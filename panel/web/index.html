@@ -310,6 +310,21 @@
             </form>
           </div>
           <div class="card">
+            <h2>远程管理令牌</h2>
+            <p class="muted">允许另一台主面板通过令牌管理本面板（看状态、加/删落地、看链接、重启 realm）。令牌只存哈希，生成时明文只显示一次，记下来，关掉页面就再也看不到了。改密码、改端口等设置接口令牌调不通。轮换后旧令牌立即失效；撤销后任何主面板都连不进来。</p>
+            <div class="small" id="central-token-status">未生成令牌</div>
+            <div id="central-token-once" class="hidden" style="margin-top:10px">
+              <div class="warn-box">只显示一次，记下来：关掉页面或刷新后就再也看不到了。</div>
+              <div class="kv"><span>令牌</span><b class="mono" id="central-token-value" style="word-break:break-all"></b></div>
+              <div class="btn-row"><button class="btn secondary sm" id="central-token-copy" type="button">复制令牌</button></div>
+            </div>
+            <div class="btn-row">
+              <button class="btn" id="central-token-generate" type="button">生成令牌</button>
+              <button class="btn secondary" id="central-token-rotate" type="button">轮换令牌</button>
+              <button class="btn danger" id="central-token-revoke" type="button">撤销令牌</button>
+            </div>
+          </div>
+          <div class="card">
             <h2>检查更新</h2>
             <div id="update-box"></div>
             <div class="btn-row"><button class="btn secondary" id="update-check" type="button">检查更新</button>
@@ -415,6 +430,27 @@
             </div>
           </form>
         </div>
+      </section>
+
+      <!-- 集中管理 -->
+      <section class="page" id="page-central">
+        <div class="page-head"><h1>集中管理</h1><div class="actions"><button class="btn secondary" id="central-refresh" type="button">刷新状态</button></div></div>
+        <p class="muted">一台主面板管多台远程面板：登记远程面板后，这里能看到每台的在线状态、版本、落地数与磁盘使用率，还能直接代理加落地、删落地、看链接、重启 realm。没登记任何远程面板时，本面板的行为与原来完全一致。</p>
+        <div class="card">
+          <h2>登记远程面板</h2>
+          <p class="muted">先到被管面板的设置页“远程管理令牌”卡片里生成令牌，再把地址和令牌填进来。令牌只保存在主面板的配置文件里（600 权限），不会显示出来。登记时会当场连一次，连不上、令牌不对或远程面板版本太旧（低于 1.2.0）都会直接拒绝并写清原因。</p>
+          <form id="central-add-form">
+            <div class="form-grid">
+              <div><label for="central-name">名称 <span class="hint">可空，默认用地址</span></label><input id="central-name" placeholder="如 香港中转 2 号"></div>
+              <div><label for="central-url">远程面板地址 <span class="hint">必填，如 http://203.0.113.1:11111</span></label><input id="central-url" placeholder="http://203.0.113.1:11111" required></div>
+              <div><label for="central-token">远程管理令牌 <span class="hint">必填，以 rpt_ 开头，不回显</span></label><input id="central-token" type="password" placeholder="rpt_…" autocomplete="off" required></div>
+            </div>
+            <div class="btn-row"><button class="btn" type="submit">登记远程面板</button></div>
+          </form>
+        </div>
+        <h2 style="margin-top:20px">已登记的远程面板</h2>
+        <div id="central-list"></div>
+        <div id="central-detail" style="margin-top:16px"></div>
       </section>
     </main>
   </div>
