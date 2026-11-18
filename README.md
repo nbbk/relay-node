@@ -55,8 +55,8 @@ curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/install.sh | b
 填写示例（落地是 tiktok-node，落地 IP `202.155.138.195`）：
 
 ```text
-输入落地服务器 IP 或域名：202.155.138.195
-选预设 [1/2/3，默认 1]：1
+① 落地服务器 IP（推荐填 IP，例如 202.155.138.195）或域名，填完按回车：202.155.138.195
+② 选预设 [1/2/3]，直接回车选默认 1：1
 ```
 
 落地是 sing-box-node 就选 `2`（再问 TLS 还是明文：TLS 选 `1`）。
@@ -64,7 +64,7 @@ curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/install.sh | b
 装完最后一步会问你要不要粘贴原节点链接，粘贴后直接给出直连 + 中转两条链接和二维码：
 
 ```text
-粘贴你原来的节点链接（可多条，一行一条，粘完空行回车结束；直接回车跳过）：
+粘贴你原来的节点链接（可多条，一行一条；粘完按一次回车（空行）结束；不想生成就直接回车跳过）：
 vless://58087f8b-f340-4721-beb7-5aae486ba0e7@yinni.930327.xyz:443?encryption=none&security=tls&type=ws&host=yinni.930327.xyz&path=%2Fs1momobvfylwonz4#TikTok-Node
 （空行回车结束）
 ```
