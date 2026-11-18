@@ -498,6 +498,7 @@ if [ -z "$PRESET" ]; then
   echo "  1) tiktok-node（Xray）：80 + 443（TCP）  ← 默认，直接回车就是 1"
   echo "  2) sing-box-node：80 + 443（TCP）+ 8388（TCP+UDP）+ 8443（UDP）+ 8444（UDP）"
   echo "  3) 自定义端口（自己输）"
+  echo "请输入你的选择："
   ask "② 选预设 [1/2/3]，直接回车选默认 1： " PRESET "1"
 fi
 
@@ -512,6 +513,7 @@ case "$PRESET" in
   2)
     echo "  1) TLS 模式（443）  ← 默认，直接回车就是 1"
     echo "  2) 明文模式（8080-8082）"
+    echo "请输入你的选择："
     ask "落地 sing-box-node 是 TLS 还是明文？[1/2]，直接回车选默认 1（TLS）： " SB_MODE "1"
     if [ "$SB_MODE" = "2" ]; then
       PORTS="tcp:8080:8080 tcp:8081:8081 tcp:8082:8082 tcp:8388:8388 udp:8388:8388"
@@ -526,6 +528,7 @@ case "$PRESET" in
     echo "  如需改监听端口，用 监听:落地 的写法，例如：443,8388,8443:9443"
     ask "端口列表（逗号分隔，填完按回车继续）： " CUSTOM_PORTS
     [ -n "$CUSTOM_PORTS" ] || { echo "没给端口，装不了。"; exit 1; }
+    echo "请输入你的选择："
     ask "这些端口要不要同时转 UDP？[y/N]，直接回车选默认 N： " WANT_UDP "N"
     IFS=',' read -ra _plist <<< "$CUSTOM_PORTS"
     for _e in "${_plist[@]}"; do
