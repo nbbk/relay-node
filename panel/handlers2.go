@@ -17,13 +17,97 @@ import (
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	latest, update := s.latestVersion()
+	relayAddr := ""
+	if rc, _, err := s.readRelayConf(); err == nil {
+		relayAddr = rc.RelayAddr
+	}
 	writeJSON(w, 200, okResp(map[string]any{
 		"port": s.cfg.Port, "https_enabled": s.cfg.HTTPSEnabled, "https_domain": s.cfg.HTTPSDomain,
-		"ip_whitelist": s.cfg.IPWhitelist,
-		"telegram":     map[string]any{"enabled": s.cfg.Telegram.Enabled, "chat_id": s.cfg.Telegram.ChatID, "has_token": s.cfg.Telegram.BotToken != ""},
-		"cloudflare":   map[string]any{"has_token": s.cfg.CloudflareToken != ""},
-		"version":      Version, "latest_version": latest, "update_available": update,
+		"ip_whitelist": s.cfg.IPWhitelist, "relay_addr": relayAddr,
+		"telegram":   map[string]any{"enabled": s.cfg.Telegram.Enabled, "chat_id": s.cfg.Telegram.ChatID, "has_token": s.cfg.Telegram.BotToken != ""},
+		"cloudflare": map[string]any{"has_token": s.cfg.CloudflareToken != ""},
+		"version":    Version, "latest_version": latest, "update_available": update,
 	}))
+}
+
+// ---------- 任意门地址 ----------
+
+// handleRelayAddr 设置/清除任意门地址（relay.conf 的 RELAY_ADDR）。
+// 空字符串 = 清除已保存值（删掉 RELAY_ADDR 键）；非空须是合法 IP 或域名。
+// 保存成功后把 nodes.txt 里所有 label 为“任意门”的链接地址换成新值（端口不动；
+// nodes.txt 不存在就跳过）。RELAY_ADDR 只用于生成链接，不用重启 realm。
+func (s *Server) handleRelayAddr(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RelayAddr string `json:"relay_addr"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	addr := strings.TrimSpace(req.RelayAddr)
+	if addr != "" && !validIPOrDomain(addr) {
+		writeJSON(w, 400, errResp("中转地址不对：填 IP 或域名"))
+		return
+	}
+	if !s.tryOpLock(w) {
+		return
+	}
+	defer s.opMu.Unlock()
+	user := s.currentUser(r)
+	rc, _, err := s.readRelayConf()
+	if err != nil {
+		writeJSON(w, 500, errResp("relay.conf 不存在或读不到：中转还没装好"))
+		return
+	}
+	if _, err := s.backupNow("改任意门地址前自动备份", "realm"); err != nil {
+		writeJSON(w, 500, errResp("备份失败，操作已取消："+err.Error()))
+		return
+	}
+	lines := rc.Lines
+	if addr == "" {
+		lines = removeRelayConfValue(lines, "RELAY_ADDR")
+	} else {
+		lines = setRelayConfValue(lines, "RELAY_ADDR", addr)
+	}
+	if err := s.writeRelayConfAtomic([]byte(strings.Join(lines, "\n") + "\n")); err != nil {
+		writeJSON(w, 500, errResp("写 relay.conf 失败："+err.Error()))
+		return
+	}
+	// 同步改 nodes.txt 里所有“任意门”链接的地址（端口不动；没有 nodes.txt 就跳过；
+	// 清除地址时没东西可换，也跳过——下次加任意门落地时再自动探测）。
+	if addr != "" {
+		if p := s.nodesFilePath(); p != "" {
+			if b, err := os.ReadFile(p); err == nil {
+				if nb, changed := rewriteDoorLinks(b, addr); changed {
+					_ = writeFileAtomic(p, nb, 0o644)
+				}
+			}
+		}
+	}
+	s.audit(user, "设置任意门地址", addr, "成功", "")
+	writeJSON(w, 200, okResp(map[string]any{"relay_addr": addr}))
+}
+
+// rewriteDoorLinks 把文本里所有“任意门：<链接>”行的地址换成新地址（端口不动），
+// 返回新内容与是否改过。
+func rewriteDoorLinks(data []byte, newAddr string) ([]byte, bool) {
+	changed := false
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "任意门：") {
+			continue
+		}
+		link := strings.TrimSpace(strings.TrimPrefix(t, "任意门："))
+		if nl := setLinkHost(link, newAddr); nl != link {
+			lines[i] = "任意门：" + nl
+			changed = true
+		}
+	}
+	if !changed {
+		return data, false
+	}
+	return []byte(strings.Join(lines, "\n")), true
 }
 
 func (s *Server) latestVersion() (string, bool) {
