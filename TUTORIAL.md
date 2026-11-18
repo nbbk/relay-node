@@ -258,7 +258,8 @@ systemctl status realm --no-pager
 **第 7 步：双节点链接（可选）。** 汇总之后脚本会问你要不要粘贴原节点链接，粘贴后直接给出直连 + 中转两条链接和二维码（直接回车跳过，装完随时可以只补生成一次：`bash install.sh --nodes`，它读 `/etc/realm/relay.conf` 里的落地信息，不重装）：
 
 ```text
-粘贴你原来的节点链接（可多条，一行一条；粘完按一次回车（空行）结束；不想生成就直接回车跳过）：
+请粘贴你原来的节点链接：
+（可多条，一行一条；粘完按一次回车（空行）结束；不想生成就直接回车跳过）
 vless://58087f8b-f340-4721-beb7-5aae486ba0e7@yinni.930327.xyz:443?encryption=none&security=tls&type=ws&host=yinni.930327.xyz&path=%2Fs1momobvfylwonz4#TikTok-Node
 （空行回车结束）
 ```
