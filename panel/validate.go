@@ -88,6 +88,9 @@ type ParsedLink struct {
 	Host   string
 	Port   int
 	SNI    string
+	// Name 备注名：vless/trojan/ss 是 # 后面的片段，vmess 是 JSON 里的 ps；
+	// url.Parse 已把百分号编码解开，这里是解码后的原文。
+	Name string
 }
 
 // parseNodeLink 解析 vless/trojan/ss/vmess 链接，取出协议/地址/端口/SNI。
@@ -103,6 +106,7 @@ func parseNodeLink(link string) (*ParsedLink, error) {
 		host := u.Hostname()
 		p, _ := strconv.Atoi(u.Port())
 		pl.Host, pl.Port = host, p
+		pl.Name = u.Fragment
 		pl.SNI = u.Query().Get("sni")
 		if pl.SNI == "" {
 			pl.SNI = u.Query().Get("host")
@@ -111,6 +115,7 @@ func parseNodeLink(link string) (*ParsedLink, error) {
 			pl.SNI = host
 		}
 	case "ss":
+		pl.Name = u.Fragment
 		if strings.Contains(u.Opaque, "@") || u.Host != "" {
 			// SIP002: ss://user@host:port
 			host := u.Hostname()
@@ -150,6 +155,9 @@ func parseNodeLink(link string) (*ParsedLink, error) {
 			return nil, fmt.Errorf("vmess 链接解码失败")
 		}
 		pl.Host, _ = j["add"].(string)
+		if s, ok := j["ps"].(string); ok {
+			pl.Name = s
+		}
 		switch v := j["port"].(type) {
 		case string:
 			pl.Port, _ = strconv.Atoi(v)
