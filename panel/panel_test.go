@@ -645,6 +645,45 @@ func TestServeEmbeddedWeb(t *testing.T) {
 	}
 }
 
+// TestMobileDrawerAndUpdatePoll 手机抽屉菜单 + 更新后自动跳登录页：
+// 首页含汉堡按钮/遮罩/抽屉关闭按钮且不再有底部导航条；style.css 含抽屉样式；
+// app.js 含抽屉开关与更新轮询逻辑（401 跳登录、5 分钟超时）。
+func TestMobileDrawerAndUpdatePoll(t *testing.T) {
+	s := newTestAddLandingServer(t, t.TempDir(), t.TempDir())
+	h := s.routes()
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		return rec
+	}
+	body := get("/").Body.String()
+	for _, want := range []string{
+		`id="menu-btn"`, `id="scrim"`, `id="sidebar-close"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("首页缺 %q（手机抽屉结构）", want)
+		}
+	}
+	if strings.Contains(body, "bottom-nav") {
+		t.Fatalf("首页不应再含底部导航条 bottom-nav（iOS 上不可靠，已改汉堡抽屉）")
+	}
+	css := get("/style.css").Body.String()
+	for _, want := range []string{".sidebar.open", ".menu-btn", ".scrim"} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("style.css 缺 %q（抽屉样式）", want)
+		}
+	}
+	js := get("/app.js").Body.String()
+	for _, want := range []string{
+		"initDrawer", "openDrawer", "closeDrawer",
+		"pollUpdateDone", "更新完成，请重新登录", "更新超时，请手动刷新页面", "正在更新…",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js 缺 %q（抽屉或更新轮询逻辑）", want)
+		}
+	}
+}
+
 // TestLoginErrorMessage 登录报错文案：错密码时服务端返回 401 + “账号或密码不对”，
 // 前端 api() 的登录 401 豁免与登录框映射保证它显示为“用户名或密码错误”，而不是“登录已过期”。
 func TestLoginErrorMessage(t *testing.T) {

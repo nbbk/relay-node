@@ -138,20 +138,42 @@ let settingsCache = null;
 let logsTimer = null;
 
 function buildNav() {
-  const side = $('#side-nav'), bottom = $('#bottom-nav-inner');
-  side.innerHTML = ''; bottom.innerHTML = '';
+  const side = $('#side-nav');
+  side.innerHTML = '';
   PAGES.forEach((p) => {
     const b1 = document.createElement('button');
     b1.type = 'button'; b1.className = 'nav-item'; b1.dataset.page = p.id;
     b1.innerHTML = '<span class="ico">' + p.icon + '</span><span>' + esc(p.title) + '</span>';
     b1.addEventListener('click', () => goto(p.id));
     side.appendChild(b1);
-    const b2 = b1.cloneNode(true);
-    b2.addEventListener('click', () => goto(p.id));
-    bottom.appendChild(b2);
   });
 }
+/* ---------- 手机抽屉菜单 ---------- */
+function openDrawer() {
+  $('#sidebar').classList.add('open');
+  const scrim = $('#scrim');
+  scrim.classList.remove('hidden'); scrim.hidden = false;
+  $('#menu-btn').setAttribute('aria-expanded', 'true');
+  document.body.style.overflow = 'hidden';
+}
+function closeDrawer() {
+  $('#sidebar').classList.remove('open');
+  const scrim = $('#scrim');
+  scrim.classList.add('hidden'); scrim.hidden = true;
+  $('#menu-btn').setAttribute('aria-expanded', 'false');
+  document.body.style.overflow = '';
+}
+function initDrawer() {
+  $('#menu-btn').addEventListener('click', () => {
+    if ($('#sidebar').classList.contains('open')) closeDrawer(); else openDrawer();
+  });
+  $('#sidebar-close').addEventListener('click', closeDrawer);
+  $('#scrim').addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+  window.addEventListener('resize', () => { if (window.innerWidth > 640) closeDrawer(); });
+}
 function goto(page) {
+  closeDrawer(); // 手机上选了页面就收起抽屉；桌面端是空操作
   currentPage = page;
   $$('.page').forEach((s) => s.classList.toggle('active', s.id === 'page-' + page));
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
@@ -877,12 +899,52 @@ function initSettings() {
       toast(r.update_available ? '发现新版本 ' + (r.latest_version || '') : '已是最新版本', r.update_available ? undefined : 'ok');
     } catch (err) { toast('检查失败：' + err.message, 'err'); }
   });
+/* ---------- 更新面板：轮询等重启，完成后自动跳登录页 ---------- */
+let updatePollTimer = null;
+function stopUpdatePoll() { if (updatePollTimer) { clearInterval(updatePollTimer); updatePollTimer = null; } }
+function pollUpdateDone(btn) {
+  // 每 3 秒调一次 /api/v1/me（noAuthRedirect 豁免，自己判断状态）：
+  // 200 = 旧面板还在跑，继续等；连不上（重启中）继续等；401 = 新面板已起来、旧会话失效，跳登录页。
+  const started = Date.now();
+  stopUpdatePoll();
+  updatePollTimer = setInterval(async () => {
+    if (Date.now() - started > 5 * 60 * 1000) {
+      stopUpdatePoll();
+      btn.disabled = false; btn.textContent = '更新面板';
+      $('#update-box').innerHTML = '<div class="warn-box">更新超时，请手动刷新页面。<button class="btn sm" type="button" onclick="location.reload()">刷新页面</button></div>';
+      return;
+    }
+    try {
+      await api('/api/v1/me', {}, true);
+    } catch (err) {
+      const msg = String(err.message || '');
+      if (msg.indexOf('401') >= 0 || msg.indexOf('未登录') >= 0) {
+        stopUpdatePoll();
+        btn.disabled = false; btn.textContent = '更新面板';
+        showLogin();
+        toast('更新完成，请重新登录', 'ok');
+      }
+      // 其他失败（连不上、面板重启中）继续等
+    }
+  }, 3000);
+}
+function initUpdatePoll() {
   $('#update-apply').addEventListener('click', async () => {
-    const ok = await confirmModal('更新面板', '<p>更新只重启面板自己，不动 realm，正在用的节点不断线。更新完自动跑一遍体检。确定更新吗？</p>', '开始更新');
+    const ok = await confirmModal('更新面板', '<p>更新只重启面板自己，不动 realm，正在用的节点不断线。更新完自动跳到登录页重新登录。确定更新吗？</p>', '开始更新');
     if (!ok) return;
-    try { await apiPost('/api/v1/update/apply', {}); toast('正在更新，面板稍后重启，请稍候再刷新', 'ok'); }
-    catch (err) { toast('更新失败：' + err.message, 'err'); }
+    const btn = $('#update-apply');
+    btn.disabled = true; btn.textContent = '正在更新…';
+    $('#update-box').innerHTML = '<div class="info-box">正在更新，面板重启后会自动跳到登录页，请稍候…</div>';
+    try {
+      await apiPost('/api/v1/update/apply', {});
+      pollUpdateDone(btn);
+    } catch (err) {
+      btn.disabled = false; btn.textContent = '更新面板';
+      $('#update-box').innerHTML = '';
+      toast('更新失败：' + err.message, 'err');
+    }
   });
+}
   $('#backup-create').addEventListener('click', async () => {
     try { await apiPost('/api/v1/backups', { label: '手动备份' }); toast('备份已创建', 'ok'); loadBackups(); }
     catch (err) { toast('备份失败：' + err.message, 'err'); }
@@ -1193,12 +1255,14 @@ function initTraffic() {
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   buildNav();
+  initDrawer();
   initLogin();
   initCheck();
   initAddForm();
   initTwin();
   initService();
   initSettings();
+  initUpdatePoll();
   initFirewall();
   initTraffic();
   $('#refresh-btn').addEventListener('click', () => loadPage(currentPage));

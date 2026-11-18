@@ -38,8 +38,9 @@
 
 <!-- 主界面（hidden 属性是原生兜底：样式文件加载失败时也不会与登录页堆在一起显示） -->
 <div id="app" class="hidden" hidden>
+  <div class="scrim hidden" id="scrim" hidden></div>
   <aside class="sidebar" id="sidebar">
-    <div class="brand">relay<span>-node</span></div>
+    <div class="brand">relay<span>-node</span><button class="icon-btn sidebar-close" id="sidebar-close" type="button" aria-label="关闭菜单">✕</button></div>
     <nav id="side-nav"></nav>
     <div class="foot">
       <div>面板版本：<span id="side-version">—</span></div>
@@ -50,6 +51,7 @@
 
   <div class="main">
     <header class="topbar">
+      <button class="icon-btn menu-btn" id="menu-btn" type="button" aria-label="打开菜单" aria-expanded="false">☰</button>
       <div class="title" id="page-title">总览</div>
       <button class="icon-btn" id="theme-btn" type="button" title="切换深色 / 浅色">🌙 深色</button>
       <button class="icon-btn" id="refresh-btn" type="button">↻ 刷新</button>
@@ -247,7 +249,7 @@
             <div id="update-box"></div>
             <div class="btn-row"><button class="btn secondary" id="update-check" type="button">检查更新</button>
             <button class="btn" id="update-apply" type="button">更新面板</button></div>
-            <p class="small">更新只重启面板自己，不动 realm，正在用的节点不断线；更新完自动跑一遍体检。</p>
+            <p class="small">更新只重启面板自己，不动 realm，正在用的节点不断线；更新完自动跳到登录页重新登录。</p>
           </div>
         </div>
 
@@ -351,9 +353,6 @@
       </section>
     </main>
   </div>
-
-  <!-- 手机底部导航 -->
-  <nav class="bottom-nav" id="bottom-nav"><div class="nav-scroll" id="bottom-nav-inner"></div></nav>
 </div>
 
 <!-- 弹窗容器 -->

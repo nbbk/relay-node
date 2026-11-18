@@ -195,25 +195,27 @@ html[data-theme="dark"] .log-box{background:#020617}
 .toast.err{background:var(--red)}
 .toast.ok{background:var(--green)}
 
-/* ---- 底部导航（手机） ---- */
-.bottom-nav{
-  display:none; position:fixed; left:0; right:0; bottom:0; z-index:50;
-  background:var(--surface); border-top:1px solid var(--border);
-  padding:6px 2px calc(6px + env(safe-area-inset-bottom));
-}
-.bottom-nav .nav-scroll{display:flex; overflow-x:auto; scrollbar-width:none}
-.bottom-nav .nav-scroll::-webkit-scrollbar{display:none}
-.bottom-nav .nav-item{flex:1 0 auto; flex-direction:column; gap:2px; font-size:11px; padding:6px 8px; justify-content:center; align-items:center; min-width:56px}
-.bottom-nav .nav-item .ico{font-size:19px}
+/* ---- 抽屉遮罩（手机） ---- */
+.scrim{position:fixed; inset:0; background:rgba(15,23,42,.5); z-index:55}
+.menu-btn{display:none}
+.sidebar-close{display:none}
 
 /* ---- 响应式 ---- */
 @media (max-width:900px){
   .grid.cols-3,.grid.cols-4{grid-template-columns:repeat(2,1fr)}
 }
 @media (max-width:640px){
-  .sidebar{display:none}
-  .bottom-nav{display:block}
-  .content{padding:16px 14px 96px}
+  /* 桌面侧边栏变抽屉：平时滑出屏幕外，点汉堡按钮才滑进来 */
+  .sidebar{
+    display:flex; position:fixed; left:0; top:0; bottom:0; z-index:60; height:100dvh;
+    width:min(280px,85vw); transform:translateX(-105%);
+    transition:transform .25s ease; box-shadow:var(--shadow-lg);
+  }
+  .sidebar.open{transform:none}
+  .sidebar .brand{display:flex; align-items:center; justify-content:space-between}
+  .menu-btn{display:inline-flex; align-items:center; justify-content:center}
+  .sidebar-close{display:inline-flex; align-items:center; justify-content:center; padding:6px 10px}
+  .content{padding:16px 14px 32px}
   .grid.cols-2,.grid.cols-3,.grid.cols-4{grid-template-columns:1fr}
   .form-grid{grid-template-columns:1fr}
   body{font-size:16px}
