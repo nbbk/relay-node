@@ -3,7 +3,7 @@
 > 本教程覆盖**安装、卸载/删除、排查运维**三部分，所有命令都可直接复制跑。
 > 简版说明看 [README.md](README.md)。中转核心是 [realm](https://github.com/zhboner/realm)（v2.9.6，Rust 纯转发）。
 >
-> 先记住架构：客户端 → **中转机（realm 原样转发，不解密）** → 落地机（你现成的 tiktok-node / sing-box-node）。
+> 先记住架构：客户端 → **中转机（realm 原样转发，不解密）** → 落地机（你现成的 [tiktok-node](https://github.com/nbbk/tiktok-node) / [sing-box-node](https://github.com/nbbk/sing-box-node)）。
 > TLS 握手是客户端和落地机之间端到端完成的，中转看不到、也改不了任何内容。
 
 ---
