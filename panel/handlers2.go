@@ -26,6 +26,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"ip_whitelist": s.cfg.IPWhitelist, "relay_addr": relayAddr,
 		"telegram":   map[string]any{"enabled": s.cfg.Telegram.Enabled, "chat_id": s.cfg.Telegram.ChatID, "has_token": s.cfg.Telegram.BotToken != ""},
 		"monitor":    s.cfg.Monitor,
+		"latency":    s.cfg.Latency,
 		"cloudflare": map[string]any{"has_token": s.cfg.CloudflareToken != ""},
 		"version":    Version, "latest_version": latest, "update_available": update,
 	}))
