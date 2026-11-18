@@ -61,6 +61,13 @@ type LandingExt struct {
 	RenewProgress     int       `json:"renew_progress"`
 	TrafficWarned80   bool      `json:"traffic_warned_80"`
 	TrafficWarned100  bool      `json:"traffic_warned_100"`
+	// OrigLink 是加落地时用户粘贴的原始节点链接（选填），只存面板自己的
+	// state.json（600 权限），用来拼中转+直连链接与二维码。
+	// 不传给安装脚本、不进日志与审计、不出现在任何接口的日志字段里。
+	OrigLink string `json:"orig_link,omitempty"`
+	// OrigLinkName 生成 twin 链接时用的节点名称（选填）：直连备注是
+	// “<名称>-直连”、中转备注是“<名称>-中转”；空着就用原始链接自己的备注名。
+	OrigLinkName string `json:"orig_link_name,omitempty"`
 }
 
 type RecycleItem struct {
@@ -113,6 +120,18 @@ type Landing struct {
 	Mode       string     `json:"mode"`
 	Ports      []PortSpec `json:"ports"`
 	PortsRaw   string     `json:"-"`
+	// Name 显示名（relay.conf 的 NAME[_N]，编辑时可改；只改显示，
+	// 不动转发配置、端口、模式与状态键；空着就显示落地地址）。
+	Name string `json:"name"`
+}
+
+// displayName 卡片标题、历史分组、集中管理里显示的名字：
+// 有名称用名称，没有就用落地地址，和以前一致。
+func (l Landing) displayName() string {
+	if l.Name != "" {
+		return l.Name
+	}
+	return l.Landing
 }
 
 type RelayConf struct {
@@ -163,7 +182,7 @@ func parseRelayConf(data []byte) *RelayConf {
 		if landing == "" {
 			continue
 		}
-		l := Landing{Index: i, Landing: landing, Domain: get("DOMAIN"), CertDomain: get("CERT_DOMAIN"), Preset: get("PRESET"), ModeNote: get("MODE_NOTE"), PortsRaw: get("PORTS")}
+		l := Landing{Index: i, Landing: landing, Domain: get("DOMAIN"), CertDomain: get("CERT_DOMAIN"), Preset: get("PRESET"), ModeNote: get("MODE_NOTE"), PortsRaw: get("PORTS"), Name: get("NAME")}
 		// MODE 缺字段的旧 relay.conf 默认标准模式（向后兼容）；只有 door 才记 door。
 		if get("MODE") == "door" {
 			l.Mode = "door"
@@ -235,7 +254,7 @@ func (rc *RelayConf) fieldKeys(index int) []string {
 	if index != 1 {
 		suffix = "_" + strconv.Itoa(index)
 	}
-	return []string{"LANDING" + suffix, "LANDING_IS_DOMAIN" + suffix, "DOMAIN" + suffix, "CERT_DOMAIN" + suffix, "PRESET" + suffix, "MODE_NOTE" + suffix, "MODE" + suffix, "PORTS" + suffix}
+	return []string{"LANDING" + suffix, "LANDING_IS_DOMAIN" + suffix, "DOMAIN" + suffix, "CERT_DOMAIN" + suffix, "PRESET" + suffix, "MODE_NOTE" + suffix, "MODE" + suffix, "PORTS" + suffix, "NAME" + suffix}
 }
 
 // ---------- 服务器 ----------
