@@ -522,8 +522,9 @@ func TestServeEmbeddedWeb(t *testing.T) {
 		return rec
 	}
 
-	// / 返回 HTML，且带内联 hidden 兜底样式；登录页默认可见（1.1.8：JS 初始化失败时
-	// 也不能白板），后台仍默认隐藏（只由 JS 在鉴权成功后显示）
+	// / 返回 HTML，且带内联 hidden 兜底样式；1.2.2 起默认显示中性加载态（不是登录页，
+	// 这样刷新不闪登录页），登录页与后台都默认隐藏，只由 JS 在会话校验后决定显示哪个；
+	// app.js 加载失败时内联兜底脚本 10 秒后把登录页放出来，页面永远不白板。
 	rec := get("/", "")
 	if rec.Code != 200 {
 		t.Fatalf("/ 状态=%d want 200", rec.Code)
@@ -535,15 +536,14 @@ func TestServeEmbeddedWeb(t *testing.T) {
 	for _, want := range []string{
 		"relay-node 面板",
 		".hidden{display:none!important}",
-		`id="login-view" class="login-wrap"`,
+		`id="loading-view" class="loading-wrap"`,
+		`id="login-view" class="login-wrap hidden" hidden`,
 		`id="app" class="hidden" hidden`,
+		"window.__panelBooted",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("/ 首页缺 %q", want)
 		}
-	}
-	if strings.Contains(body, `id="login-view" class="login-wrap hidden"`) {
-		t.Fatalf("/ 登录页不应再默认隐藏（1.1.8 改成默认可见）")
 	}
 
 	// /style.css 必须是真 CSS，不是 HTML
@@ -1097,16 +1097,21 @@ func TestBlankPageFix118(t *testing.T) {
 		}
 	}
 
-	// 2. 登录页默认可见、后台默认隐藏：即使 JS 初始化失败，用户看到的也是登录页而不是白板
+	// 2. 加载态默认可见、登录页与后台默认隐藏（1.2.2：刷新先显示加载态，校验完会话
+	// 再决定显示登录页还是后台，不闪登录页）；即使 JS 初始化失败，内联兜底脚本
+	// 10 秒后也会把登录页放出来，用户看到的仍是登录页而不是白板
 	body := get("/").Body.String()
-	if !strings.Contains(body, `<div id="login-view" class="login-wrap">`) {
-		t.Fatalf("登录页 #login-view 应默认可见（无 hidden 类与 hidden 属性）")
+	if !strings.Contains(body, `<div id="loading-view" class="loading-wrap">`) {
+		t.Fatalf("加载态 #loading-view 应默认可见")
 	}
-	if strings.Contains(body, `id="login-view" class="login-wrap hidden"`) {
-		t.Fatalf("登录页 #login-view 不应再默认隐藏")
+	if !strings.Contains(body, `<div id="login-view" class="login-wrap hidden" hidden>`) {
+		t.Fatalf("登录页 #login-view 应默认隐藏（校验完会话再决定显示）")
 	}
 	if !strings.Contains(body, `<div id="app" class="hidden" hidden>`) {
 		t.Fatalf("后台 #app 应仍默认隐藏（只由 JS 在鉴权成功后显示）")
+	}
+	if !strings.Contains(body, "window.__panelBooted") {
+		t.Fatalf("首页缺内联兜底脚本（app.js 失效时 10 秒后显示登录页）")
 	}
 
 	// 3. app.js：安全绑定 + 初始化逐个包 try/catch + checkMe 必须执行
@@ -1114,6 +1119,7 @@ func TestBlankPageFix118(t *testing.T) {
 	for _, want := range []string{
 		"function on(sel, ev, fn, root)", "function onIn(root, sel, ev, fn)",
 		"safeInit(initDrawer)", "try { checkMe(); } catch (e) { showLogin(); }",
+		"window.__panelBooted = true", "hideLoading();",
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js 缺 %q（初始化加固或 checkMe 保证执行）", want)
