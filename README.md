@@ -6,6 +6,12 @@
 
 > 📖 详细教程（安装、卸载、排查运维全流程）：**[TUTORIAL.md](TUTORIAL.md)**
 
+## 相关仓库
+
+- [tiktok-node](https://github.com/nbbk/tiktok-node)：落地节点，Xray 内核，VLESS + WS + TLS 单协议
+- [sing-box-node](https://github.com/nbbk/sing-box-node)：落地节点，sing-box 内核，VLESS/Trojan/VMess/Shadowsocks/Hysteria2/TUIC 6 协议合一
+- [relay-node](https://github.com/nbbk/relay-node)（本仓库）：中转，realm 纯转发，落地线路不好时提速
+
 ## 这是什么
 
 服务器线路不好时，直连落地节点又慢又卡。加一台中转机：
