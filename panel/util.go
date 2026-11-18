@@ -16,6 +16,28 @@ import (
 	"time"
 )
 
+// ---------- 日志轮转（防爆盘） ----------
+
+// 面板自己写的文件（audit.log、realm.log）没有系统轮转，
+// 写之前判大小，超限就轮转，旧份只留最近 3 个。
+const (
+	logRotateMaxBytes = 10 << 20 // 10MB
+	logRotateKeep     = 3        // 保留 .1/.2/.3
+)
+
+func rotateLogIfLarge(path string) {
+	st, err := os.Stat(path)
+	if err != nil || st.Size() <= logRotateMaxBytes {
+		return
+	}
+	// 先删最旧的，再逐个往后挪一位，最后把当前文件挪成 .1
+	_ = os.Remove(path + fmt.Sprintf(".%d", logRotateKeep))
+	for i := logRotateKeep - 1; i >= 1; i-- {
+		_ = os.Rename(path+fmt.Sprintf(".%d", i), path+fmt.Sprintf(".%d", i+1))
+	}
+	_ = os.Rename(path, path+".1")
+}
+
 // ---------- JSON 响应 ----------
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -165,6 +187,7 @@ func (s *Server) restartRealm() error {
 	time.Sleep(time.Second)
 	_, _ = runCmdOut(nil, 5*time.Second, "pkill", "-9", "-x", "realm")
 	cmd := exec.Command("nohup", "/usr/local/bin/realm", "-c", filepath.Join(s.env.RealmDir, "config.toml"))
+	rotateLogIfLarge("/var/log/realm.log") // 超 10MB 就轮转，旧份只留 3 个
 	f, err := os.OpenFile("/var/log/realm.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err == nil {
 		defer f.Close()

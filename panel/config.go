@@ -512,7 +512,9 @@ func (s *Server) audit(user, action, target, result, detail string) {
 	defer s.auditMu.Unlock()
 	e := AuditEntry{TS: time.Now().UTC().Format(time.RFC3339), User: user, Action: action, Target: target, Result: result, Detail: sanitize(detail)}
 	b, _ := json.Marshal(e)
-	f, err := os.OpenFile(filepath.Join(s.env.PanelHome, "audit.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	auditPath := filepath.Join(s.env.PanelHome, "audit.log")
+	rotateLogIfLarge(auditPath) // 超 10MB 就轮转，旧份只留 3 个
+	f, err := os.OpenFile(auditPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -681,5 +682,190 @@ func TestLoginErrorMessage(t *testing.T) {
 		if !strings.Contains(string(js), want) {
 			t.Fatalf("app.js 缺 %q", want)
 		}
+	}
+}
+
+// ---------- 日志轮转 ----------
+
+func TestRotateLogIfLarge(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "test.log")
+	// 不到 10MB：不轮转
+	if err := os.WriteFile(p, []byte("small"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rotateLogIfLarge(p)
+	if _, err := os.Stat(p + ".1"); err == nil {
+		t.Fatalf("小文件不应轮转")
+	}
+	// 超 10MB：轮转成 .1，原文件消失
+	big := make([]byte, logRotateMaxBytes+1)
+	for i := range big {
+		big[i] = 'x'
+	}
+	if err := os.WriteFile(p, big, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rotateLogIfLarge(p)
+	if _, err := os.Stat(p); err == nil {
+		t.Fatalf("轮转后原文件应消失")
+	}
+	if st, err := os.Stat(p + ".1"); err != nil || st.Size() != int64(len(big)) {
+		t.Fatalf(".1 不存在或大小不对：%v", err)
+	}
+	// 再轮转 3 次：旧份只留 .1/.2/.3，共 4 次轮转后最旧的一份被删
+	for i := 0; i < 3; i++ {
+		if err := os.WriteFile(p, big, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		rotateLogIfLarge(p)
+	}
+	for _, n := range []string{".1", ".2", ".3"} {
+		if _, err := os.Stat(p + n); err != nil {
+			t.Fatalf("轮转 4 次后 %s 应存在：%v", n, err)
+		}
+	}
+	if _, err := os.Stat(p + ".4"); err == nil {
+		t.Fatalf(".4 不应存在：旧份只留 3 个")
+	}
+}
+
+func TestAuditRotatesLargeLog(t *testing.T) {
+	panelHome := t.TempDir()
+	s, err := newServer(Env{PanelHome: panelHome, RealmDir: t.TempDir(), KitDir: t.TempDir(), Port: 11111})
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	// 预先放一个超 10MB 的 audit.log，再记一条审计：应轮转，旧内容进 .1，新内容写进新文件
+	big := make([]byte, logRotateMaxBytes+100)
+	for i := range big {
+		big[i] = 'a'
+	}
+	auditPath := filepath.Join(panelHome, "audit.log")
+	if err := os.WriteFile(auditPath, big, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.audit("admin", "test-action", "target", "ok", "detail")
+	if st, err := os.Stat(auditPath + ".1"); err != nil || st.Size() != int64(len(big)) {
+		t.Fatalf("audit.log.1 不存在或大小不对：%v", err)
+	}
+	data, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "test-action") {
+		t.Fatalf("新 audit.log 里没有新记的审计条目")
+	}
+	if int64(len(data)) > logRotateMaxBytes {
+		t.Fatalf("新 audit.log 不应超限")
+	}
+}
+
+// ---------- 检查更新 ----------
+
+func loginTestCookie(t *testing.T, h http.Handler) string {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/api/v1/login", strings.NewReader(`{"username":"admin","password":"test-password-123"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("测试登录状态=%d want 200：%s", rec.Code, rec.Body.String())
+	}
+	cookie := strings.SplitN(rec.Header().Get("Set-Cookie"), ";", 2)[0]
+	if cookie == "" {
+		t.Fatal("登录后没发会话 cookie")
+	}
+	return cookie
+}
+
+func TestIsNewerVersion(t *testing.T) {
+	cases := []struct {
+		latest, current string
+		want            bool
+	}{
+		{"1.1.3", "1.1.2", true},
+		{"1.1.10", "1.1.2", true},  // 数字比较：10 > 2，不是字符串比较
+		{"1.1.2", "1.1.2", false},  // 相同版本不报更新
+		{"1.1.2", "1.1.10", false}, // 本地更新时不报更新
+		{"1.2.0", "1.1.10", true},
+		{"1.1", "1.1.0", false},   // 缺失段按 0 算
+		{"v1.1.4", "1.1.3", true}, // 前缀 v 容错
+		{"abc", "1.1.2", true},    // 解析失败回退到字符串不等
+		{"", "1.1.2", false},      // 远端为空不报更新
+	}
+	for _, c := range cases {
+		if got := isNewerVersion(c.latest, c.current); got != c.want {
+			t.Errorf("isNewerVersion(%q, %q)=%v want %v", c.latest, c.current, got, c.want)
+		}
+	}
+}
+
+func TestUpdateCheckBypassesCache(t *testing.T) {
+	// mock 远端 VERSION 服务，内容可改
+	remote := "1.1.2"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(remote + "\n"))
+	}))
+	defer srv.Close()
+	oldURL := latestVersionURL
+	latestVersionURL = srv.URL + "/panel/VERSION"
+	defer func() { latestVersionURL = oldURL }()
+	oldVersion := Version
+	Version = "1.1.2"
+	defer func() { Version = oldVersion }()
+	latestVersionCache.set("")
+	defer latestVersionCache.set("")
+
+	s := newTestAddLandingServer(t, t.TempDir(), t.TempDir())
+	h := s.routes()
+	cookie := loginTestCookie(t, h)
+	check := func() (int, map[string]any) {
+		req := httptest.NewRequest("GET", "/api/v1/update/check", nil)
+		req.Header.Set("Cookie", cookie)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var body map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return rec.Code, body
+	}
+	// 远端还是 1.1.2：不报更新
+	if code, body := check(); code != 200 || body["update_available"] != false {
+		t.Fatalf("同版本检查：code=%d body=%v want 200/false", code, body)
+	}
+	// 远端升到 1.1.3，同时缓存里塞一个 1 小时内的旧值 1.1.2：手动检查必须绕过缓存拿到新版本
+	remote = "1.1.3"
+	latestVersionCache.set("1.1.2")
+	if code, body := check(); code != 200 {
+		t.Fatalf("新版本检查状态=%d want 200：%v", code, body)
+	} else if body["latest_version"] != "1.1.3" || body["update_available"] != true {
+		t.Fatalf("缓存内旧值时手动检查应拿到 1.1.3 且报更新，实际：%v", body)
+	}
+}
+
+func TestUpdateCheckFetchFailure(t *testing.T) {
+	// 远端 404：手动检查应明确报错（502），不能返回“已是最新”
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+	oldURL := latestVersionURL
+	latestVersionURL = srv.URL + "/panel/VERSION"
+	defer func() { latestVersionURL = oldURL }()
+	latestVersionCache.set("")
+	defer latestVersionCache.set("")
+
+	s := newTestAddLandingServer(t, t.TempDir(), t.TempDir())
+	h := s.routes()
+	cookie := loginTestCookie(t, h)
+	req := httptest.NewRequest("GET", "/api/v1/update/check", nil)
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 502 {
+		t.Fatalf("拉取失败时状态=%d want 502：%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "检查更新失败") {
+		t.Fatalf("拉取失败时正文应含“检查更新失败”，实际：%s", rec.Body.String())
 	}
 }
