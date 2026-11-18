@@ -6,7 +6,13 @@
 #   只补生成双节点链接：bash install.sh --nodes（读 /etc/realm/relay.conf，不重装）
 #   追加一个落地节点：bash install.sh --add（不覆盖已有配置，直接往后加）
 #   只生成一条链接的直连 twin：bash install.sh --twin '<链接>' <落地IP> [sni域名]（面板调用）
+#   只生成一条任意门链接：bash install.sh --door '<链接>' <中转地址> <转发端口> [sni域名]（面板调用）
 #   （不给参数则交互询问；落地不用装任何东西，转发目标就是落地现成的端口）
+# 任意门模式：节点域名永远指着落地不动；中转机上每个落地分一个专用转发端口
+#   （转发端口 = 落地端口 + 20000，如 443→20443、8388→28388）；链接用“中转地址:转发端口”，
+#   SNI 仍是节点域名，TLS 还是客户端和落地端到端直通；证书续签走落地直连，永远不用改指向。
+#   环境变量：RELAY_MODE=standard|door（1/2 也接受）、RELAY_ADDR（中转地址）、
+#   DOOR_PORT_OVERRIDES="落地端口:转发端口"（逗号分隔，如 "443:30443"）。
 # 多落地：一台中转机可以转多个落地节点（装完第 1 个后会问要不要再加一个，
 #        或事后跑 bash install.sh --add）。每个落地各有一组转发端口，监听端口
 #        不能撞。加第 2 个及以上落地、80 或 443 被已装好的落地占了时，会让你
@@ -59,12 +65,21 @@ if [ "${1:-}" = "--twin" ]; then
   TWIN_MODE=1
   shift
 fi
+# 只生成一条任意门链接：bash install.sh --door '<链接>' <中转地址> <转发端口> [sni域名]（面板调用，标准输出只打印任意门链接一行）
+DOOR_MODE=0
+if [ "${1:-}" = "--door" ]; then
+  DOOR_MODE=1
+  shift
+fi
 SNI_ASKED=0
 STEP7_INDEX=1
 SHARE80=0        # 80 是否走按域名分流（nginx 监听 80，按 Host 分到各落地 80）
 SHARE443=0       # 443 是否走按 SNI 分流（haproxy 监听 443，按 SNI 分到各落地 443）
 SHARE_ASKED=0    # 本轮加落地时是否已问过分流方式（每加一个落地重置一次）
 CERT_DOMAIN="${CERT_DOMAIN:-}"   # 本轮落地的证书域名（分流按它认落地；落地填域名时就是它，填 IP 时再问；面板非交互调用时可用环境变量预设）
+RELAY_MODE="${RELAY_MODE:-}"     # 转发模式：standard（标准）/door（任意门）；1/2 也接受；没给就交互问
+RELAY_ADDR="${RELAY_ADDR:-}"     # 任意门模式用的中转地址（IP 或域名）；没给就自动探测本机公网 IP
+DOOR_PORT_OVERRIDES="${DOOR_PORT_OVERRIDES:-}"  # 任意门转发端口覆盖："落地端口:转发端口"，逗号分隔，如 "443:30443"
 
 REALM_VERSION="${REALM_VERSION:-}"   # 可手动指定，如 REALM_VERSION=v2.9.6
 REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/nbbk/relay-node/main}"
@@ -145,6 +160,129 @@ landing_field() { # $1=落地编号 $2=字段名（LANDING/PORTS/MODE_NOTE/DOMAI
   local _var="$_field"
   [ "$_idx" != "1" ] && _var="${_field}_$_idx"
   printf '%s' "${!_var:-}"
+}
+
+# ---------- 任意门模式辅助函数 ----------
+normalize_relay_mode() { # $1=模式值（1/2/standard/door，大小写不敏感）-> 打印 standard 或 door；认不出返回 1
+  local m
+  m="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$m" in
+    1|standard|std) printf '%s' "standard" ;;
+    2|door) printf '%s' "door" ;;
+    *) return 1 ;;
+  esac
+}
+
+detect_relay_ip() { # 打印本机公网 IP；拿不到返回 1
+  local ip=""
+  ip="$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+  [ -n "$ip" ] || ip="$(curl -s --max-time 5 https://ifconfig.me 2>/dev/null || true)"
+  [ -n "$ip" ] && printf '%s' "$ip"
+}
+
+door_listen_port() { # $1=落地端口 -> 打印转发端口（+20000；超了依次试 +10000、+1000；都不行返回 1）
+  local p="$1" s _off
+  for _off in 20000 10000 1000; do
+    s=$((p + _off))
+    if [ "$s" -ge 1 ] && [ "$s" -le 65535 ]; then printf '%s' "$s"; return 0; fi
+  done
+  return 1
+}
+
+door_map_ports() { # $1=PORTS -> 打印映射后的 PORTS（监听端口按落地端口 +20000，落地端口不变）
+  local ports="$1" _spec _proto _rest _lp _rp _nlp _out=""
+  for _spec in $ports; do
+    _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
+    _nlp="$(door_listen_port "$_rp" || true)"
+    [ -n "$_nlp" ] || { echo "转发端口算不出来：落地端口 $_rp 太大，加 20000 超出范围。" >&2; return 1; }
+    _out="$_out $_proto:$_nlp:$_rp"
+  done
+  printf '%s' "${_out# }"
+}
+
+apply_door_overrides() { # $1=PORTS $2=覆盖串（"落地端口:转发端口"，逗号分隔）-> 打印应用后的 PORTS；格式不对返回 1
+  local ports="$1" ov="$2" _o _rp _nlp _spec _proto _rest _lp _rp2 _out="" _seen="" _found=0
+  local -a _ov=()
+  IFS=',' read -ra _ov <<< "$ov"
+  for _o in "${_ov[@]}"; do
+    _o="${_o//[[:space:]]/}"
+    [ -n "$_o" ] || continue
+    [[ "$_o" == *:* ]] || { echo "转发端口覆盖格式不对：$_o（应为 落地端口:转发端口，如 443:30443）。" >&2; return 1; }
+    _rp="${_o%%:*}"; _nlp="${_o##*:}"
+    valid_port "$_rp" && valid_port "$_nlp" || { echo "转发端口覆盖不合法：$_o（端口须在 1-65535 之间）。" >&2; return 1; }
+    _found=0
+    for _spec in $ports; do
+      _rest="${_spec#*:}"; _rp2="${_rest##*:}"
+      [ "$_rp2" = "$_rp" ] && _found=1
+    done
+    [ "$_found" = "1" ] || { echo "转发端口覆盖里的落地端口 $_rp 不在本次转发表里。" >&2; return 1; }
+    _out=""
+    for _spec in $ports; do
+      _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp2="${_rest##*:}"
+      [ "$_rp2" = "$_rp" ] && _lp="$_nlp"
+      _out="$_out $_proto:$_lp:$_rp2"
+    done
+    ports="${_out# }"
+  done
+  # 覆盖后监听端口不能撞（同一协议内）
+  _seen=""
+  for _spec in $ports; do
+    _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"
+    case " $_seen " in *" $_proto:$_lp "*) echo "转发端口覆盖后监听端口撞了：$_proto:$_lp 出现两次。" >&2; return 1 ;; esac
+    _seen="$_seen $_proto:$_lp"
+  done
+  printf '%s' "$ports"
+}
+
+ensure_relay_addr() { # 任意门模式：RELAY_ADDR 为空时自动探测公网 IP（失败就问用户）
+  if [ -n "$RELAY_ADDR" ]; then
+    echo "中转地址：$RELAY_ADDR"
+    return 0
+  fi
+  local _detected=""
+  _detected="$(detect_relay_ip || true)"
+  if [ -n "$_detected" ]; then
+    echo "没填中转地址，自动探测到本机公网 IP：$_detected"
+    echo "请确认中转地址（任意门链接里用的地址，填域名或 IP）："
+    ask "中转地址 [直接回车就是 $_detected]： " RELAY_ADDR "$_detected"
+  else
+    echo "自动探测本机公网 IP 失败（可能出站网络不通）。"
+    echo "请填写中转地址（任意门链接里用的地址，填域名或 IP，例如 relay.example.com）："
+    ask "中转地址： " RELAY_ADDR
+  fi
+  [ -n "$RELAY_ADDR" ] || { echo "没给中转地址，任意门模式装不了。"; exit 1; }
+  echo "中转地址：$RELAY_ADDR"
+}
+
+confirm_door_ports() { # 任意门模式：打印转发端口映射表，让用户确认或覆盖（直接回车就是默认映射）
+  echo ""
+  echo "转发端口映射（任意门模式：转发端口 = 落地端口 + 20000，落地端口不变）："
+  local _spec _proto _rest _lp _rp
+  for _spec in $PORTS; do
+    _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
+    echo "  $_proto  落地端口 $_rp  ->  中转转发端口 $_lp"
+  done
+  # 面板非交互调用：DOOR_PORT_OVERRIDES 环境变量预设覆盖，格式不对直接退出（不交互问）
+  if [ -n "${DOOR_PORT_OVERRIDES:-}" ]; then
+    local _new=""
+    _new="$(apply_door_overrides "$PORTS" "$DOOR_PORT_OVERRIDES")" || exit 1
+    PORTS="$_new"
+    echo "转发端口已按预设覆盖：$PORTS"
+    return 0
+  fi
+  echo "请确认转发端口（直接回车不改；要改按“落地端口:转发端口”填，多个逗号分隔，例如 443:30443）："
+  local _ov="" _new=""
+  while true; do
+    _ov=""
+    ask "转发端口覆盖 [直接回车就是上面这张表]： " _ov ""
+    [ -z "$_ov" ] && return 0
+    if _new="$(apply_door_overrides "$PORTS" "$_ov")"; then
+      PORTS="$_new"
+      echo "转发端口已按覆盖改好：$PORTS"
+      return 0
+    fi
+    echo "上面那条覆盖没用上，重新填，或直接回车用默认映射。"
+  done
 }
 
 # ---------- 分流（80 按域名分流 / 443 按 SNI 分流）辅助函数 ----------
@@ -822,20 +960,29 @@ query_set_param() { # $1=query $2=name $3=value -> 新 query（有则替换，�
   printf '%s' "$out"
 }
 
-frag_direct() { # $1=frag $2=原来有没有 fragment(0/1) -> 加 -直连 后缀的新 frag（已有不再重复加）
-  local frag="$1" has="$2"
+frag_marked() { # $1=frag $2=原来有没有 fragment(0/1) $3=标记（direct=直连 / door=任意门）-> 加后缀的新 frag（已有不再重复加）
+  local frag="$1" has="$2" mark="$3" enc suffix
+  if [ "$mark" = "door" ]; then enc="%E4%BB%BB%E6%84%8F%E9%97%A8"; suffix="任意门"; else enc="%E7%9B%B4%E8%BF%9E"; suffix="直连"; fi
   if [ "$has" = "1" ]; then
     case "$frag" in
-      *"%E7%9B%B4%E8%BF%9E"*|*"直连"*) printf '%s' "$frag" ;;
-      *) printf '%s' "$frag-%E7%9B%B4%E8%BF%9E" ;;
+      *"$enc"*|*"$suffix"*) printf '%s' "$frag" ;;
+      *) printf '%s' "$frag-$enc" ;;
     esac
   else
-    printf '%s' "%E7%9B%B4%E8%BF%9E"
+    printf '%s' "$enc"
   fi
 }
 
-twin_plain() { # vless/trojan：换地址 host，加/改 sni，名字加 -直连
-  local link="$1" lip="$2" sni="$3"
+frag_direct() { # $1=frag $2=原来有没有 fragment(0/1) -> 加 -直连 后缀的新 frag
+  frag_marked "$1" "$2" direct
+}
+
+frag_door() { # $1=frag $2=原来有没有 fragment(0/1) -> 加 -任意门 后缀的新 frag
+  frag_marked "$1" "$2" door
+}
+
+twin_plain() { # vless/trojan：换地址 host，加/改 sni，名字加 -直连（$4=door 时加 -任意门）
+  local link="$1" lip="$2" sni="$3" mark="${4:-direct}"
   local scheme="${link%%://*}"
   scheme="$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')"
   local rest="${link#*://}"
@@ -856,7 +1003,7 @@ twin_plain() { # vless/trojan：换地址 host，加/改 sni，名字加 -直连
     query="$(query_set_param "$query" "sni" "$sni")"
     has_query=1
   fi
-  frag="$(frag_direct "$frag" "$has_frag")"
+  frag="$(frag_marked "$frag" "$has_frag" "$mark")"
   local out="$scheme://"
   [ -n "$userinfo" ] && out+="$userinfo@"
   out+="$lip"
@@ -889,8 +1036,8 @@ print(base64.b64encode(new.encode()).decode())
 PYEOF
 }
 
-twin_ss() { # ss：只换地址 host，不加 sni；SIP002 直接换，传统 base64 形式走 python3 解码
-  local link="$1" lip="$2"
+twin_ss() { # ss：只换地址 host，不加 sni；SIP002 直接换，传统 base64 形式走 python3 解码（$3=door 时名字加 -任意门）
+  local link="$1" lip="$2" mark="${3:-direct}"
   local rest="${link#*://}"
   local frag="" core="$rest" has_frag=0
   if [[ "$core" == *"#"* ]]; then frag="${core##*#}"; core="${core%#*}"; has_frag=1; fi
@@ -920,23 +1067,25 @@ twin_ss() { # ss：只换地址 host，不加 sni；SIP002 直接换，传统 ba
       return 1
     fi
   fi
-  frag="$(frag_direct "$frag" "$has_frag")"
+  frag="$(frag_marked "$frag" "$has_frag" "$mark")"
   local out="ss://$out_core"
   [ "$has_query" = "1" ] && out+="?$query"
   out+="#$frag"
   printf '%s' "$out"
 }
 
-vmess_twin() { # vmess：python3 解 base64 JSON，改 add=落地IP、sni=域名、ps 加 -直连
-  local b64="$1" lip="$2" sni="$3"
+vmess_twin() { # vmess：python3 解 base64 JSON，改 add=落地IP、sni=域名、ps 加 -直连（$4=door 时加 -任意门）
+  local b64="$1" lip="$2" sni="$3" mark="${4:-direct}"
+  local suffix="直连"
+  [ "$mark" = "door" ] && suffix="任意门"
   if ! command -v python3 >/dev/null 2>&1; then
     echo "__MANUAL__:vmess 链接需要 python3 解码"
     return 1
   fi
   local out=""
-  out="$(python3 - "$b64" "$lip" "$sni" <<'PYEOF' 2>/dev/null || true
+  out="$(python3 - "$b64" "$lip" "$sni" "$suffix" <<'PYEOF' 2>/dev/null || true
 import sys, json, base64
-b64, lip, sni = sys.argv[1], sys.argv[2], sys.argv[3]
+b64, lip, sni, mark = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 b64 += '=' * (-len(b64) % 4)
 try:
     j = json.loads(base64.urlsafe_b64decode(b64))
@@ -946,8 +1095,8 @@ j['add'] = lip
 if sni:
     j['sni'] = sni
 ps = j.get('ps') or 'vmess'
-if '直连' not in ps:
-    j['ps'] = ps + '-直连'
+if mark not in ps:
+    j['ps'] = ps + '-' + mark
 print('vmess://' + base64.b64encode(json.dumps(j, ensure_ascii=False, separators=(',', ':')).encode()).decode())
 PYEOF
 )"
@@ -958,27 +1107,53 @@ PYEOF
   printf '%s' "$out"
 }
 
-twin_uri() { # $1=link $2=落地IP $3=sni域名 -> echo twin；失败 echo __MANUAL__:原因 并 return 1
-  local link="$1" lip="$2" sni="$3"
+twin_uri() { # $1=link $2=落地IP $3=sni域名 [$4=标记 direct/door] -> echo twin；失败 echo __MANUAL__:原因 并 return 1
+  local link="$1" lip="$2" sni="$3" mark="${4:-direct}"
   local scheme="${link%%://*}"
   scheme="$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')"
   case "$scheme" in
     vless|trojan)
-      twin_plain "$link" "$lip" "$sni"
+      twin_plain "$link" "$lip" "$sni" "$mark"
       ;;
     ss)
-      twin_ss "$link" "$lip"
+      twin_ss "$link" "$lip" "$mark"
       ;;
     vmess)
       local b64="${link#*://}"
       b64="${b64%%#*}"
-      vmess_twin "$b64" "$lip" "$sni"
+      vmess_twin "$b64" "$lip" "$sni" "$mark"
       ;;
     *)
       echo "__MANUAL__:不识别的链接格式"
       return 1
       ;;
   esac
+}
+
+door_uri() { # $1=link $2=中转地址 $3=sni域名 $4=转发端口 -> echo 任意门链接；失败 echo __MANUAL__:原因 并 return 1
+  local link="$1" addr="$2" sni="$3" lp="$4"
+  local scheme="${link%%://*}"
+  scheme="$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')"
+  local out=""
+  case "$scheme" in
+    vless|trojan)
+      out="$(twin_plain "$link" "$addr" "$sni" door)" || { printf '%s' "$out"; return 1; }
+      ;;
+    ss)
+      out="$(twin_ss "$link" "$addr" door)" || { printf '%s' "$out"; return 1; }
+      ;;
+    vmess)
+      local b64="${link#*://}"
+      b64="${b64%%#*}"
+      out="$(vmess_twin "$b64" "$addr" "$sni" door)" || { printf '%s' "$out"; return 1; }
+      ;;
+    *)
+      echo "__MANUAL__:不识别的链接格式"
+      return 1
+      ;;
+  esac
+  # twin_* 保留了原链接的端口；任意门要换成转发端口
+  set_link_port "$out" "$lp"
 }
 
 link_sni_domain() { # $1=link -> 打印 sni 用的域名（链接地址是域名 -> query 的 sni= -> query 的 host=），找不到返回 1
@@ -1055,9 +1230,11 @@ try_install_qrencode() { # 有就直接用；没有就试着装一个，装不�
 }
 
 step7_nodes() { # 第 7 步：双节点链接（可选；跳过不报错，始终 return 0）
-  # 依赖全局变量：LANDING / PORTS / MODE_NOTE / STEP7_INDEX；nodes.txt 由调用方先截断一次，这里只追加
+  # 依赖全局变量：LANDING / PORTS / MODE_NOTE / STEP7_INDEX / RELAY_MODE / RELAY_ADDR；nodes.txt 由调用方先截断一次，这里只追加
+  local _relay_label="中转" _qr_file="relay"
+  if [ "$RELAY_MODE" = "door" ]; then _relay_label="任意门"; _qr_file="door"; fi
   echo ""
-  echo "== 7/7 双节点链接（直连 + 中转）——落地 $STEP7_INDEX：$LANDING =="
+  echo "== 7/7 双节点链接（直连 + $_relay_label）——落地 $STEP7_INDEX：$LANDING =="
   local landing_ip="" _resolve_note=""
   if is_ip "$LANDING"; then
     landing_ip="$LANDING"
@@ -1101,7 +1278,11 @@ step7_nodes() { # 第 7 步：双节点链接（可选；跳过不报错，始�
   {
     echo ""
     echo "## 落地 $STEP7_INDEX：$LANDING（${MODE_NOTE:-}）"
-    echo "# 中转：原链接按实际监听端口走（监听端口改过时中转链接端口跟着改）；直连：地址换成落地 IP $landing_ip + sni=域名"
+    if [ "$RELAY_MODE" = "door" ]; then
+      echo "# 任意门：地址换成中转地址 $RELAY_ADDR、端口换成转发端口；直连：地址换成落地 IP $landing_ip + sni=域名"
+    else
+      echo "# 中转：原链接按实际监听端口走（监听端口改过时中转链接端口跟着改）；直连：地址换成落地 IP $landing_ip + sni=域名"
+    fi
   } >> "$nodes_file" 2>/dev/null || nodes_file="/dev/null"
   local -a ORIGS=() TWINS=()
   local i=0 _orig="" _sni="" _out="" _twin="" _relay="" _orig_port="" _listen_port="" _reason="" _scheme_l=""
@@ -1119,23 +1300,45 @@ step7_nodes() { # 第 7 步：双节点链接（可选；跳过不报错，始�
           ;;
       esac
     fi
-    # 中转链接：端口换成实际监听端口（监听≠落地端口时才换；直连那条保持落地端口不变）
+    # 中转/任意门链接：标准模式只换端口（监听≠落地端口时才换）；
+    # 任意门模式换地址+端口（中转地址:转发端口），名字后缀 -任意门
     _relay="$_orig"
     _orig_port="$(link_port "$_orig" || true)"
     _listen_port=""
     if [ -n "$_orig_port" ]; then
       _listen_port="$(listen_for_remote "$PORTS" "$_orig_port" || true)"
+    fi
+    if [ "$RELAY_MODE" = "door" ]; then
+      if [ -n "$_listen_port" ]; then
+        if _out="$(door_uri "$_orig" "$RELAY_ADDR" "$_sni" "$_listen_port" 2>/dev/null)"; then
+          _relay="$_out"
+        else
+          _reason="${_out#__MANUAL__:}"
+          [ -n "$_reason" ] || _reason="这条不会自动生成"
+          _relay=""
+        fi
+      else
+        _reason="端口 $_orig_port 不在本次转发表里"
+        _relay=""
+      fi
+    else
       if [ -n "$_listen_port" ] && [ "$_listen_port" != "$_orig_port" ]; then
         _relay="$(set_link_port "$_orig" "$_listen_port")"
       fi
     fi
     echo ""
     echo "---- 第 $i 条 ----"
-    echo "中转：$_relay"
-    if [ -n "$_listen_port" ] && [ "$_listen_port" != "$_orig_port" ]; then
-      echo "（中转监听端口是 $_listen_port，原链接端口 $_orig_port 已换成监听端口；直连仍走落地端口 $_orig_port）"
-    elif [ -n "$_orig_port" ] && [ -z "$_listen_port" ]; then
-      echo "（注意：这条链接的端口 $_orig_port 不在本次转发表里，中转可能不通，请确认端口对不对）"
+    if [ -n "$_relay" ]; then
+      echo "$_relay_label：$_relay"
+      if [ "$RELAY_MODE" = "door" ]; then
+        echo "（任意门转发端口是 $_listen_port，原链接端口 $_orig_port 已换成转发端口；直连仍走落地端口 $_orig_port）"
+      elif [ -n "$_listen_port" ] && [ "$_listen_port" != "$_orig_port" ]; then
+        echo "（中转监听端口是 $_listen_port，原链接端口 $_orig_port 已换成监听端口；直连仍走落地端口 $_orig_port）"
+      elif [ -n "$_orig_port" ] && [ -z "$_listen_port" ]; then
+        echo "（注意：这条链接的端口 $_orig_port 不在本次转发表里，中转可能不通，请确认端口对不对）"
+      fi
+    else
+      echo "$_relay_label：$_reason，请手动改地址（地址换成 $RELAY_ADDR、端口换成 $_listen_port，TLS 的 SNI 填域名）。"
     fi
     _twin=""
     if _out="$(twin_uri "$_orig" "$landing_ip" "$_sni" 2>/dev/null)"; then
@@ -1151,7 +1354,7 @@ step7_nodes() { # 第 7 步：双节点链接（可选；跳过不报错，始�
     {
       echo ""
       echo "[第 $i 条]"
-      echo "中转：$_relay"
+      if [ -n "$_relay" ]; then echo "$_relay_label：$_relay"; else echo "$_relay_label：$_reason（手动改）"; fi
       [ -n "$_twin" ] && echo "直连：$_twin"
     } >> "$nodes_file" 2>/dev/null || true
   done
@@ -1161,10 +1364,11 @@ step7_nodes() { # 第 7 步：双节点链接（可选；跳过不报错，始�
     local j=0 n=0
     for j in "${!ORIGS[@]}"; do
       n=$((j + 1))
+      [ -n "${ORIGS[$j]}" ] || continue
       echo ""
-      echo "中转二维码（落地 $STEP7_INDEX 第 $n 条）："
+      echo "$_relay_label二维码（落地 $STEP7_INDEX 第 $n 条）："
       qrencode -t ANSIUTF8 "${ORIGS[$j]}" 2>/dev/null || echo "（这条二维码生成失败，复制链接导入）"
-      qrencode -o "$nodes_dir/nodes-L${STEP7_INDEX}-relay-$n.png" "${ORIGS[$j]}" 2>/dev/null || true
+      qrencode -o "$nodes_dir/nodes-L${STEP7_INDEX}-${_qr_file}-$n.png" "${ORIGS[$j]}" 2>/dev/null || true
       if [ -n "${TWINS[$j]}" ]; then
         echo "直连二维码（落地 $STEP7_INDEX 第 $n 条）："
         qrencode -t ANSIUTF8 "${TWINS[$j]}" 2>/dev/null || echo "（这条二维码生成失败，复制链接导入）"
@@ -1172,7 +1376,7 @@ step7_nodes() { # 第 7 步：双节点链接（可选；跳过不报错，始�
       fi
     done
     echo ""
-    echo "二维码 PNG 已存到 $nodes_dir/nodes-L${STEP7_INDEX}-relay-N.png、nodes-L${STEP7_INDEX}-direct-N.png"
+    echo "二维码 PNG 已存到 $nodes_dir/nodes-L${STEP7_INDEX}-${_qr_file}-N.png、nodes-L${STEP7_INDEX}-direct-N.png"
   else
     echo "没有 qrencode（也没装上），复制上面两条链接导入即可；想看二维码可装好 qrencode 后再跑 bash install.sh --nodes。"
   fi
@@ -1194,6 +1398,25 @@ if [ "$TWIN_MODE" = "1" ]; then
   exit $?
 fi
 
+# 只生成一条任意门链接：bash install.sh --door '<链接>' <中转地址> <转发端口> [sni域名]
+# （面板调用；标准输出只打印任意门链接一行，失败打印 __MANUAL__:原因）
+if [ "$DOOR_MODE" = "1" ]; then
+  _door_link="${1:-}"; _door_addr="${2:-}"; _door_port="${3:-}"; _door_sni="${4:-}"
+  if [ -z "$_door_link" ] || [ -z "$_door_addr" ] || [ -z "$_door_port" ]; then
+    echo "__MANUAL__:用法：bash install.sh --door '<链接>' <中转地址> <转发端口> [sni域名]"
+    exit 1
+  fi
+  if ! valid_port "$_door_port"; then
+    echo "__MANUAL__:转发端口不合法：$_door_port（1-65535）"
+    exit 1
+  fi
+  if [ -z "$_door_sni" ]; then
+    _door_sni="$(link_sni_domain "$_door_link" 2>/dev/null || true)"
+  fi
+  door_uri "$_door_link" "$_door_addr" "$_door_sni" "$_door_port"
+  exit $?
+fi
+
 # 只生成双节点：bash install.sh --nodes（读 /etc/realm/relay.conf 里的落地信息，不重装）
 if [ "$NODES_ONLY" = "1" ]; then
   if [ ! -f /etc/realm/relay.conf ]; then
@@ -1211,17 +1434,21 @@ if [ "$NODES_ONLY" = "1" ]; then
   {
     echo "# relay-node 双节点（$(date -u +%Y-%m-%dT%H:%M:%SZ)）"
     echo "# 中转：原链接按实际监听端口走（监听端口改过时中转链接端口跟着改）；直连：地址换成落地 IP + sni=域名"
+    echo "# 任意门：地址换成中转地址、端口换成转发端口；直连：地址换成落地 IP + sni=域名"
   } > "$HOME/relay-node-kit/nodes.txt" 2>/dev/null || true
   _count="${LANDING_COUNT:-1}"
   _idx=1
   while [ "$_idx" -le "$_count" ]; do
     if [ "$_idx" = "1" ]; then
       LANDING="${LANDING:-}"; PORTS="${PORTS:-}"; MODE_NOTE="${MODE_NOTE:-}"; DOMAIN="${DOMAIN:-}"
+      RELAY_MODE="${MODE:-standard}"
     else
       LANDING="$(landing_field "$_idx" LANDING)"
       PORTS="$(landing_field "$_idx" PORTS)"
       MODE_NOTE="$(landing_field "$_idx" MODE_NOTE)"
       DOMAIN="$(landing_field "$_idx" DOMAIN)"
+      RELAY_MODE="$(landing_field "$_idx" MODE)"
+      [ -n "$RELAY_MODE" ] || RELAY_MODE="standard"
     fi
     if [ -z "$LANDING" ]; then
       echo "relay.conf 里落地 $_idx 没有 LANDING，跳过。"
@@ -1261,6 +1488,26 @@ collect_landing() { # $1=标题（如 "1/6 落地目标与转发预设"），收
       echo "      realm 启动时会再解析，解析失败则转发不通；确认域名能解析后再继续更稳。"
     fi
   fi
+
+  # 转发模式：面板非交互调用用 RELAY_MODE 环境变量预设（standard/door，或 1/2），不预设就交互问
+  if [ -z "$RELAY_MODE" ]; then
+    echo ""
+    echo "转发模式："
+    echo "  1) 标准模式  ← 默认，直接回车就是 1"
+    echo "     域名 A 记录指到中转机，客户端用节点域名直连中转的 80/443，链接干净、不用带端口。"
+    echo "     适合：域名能自由改指向、只转一两个落地。代价：第 2 个及以后的落地证书续签走不通中转，到期前要手动改指向续签。"
+    echo "  2) 任意门模式"
+    echo "     节点域名永远指着落地不动，中转机上每个落地分一个专用转发端口，客户端用“中转地址:转发端口”连过来，SNI 还是节点域名。"
+    echo "     适合：不想改来改去域名指向、要转多个落地、或域名动不了。代价：链接要带转发端口，中转地址会暴露在链接里，转发端口要在云厂商安全组和 ufw 里放行。"
+    echo "请输入你的选择："
+    ask "选哪种模式？[1/2]，直接回车选默认 1（标准模式）： " RELAY_MODE "1"
+  fi
+  RELAY_MODE="$(normalize_relay_mode "$RELAY_MODE" || true)"
+  if [ -z "$RELAY_MODE" ]; then
+    echo "模式只能选 1/2，默认按 1（标准模式）处理。"
+    RELAY_MODE="standard"
+  fi
+  echo "转发模式：$RELAY_MODE"
 
   if [ -z "$PRESET" ]; then
     echo ""
@@ -1323,6 +1570,13 @@ collect_landing() { # $1=标题（如 "1/6 落地目标与转发预设"），收
       echo "预设只能是 1/2/3。"; exit 1
       ;;
   esac
+  # 任意门模式：监听端口按落地端口 +20000 映射，中转地址问一次（面板用 RELAY_ADDR 预设）
+  if [ "$RELAY_MODE" = "door" ]; then
+    ensure_relay_addr
+    PORTS="$(door_map_ports "$PORTS")" || exit 1
+    confirm_door_ports
+    MODE_NOTE="$MODE_NOTE（任意门）"
+  fi
   echo "预设：$MODE_NOTE"
   echo "转发：$PORTS"
 }
@@ -1550,12 +1804,14 @@ EOF
   # CERT_DOMAIN 是证书上的域名（分流按它认落地）；SHARE80/SHARE443 是 80/443 是否走了分流共享
   cat > /etc/realm/relay.conf <<EOF
 LANDING=$LANDING
+MODE="$RELAY_MODE"
 LANDING_IS_DOMAIN=$LANDING_IS_DOMAIN
 DOMAIN="$DOMAIN"
 CERT_DOMAIN="$CERT_DOMAIN"
 PRESET=$PRESET
 MODE_NOTE="$MODE_NOTE"
 PORTS="$PORTS"
+RELAY_ADDR="$RELAY_ADDR"
 REALM_VERSION="$REALM_VERSION"
 LANDING_COUNT=1
 ALL_PORTS="$PORTS"
@@ -1601,6 +1857,7 @@ EOF
   # relay.conf：追加编号块，更新 LANDING_COUNT 与 ALL_PORTS（老 relay.conf 没有这两行也能补上）
   {
     echo "LANDING_$_idx=$LANDING"
+    echo "MODE_$_idx=\"$RELAY_MODE\""
     echo "LANDING_IS_DOMAIN_$_idx=$LANDING_IS_DOMAIN"
     echo "DOMAIN_$_idx=\"$DOMAIN\""
     echo "CERT_DOMAIN_$_idx=\"$CERT_DOMAIN\""
@@ -1750,13 +2007,26 @@ print_summary() { # 打印当前落地的汇总（中转 IP 只查一次）
   echo "中转机：$RELAY_IP"
   echo "落地：  $LANDING（$MODE_NOTE）"
   echo "转发："
+  local _disp_ip="$RELAY_IP"
+  if [ "$RELAY_MODE" = "door" ] && [ -n "$RELAY_ADDR" ]; then _disp_ip="$RELAY_ADDR"; fi
   for _spec in $PORTS; do
     _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
-    echo "  $_proto  $RELAY_IP:$_lp  ->  $LANDING:$_rp"
+    echo "  $_proto  $_disp_ip:$_lp  ->  $LANDING:$_rp"
   done
+  if [ "$RELAY_MODE" = "door" ]; then
+    echo "中转地址：$RELAY_ADDR（任意门链接里用的地址）"
+  fi
   echo ""
   echo "下一步（只做一次）："
-  if [ "$LANDING_IS_DOMAIN" = "1" ]; then
+  if [ "$RELAY_MODE" = "door" ]; then
+    if [ "$LANDING_IS_DOMAIN" = "1" ]; then
+      echo "  节点域名 $DOMAIN 不用动，永远指着落地；客户端用“$RELAY_ADDR:转发端口”连过来，SNI 还是节点域名。"
+    else
+      echo "  落地不用动；客户端用“$RELAY_ADDR:转发端口”连过来，SNI 还是节点域名。"
+    fi
+    echo "  落地不用装任何东西，也不用重启；证书续签走落地直连，自动通，不用手动改指向。"
+    echo "  注意：转发端口要在云厂商安全组和中转机 ufw 里放行，否则连不上。"
+  elif [ "$LANDING_IS_DOMAIN" = "1" ]; then
     echo "  把域名 $DOMAIN 的 A 记录从落地 IP 改指到中转 IP $RELAY_IP，"
     echo "  等 DNS 生效后客户端配置一个字都不用改，直接就能走中转。"
   else
@@ -1769,7 +2039,9 @@ print_summary() { # 打印当前落地的汇总（中转 IP 只查一次）
     [ "$_proto" = "tcp" ] && [ "$_rp" = "443" ] && _is_tls=1
     [ "$_spec" = "tcp:80:80" ] && _has80=1
   done
-  if [ "$_is_tls" = "1" ]; then
+  if [ "$RELAY_MODE" = "door" ]; then
+    : # 任意门：续签说明已在上面“下一步”里讲了（域名指落地，续签走落地直连）
+  elif [ "$_is_tls" = "1" ]; then
     if [ "$SHARE80" = "1" ]; then
       echo "  落地不用装任何东西，也不用重启；证书续签走 80 分流自动通，不用手动改指向。"
     elif [ "$SHARE443" = "1" ]; then
@@ -1803,6 +2075,7 @@ if [ "$ADD_MODE" = "1" ]; then
   fi
   # 先留住命令行给的落地/预设（下面读 relay.conf 会覆盖它们，读完再还回去）
   _cli_landing="${LANDING:-}"; _cli_preset="${PRESET:-}"; _cli_cert_domain="${CERT_DOMAIN:-}"
+  _cli_relay_mode="${RELAY_MODE:-}"; _cli_relay_addr="${RELAY_ADDR:-}"
   # shellcheck disable=SC1091
   . /etc/realm/relay.conf
   LANDING_COUNT="${LANDING_COUNT:-1}"
@@ -1811,6 +2084,9 @@ if [ "$ADD_MODE" = "1" ]; then
   SHARE443="${SHARE443:-0}"
   echo "追加模式：当前已有 $LANDING_COUNT 个落地，继续加一个（不覆盖已有配置）。"
   LANDING="$_cli_landing"; PRESET="$_cli_preset"; CERT_DOMAIN="$_cli_cert_domain"
+  # RELAY_MODE/RELAY_ADDR 只在命令行/环境变量给了新值时才覆盖 relay.conf 里的旧值（没给就沿用旧值）
+  [ -n "$_cli_relay_mode" ] && RELAY_MODE="$_cli_relay_mode"
+  [ -n "$_cli_relay_addr" ] && RELAY_ADDR="$_cli_relay_addr"
   # 注意：SB_MODE/CUSTOM_PORTS/WANT_UDP 不在这里清空——面板非交互调用时靠环境变量预设这三项，
   # 清空会把面板传的值丢掉（collect_landing 里 ask() 会跳过已预设的值）；relay.conf 里也没有这三项，不用防泄漏
   PORTS=""; MODE_NOTE=""; DOMAIN=""; LANDING_IS_DOMAIN=0; SHARE_ASKED=0
@@ -1821,7 +2097,7 @@ echo "装完第 1 个落地后会问要不要再加一个落地节点，一台�
 echo "加第 2 个落地、80 或 443 被已装好的落地占了时，会让你选解决方式：默认改监听走高位端口，也可以选 80 分流 / 443 分流（续签自动）。"
 echo ""
 
-declare -a ADDED_LANDING=() ADDED_PORTS=() ADDED_MODE=() ADDED_DOMAIN=() ADDED_INDEX=()
+declare -a ADDED_LANDING=() ADDED_PORTS=() ADDED_MODE=() ADDED_DOMAIN=() ADDED_INDEX=() ADDED_RELAY_MODE=()
 FIRST=1
 ADD_ANOTHER=""
 while true; do
@@ -1846,13 +2122,15 @@ while true; do
   ADDED_MODE+=("$MODE_NOTE")
   ADDED_DOMAIN+=("$DOMAIN")
   ADDED_INDEX+=("$LANDING_COUNT")
+  ADDED_RELAY_MODE+=("$RELAY_MODE")
   FIRST=0
   echo ""
   echo "请输入你的选择："
   ADD_ANOTHER=""
   ask "还要再加一个落地节点吗？[y/N]，直接回车选默认 N： " ADD_ANOTHER "N"
   if [ "$ADD_ANOTHER" = "y" ] || [ "$ADD_ANOTHER" = "Y" ]; then
-    LANDING=""; PRESET=""; SB_MODE=""; CUSTOM_PORTS=""; WANT_UDP=""; PORTS=""; MODE_NOTE=""; DOMAIN=""; LANDING_IS_DOMAIN=0; CHANGE_LISTEN=""; CERT_DOMAIN=""; SHARE_ASKED=0
+    LANDING=""; PRESET=""; SB_MODE=""; CUSTOM_PORTS=""; WANT_UDP=""; PORTS=""; MODE_NOTE=""; DOMAIN=""; LANDING_IS_DOMAIN=0; CHANGE_LISTEN=""; CERT_DOMAIN=""; SHARE_ASKED=0; RELAY_MODE=""
+    # RELAY_ADDR 不清空：同一台中转机上的落地共用一个中转地址
     continue
   fi
   break
@@ -1874,6 +2152,7 @@ mkdir -p "$HOME/relay-node-kit" 2>/dev/null || true
 {
   echo "# relay-node 双节点（$(date -u +%Y-%m-%dT%H:%M:%SZ)）"
   echo "# 中转：原链接按实际监听端口走（监听端口改过时中转链接端口跟着改）；直连：地址换成落地 IP + sni=域名"
+  echo "# 任意门：地址换成中转地址、端口换成转发端口；直连：地址换成落地 IP + sni=域名"
 } > "$HOME/relay-node-kit/nodes.txt" 2>/dev/null || true
 _n=0
 for _k in "${!ADDED_LANDING[@]}"; do
@@ -1883,6 +2162,7 @@ for _k in "${!ADDED_LANDING[@]}"; do
   MODE_NOTE="${ADDED_MODE[$_k]}"
   DOMAIN="${ADDED_DOMAIN[$_k]}"
   STEP7_INDEX="${ADDED_INDEX[$_k]}"
+  RELAY_MODE="${ADDED_RELAY_MODE[$_k]}"
   step7_nodes || true
 done
 
