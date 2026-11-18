@@ -89,9 +89,10 @@ if [ "$JSON_MODE" = "1" ]; then
   _i=1
   while [ "$_i" -le "$LANDING_COUNT" ]; do
     if [ "$_i" = "1" ]; then
-      _L="$LANDING"; _P="$PORTS"; _D="$DOMAIN"
+      _L="$LANDING"; _P="$PORTS"; _D="$DOMAIN"; _M="${MODE:-standard}"
     else
-      _L="$(landing_field "$_i" LANDING)"; _P="$(landing_field "$_i" PORTS)"; _D="$(landing_field "$_i" DOMAIN)"
+      _L="$(landing_field "$_i" LANDING)"; _P="$(landing_field "$_i" PORTS)"; _D="$(landing_field "$_i" DOMAIN)"; _M="$(landing_field "$_i" MODE)"
+      [ -n "$_M" ] || _M="standard"
     fi
     if [ -z "$_L" ]; then _i=$((_i + 1)); continue; fi
     # 端口监听
@@ -122,16 +123,20 @@ if [ "$JSON_MODE" = "1" ]; then
         if [ "$_proto" = "tcp" ] && [ "$_rp" = "443" ]; then TLS_LISTEN="$_lp"; TLS_REMOTE="$_rp"; break; fi
       done
     fi
-    # 续签方式（与 5/5 同一套判定）
+    # 续签方式（与 5/5 同一套判定）；任意门模式域名指落地，续签直接走落地
     _renew="自动"; _need_manual=false
-    case " $_P " in
-      *" tcp:80:80 "*) _renew="自动（走 80）" ;;
-      *) if [ "$SHARE443" = "1" ]; then _renew="自动（走 443 SNI 分流）"; else _renew="手动（80 改了监听端口，见 README“手动续签证书”）"; _need_manual=true; fi ;;
-    esac
+    if [ "$_M" = "door" ]; then
+      _renew="自动（域名指落地，直接续签）"
+    else
+      case " $_P " in
+        *" tcp:80:80 "*) _renew="自动（走 80）" ;;
+        *) if [ "$SHARE443" = "1" ]; then _renew="自动（走 443 SNI 分流）"; else _renew="手动（80 改了监听端口，见 README“手动续签证书”）"; _need_manual=true; fi ;;
+      esac
+    fi
     if [ -z "$TLS_LISTEN" ]; then
       # 明文落地，没有证书
       [ -n "$_certs_json" ] && _certs_json="$_certs_json,"
-      _certs_json="$_certs_json{\"index\":$_i,\"landing\":\"$(jesc "$_L")\",\"domain\":\"$(jesc "$_D")\",\"days_left\":null,\"expiry\":null,\"renew_mode\":\"$(jesc "$_renew")\",\"need_manual\":$_need_manual}"
+      _certs_json="$_certs_json{\"index\":$_i,\"landing\":\"$(jesc "$_L")\",\"domain\":\"$(jesc "$_D")\",\"mode\":\"$_M\",\"days_left\":null,\"expiry\":null,\"renew_mode\":\"$(jesc "$_renew")\",\"need_manual\":$_need_manual}"
       _i=$((_i + 1))
       continue
     fi
@@ -215,7 +220,7 @@ if [ "$JSON_MODE" = "1" ]; then
     [ -n "$_sec_cert_items" ] && _sec_cert_items="$_sec_cert_items,"
     _sec_cert_items="$_sec_cert_items{\"level\":\"$_cert_level\",\"message\":\"$(jesc "$_cert_msg")\"}"
     [ -n "$_certs_json" ] && _certs_json="$_certs_json,"
-    _certs_json="$_certs_json{\"index\":$_i,\"landing\":\"$(jesc "$_L")\",\"domain\":\"$(jesc "$_D")\",\"days_left\":$_days_json,\"expiry\":$_exp_json,\"renew_mode\":\"$(jesc "$_renew")\",\"need_manual\":$_need_manual}"
+    _certs_json="$_certs_json{\"index\":$_i,\"landing\":\"$(jesc "$_L")\",\"domain\":\"$(jesc "$_D")\",\"mode\":\"$_M\",\"days_left\":$_days_json,\"expiry\":$_exp_json,\"renew_mode\":\"$(jesc "$_renew")\",\"need_manual\":$_need_manual}"
     _i=$((_i + 1))
   done
   [ -z "$_sec_ports_items" ] && _sec_ports_items='{"level":"pass","message":"监听端口全部正常"}'
@@ -245,12 +250,17 @@ echo "== 2/5 监听端口（共 $LANDING_COUNT 个落地） =="
 _i=1
 while [ "$_i" -le "$LANDING_COUNT" ]; do
   if [ "$_i" = "1" ]; then
-    _L="$LANDING"; _P="$PORTS"
+    _L="$LANDING"; _P="$PORTS"; _M="${MODE:-standard}"
   else
-    _L="$(landing_field "$_i" LANDING)"; _P="$(landing_field "$_i" PORTS)"
+    _L="$(landing_field "$_i" LANDING)"; _P="$(landing_field "$_i" PORTS)"; _M="$(landing_field "$_i" MODE)"
+    [ -n "$_M" ] || _M="standard"
   fi
   if [ -z "$_L" ]; then _i=$((_i + 1)); continue; fi
-  echo "  落地 $_i：$_L"
+  if [ "$_M" = "door" ]; then
+    echo "  落地 $_i：$_L（任意门模式，中转地址 ${RELAY_ADDR:-未设置}，转发端口见下）"
+  else
+    echo "  落地 $_i：$_L"
+  fi
   for _spec in $_P; do
     _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
     if port_listening "$_proto" "$_lp"; then
@@ -281,12 +291,17 @@ else
   _i=1
   while [ "$_i" -le "$LANDING_COUNT" ]; do
     if [ "$_i" = "1" ]; then
-      _L="$LANDING"; _P="$PORTS"; _D="$DOMAIN"
+      _L="$LANDING"; _P="$PORTS"; _D="$DOMAIN"; _M="${MODE:-standard}"
     else
-      _L="$(landing_field "$_i" LANDING)"; _P="$(landing_field "$_i" PORTS)"; _D="$(landing_field "$_i" DOMAIN)"
+      _L="$(landing_field "$_i" LANDING)"; _P="$(landing_field "$_i" PORTS)"; _D="$(landing_field "$_i" DOMAIN)"; _M="$(landing_field "$_i" MODE)"
+      [ -n "$_M" ] || _M="standard"
     fi
     if [ -z "$_L" ]; then _i=$((_i + 1)); continue; fi
-    echo "  落地 $_i：$_L"
+    if [ "$_M" = "door" ]; then
+      echo "  落地 $_i：$_L（任意门模式，转发端口验 TLS 指纹）"
+    else
+      echo "  落地 $_i：$_L"
+    fi
     # 找到 TLS 端点：优先监听端口是 443 的那条，其次找 remote 是 443 的那条
     TLS_LISTEN=""; TLS_REMOTE=""
     for _spec in $_P; do
@@ -340,9 +355,10 @@ else
   _i=1
   while [ "$_i" -le "$LANDING_COUNT" ]; do
     if [ "$_i" = "1" ]; then
-      _L="$LANDING"; _P="$PORTS"; _D="$DOMAIN"
+      _L="$LANDING"; _P="$PORTS"; _D="$DOMAIN"; _M="${MODE:-standard}"
     else
-      _L="$(landing_field "$_i" LANDING)"; _P="$(landing_field "$_i" PORTS)"; _D="$(landing_field "$_i" DOMAIN)"
+      _L="$(landing_field "$_i" LANDING)"; _P="$(landing_field "$_i" PORTS)"; _D="$(landing_field "$_i" DOMAIN)"; _M="$(landing_field "$_i" MODE)"
+      [ -n "$_M" ] || _M="standard"
     fi
     if [ -z "$_L" ]; then _i=$((_i + 1)); continue; fi
     # 找 TLS 端点（和 4/5 同一套逻辑：优先监听 443，其次落地 443）
@@ -363,13 +379,18 @@ else
       continue
     fi
     # 续签方式：80 直通或 80 分流都是自动；443 分流也是自动；只有 80 改了监听端口的才要手动
+    # 任意门模式域名指落地，续签直接走落地，也是自动
     _renew="自动"
-    case " $_P " in
-      *" tcp:80:80 "*) _renew="自动（走 80）" ;;
-      *)
-        if [ "$SHARE443" = "1" ]; then _renew="自动（走 443 SNI 分流）"; else _renew="手动（80 改了监听端口，见 README“手动续签证书”）"; fi
-        ;;
-    esac
+    if [ "$_M" = "door" ]; then
+      _renew="自动（域名指落地，直接续签）"
+    else
+      case " $_P " in
+        *" tcp:80:80 "*) _renew="自动（走 80）" ;;
+        *)
+          if [ "$SHARE443" = "1" ]; then _renew="自动（走 443 SNI 分流）"; else _renew="手动（80 改了监听端口，见 README“手动续签证书”）"; fi
+          ;;
+      esac
+    fi
     SNI_ARGS=()
     [ -n "$_D" ] && SNI_ARGS=(-servername "$_D")
     ENDDATE="$(echo | timeout 10 openssl s_client -connect 127.0.0.1:$TLS_LISTEN "${SNI_ARGS[@]}" 2>/dev/null | openssl x509 -enddate -noout 2>/dev/null)"
