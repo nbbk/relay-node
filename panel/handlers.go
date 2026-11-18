@@ -60,6 +60,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/ip-whitelist", s.requireAuth(s.handleIPWhitelist))
 	mux.HandleFunc("POST /api/v1/settings/https", s.requireAuth(s.handleHTTPS))
 	mux.HandleFunc("POST /api/v1/settings/cloudflare", s.requireAuth(s.handleCloudflare))
+	mux.HandleFunc("POST /api/v1/settings/relay-addr", s.requireAuth(s.handleRelayAddr))
 	mux.HandleFunc("POST /api/v1/settings/telegram", s.requireAuth(s.handleTelegram))
 	mux.HandleFunc("POST /api/v1/settings/telegram/test", s.requireAuth(s.handleTelegramTest))
 	mux.HandleFunc("GET /api/v1/update/check", s.requireAuth(s.handleUpdateCheck))
@@ -197,7 +198,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, 200, okResp(map[string]any{
 			"realm":   map[string]any{"running": realmRunning(), "version": realmVersion(), "uptime_seconds": realmUptimeSeconds(), "bbr": bbrEnabled()},
-			"share80": false, "share443": false, "panel_version": Version,
+			"share80": false, "share443": false, "panel_version": Version, "relay_addr": "",
 			"landings": []any{}, "note": "relay.conf 不存在：中转还没装好",
 		}))
 		return
@@ -286,7 +287,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		landings = append(landings, map[string]any{
 			"index": l.Index, "landing": l.Landing, "domain": l.Domain, "cert_domain": l.CertDomain,
-			"preset": l.Preset, "mode_note": l.ModeNote, "ports": l.Ports,
+			"preset": l.Preset, "mode_note": l.ModeNote, "mode": l.Mode, "ports": l.Ports,
 			"online": online, "latency_ms": latency,
 			"cert_days_left": ci.DaysLeft, "cert_expiry": ci.Expiry, "renew_mode": renewMode,
 			"expiry": ext.Expiry, "days_left": daysLeft,
@@ -305,7 +306,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, okResp(map[string]any{
 		"realm":   map[string]any{"running": realmRunning(), "version": realmVersion(), "uptime_seconds": realmUptimeSeconds(), "bbr": bbrEnabled()},
-		"share80": rc.Share80, "share443": rc.Share443, "panel_version": Version, "landings": landings,
+		"share80": rc.Share80, "share443": rc.Share443, "panel_version": Version, "relay_addr": rc.RelayAddr, "landings": landings,
 	}))
 }
 
@@ -447,6 +448,9 @@ func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
 		SpeedLimitMbps    int            `json:"speed_limit_mbps"`
 		ShareMode         string         `json:"share_mode"`
 		ListenOverrides   map[string]int `json:"listen_overrides"`
+		Mode              string         `json:"mode"`
+		RelayAddr         string         `json:"relay_addr"`
+		DoorPortOverrides map[string]int `json:"door_port_overrides"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, 400, errResp("请求格式不对"))
@@ -486,20 +490,69 @@ func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errResp("分流方式只能是 1/2/3/4"))
 		return
 	}
+	if req.Mode != "" && req.Mode != "standard" && req.Mode != "door" {
+		writeJSON(w, 400, errResp("模式只能是 standard（标准模式）或 door（任意门模式）"))
+		return
+	}
+	if req.Mode == "" {
+		req.Mode = "standard"
+	}
+	if req.RelayAddr != "" && !validIPOrDomain(req.RelayAddr) {
+		writeJSON(w, 400, errResp("中转地址不对：填 IP 或域名"))
+		return
+	}
+	// door_port_overrides：键是落地端口、值是转发端口，统一归一化成 map[int]int。
+	doorOverridesReq := map[int]int{}
+	for k, v := range req.DoorPortOverrides {
+		rp, err := strconv.Atoi(strings.TrimSpace(k))
+		if err != nil || !validPort(rp) || !validPort(v) {
+			writeJSON(w, 400, errResp("转发端口覆盖格式不对：键和值都须是 1-65535 的端口，如 {\"443\": 30443}"))
+			return
+		}
+		doorOverridesReq[rp] = v
+	}
 	// 预检端口
 	ports := presetPorts(req.Preset, req.SBMode, req.CustomPorts, req.WantUDP)
 	rc, _, _ := s.readRelayConf()
-	conflicts, realm80, realm443 := s.checkPortConflicts(ports, rc)
-	if len(conflicts) > 0 && req.ShareMode == "" && len(req.ListenOverrides) == 0 {
-		if realm80 || realm443 {
-			writeJSON(w, 200, map[string]any{"ok": false, "need_choice": true,
-				"conflicts":           conflicts,
-				"conflict_with_realm": map[string]bool{"80": realm80, "443": realm443},
-				"options":             shareOptions(realm80, realm443)})
+	doorNote := ""
+	doorOverrides := map[int]int{}
+	if req.Mode == "door" {
+		// 任意门模式：先按落地端口 +20000 映射转发端口，再验冲突；不走标准模式的分流选择。
+		ports = doorMapPorts(ports)
+		if len(doorOverridesReq) > 0 {
+			ports = applyDoorPortOverrides(ports, doorOverridesReq)
+			doorOverrides = doorOverridesReq
+			if conflicts, _, _ := s.checkPortConflicts(ports, rc); len(conflicts) > 0 {
+				writeJSON(w, 400, errResp("端口已被占用："+strings.Join(conflicts, ", ")+"。改一下转发端口覆盖再提交。"))
+				return
+			}
+		} else if newPorts, bumps, err := s.bumpDoorPorts(ports, rc); err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		} else {
+			ports = newPorts
+			if len(bumps) > 0 {
+				var notes []string
+				for _, b := range bumps {
+					notes = append(notes, fmt.Sprintf("转发端口 %d 已被占用，已改用 %d", b.Old, b.New))
+					doorOverrides[b.Remote] = b.New
+				}
+				doorNote = strings.Join(notes, "；")
+			}
+		}
+	} else {
+		conflicts, realm80, realm443 := s.checkPortConflicts(ports, rc)
+		if len(conflicts) > 0 && req.ShareMode == "" && len(req.ListenOverrides) == 0 {
+			if realm80 || realm443 {
+				writeJSON(w, 200, map[string]any{"ok": false, "need_choice": true,
+					"conflicts":           conflicts,
+					"conflict_with_realm": map[string]bool{"80": realm80, "443": realm443},
+					"options":             shareOptions(realm80, realm443)})
+				return
+			}
+			writeJSON(w, 400, errResp("端口已被占用："+strings.Join(conflicts, ", ")+"。先停掉占端口的程序，或用 listen_overrides 改监听端口。"))
 			return
 		}
-		writeJSON(w, 400, errResp("端口已被占用："+strings.Join(conflicts, ", ")+"。先停掉占端口的程序，或用 listen_overrides 改监听端口。"))
-		return
 	}
 	if !s.tryOpLock(w) {
 		return
@@ -516,10 +569,10 @@ func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
 		"WANT_UDP=" + boolToYN(req.WantUDP), "CERT_DOMAIN=" + req.CertDomain,
 		"ADD_ANOTHER=N",
 	}
-	if req.ShareMode != "" {
+	if req.ShareMode != "" && req.Mode != "door" {
 		env = append(env, "SHARE_MODE="+req.ShareMode)
 	}
-	if len(req.ListenOverrides) > 0 {
+	if len(req.ListenOverrides) > 0 && req.Mode != "door" {
 		var parts []string
 		for k := range req.ListenOverrides {
 			parts = append(parts, k)
@@ -530,6 +583,15 @@ func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
 			ov = append(ov, fmt.Sprintf("%s:%d", k, req.ListenOverrides[k]))
 		}
 		env = append(env, "LISTEN_OVERRIDES="+strings.Join(ov, ","))
+	}
+	if req.Mode == "door" {
+		env = append(env, "RELAY_MODE=door")
+		if req.RelayAddr != "" {
+			env = append(env, "RELAY_ADDR="+req.RelayAddr)
+		}
+		if len(doorOverrides) > 0 {
+			env = append(env, "DOOR_PORT_OVERRIDES="+formatDoorOverrides(doorOverrides))
+		}
 	}
 	// 中转还没装（relay.conf 不存在）时改跑完整安装（不带 --add），
 	// 面板里加第一个落地就把中转一起装好；完整安装要下载 realm、建服务，给更长的超时。
@@ -599,7 +661,7 @@ func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.audit(user, "添加落地", req.Landing, "成功", "")
-	writeJSON(w, 200, okResp(map[string]any{"landing_index": landingIndex, "links": links, "qr": qr}))
+	writeJSON(w, 200, okResp(map[string]any{"landing_index": landingIndex, "links": links, "qr": qr, "door_note": doorNote}))
 }
 
 func boolToYN(b bool) string {
@@ -671,6 +733,137 @@ func (s *Server) checkPortConflicts(ports []PortSpec, rc *RelayConf) ([]string, 
 		}
 	}
 	return conflicts, realm80, realm443
+}
+
+// ---------- 任意门模式：转发端口覆盖与冲突自动顺延 ----------
+
+// applyDoorPortOverrides 把转发端口覆盖（键=落地端口，值=转发端口）套到 ports 上：
+// 同一落地端口的 TCP/UDP 一起改（与 install.sh 的 apply_door_overrides 语义一致）。
+func applyDoorPortOverrides(ports []PortSpec, overrides map[int]int) []PortSpec {
+	out := make([]PortSpec, len(ports))
+	copy(out, ports)
+	for rp, nl := range overrides {
+		for i := range out {
+			if out[i].Remote == rp {
+				out[i].Listen = nl
+			}
+		}
+	}
+	return out
+}
+
+// formatDoorOverrides 把覆盖 map 编成 install.sh 的 DOOR_PORT_OVERRIDES 串
+// （"落地端口:转发端口"，逗号分隔，按落地端口从小到大排）。
+func formatDoorOverrides(overrides map[int]int) string {
+	keys := make([]int, 0, len(overrides))
+	for k := range overrides {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%d:%d", k, overrides[k]))
+	}
+	return strings.Join(parts, ",")
+}
+
+// doorBump 一条自动顺延记录：落地端口 remote 的转发端口从 Old 改到 New。
+type doorBump struct {
+	Remote int
+	Old    int
+	New    int
+}
+
+// bumpDoorPorts 任意门模式的冲突自动顺延：按落地端口分组，组里任一端口冲突就整组顺延
+// （转发端口是按落地端口定的，同一落地端口的 TCP/UDP 必须走同一个转发端口）。
+// 冲突的转发端口 +10000，还冲突再 +1000，直到空闲且不与本批其他 listen 撞；
+// 顺延后仍找不到空闲端口时返回错误。无冲突时返回原 ports 与空记录。
+func (s *Server) bumpDoorPorts(ports []PortSpec, rc *RelayConf) ([]PortSpec, []doorBump, error) {
+	conflicts, _, _ := s.checkPortConflicts(ports, rc)
+	if len(conflicts) == 0 {
+		return ports, nil, nil
+	}
+	conflictSet := map[string]bool{}
+	for _, c := range conflicts {
+		parts := strings.SplitN(c, "/", 2)
+		if len(parts) == 2 {
+			conflictSet[parts[1]+":"+parts[0]] = true
+		}
+	}
+	listening := listeningPorts()
+	inConfig := map[int]bool{}
+	if rc != nil {
+		for _, l := range rc.Landings {
+			for _, p := range l.Ports {
+				inConfig[p.Listen] = true
+			}
+		}
+	}
+	// 本批最终 listen 集合（proto:port），顺延时实时更新
+	batch := map[string]bool{}
+	for _, p := range ports {
+		batch[fmt.Sprintf("%s:%d", p.Proto, p.Listen)] = true
+	}
+	out := make([]PortSpec, len(ports))
+	copy(out, ports)
+	// 按落地端口分组（保持首次出现顺序）
+	var remotes []int
+	groups := map[int][]int{}
+	for i, p := range out {
+		if _, ok := groups[p.Remote]; !ok {
+			remotes = append(remotes, p.Remote)
+		}
+		groups[p.Remote] = append(groups[p.Remote], i)
+	}
+	var bumps []doorBump
+	for _, remote := range remotes {
+		idxs := groups[remote]
+		hit := false
+		for _, i := range idxs {
+			if conflictSet[fmt.Sprintf("%s:%d", out[i].Proto, out[i].Listen)] {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			continue
+		}
+		old := out[idxs[0]].Listen
+		for _, i := range idxs {
+			delete(batch, fmt.Sprintf("%s:%d", out[i].Proto, out[i].Listen))
+		}
+		cand := old + 10000
+		ok := false
+		for tries := 0; tries < 100; tries++ {
+			if cand > 65535 {
+				break
+			}
+			free := !inConfig[cand]
+			if free {
+				for _, i := range idxs {
+					ck := fmt.Sprintf("%s:%d", out[i].Proto, cand)
+					if listening[ck] || batch[ck] {
+						free = false
+						break
+					}
+				}
+			}
+			if free {
+				ok = true
+				break
+			}
+			cand += 1000
+		}
+		if !ok {
+			return nil, nil, fmt.Errorf("转发端口 %d 已被占用，顺延后仍找不到空闲端口", old)
+		}
+		for _, i := range idxs {
+			out[i].Listen = cand
+			batch[fmt.Sprintf("%s:%d", out[i].Proto, cand)] = true
+		}
+		bumps = append(bumps, doorBump{Remote: remote, Old: old, New: cand})
+	}
+	return out, bumps, nil
 }
 
 func lastLines(s string, n int) string {
@@ -1020,7 +1213,7 @@ func endpointsForLanding(data []byte, landing string) string {
 // rebuildRelayConfAfterDelete 删落地后重建 relay.conf：被删编号之后的前移一位，LANDING_COUNT-1。
 func rebuildRelayConfAfterDelete(rc *RelayConf, delIndex int) []string {
 	// 收集各落地字段
-	type lf struct{ landing, isDomain, domain, cert, preset, mode, ports string }
+	type lf struct{ landing, isDomain, domain, cert, preset, mode, doorMode, ports string }
 	var list []lf
 	for _, l := range rc.Landings {
 		if l.Index == delIndex {
@@ -1031,7 +1224,7 @@ func rebuildRelayConfAfterDelete(rc *RelayConf, delIndex int) []string {
 			suffix = "_" + strconv.Itoa(l.Index)
 		}
 		get := func(f string) string { return rc.Raw[f+suffix] }
-		list = append(list, lf{get("LANDING"), get("LANDING_IS_DOMAIN"), get("DOMAIN"), get("CERT_DOMAIN"), get("PRESET"), get("MODE_NOTE"), get("PORTS")})
+		list = append(list, lf{get("LANDING"), get("LANDING_IS_DOMAIN"), get("DOMAIN"), get("CERT_DOMAIN"), get("PRESET"), get("MODE_NOTE"), get("MODE"), get("PORTS")})
 	}
 	// 保留非落地行
 	landingKeys := map[string]bool{}
@@ -1071,6 +1264,11 @@ func rebuildRelayConfAfterDelete(rc *RelayConf, delIndex int) []string {
 			`MODE_NOTE`+suffix+`="`+f.mode+`"`,
 			`PORTS`+suffix+`="`+f.ports+`"`,
 		)
+		// MODE 只在非空时写回（标准模式是缺字段时的默认值，不用写）；
+		// 不写的话删一个落地会把其余 door 落地的模式丢掉。
+		if f.doorMode != "" {
+			lines = append(lines, "MODE"+suffix+"="+f.doorMode)
+		}
 	}
 	lines = append(lines, fmt.Sprintf("LANDING_COUNT=%d", len(list)))
 	// ALL_PORTS 重算
@@ -1155,7 +1353,7 @@ func (s *Server) handleDeleteLanding(w http.ResponseWriter, r *http.Request) {
 	id := "rc-" + time.Now().UTC().Format("20060102-150405") + "-" + randomTokenHex(3)
 	now := time.Now().UTC()
 	s.state.Recycle = append(s.state.Recycle, RecycleItem{
-		ID: id, Landing: l.Landing, Domain: l.Domain, Ports: l.PortsRaw, ModeNote: l.ModeNote,
+		ID: id, Landing: l.Landing, Domain: l.Domain, Ports: l.PortsRaw, ModeNote: l.ModeNote, Mode: l.Mode,
 		CertDomain: l.CertDomain, DeletedAt: now.Format(time.RFC3339),
 		ExpiresAt:        now.Add(7 * 24 * time.Hour).Format(time.RFC3339),
 		RelayConfSnippet: strings.Join(snippet, "\n"), ConfigEndpoints: endpointsText, Ext: ext,
@@ -1263,6 +1461,10 @@ func (s *Server) handleRecycleRestore(w http.ResponseWriter, r *http.Request) {
 		"MODE_NOTE"+suffix+`="`+it.ModeNote+`"`,
 		"PORTS"+suffix+`="`+it.Ports+`"`,
 	)
+	// 恢复 door 落地的模式（旧回收站记录没存 Mode 时不写，默认标准模式）
+	if it.Mode != "" {
+		lines = append(lines, "MODE"+suffix+"="+it.Mode)
+	}
 	lines = setRelayConfValue(lines, "LANDING_COUNT", strconv.Itoa(newIdx))
 	// ALL_PORTS 合并
 	all := rc.AllPorts
@@ -1330,7 +1532,19 @@ func (s *Server) handleLinks(w http.ResponseWriter, r *http.Request) {
 	if groups == nil {
 		groups = []linkGroup{}
 	}
+	// 每个分组标模式：按 landing_index 查 relay.conf，查不到默认标准模式。
+	modeByIndex := map[int]string{}
+	if rc, _, err := s.readRelayConf(); err == nil {
+		for _, l := range rc.Landings {
+			modeByIndex[l.Index] = l.Mode
+		}
+	}
 	for i := range groups {
+		if m, ok := modeByIndex[groups[i].LandingIndex]; ok && m != "" {
+			groups[i].Mode = m
+		} else {
+			groups[i].Mode = "standard"
+		}
 		groups[i].QR = map[string]string{}
 		for _, l := range groups[i].Links {
 			if q, err := qrDataURI(l.Link); err == nil {
@@ -1371,6 +1585,23 @@ func (s *Server) handleTwin(w http.ResponseWriter, r *http.Request) {
 			landingIP = ips[0].String()
 		}
 	}
+	// 先按 landing_ip 在 relay.conf 里找落地，定模式（door 落地走 --door 生成任意门链接）。
+	var landing *Landing
+	var rc *RelayConf
+	if rc2, _, err := s.readRelayConf(); err == nil {
+		rc = rc2
+		for i := range rc.Landings {
+			if rc.Landings[i].Landing == req.LandingIP || rc.Landings[i].Landing == landingIP {
+				landing = &rc.Landings[i]
+				break
+			}
+		}
+	}
+	relayLabel := "中转"
+	isDoor := landing != nil && landing.Mode == "door"
+	if isDoor {
+		relayLabel = "任意门"
+	}
 	res, err := s.runScript("install.sh", 60*time.Second, nil, "--twin", req.Link, landingIP, sni)
 	twin := strings.TrimSpace(res.Stdout)
 	if err != nil || strings.HasPrefix(twin, "__MANUAL__:") {
@@ -1378,33 +1609,56 @@ func (s *Server) handleTwin(w http.ResponseWriter, r *http.Request) {
 		if reason == "" {
 			reason = "这条链接不会自动生成直连，请手动改地址（把地址换成落地 IP，TLS 的 SNI 填域名）"
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "relay_link": req.Link, "direct_link": "", "manual": reason})
+		writeJSON(w, 200, map[string]any{"ok": true, "relay_link": req.Link, "direct_link": "", "manual": reason, "relay_label": relayLabel})
 		return
 	}
 	// 中转链接：原链接按实际监听端口换（install.sh --nodes 的逻辑在面板侧简化：端口不变，
 	// 除非该落地监听端口与落地端口不同——这里用 relay.conf 查）
 	relayLink := req.Link
-	if rc, _, err := s.readRelayConf(); err == nil {
-		for _, l := range rc.Landings {
-			if l.Landing == req.LandingIP || l.Landing == landingIP {
-				if pl, err := parseNodeLink(req.Link); err == nil && pl.Port > 0 {
-					for _, p := range l.Ports {
-						if p.Remote == pl.Port && p.Listen != p.Remote {
-							relayLink = setLinkPort(req.Link, p.Listen)
-						}
-					}
+	if isDoor {
+		// 任意门模式：跑 install.sh --door 生成任意门链接（地址换成中转地址、端口换成转发端口）。
+		forwardPort := 0
+		if pl, err := parseNodeLink(req.Link); err == nil && pl.Port > 0 {
+			forwardPort = pl.Port
+			for _, p := range landing.Ports {
+				if p.Remote == pl.Port {
+					forwardPort = p.Listen
+					break
+				}
+			}
+		}
+		if rc.RelayAddr == "" {
+			writeJSON(w, 200, map[string]any{"ok": true, "relay_link": "", "direct_link": twin, "manual": "任意门地址还没设置：先到「设置 → 任意门地址」填好中转地址，再重新生成", "relay_label": relayLabel})
+			return
+		}
+		dres, derr := s.runScript("install.sh", 60*time.Second, nil, "--door", req.Link, rc.RelayAddr, strconv.Itoa(forwardPort), sni)
+		doorLink := strings.TrimSpace(dres.Stdout)
+		if derr != nil || strings.HasPrefix(doorLink, "__MANUAL__:") {
+			reason := strings.TrimPrefix(doorLink, "__MANUAL__:")
+			if reason == "" {
+				reason = "任意门链接生成失败，请手动改地址（把地址换成中转地址、端口换成转发端口）"
+			}
+			writeJSON(w, 200, map[string]any{"ok": true, "relay_link": "", "direct_link": twin, "manual": reason, "relay_label": relayLabel})
+			return
+		}
+		relayLink = doorLink
+	} else if landing != nil {
+		if pl, err := parseNodeLink(req.Link); err == nil && pl.Port > 0 {
+			for _, p := range landing.Ports {
+				if p.Remote == pl.Port && p.Listen != p.Remote {
+					relayLink = setLinkPort(req.Link, p.Listen)
 				}
 			}
 		}
 	}
 	qr := map[string]string{}
 	if q, err := qrDataURI(relayLink); err == nil {
-		qr["中转"] = q
+		qr[relayLabel] = q
 	}
 	if q, err := qrDataURI(twin); err == nil {
 		qr["直连"] = q
 	}
-	writeJSON(w, 200, okResp(map[string]any{"relay_link": relayLink, "direct_link": twin, "qr": qr}))
+	writeJSON(w, 200, okResp(map[string]any{"relay_link": relayLink, "direct_link": twin, "qr": qr, "relay_label": relayLabel}))
 }
 
 // setLinkPort 换链接端口（vless/trojan；vmess/ss base64 换不了时原样返回）。
