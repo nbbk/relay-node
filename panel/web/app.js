@@ -4,13 +4,20 @@
 /* ---------- 工具 ---------- */
 const $ = (s, r) => (r || document).querySelector(s);
 const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+// 安全绑定：元素不存在时静默跳过，绝不抛错（新旧 index.html 混用时新 app.js
+// 引用的新元素可能不在旧页面里；单个绑定失败也不能拖垮后面的初始化）。
+// on() 查整个 document；onIn() 在给定的根（弹窗/分页容器）里查。
+function on(sel, ev, fn, root) { const el = $(sel, root); if (el) el.addEventListener(ev, fn); return el; }
+function onIn(root, sel, ev, fn) { return on(sel, ev, fn, root); }
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function toast(msg, kind) {
   const el = document.createElement('div');
   el.className = 'toast' + (kind ? ' ' + kind : '');
   el.textContent = msg;
-  $('#toast-wrap').appendChild(el);
+  const wrap = $('#toast-wrap');
+  if (!wrap) return; // 容器缺失时静默丢弃，绝不抛错
+  wrap.appendChild(el);
   setTimeout(() => el.remove(), 4500);
 }
 function fmtBytes(n) {
@@ -82,18 +89,19 @@ async function apiPost(path, body, noAuthRedirect) { return api(path, { method: 
 /* ---------- 弹窗 ---------- */
 function openModal(html) {
   const root = $('#modal-root');
+  if (!root) return null; // 弹窗容器缺失时直接放弃，绝不抛错
   root.innerHTML = '<div class="modal-backdrop"><div class="modal" role="dialog" aria-modal="true">' + html + '</div></div>';
-  $('.modal-backdrop', root).addEventListener('click', (e) => { if (e.target.classList.contains('modal-backdrop')) closeModal(); });
+  onIn(root, '.modal-backdrop', 'click', (e) => { if (e.target.classList.contains('modal-backdrop')) closeModal(); });
   return $('.modal', root);
 }
-function closeModal() { $('#modal-root').innerHTML = ''; }
+function closeModal() { const r = $('#modal-root'); if (r) r.innerHTML = ''; }
 function confirmModal(title, bodyHtml, okLabel, danger) {
   return new Promise((resolve) => {
     const m = openModal('<h2>' + esc(title) + '</h2><div>' + bodyHtml + '</div>' +
       '<div class="btn-row"><button class="btn ' + (danger ? 'danger' : '') + '" id="cf-ok" type="button">' + esc(okLabel || '确认') + '</button>' +
       '<button class="btn secondary" id="cf-cancel" type="button">取消</button></div>');
-    $('#cf-ok', m).addEventListener('click', () => { closeModal(); resolve(true); });
-    $('#cf-cancel', m).addEventListener('click', () => { closeModal(); resolve(false); });
+    onIn(m, '#cf-ok', 'click', () => { closeModal(); resolve(true); });
+    onIn(m, '#cf-cancel', 'click', () => { closeModal(); resolve(false); });
   });
 }
 
@@ -112,7 +120,7 @@ function initTheme() {
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (!localStorage.getItem('relay-panel-theme')) applyTheme('auto');
   });
-  $('#theme-btn').addEventListener('click', () => {
+  on('#theme-btn', 'click', () => {
     const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('relay-panel-theme', next);
     applyTheme(next);
@@ -139,6 +147,7 @@ let logsTimer = null;
 
 function buildNav() {
   const side = $('#side-nav');
+  if (!side) return; // 导航容器缺失时直接跳过
   side.innerHTML = '';
   PAGES.forEach((p) => {
     const b1 = document.createElement('button');
@@ -150,25 +159,32 @@ function buildNav() {
 }
 /* ---------- 手机抽屉菜单 ---------- */
 function openDrawer() {
-  $('#sidebar').classList.add('open');
+  const bar = $('#sidebar');
+  if (!bar) return;
+  bar.classList.add('open');
   const scrim = $('#scrim');
-  scrim.classList.remove('hidden'); scrim.hidden = false;
-  $('#menu-btn').setAttribute('aria-expanded', 'true');
+  if (scrim) { scrim.classList.remove('hidden'); scrim.hidden = false; }
+  const btn = $('#menu-btn');
+  if (btn) btn.setAttribute('aria-expanded', 'true');
   document.body.style.overflow = 'hidden';
 }
 function closeDrawer() {
-  $('#sidebar').classList.remove('open');
+  const bar = $('#sidebar');
+  if (!bar) return;
+  bar.classList.remove('open');
   const scrim = $('#scrim');
-  scrim.classList.add('hidden'); scrim.hidden = true;
-  $('#menu-btn').setAttribute('aria-expanded', 'false');
+  if (scrim) { scrim.classList.add('hidden'); scrim.hidden = true; }
+  const btn = $('#menu-btn');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
   document.body.style.overflow = '';
 }
 function initDrawer() {
-  $('#menu-btn').addEventListener('click', () => {
-    if ($('#sidebar').classList.contains('open')) closeDrawer(); else openDrawer();
+  on('#menu-btn', 'click', () => {
+    const bar = $('#sidebar');
+    if (bar && bar.classList.contains('open')) closeDrawer(); else openDrawer();
   });
-  $('#sidebar-close').addEventListener('click', closeDrawer);
-  $('#scrim').addEventListener('click', closeDrawer);
+  on('#sidebar-close', 'click', closeDrawer);
+  on('#scrim', 'click', closeDrawer);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
   window.addEventListener('resize', () => { if (window.innerWidth > 640) closeDrawer(); });
 }
@@ -178,7 +194,8 @@ function goto(page) {
   $$('.page').forEach((s) => s.classList.toggle('active', s.id === 'page-' + page));
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
   const def = PAGES.find((p) => p.id === page);
-  $('#page-title').textContent = def ? def.title : '总览';
+  const title = $('#page-title');
+  if (title) title.textContent = def ? def.title : '总览';
   if (location.hash !== '#' + page) history.replaceState(null, '', '#' + page);
   window.scrollTo(0, 0);
   loadPage(page);
@@ -200,18 +217,21 @@ function stopLogsTimer() { if (logsTimer) { clearInterval(logsTimer); logsTimer 
 /* ---------- 登录 ---------- */
 function showLogin() {
   // class 与 hidden 属性一起切：只靠 class 的话，style.css 加载失败时两边会堆在一起
-  $('#app').classList.add('hidden'); $('#app').hidden = true;
-  $('#login-view').classList.remove('hidden'); $('#login-view').hidden = false;
+  const app = $('#app'), login = $('#login-view');
+  if (app) { app.classList.add('hidden'); app.hidden = true; }
+  if (login) { login.classList.remove('hidden'); login.hidden = false; }
 }
 function showApp() {
-  $('#login-view').classList.add('hidden'); $('#login-view').hidden = true;
-  $('#app').classList.remove('hidden'); $('#app').hidden = false;
+  const app = $('#app'), login = $('#login-view');
+  if (login) { login.classList.add('hidden'); login.hidden = true; }
+  if (app) { app.classList.remove('hidden'); app.hidden = false; }
 }
 async function checkMe() {
   try {
     const me = await api('/api/v1/me');
-    $('#side-user').textContent = me.username || 'admin';
-    if (me.version) $('#side-version').textContent = me.version;
+    const userEl = $('#side-user');
+    if (userEl) userEl.textContent = me.username || 'admin';
+    if (me.version) { const verEl = $('#side-version'); if (verEl) verEl.textContent = me.version; }
     showApp();
     const hash = (location.hash || '').replace('#', '');
     goto(PAGES.some((p) => p.id === hash) ? hash : 'overview');
@@ -222,7 +242,7 @@ async function checkMe() {
   }
 }
 function initLogin() {
-  $('#login-form').addEventListener('submit', async (e) => {
+  on('#login-form', 'submit', async (e) => {
     e.preventDefault();
     const username = $('#login-user').value.trim();
     const password = $('#login-pass').value;
@@ -241,7 +261,7 @@ function initLogin() {
       box.classList.remove('hidden');
     } finally { btn.disabled = false; btn.textContent = '登录'; }
   });
-  $('#logout-btn').addEventListener('click', async () => {
+  on('#logout-btn', 'click', async () => {
     try { await apiPost('/api/v1/logout', {}); } catch (e) { /* 忽略 */ }
     showLogin();
   });
@@ -375,7 +395,7 @@ function renderLandingCards(page) {
 
 /* ---------- 一键体检 + 一键修复 ---------- */
 function initCheck() {
-  $('#check-btn').addEventListener('click', async () => {
+  on('#check-btn', 'click', async () => {
     const box = $('#check-result');
     box.innerHTML = '<div class="card">体检中，请稍候…</div>';
     try {
@@ -422,15 +442,19 @@ async function fixIssue(issue) {
 /* ---------- 添加落地（含端口冲突方式选择） ---------- */
 function initAddForm() {
   const preset = $('#add-preset');
+  if (!preset) return; // 添加落地表单不在旧页面里时直接跳过
   const syncPreset = () => {
-    $('#sb-mode-wrap').classList.toggle('hidden', preset.value !== '2');
-    $('#custom-ports-wrap').classList.toggle('hidden', preset.value !== '3');
+    const sbWrap = $('#sb-mode-wrap');
+    if (sbWrap) sbWrap.classList.toggle('hidden', preset.value !== '2');
+    const cpWrap = $('#custom-ports-wrap');
+    if (cpWrap) cpWrap.classList.toggle('hidden', preset.value !== '3');
   };
   preset.addEventListener('change', syncPreset); syncPreset();
-  $('#add-duration').addEventListener('change', (e) => {
-    $('#duration-custom-wrap').classList.toggle('hidden', e.target.value !== 'custom');
+  on('#add-duration', 'change', (e) => {
+    const w = $('#duration-custom-wrap');
+    if (w) w.classList.toggle('hidden', e.target.value !== 'custom');
   });
-  $('#add-form').addEventListener('submit', async (e) => {
+  on('#add-form', 'submit', async (e) => {
     e.preventDefault();
     const payload = buildAddPayload();
     if (!payload) return;
@@ -507,8 +531,8 @@ async function showShareChoice(resp, payload) {
     const v = card.dataset.opt;
     $('#share-overrides', m).classList.toggle('hidden', v !== '1');
   }));
-  $('#share-cancel', m).addEventListener('click', closeModal);
-  $('#share-ok', m).addEventListener('click', async () => {
+  onIn(m, '#share-cancel', 'click', closeModal);
+  onIn(m, '#share-ok', 'click', async () => {
     const sel = $('input[name="share-mode"]:checked', m);
     if (!sel) { toast('请先选择一种方式', 'err'); return; }
     const overrides = {};
@@ -609,8 +633,8 @@ async function renewLanding(index) {
   const m = openModal('<h2>续期</h2><p>续期只延长时限；如果是因为流量用完被停用，请另外「续量」。</p>' +
     '<label>续期天数</label><select id="renew-days"><option value="30">30 天</option><option value="90" selected>90 天</option><option value="180">180 天</option><option value="365">365 天</option></select>' +
     '<div class="btn-row"><button class="btn" id="renew-ok" type="button">确认续期</button><button class="btn secondary" id="renew-cancel" type="button">取消</button></div>');
-  $('#renew-cancel', m).addEventListener('click', closeModal);
-  $('#renew-ok', m).addEventListener('click', async () => {
+  onIn(m, '#renew-cancel', 'click', closeModal);
+  onIn(m, '#renew-ok', 'click', async () => {
     const days = Number($('#renew-days', m).value);
     closeModal();
     try { await apiPost('/api/v1/landings/' + index + '/renew', { days }); toast('续期成功，已延长 ' + days + ' 天', 'ok'); loadManage(); }
@@ -621,8 +645,8 @@ async function addTraffic(index) {
   const m = openModal('<h2>续量</h2><p>给流量上限增加额度。续完仍有余额且之前因流量停用的，会自动恢复转发。</p>' +
     '<label>增加多少 GB</label><input id="addtraffic-gb" type="number" min="1" step="1" value="50">' +
     '<div class="btn-row"><button class="btn" id="at-ok" type="button">确认续量</button><button class="btn secondary" id="at-cancel" type="button">取消</button></div>');
-  $('#at-cancel', m).addEventListener('click', closeModal);
-  $('#at-ok', m).addEventListener('click', async () => {
+  onIn(m, '#at-cancel', 'click', closeModal);
+  onIn(m, '#at-ok', 'click', async () => {
     const gb = Number($('#addtraffic-gb', m).value);
     if (!gb || gb < 1) { toast('请填大于 0 的 GB 数', 'err'); return; }
     closeModal();
@@ -638,8 +662,8 @@ async function trafficSettings(index) {
     '<label>算法</label><select id="ts-mode"><option value="total"' + (t.limit_mode !== 'monthly' ? ' selected' : '') + '>总量</option><option value="monthly"' + (t.limit_mode === 'monthly' ? ' selected' : '') + '>按月</option></select>' +
     '<label>限速（Mbps，0 = 不限速）</label><input id="ts-speed" type="number" min="0" step="1" value="' + (l ? (l.speed_limit_mbps || 0) : 0) + '">' +
     '<div class="btn-row"><button class="btn" id="ts-ok" type="button">保存</button><button class="btn secondary" id="ts-cancel" type="button">取消</button></div>');
-  $('#ts-cancel', m).addEventListener('click', closeModal);
-  $('#ts-ok', m).addEventListener('click', async () => {
+  onIn(m, '#ts-cancel', 'click', closeModal);
+  onIn(m, '#ts-ok', 'click', async () => {
     const gb = Number($('#ts-gb', m).value) || 0;
     if (gb < 0) { toast('流量上限不能为负', 'err'); return; }
     closeModal();
@@ -670,8 +694,8 @@ async function addNodeWizard(index) {
     '<p class="small">落地：' + esc(l ? (l.cert_domain || l.landing) : index) + '</p>' +
     '<label>新子域名 <span class="hint">如 node2.example.com</span></label><input id="wizard-sub" placeholder="node2.example.com">' +
     '<div class="btn-row"><button class="btn" id="wz-next" type="button">生成落地机命令</button><button class="btn secondary" id="wz-cancel" type="button">取消</button></div>');
-  $('#wz-cancel', m).addEventListener('click', closeModal);
-  $('#wz-next', m).addEventListener('click', async () => {
+  onIn(m, '#wz-cancel', 'click', closeModal);
+  onIn(m, '#wz-next', 'click', async () => {
     const sub = $('#wizard-sub', m).value.trim();
     if (!sub || !/^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(sub)) { toast('请填写正确的子域名，如 node2.example.com', 'err'); return; }
     try {
@@ -682,8 +706,8 @@ async function addNodeWizard(index) {
         (cmd ? '<pre class="cmd">' + esc(cmd) + '</pre><div class="btn-row"><button class="btn secondary sm" type="button" data-copy="' + esc(cmd) + '">复制命令</button></div>' : '<p class="muted">后端未返回命令，请联系管理员确认命令模板。</p>') +
         '<label>粘贴新节点链接 <span class="hint">落地机跑完命令后生成的那条链接</span></label><input id="wz-link" placeholder="vless://…@' + esc(sub) + ':443?…">' +
         '<div class="btn-row"><button class="btn" id="wz-done" type="button">登记并生成 twin</button><button class="btn secondary" id="wz-back" type="button">上一步</button></div>');
-      $('#wz-back', m2).addEventListener('click', () => addNodeWizard(index));
-      $('#wz-done', m2).addEventListener('click', async () => {
+      onIn(m2, '#wz-back', 'click', () => addNodeWizard(index));
+      onIn(m2, '#wz-done', 'click', async () => {
         const link = $('#wz-link', m2).value.trim();
         if (!link || !/^(vless|trojan|ss|vmess):\/\//.test(link)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
         try {
@@ -691,7 +715,7 @@ async function addNodeWizard(index) {
           closeModal();
           openModal('<h2>✅ 子节点已登记</h2>' + linksHtml(r2.links, r2.qr) +
             '<div class="btn-row"><button class="btn" id="wz-close" type="button">完成</button></div>');
-          $('#wz-close').addEventListener('click', () => { closeModal(); loadManage(); });
+          on('#wz-close', 'click', () => { closeModal(); loadManage(); });
         } catch (e) { toast('登记失败：' + e.message, 'err'); }
       });
     } catch (e) { toast('生成命令失败：' + e.message, 'err'); }
@@ -718,7 +742,7 @@ async function loadLinks(page) {
   }
 }
 function initTwin() {
-  $('#twin-form').addEventListener('submit', async (e) => {
+  on('#twin-form', 'submit', async (e) => {
     e.preventDefault();
     const link = $('#twin-link').value.trim();
     const landingIp = $('#twin-landing').value.trim();
@@ -850,7 +874,7 @@ function initService() {
       toast('已执行：' + act, 'ok'); loadService();
     } catch (e) { toast('操作失败：' + e.message, 'err'); }
   }));
-  $('#logs-refresh').addEventListener('click', loadLogs);
+  on('#logs-refresh', 'click', loadLogs);
 }
 
 /* ---------- 设置 ---------- */
@@ -875,7 +899,7 @@ async function loadSettingsPage() {
   loadBackups(); loadAudit();
 }
 function initSettings() {
-  $('#pw-form').addEventListener('submit', async (e) => {
+  on('#pw-form', 'submit', async (e) => {
     e.preventDefault();
     const oldPw = $('#pw-old').value, nw = $('#pw-new').value, nw2 = $('#pw-new2').value;
     if (nw.length < 8) { toast('新密码至少 8 位', 'err'); return; }
@@ -885,7 +909,7 @@ function initSettings() {
       toast('密码已修改', 'ok'); e.target.reset();
     } catch (err) { toast('修改失败：' + err.message, 'err'); }
   });
-  $('#port-form').addEventListener('submit', async (e) => {
+  on('#port-form', 'submit', async (e) => {
     e.preventDefault();
     const port = Number($('#panel-port').value);
     if (!port || port < 1 || port > 65535) { toast('端口请填 1–65535', 'err'); return; }
@@ -894,7 +918,7 @@ function initSettings() {
     try { await apiPost('/api/v1/settings/port', { port }); toast('面板正在重启，请用新端口重新打开', 'ok'); }
     catch (err) { toast('操作失败：' + err.message, 'err'); }
   });
-  $('#whitelist-form').addEventListener('submit', async (e) => {
+  on('#whitelist-form', 'submit', async (e) => {
     e.preventDefault();
     const list = $('#whitelist-input').value.split('\n').map((s) => s.trim()).filter(Boolean);
     const bad = list.find((ip) => !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip));
@@ -902,7 +926,7 @@ function initSettings() {
     try { await apiPost('/api/v1/settings/ip-whitelist', { whitelist: list }); toast('白名单已保存', 'ok'); }
     catch (err) { toast('保存失败：' + err.message, 'err'); }
   });
-  $('#https-enable').addEventListener('click', async () => {
+  on('#https-enable', 'click', async () => {
     const domain = $('#https-domain').value.trim();
     if (domain && !/^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(domain)) { toast('域名格式不正确', 'err'); return; }
     try {
@@ -910,13 +934,13 @@ function initSettings() {
       toast('HTTPS 已开启' + (r.msg ? '：' + r.msg : ''), 'ok'); loadSettingsPage();
     } catch (err) { toast('开启失败：' + err.message + '（已保留原有方式，面板未中断）', 'err'); }
   });
-  $('#https-disable').addEventListener('click', async () => {
+  on('#https-disable', 'click', async () => {
     const ok = await confirmModal('关闭 HTTPS', '<p>关闭后回到 HTTP 明文访问。确定吗？</p>', '关闭 HTTPS');
     if (!ok) return;
     try { await apiPost('/api/v1/settings/https', { enable: false, domain: '' }); toast('已关闭 HTTPS', 'ok'); loadSettingsPage(); }
     catch (err) { toast('操作失败：' + err.message, 'err'); }
   });
-  $('#tg-form').addEventListener('submit', async (e) => {
+  on('#tg-form', 'submit', async (e) => {
     e.preventDefault();
     const token = $('#tg-token').value.trim();
     const chatId = $('#tg-chat').value.trim();
@@ -926,7 +950,7 @@ function initSettings() {
       toast('Telegram 设置已保存', 'ok'); $('#tg-token').value = '';
     } catch (err) { toast('保存失败：' + err.message, 'err'); }
   });
-  $('#cf-form').addEventListener('submit', async (e) => {
+  on('#cf-form', 'submit', async (e) => {
     e.preventDefault();
     const token = $('#cf-token').value.trim();
     if (!token) { toast('请先填写 Token', 'err'); return; }
@@ -935,17 +959,50 @@ function initSettings() {
       toast('Cloudflare Token 已保存' + (r.warning ? '：' + r.warning : ''), 'ok'); $('#cf-token').value = ''; loadSettingsPage();
     } catch (err) { toast('保存失败：' + err.message, 'err'); }
   });
-  $('#tg-test').addEventListener('click', async () => {
+  on('#tg-test', 'click', async () => {
     try { await apiPost('/api/v1/settings/telegram/test', {}); toast('测试消息已发送，请查看 Telegram', 'ok'); }
     catch (err) { toast('发送失败：' + err.message, 'err'); }
   });
-  $('#update-check').addEventListener('click', async () => {
+  on('#update-check', 'click', async () => {
     try {
       const r = await api('/api/v1/update/check');
       await loadSettingsPage();
       toast(r.update_available ? '发现新版本 ' + (r.latest_version || '') : '已是最新版本', r.update_available ? undefined : 'ok');
     } catch (err) { toast('检查失败：' + err.message, 'err'); }
   });
+  on('#backup-create', 'click', async () => {
+    try { await apiPost('/api/v1/backups', { label: '手动备份' }); toast('备份已创建', 'ok'); loadBackups(); }
+    catch (err) { toast('备份失败：' + err.message, 'err'); }
+  });
+  on('#export-btn', 'click', async () => {
+    try {
+      const res = await fetch('/api/v1/export');
+      if (!res.ok) throw new Error('导出失败（HTTP ' + res.status + '）');
+      const text = await res.text();
+      downloadFile('relay-panel-export-' + new Date().toISOString().slice(0, 10) + '.json', text);
+      toast('导出完成', 'ok');
+    } catch (err) { toast(err.message, 'err'); }
+  });
+  on('#import-file', 'change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const text = await file.text();
+    let data;
+    try { data = JSON.parse(text); } catch (err) { $('#import-result').innerHTML = '<div class="error-box">文件不是合法的 JSON：' + esc(err.message) + '</div>'; e.target.value = ''; return; }
+    if (!data.relay_conf && !data.config_toml && !data.state) {
+      $('#import-result').innerHTML = '<div class="error-box">文件格式不正确：缺少 relay_conf / config_toml / state，不是面板导出的文件。</div>';
+      e.target.value = ''; return;
+    }
+    const ok = await confirmModal('导入配置', '<p>导入会覆盖当前全部落地与设置（导入前会自动备份当前配置；密码与 Telegram Token 保持本机原值，不随导入走）。确定导入 <b>' + esc(file.name) + '</b> 吗？</p>', '确认导入', true);
+    if (!ok) { e.target.value = ''; return; }
+    try {
+      await apiPost('/api/v1/import', data);
+      $('#import-result').innerHTML = '<div class="ok-box">导入成功，realm 已重启并验过端口。</div>';
+      toast('导入成功', 'ok'); loadOverview();
+    } catch (err) { $('#import-result').innerHTML = '<div class="error-box">导入失败：' + esc(err.message) + '</div>'; }
+    e.target.value = '';
+  });
+}
 /* ---------- 更新面板：轮询等重启，完成后自动跳登录页 ---------- */
 let updatePollTimer = null;
 function stopUpdatePoll() { if (updatePollTimer) { clearInterval(updatePollTimer); updatePollTimer = null; } }
@@ -976,7 +1033,7 @@ function pollUpdateDone(btn) {
   }, 3000);
 }
 function initUpdatePoll() {
-  $('#update-apply').addEventListener('click', async () => {
+  on('#update-apply', 'click', async () => {
     const ok = await confirmModal('更新面板', '<p>更新只重启面板自己，不动 realm，正在用的节点不断线。更新完自动跳到登录页重新登录。确定更新吗？</p>', '开始更新');
     if (!ok) return;
     const btn = $('#update-apply');
@@ -990,39 +1047,6 @@ function initUpdatePoll() {
       $('#update-box').innerHTML = '';
       toast('更新失败：' + err.message, 'err');
     }
-  });
-}
-  $('#backup-create').addEventListener('click', async () => {
-    try { await apiPost('/api/v1/backups', { label: '手动备份' }); toast('备份已创建', 'ok'); loadBackups(); }
-    catch (err) { toast('备份失败：' + err.message, 'err'); }
-  });
-  $('#export-btn').addEventListener('click', async () => {
-    try {
-      const res = await fetch('/api/v1/export');
-      if (!res.ok) throw new Error('导出失败（HTTP ' + res.status + '）');
-      const text = await res.text();
-      downloadFile('relay-panel-export-' + new Date().toISOString().slice(0, 10) + '.json', text);
-      toast('导出完成', 'ok');
-    } catch (err) { toast(err.message, 'err'); }
-  });
-  $('#import-file').addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const text = await file.text();
-    let data;
-    try { data = JSON.parse(text); } catch (err) { $('#import-result').innerHTML = '<div class="error-box">文件不是合法的 JSON：' + esc(err.message) + '</div>'; e.target.value = ''; return; }
-    if (!data.relay_conf && !data.config_toml && !data.state) {
-      $('#import-result').innerHTML = '<div class="error-box">文件格式不正确：缺少 relay_conf / config_toml / state，不是面板导出的文件。</div>';
-      e.target.value = ''; return;
-    }
-    const ok = await confirmModal('导入配置', '<p>导入会覆盖当前全部落地与设置（导入前会自动备份当前配置；密码与 Telegram Token 保持本机原值，不随导入走）。确定导入 <b>' + esc(file.name) + '</b> 吗？</p>', '确认导入', true);
-    if (!ok) { e.target.value = ''; return; }
-    try {
-      await apiPost('/api/v1/import', data);
-      $('#import-result').innerHTML = '<div class="ok-box">导入成功，realm 已重启并验过端口。</div>';
-      toast('导入成功', 'ok'); loadOverview();
-    } catch (err) { $('#import-result').innerHTML = '<div class="error-box">导入失败：' + esc(err.message) + '</div>'; }
-    e.target.value = '';
   });
 }
 let backupsPage = 1;
@@ -1091,8 +1115,8 @@ function wirePager(wrap, ns, cur, totalPages, onPage) {
     if (p === cur) { inp.value = cur; return; }
     onPage(p);
   };
-  $('#' + ns + '-jump-btn', wrap).addEventListener('click', doJump);
-  $('#' + ns + '-jump', wrap).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doJump(); } });
+  onIn(wrap, '#' + ns + '-jump-btn', 'click', doJump);
+  onIn(wrap, '#' + ns + '-jump', 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doJump(); } });
 }
 let auditPage = 1;
 const AUDIT_PAGE_SIZE = 20;
@@ -1147,14 +1171,14 @@ async function loadFirewall(page) {
   }
 }
 function initFirewall() {
-  $('#fw-one-form').addEventListener('submit', async (e) => {
+  on('#fw-one-form', 'submit', async (e) => {
     e.preventDefault();
     const port = Number($('#fw-port').value);
     if (!port || port < 1 || port > 65535) { toast('端口请填 1–65535', 'err'); return; }
     try { await apiPost('/api/v1/firewall', { action: 'allow', port, proto: $('#fw-proto').value }); toast('端口 ' + port + ' 已放行', 'ok'); loadFirewall(); }
     catch (err) { toast('放行失败：' + err.message, 'err'); }
   });
-  $('#fw-range-form').addEventListener('submit', async (e) => {
+  on('#fw-range-form', 'submit', async (e) => {
     e.preventDefault();
     const from = Number($('#fw-from').value), to = Number($('#fw-to').value);
     if (!from || !to || from < 1 || to > 65535 || from > to) { toast('请填写正确的端口范围（起始 ≤ 结束，1–65535）', 'err'); return; }
@@ -1162,13 +1186,13 @@ function initFirewall() {
     try { await apiPost('/api/v1/firewall', { action: 'allow-range', from, to, proto: $('#fw-range-proto').value }); toast('端口范围 ' + from + '–' + to + ' 已放行', 'ok'); loadFirewall(); }
     catch (err) { toast('放行失败：' + err.message, 'err'); }
   });
-  $('#fw-open-all').addEventListener('click', async () => {
+  on('#fw-open-all', 'click', async () => {
     const ok = await confirmModal('一键开放全部端口', '<p><b>⚠️ 高风险操作：</b>将放行全部入站端口，所有端口都会暴露，包括 SSH 等服务端口，可能被扫描攻击。</p><p>建议只在需要时使用，用完立即「一键恢复只开必要端口」。确定继续吗？</p>', '我明白，全部开放', true);
     if (!ok) return;
     try { await apiPost('/api/v1/firewall', { action: 'open-all', confirm: true }); toast('已开放全部端口，请用完尽快恢复', 'ok'); loadFirewall(); }
     catch (err) { toast('操作失败：' + err.message, 'err'); }
   });
-  $('#fw-restore').addEventListener('click', async () => {
+  on('#fw-restore', 'click', async () => {
     const ok = await confirmModal('恢复只开必要端口', '<p>将只保留必要端口：面板端口 + 各落地监听端口 + 22（SSH），其余全部关闭。确定吗？</p>', '恢复');
     if (!ok) return;
     try { await apiPost('/api/v1/firewall', { action: 'restore-default' }); toast('已恢复只开必要端口', 'ok'); loadFirewall(); }
@@ -1303,7 +1327,7 @@ function initTraffic() {
     $$('[data-range]').forEach((x) => x.classList.toggle('active', x === b));
     loadTrafficData();
   }));
-  $('#traffic-limit-form').addEventListener('submit', async (e) => {
+  on('#traffic-limit-form', 'submit', async (e) => {
     e.preventDefault();
     if (!trafficLanding) { toast('请先选择落地', 'err'); return; }
     const gb = Number($('#limit-bytes-gb').value) || 0;
@@ -1324,30 +1348,32 @@ function initTraffic() {
     try { await apiPost('/api/v1/traffic/reset', { landing_index: trafficLanding, scope }); toast('用量已重置', 'ok'); loadTrafficData(); }
     catch (e) { toast('重置失败：' + e.message, 'err'); }
   };
-  $('#traffic-reset-month').addEventListener('click', () => reset('month'));
-  $('#traffic-reset-total').addEventListener('click', () => reset('total'));
+  on('#traffic-reset-month', 'click', () => reset('month'));
+  on('#traffic-reset-total', 'click', () => reset('total'));
 }
 
 /* ---------- 启动 ---------- */
 document.addEventListener('DOMContentLoaded', () => {
-  initTheme();
-  buildNav();
-  initDrawer();
-  initLogin();
-  initCheck();
-  initAddForm();
-  initTwin();
-  initService();
-  initSettings();
-  initUpdatePoll();
-  initFirewall();
-  initTraffic();
+  // 单个初始化失败不能拖垮后面的：逐个包 try/catch，checkMe 必须执行，
+  // 否则登录页和后台都出不来，页面就是白板。
+  const safeInit = (fn) => { try { fn(); } catch (e) { /* 忽略：单个初始化失败不影响其他 */ } };
+  safeInit(initTheme);
+  safeInit(buildNav);
+  safeInit(initDrawer);
+  safeInit(initLogin);
+  safeInit(initCheck);
+  safeInit(initAddForm);
+  safeInit(initTwin);
+  safeInit(initService);
+  safeInit(initSettings);
+  safeInit(initUpdatePoll);
+  safeInit(initFirewall);
+  safeInit(initTraffic);
   let refreshing = false;
-  $('#refresh-btn').addEventListener('click', async () => {
-    if (refreshing) return; // 正在刷时再点无效
+  const refreshBtn = on('#refresh-btn', 'click', async () => {
+    if (refreshing || !refreshBtn) return; // 正在刷时再点无效
     refreshing = true;
-    const btn = $('#refresh-btn');
-    btn.disabled = true; btn.classList.add('spinning');
+    refreshBtn.disabled = true; refreshBtn.classList.add('spinning');
     try {
       await loadPage(currentPage);
       toast('已刷新', 'ok');
@@ -1355,9 +1381,10 @@ document.addEventListener('DOMContentLoaded', () => {
       toast('刷新失败：' + (e.message || e), 'err');
     } finally {
       refreshing = false;
-      btn.disabled = false; btn.classList.remove('spinning');
+      refreshBtn.disabled = false; refreshBtn.classList.remove('spinning');
     }
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
-  checkMe();
+  // checkMe 必须执行：不管前面哪个初始化失败，都要决定显示登录页还是后台
+  try { checkMe(); } catch (e) { showLogin(); }
 });

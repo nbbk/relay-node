@@ -28,6 +28,9 @@ func serveEmbeddedWeb(w http.ResponseWriter, r *http.Request) {
 	}
 	if data, err := webFS.ReadFile("web/" + p); err == nil {
 		w.Header().Set("Content-Type", contentTypeFor(p))
+		// 每次重新验证，绝不让浏览器拿旧文件：更新重启后新旧 index.html/app.js
+		// 混用会让新 JS 找不到旧页面里没有的元素，初始化中途抛错、页面变白板
+		w.Header().Set("Cache-Control", "no-cache")
 		_, _ = w.Write(data)
 		return
 	}
@@ -42,6 +45,7 @@ func serveEmbeddedWeb(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
 	_, _ = w.Write(data)
 }
 

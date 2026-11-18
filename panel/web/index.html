@@ -18,8 +18,8 @@
 </head>
 <body>
 
-<!-- 登录页（hidden 属性是原生兜底：样式文件加载失败时也不会与后台堆在一起显示） -->
-<div id="login-view" class="login-wrap hidden" hidden>
+<!-- 登录页默认可见：即使 JS 初始化失败，用户看到的也是登录页而不是白板；鉴权成功后 JS 再把它藏起来、显示后台 -->
+<div id="login-view" class="login-wrap">
   <div class="login-card">
     <div class="brand">relay<span>-node</span> 面板</div>
     <p class="sub">中转节点可视化管理 · 请登录</p>
@@ -36,7 +36,7 @@
   </div>
 </div>
 
-<!-- 主界面（hidden 属性是原生兜底：样式文件加载失败时也不会与登录页堆在一起显示） -->
+<!-- 主界面默认隐藏（hidden 属性是原生兜底：样式文件加载失败时也不会与登录页堆在一起显示）；只由 JS 在鉴权成功后显示，未登录时绝不闪出来 -->
 <div id="app" class="hidden" hidden>
   <div class="scrim hidden" id="scrim" hidden></div>
   <aside class="sidebar" id="sidebar">

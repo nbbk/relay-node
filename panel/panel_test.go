@@ -522,7 +522,8 @@ func TestServeEmbeddedWeb(t *testing.T) {
 		return rec
 	}
 
-	// / 返回 HTML，且带内联 hidden 兜底样式与 hidden 属性
+	// / 返回 HTML，且带内联 hidden 兜底样式；登录页默认可见（1.1.8：JS 初始化失败时
+	// 也不能白板），后台仍默认隐藏（只由 JS 在鉴权成功后显示）
 	rec := get("/", "")
 	if rec.Code != 200 {
 		t.Fatalf("/ 状态=%d want 200", rec.Code)
@@ -534,12 +535,15 @@ func TestServeEmbeddedWeb(t *testing.T) {
 	for _, want := range []string{
 		"relay-node 面板",
 		".hidden{display:none!important}",
-		`id="login-view" class="login-wrap hidden" hidden`,
+		`id="login-view" class="login-wrap"`,
 		`id="app" class="hidden" hidden`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("/ 首页缺 %q", want)
 		}
+	}
+	if strings.Contains(body, `id="login-view" class="login-wrap hidden"`) {
+		t.Fatalf("/ 登录页不应再默认隐藏（1.1.8 改成默认可见）")
 	}
 
 	// /style.css 必须是真 CSS，不是 HTML
@@ -1063,5 +1067,78 @@ func TestAuditPaginationRotated(t *testing.T) {
 	code, b = get("page=3&page_size=20")
 	if code != 200 || len(entries(b)) != 10 || ts(entries(b)[9]) != "2026-11-18T00:00:00Z" {
 		t.Fatalf("page=3：code=%d entries=%d 末=%s", code, len(entries(b)), ts(entries(b)[9]))
+	}
+}
+
+// ---------- 1.1.8：点“更新面板”后变白板 ----------
+//
+// 根因：登录页与后台默认都隐藏，靠 JS 初始化最后调 checkMe() 决定显示哪一个；
+// initDrawer 里 $('#menu-btn').addEventListener 没有判空，浏览器拿到旧 index.html
+// （1.1.7 之前没有 #menu-btn）配新 app.js 时中途抛错，checkMe() 永远不执行，
+// 两个视图一直隐藏 → 全白。serveEmbeddedWeb 还不设 Cache-Control，
+// 浏览器可能长期拿旧 index.html，新旧文件混用正好触发上面那条。
+func TestBlankPageFix118(t *testing.T) {
+	s := newTestAddLandingServer(t, t.TempDir(), t.TempDir())
+	h := s.routes()
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		return rec
+	}
+
+	// 1. 静态文件与 SPA 回退都要带 Cache-Control: no-cache（每次重新验证，不拿旧文件）
+	for _, p := range []string{"/", "/app.js", "/style.css", "/overview"} {
+		rec := get(p)
+		if rec.Code != 200 {
+			t.Fatalf("%s 状态=%d want 200", p, rec.Code)
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+			t.Fatalf("%s Cache-Control=%q want no-cache", p, cc)
+		}
+	}
+
+	// 2. 登录页默认可见、后台默认隐藏：即使 JS 初始化失败，用户看到的也是登录页而不是白板
+	body := get("/").Body.String()
+	if !strings.Contains(body, `<div id="login-view" class="login-wrap">`) {
+		t.Fatalf("登录页 #login-view 应默认可见（无 hidden 类与 hidden 属性）")
+	}
+	if strings.Contains(body, `id="login-view" class="login-wrap hidden"`) {
+		t.Fatalf("登录页 #login-view 不应再默认隐藏")
+	}
+	if !strings.Contains(body, `<div id="app" class="hidden" hidden>`) {
+		t.Fatalf("后台 #app 应仍默认隐藏（只由 JS 在鉴权成功后显示）")
+	}
+
+	// 3. app.js：安全绑定 + 初始化逐个包 try/catch + checkMe 必须执行
+	js := get("/app.js").Body.String()
+	for _, want := range []string{
+		"function on(sel, ev, fn, root)", "function onIn(root, sel, ev, fn)",
+		"safeInit(initDrawer)", "try { checkMe(); } catch (e) { showLogin(); }",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js 缺 %q（初始化加固或 checkMe 保证执行）", want)
+		}
+	}
+	for _, bad := range []string{
+		"$('#menu-btn').addEventListener", "$('#sidebar-close').addEventListener",
+		"$('#scrim').addEventListener", "$('#login-form').addEventListener",
+		"$('#refresh-btn').addEventListener",
+	} {
+		if strings.Contains(js, bad) {
+			t.Fatalf("app.js 不应再有未判空的直接绑定 %q", bad)
+		}
+	}
+	// 弹窗内绑定的选择器必须带 #（onIn 的第二个参数是 querySelector 选择器；
+	// 漏了 # 会查 <cf-ok> 这种不存在的标签名，静默绑不上，确认框点了没反应）
+	for _, want := range []string{
+		"onIn(m, '#cf-ok'", "onIn(m, '#cf-cancel'",
+		"onIn(m, '#share-ok'", "onIn(m, '#wz-next'", "onIn(m2, '#wz-done'",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js 缺 %q（弹窗绑定选择器丢了 # 会绑不上）", want)
+		}
+	}
+	if strings.Contains(js, "onIn(m, 'cf-ok'") || strings.Contains(js, "onIn(m, 'wz-next'") {
+		t.Fatalf("app.js 里有丢了 # 的 onIn 绑定（查不到元素，静默失效）")
 	}
 }
