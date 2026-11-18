@@ -365,6 +365,10 @@ function statCard(label, value, sub) {
   return '<div class="card"><div class="stat-label">' + esc(label) + '</div><div class="stat-num" style="font-size:22px">' + value + '</div><div class="small">' + esc(sub || '') + '</div></div>';
 }
 let overviewPage = 1;
+function modeText(l, relayAddr) {
+  if (l.mode === 'door') return '任意门模式' + (relayAddr ? '（中转地址：' + esc(relayAddr) + '）' : '');
+  return '标准模式';
+}
 function renderLandingCards(page) {
   if (page) overviewPage = page;
   const wrap = $('#landing-cards');
@@ -372,6 +376,7 @@ function renderLandingCards(page) {
   if (!landingsCache.length) { wrap.innerHTML = ''; return; }
   const pg = paginate(landingsCache, overviewPage);
   overviewPage = pg.cur;
+  const relayAddr = (statusCache && statusCache.relay_addr) || '';
   wrap.innerHTML = pg.slice.map((l) => {
     const exp = daysLeftText(l.expiry);
     const ports = (l.ports || []).map((p) => esc(p.proto) + ' ' + esc(p.listen) + '→' + esc(p.remote)).join('、') || '—';
@@ -380,6 +385,7 @@ function renderLandingCards(page) {
       '<div class="kv"><span>落地</span><b>' + esc(l.landing) + '</b></div>' +
       '<div class="kv"><span>监听端口</span><b>' + ports + '</b></div>' +
       '<div class="kv"><span>类型</span><b>' + esc(l.mode_note || '—') + '</b></div>' +
+      '<div class="kv"><span>模式</span><b>' + modeText(l, relayAddr) + '</b></div>' +
       '<div class="kv"><span>延迟</span><b>' + (l.latency_ms == null ? '—' : l.latency_ms + ' ms') + '</b></div>' +
       '<div class="kv"><span>证书</span><b>' + certBadge(l.cert_days_left) + ' · ' + esc(l.renew_mode || '') + '</b></div>' +
       '<div class="kv"><span>到期</span><b><span class="badge ' + exp.cls + '">' + esc(exp.text) + '</span></b></div>' +
@@ -450,6 +456,12 @@ function initAddForm() {
     if (cpWrap) cpWrap.classList.toggle('hidden', preset.value !== '3');
   };
   preset.addEventListener('change', syncPreset); syncPreset();
+  const modeSel = $('#add-mode');
+  const syncMode = () => {
+    const w = $('#add-relay-addr-wrap');
+    if (w) w.classList.toggle('hidden', !modeSel || modeSel.value !== 'door');
+  };
+  if (modeSel) { modeSel.addEventListener('change', syncMode); syncMode(); }
   on('#add-duration', 'change', (e) => {
     const w = $('#duration-custom-wrap');
     if (w) w.classList.toggle('hidden', e.target.value !== 'custom');
@@ -483,8 +495,11 @@ function buildAddPayload() {
   if (trafficGb < 0) { toast('流量上限不能为负', 'err'); return null; }
   const speed = Number($('#add-speed').value) || 0;
   if (speed < 0) { toast('限速不能为负', 'err'); return null; }
+  const mode = $('#add-mode') ? $('#add-mode').value : 'standard';
+  const relayAddr = (mode === 'door' && $('#add-relay-addr')) ? $('#add-relay-addr').value.trim() : '';
   return {
-    landing, preset,
+    landing, preset, mode,
+    relay_addr: relayAddr || undefined,
     sb_mode: preset === '2' ? $('#add-sb-mode').value : undefined,
     custom_ports: customPorts || undefined,
     want_udp: $('#add-want-udp').checked,
@@ -503,6 +518,7 @@ async function submitAdd(payload, shareChoice) {
     const r = await apiPost('/api/v1/landings', body);
     if (r.need_choice) { await showShareChoice(r, payload); return; }
     $('#add-result').innerHTML = '<div class="card"><h2>✅ 落地添加成功</h2>' +
+      (r.door_note ? '<div class="warn-box">' + esc(r.door_note) + '</div>' : '') +
       (r.qr ? '' : '<p class="muted">二维码不可用（服务器未装 qrencode），仅显示链接。</p>') +
       linksHtml(r.links, r.qr) + '</div>';
     toast('落地添加成功', 'ok');
@@ -558,6 +574,7 @@ async function loadManage(page) {
     else {
       const pg = paginate(landingsCache, managePage);
       managePage = pg.cur;
+      const relayAddr = s.relay_addr || '';
       wrap.innerHTML = pg.slice.map((l) => {
         const exp = daysLeftText(l.expiry);
         const ports = (l.ports || []).map((p) => esc(p.proto) + ' ' + esc(p.listen) + '→' + esc(p.remote)).join('、') || '—';
@@ -568,6 +585,7 @@ async function loadManage(page) {
           '<div class="kv"><span>落地</span><b>' + esc(l.landing) + '</b></div>' +
           '<div class="kv"><span>监听端口</span><b>' + ports + '</b></div>' +
           '<div class="kv"><span>类型</span><b>' + esc(l.mode_note || '—') + '</b></div>' +
+          '<div class="kv"><span>模式</span><b>' + modeText(l, relayAddr) + '</b></div>' +
           '<div class="kv"><span>证书</span><b>' + certBadge(l.cert_days_left) + ' · ' + esc(l.renew_mode || '') + '</b></div>' +
           '<div class="kv"><span>到期</span><b><span class="badge ' + exp.cls + '">' + esc(exp.text) + '</span>' + (l.expiry ? '（' + esc(fmtDate(l.expiry)) + '）' : '') + '</b></div>' +
           '<div style="margin-top:8px">' + trafficBarHtml(l) + '</div>' +
@@ -734,7 +752,7 @@ async function loadLinks(page) {
     const pg = paginate(groups, linksPage);
     linksPage = pg.cur;
     wrap.innerHTML = pg.slice.map((g) =>
-      '<div class="card" style="margin-bottom:16px"><h2>落地 #' + esc(g.landing_index) + ' · ' + esc(g.landing || '') + '</h2>' + linksHtml(g.links, g.qr) + '</div>').join('') +
+      '<div class="card" style="margin-bottom:16px"><h2>落地 #' + esc(g.landing_index) + ' · ' + esc(g.landing || '') + (g.mode === 'door' ? ' <span class="badge blue">任意门模式</span>' : '') + '</h2>' + linksHtml(g.links, g.qr) + '</div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'links');
     if (pg.totalPages > 1) wirePager(wrap, 'links', pg.cur, pg.totalPages, (p) => loadLinks(p));
   } catch (e) {
@@ -751,8 +769,13 @@ function initTwin() {
     if (!landingIp) { toast('请填写落地 IP', 'err'); return; }
     try {
       const r = await apiPost('/api/v1/links/twin', { link, landing_ip: landingIp, sni });
+      const relayLabel = r.relay_label || '中转';
+      const links = [];
+      if (r.relay_link) links.push({ label: relayLabel, link: r.relay_link });
+      if (r.direct_link) links.push({ label: '直连', link: r.direct_link });
       $('#twin-result').innerHTML = '<div class="card" style="margin-top:16px"><h2>生成结果</h2>' +
-        linksHtml([{ label: '中转', link: r.relay_link }, { label: '直连', link: r.direct_link }], r.qr) + '</div>';
+        (r.manual ? '<div class="warn-box">' + esc(r.manual) + '</div>' : '') +
+        linksHtml(links, r.qr) + '</div>';
       toast('twin 生成成功', 'ok');
     } catch (err) { toast('生成失败：' + err.message, 'err'); }
   });
@@ -888,6 +911,8 @@ async function loadSettingsPage() {
     $('#https-status').textContent = st.https_enabled ? 'HTTPS 已开启' + (st.https_domain ? '（域名：' + st.https_domain + '）' : '（自签证书）') : '当前为 HTTP，未开启 HTTPS。';
     const cf = st.cloudflare || {};
     $('#cf-status').textContent = cf.has_token ? '已保存 Cloudflare Token（绑域名开 HTTPS 可用）' : '未保存 Token（绑域名开 HTTPS 前要先填）';
+    $('#door-addr').value = st.relay_addr || '';
+    $('#door-status').textContent = st.relay_addr ? '当前任意门地址：' + st.relay_addr : '未设置：下次加任意门落地时自动探测中转机公网 IP';
     const tg = st.telegram || {};
     $('#tg-enabled').checked = !!tg.enabled;
     $('#tg-chat').value = tg.chat_id || '';
@@ -957,6 +982,15 @@ function initSettings() {
     try {
       const r = await apiPost('/api/v1/settings/cloudflare', { token });
       toast('Cloudflare Token 已保存' + (r.warning ? '：' + r.warning : ''), 'ok'); $('#cf-token').value = ''; loadSettingsPage();
+    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+  });
+  on('#door-form', 'submit', async (e) => {
+    e.preventDefault();
+    const addr = $('#door-addr').value.trim();
+    if (addr && !/^[A-Za-z0-9.-]+$/.test(addr)) { toast('任意门地址格式不正确，填 IP 或域名', 'err'); return; }
+    try {
+      await apiPost('/api/v1/settings/relay-addr', { relay_addr: addr });
+      toast(addr ? '任意门地址已保存' : '任意门地址已清除', 'ok'); loadSettingsPage();
     } catch (err) { toast('保存失败：' + err.message, 'err'); }
   });
   on('#tg-test', 'click', async () => {
