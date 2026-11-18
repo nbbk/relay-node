@@ -238,3 +238,38 @@ html[data-theme="dark"] .log-box{background:#020617}
 @media (min-width:641px){
   #toast-wrap{bottom:24px}
 }
+
+/* ---- 加载态（1.2.2：刷新时先显示它，校验完会话再决定登录页/后台，不闪登录页） ---- */
+.loading-wrap{min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; background:var(--bg)}
+.loading-card{text-align:center; color:var(--muted)}
+.loading-spin{font-size:34px; animation:spin 1.2s linear infinite; display:inline-block}
+
+/* ---- 紧凑落地卡片网格（1.2.2）：桌面 3 列、平板 2 列、手机 1 列 ---- */
+.landing-grid{display:grid; gap:14px; grid-template-columns:repeat(3,1fr)}
+.mini-card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); padding:14px; cursor:pointer}
+.mini-card:hover{border-color:var(--accent)}
+.mini-card.offline{border-color:var(--red)}
+.mini-card h3{margin:0 0 6px; font-size:16px; word-break:break-all}
+.mini-card .mini-top{display:flex; justify-content:space-between; gap:8px; align-items:flex-start}
+.mini-card .mini-row{display:flex; justify-content:space-between; gap:10px; font-size:14px; padding:4px 0; color:var(--muted)}
+.mini-card .mini-row b{color:var(--text); font-weight:600; text-align:right; word-break:break-all}
+.mini-card .btn-row{margin-top:8px}
+
+/* ---- 历史记录分组头（1.2.2：默认折叠成一行，点行展开） ---- */
+.group-head{display:flex; align-items:center; gap:8px; flex-wrap:wrap; cursor:pointer; padding:2px 0}
+.group-head .group-title{font-weight:700; font-size:16px; word-break:break-all; flex:1; min-width:120px}
+.group-head input[type="checkbox"]{width:18px; height:18px; flex:0 0 auto; accent-color:var(--accent); cursor:pointer}
+.tag{display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px; font-weight:600; background:var(--surface-muted); color:var(--muted); border:1px solid var(--border)}
+.tag.relay{background:#dbeafe; color:#1d4ed8; border-color:#bfdbfe}
+html[data-theme="dark"] .tag.relay{background:#1e3a5f; color:#93c5fd; border-color:#2c4a6e}
+.tag.direct{background:var(--green-bg); color:var(--green)}
+.group-body{margin-top:10px; border-top:1px dashed var(--border); padding-top:6px}
+.links-toolbar{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:4px 0 12px}
+.links-toolbar label{display:inline-flex; align-items:center; gap:6px; margin:0; font-weight:400; font-size:14px}
+.links-toolbar input[type="checkbox"]{width:18px; height:18px; accent-color:var(--accent)}
+@media (max-width:900px){
+  .landing-grid{grid-template-columns:repeat(2,1fr)}
+}
+@media (max-width:640px){
+  .landing-grid{grid-template-columns:1fr}
+}
