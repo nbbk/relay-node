@@ -88,6 +88,13 @@
                   <option value="2">预设 2：sing-box-node</option>
                   <option value="3">预设 3：自定义端口</option>
                 </select></div>
+              <div><label for="add-mode">模式 <span class="hint">任意门：节点域名永远指落地，中转只做端口转发</span></label>
+                <select id="add-mode">
+                  <option value="standard" selected>标准模式</option>
+                  <option value="door">任意门模式</option>
+                </select></div>
+              <div id="add-relay-addr-wrap" class="hidden"><label for="add-relay-addr">中转地址 <span class="hint">任意门链接用这个地址生成</span></label>
+                <input id="add-relay-addr" placeholder="留空 = 自动用中转机公网 IP"></div>
               <div id="sb-mode-wrap" class="hidden"><label for="add-sb-mode">sing-box 模式</label>
                 <select id="add-sb-mode"><option value="1">TLS（443）</option><option value="2">明文（8080）</option></select></div>
               <div id="custom-ports-wrap" class="hidden"><label for="add-custom-ports">自定义端口 <span class="hint">必填，逗号分隔，如 443,8388；可写 监听:落地，如 10443:443</span></label>
@@ -236,6 +243,16 @@
               <input id="cf-token" type="password" placeholder="留空 = 保持原值" autocomplete="off">
               <div class="small" id="cf-status"></div>
               <div class="btn-row"><button class="btn" type="submit">保存 Token</button></div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>任意门地址</h2>
+            <p class="muted">任意门链接用这个地址生成；改完历史记录里的任意门链接自动跟着改；留空清除则下次加任意门落地时自动探测。</p>
+            <form id="door-form">
+              <label for="door-addr">中转地址 <span class="hint">IP 或域名，留空 = 清除</span></label>
+              <input id="door-addr" placeholder="如 203.0.113.9 或 relay.example.com">
+              <div class="small" id="door-status"></div>
+              <div class="btn-row"><button class="btn" type="submit">保存任意门地址</button></div>
             </form>
           </div>
           <div class="card">
