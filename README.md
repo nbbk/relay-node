@@ -88,8 +88,16 @@ vless://58087f8b-f340-4721-beb7-5aae486ba0e7@yinni.930327.xyz:443?encryption=non
 ## 停止 / 删除中转
 
 ```bash
-bash stop.sh            # 停止中转，保留配置（systemctl start realm 可再启动）
+bash stop.sh            # 停止中转，保留配置
 bash stop.sh --remove   # 彻底删除（realm 二进制、配置、服务、sysctl、目录全删）
+```
+
+再启动的命令就是下面这条（只针对 `bash stop.sh` 保留配置的情况，跑完中转按原配置重新起来）：
+
+```bash
+systemctl start realm
+# 查是不是起来了：
+systemctl status realm
 ```
 
 远程一键停：`curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/stop.sh | bash`（`--remove` 用 `| bash -s -- --remove`）。删完记得把域名 A 记录改回指向落地 IP。
