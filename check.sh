@@ -10,9 +10,12 @@ fail() { echo "  [风险] $1"; }
 # 读 install.sh 写的状态文件；没有就用默认端口表
 # 多落地：1 号落地用平铺变量（LANDING/PORTS），2 号起用 _编号 后缀；老版本单落地
 # relay.conf 没有 LANDING_COUNT，按 1 个落地读，向后兼容。
+# SHARE80/SHARE443：80/443 是否走了分流共享（老 relay.conf 没有，按 0 读）。
 LANDING=""; LANDING_IS_DOMAIN=0; DOMAIN=""; PORTS=""
 [ -f /etc/realm/relay.conf ] && set -a && . /etc/realm/relay.conf && set +a
 LANDING_COUNT="${LANDING_COUNT:-1}"
+SHARE80="${SHARE80:-0}"
+SHARE443="${SHARE443:-0}"
 [ -n "$PORTS" ] || PORTS="tcp:80:80 tcp:443:443 tcp:8388:8388 udp:8388:8388 udp:8443:8443 udp:8444:8444"
 [ -n "$LANDING" ] || LANDING="<未知，/etc/realm/relay.conf 缺失>"
 
@@ -46,7 +49,7 @@ port_listening() {
   fi
 }
 
-echo "== 1/4 realm 进程 =="
+echo "== 1/5 realm 进程 =="
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
   if systemctl is-active --quiet realm 2>/dev/null; then
     pass "systemd 服务 realm 正在运行"
@@ -61,7 +64,7 @@ fi
 /usr/local/bin/realm --version 2>/dev/null && echo "  realm 版本：$(/usr/local/bin/realm --version 2>/dev/null)"
 
 echo ""
-echo "== 2/4 监听端口（共 $LANDING_COUNT 个落地） =="
+echo "== 2/5 监听端口（共 $LANDING_COUNT 个落地） =="
 _i=1
 while [ "$_i" -le "$LANDING_COUNT" ]; do
   if [ "$_i" = "1" ]; then
@@ -83,7 +86,7 @@ while [ "$_i" -le "$LANDING_COUNT" ]; do
 done
 
 echo ""
-echo "== 3/4 BBR =="
+echo "== 3/5 BBR =="
 BBR="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "?")"
 if [ "$BBR" = "bbr" ]; then
   pass "BBR 已启用（$BBR）"
@@ -92,7 +95,7 @@ else
 fi
 
 echo ""
-echo "== 4/4 TLS 直通验证（每个落地各验一次，证书必须与落地一模一样） =="
+echo "== 4/5 TLS 直通验证（每个落地各验一次，证书必须与落地一模一样） =="
 # 原理：realm 只转发字节不解密，穿过中转拿到的证书指纹必须和直连落地的一致。
 # 有域名就用它做 SNI；没有就直接连（单域名落地也能比出指纹）。
 if ! command -v openssl >/dev/null 2>&1; then
@@ -145,6 +148,77 @@ else
           fail "证书指纹与直连落地不一致！中转可能被中间人动过，或域名同时指了别的机器。立即排查，不要用。"
         fi
       fi
+    fi
+    _i=$((_i + 1))
+  done
+fi
+
+echo ""
+echo "== 5/5 证书到期天数（每个落地，不用自己记日子） =="
+# 原理：经中转连落地 443 拿证书，读 notAfter 算剩余天数；<30 天提醒，<7 天警告。
+# Caddy 只在到期前 30 天内才开始续签，所以手动续签也别太早做，建议到期前 2 周内做。
+if ! command -v openssl >/dev/null 2>&1; then
+  warn "本机无 openssl，装一个再看：apt install openssl"
+else
+  _i=1
+  while [ "$_i" -le "$LANDING_COUNT" ]; do
+    if [ "$_i" = "1" ]; then
+      _L="$LANDING"; _P="$PORTS"; _D="$DOMAIN"
+    else
+      _L="$(landing_field "$_i" LANDING)"; _P="$(landing_field "$_i" PORTS)"; _D="$(landing_field "$_i" DOMAIN)"
+    fi
+    if [ -z "$_L" ]; then _i=$((_i + 1)); continue; fi
+    # 找 TLS 端点（和 4/5 同一套逻辑：优先监听 443，其次落地 443）
+    TLS_LISTEN=""; TLS_REMOTE=""
+    for _spec in $_P; do
+      _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
+      if [ "$_proto" = "tcp" ] && [ "$_lp" = "443" ]; then TLS_LISTEN="$_lp"; TLS_REMOTE="$_rp"; break; fi
+    done
+    if [ -z "$TLS_LISTEN" ]; then
+      for _spec in $_P; do
+        _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
+        if [ "$_proto" = "tcp" ] && [ "$_rp" = "443" ]; then TLS_LISTEN="$_lp"; TLS_REMOTE="$_rp"; break; fi
+      done
+    fi
+    if [ -z "$TLS_LISTEN" ]; then
+      echo "  落地 $_i：$_L（没配 443，明文模式，没有证书）"
+      _i=$((_i + 1))
+      continue
+    fi
+    # 续签方式：80 直通或 80 分流都是自动；443 分流也是自动；只有 80 改了监听端口的才要手动
+    _renew="自动"
+    case " $_P " in
+      *" tcp:80:80 "*) _renew="自动（走 80）" ;;
+      *)
+        if [ "$SHARE443" = "1" ]; then _renew="自动（走 443 SNI 分流）"; else _renew="手动（80 改了监听端口，见 README“手动续签证书”）"; fi
+        ;;
+    esac
+    SNI_ARGS=()
+    [ -n "$_D" ] && SNI_ARGS=(-servername "$_D")
+    ENDDATE="$(echo | timeout 10 openssl s_client -connect 127.0.0.1:$TLS_LISTEN "${SNI_ARGS[@]}" 2>/dev/null | openssl x509 -enddate -noout 2>/dev/null)"
+    if [ -z "$ENDDATE" ]; then
+      warn "落地 $_i（$_L）：经中转拿不到证书，算不出到期天数（先看 4/5 那节）。"
+      _i=$((_i + 1))
+      continue
+    fi
+    END_STR="${ENDDATE#notAfter=}"
+    END_TS="$(date -d "$END_STR" +%s 2>/dev/null || echo "")"
+    if [ -z "$END_TS" ]; then
+      warn "落地 $_i（$_L）：证书到期日解析失败：$END_STR"
+      _i=$((_i + 1))
+      continue
+    fi
+    NOW_TS="$(date +%s)"
+    DAYS=$(( (END_TS - NOW_TS) / 86400 ))
+    END_FMT="$(date -d "@$END_TS" +%Y-%m-%d 2>/dev/null || echo "$END_STR")"
+    if [ "$DAYS" -lt 0 ]; then
+      fail "落地 $_i（$_L）：证书已过期 $((0 - DAYS)) 天（到期 $END_FMT）！立即按 README“手动续签证书”处理。"
+    elif [ "$DAYS" -lt 7 ]; then
+      fail "落地 $_i（$_L）：证书只剩 $DAYS 天（到期 $END_FMT），续签方式：$_renew。"
+    elif [ "$DAYS" -lt 30 ]; then
+      warn "落地 $_i（$_L）：证书剩余 $DAYS 天（到期 $END_FMT），续签方式：$_renew。"
+    else
+      pass "落地 $_i（$_L）：证书剩余 $DAYS 天（到期 $END_FMT），续签方式：$_renew。"
     fi
     _i=$((_i + 1))
   done
