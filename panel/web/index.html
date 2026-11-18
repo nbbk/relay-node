@@ -220,6 +220,16 @@
             <div id="https-status" class="small"></div>
           </div>
           <div class="card">
+            <h2>Cloudflare Token</h2>
+            <p class="muted">绑域名开 HTTPS 时用它签证书（DNS 验证）。只用 IP 访问（自签证书）不用填。令牌怎么开见仓库里的 CLOUDFLARE_TOKEN.md。</p>
+            <form id="cf-form">
+              <label for="cf-token">API Token <span class="hint">只保存，不回显</span></label>
+              <input id="cf-token" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+              <div class="small" id="cf-status"></div>
+              <div class="btn-row"><button class="btn" type="submit">保存 Token</button></div>
+            </form>
+          </div>
+          <div class="card">
             <h2>Telegram 提醒</h2>
             <p class="muted">证书快到期、中转挂了、落地到期或流量用完时自动发消息。需要 Bot Token 和 Chat ID。</p>
             <form id="tg-form">
