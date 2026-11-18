@@ -24,11 +24,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, okResp(map[string]any{
 		"port": s.cfg.Port, "https_enabled": s.cfg.HTTPSEnabled, "https_domain": s.cfg.HTTPSDomain,
 		"ip_whitelist": s.cfg.IPWhitelist, "relay_addr": relayAddr,
-		"telegram":   map[string]any{"enabled": s.cfg.Telegram.Enabled, "chat_id": s.cfg.Telegram.ChatID, "has_token": s.cfg.Telegram.BotToken != ""},
-		"monitor":    s.cfg.Monitor,
-		"latency":    s.cfg.Latency,
-		"cloudflare": map[string]any{"has_token": s.cfg.CloudflareToken != ""},
-		"version":    Version, "latest_version": latest, "update_available": update,
+		"telegram":      map[string]any{"enabled": s.cfg.Telegram.Enabled, "chat_id": s.cfg.Telegram.ChatID, "has_token": s.cfg.Telegram.BotToken != ""},
+		"monitor":       s.cfg.Monitor,
+		"latency":       s.cfg.Latency,
+		"central_token": map[string]any{"has_token": s.cfg.RemoteTokenHash != "", "created_at": s.cfg.RemoteTokenCreatedAt},
+		"remotes_count": len(s.cfg.Remotes),
+		"cloudflare":    map[string]any{"has_token": s.cfg.CloudflareToken != ""},
+		"version":       Version, "latest_version": latest, "update_available": update,
 	}))
 }
 
