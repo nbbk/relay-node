@@ -68,6 +68,9 @@ func (s *Server) routes() http.Handler {
 	// 机器状态监控告警（v1.1.10）
 	mux.HandleFunc("GET /api/v1/monitor", s.requireAuth(s.handleMonitor))
 	mux.HandleFunc("POST /api/v1/settings/monitor", s.requireAuth(s.handleMonitorSettings))
+	// 落地延迟探测（v1.1.11）
+	mux.HandleFunc("GET /api/v1/latency", s.requireAuth(s.handleLatency))
+	mux.HandleFunc("POST /api/v1/settings/latency", s.requireAuth(s.handleLatencySettings))
 	// 端口管理 / 流量 / 备份导出导入 / 审计
 	mux.HandleFunc("GET /api/v1/firewall", s.requireAuth(s.handleFirewallGet))
 	mux.HandleFunc("POST /api/v1/firewall", s.requireAuth(s.handleFirewallPost))
@@ -227,36 +230,19 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var landings []any
+	// 总览打开时若有落地还没探测结果，补跑一轮（有 3 秒上限），保证卡片能看到数
+	s.ensureLatencyProbed()
 	for _, l := range rc.Landings {
 		ext := s.state.ext(l.Landing)
-		// 在线：TCP 443（或第一个 TCP 端口）握手
-		online, latency := false, 0
-		probePort := 0
-		for _, p := range l.Ports {
-			if p.Proto == "tcp" && p.Listen == 443 {
-				probePort = p.Listen
-				break
-			}
-		}
-		if probePort == 0 {
-			for _, p := range l.Ports {
-				if p.Proto == "tcp" {
-					probePort = p.Listen
-					break
-				}
-			}
-		}
-		if probePort > 0 {
-			start := time.Now()
-			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", probePort), 3*time.Second)
-			if err == nil {
-				online = true
-				latency = int(time.Since(start).Milliseconds())
-				conn.Close()
-			} else {
-				// 无 443 时只看端口监听
-				online = listeningPorts()[fmt.Sprintf("tcp:%d", probePort)]
-			}
+		// 在线/延迟：用后台延迟探测的结果（探测目标是落地地址:落地端口，
+		// 1.1.11 起不再测中转机本地监听端口）；没结果时为未知（null）。
+		var online any
+		var latencyMs any
+		var latErr, latCheckedAt, latTarget string
+		if lat := s.latency.get(latencyStoreKey(l)); lat != nil {
+			online = lat.Online
+			latencyMs = lat.LatencyMs
+			latErr, latCheckedAt, latTarget = lat.Error, lat.CheckedAt, lat.Target
 		}
 		ci, ok := certByIndex[l.Index]
 		if !ok {
@@ -291,7 +277,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		landings = append(landings, map[string]any{
 			"index": l.Index, "landing": l.Landing, "domain": l.Domain, "cert_domain": l.CertDomain,
 			"preset": l.Preset, "mode_note": l.ModeNote, "mode": l.Mode, "ports": l.Ports,
-			"online": online, "latency_ms": latency,
+			"online": online, "latency_ms": latencyMs,
+			"latency_error": latErr, "latency_checked_at": latCheckedAt, "latency_target": latTarget,
 			"cert_days_left": ci.DaysLeft, "cert_expiry": ci.Expiry, "renew_mode": renewMode,
 			"expiry": ext.Expiry, "days_left": daysLeft,
 			"traffic": map[string]any{
