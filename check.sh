@@ -1,7 +1,21 @@
 #!/usr/bin/env bash
 # 中转自检：在中转机上运行，检查 realm 进程、监听端口、TLS 直通（证书与落地一致）
 # 用法：bash check.sh
+#   bash check.sh --json   机器可读输出（面板调用）
 set -uo pipefail
+
+JSON_MODE=0
+[ "${1:-}" = "--json" ] && JSON_MODE=1
+
+jesc() { # $1=字符串 -> JSON 转义后输出（不带外层引号）
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
 
 pass() { echo "  [通过] $1"; }
 warn() { echo "  [注意] $1"; }
@@ -48,6 +62,169 @@ port_listening() {
     fi
   fi
 }
+
+if [ "$JSON_MODE" = "1" ]; then
+  # ---- realm 运行状态 ----
+  _rj_running=0; _rj_version=""; _rj_bbr=""
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl is-active --quiet realm 2>/dev/null && _rj_running=1
+  elif pgrep -x realm >/dev/null 2>&1; then
+    _rj_running=1
+  fi
+  _rj_version="$(/usr/local/bin/realm --version 2>/dev/null | head -1 || true)"
+  _rj_bbr="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "?")"
+  if [ "$_rj_running" = "1" ]; then
+    _sec_realm_status="pass"; _sec_realm_items='{"level":"pass","message":"realm 正在运行"}'
+  else
+    _sec_realm_status="fail"; _sec_realm_items='{"level":"fail","message":"realm 没在运行"}'
+  fi
+  if [ "$_rj_bbr" = "bbr" ]; then _sec_bbr_status="pass"; else _sec_bbr_status="warn"; fi
+
+  # ---- 逐落地：端口监听 + TLS 指纹 + 证书天数 ----
+  _ports_json=""; _certs_json=""; _issues_json=""
+  _sec_ports_items=""; _sec_ports_status="pass"
+  _sec_tls_items=""; _sec_tls_status="pass"
+  _sec_cert_items=""; _sec_cert_status="pass"
+  [ "$_rj_running" = "0" ] && _issues_json="{\"code\":\"realm_down\",\"landing\":0,\"message\":\"realm 没在运行\",\"fix\":\"restart_realm\"}"
+  _i=1
+  while [ "$_i" -le "$LANDING_COUNT" ]; do
+    if [ "$_i" = "1" ]; then
+      _L="$LANDING"; _P="$PORTS"; _D="$DOMAIN"
+    else
+      _L="$(landing_field "$_i" LANDING)"; _P="$(landing_field "$_i" PORTS)"; _D="$(landing_field "$_i" DOMAIN)"
+    fi
+    if [ -z "$_L" ]; then _i=$((_i + 1)); continue; fi
+    # 端口监听
+    for _spec in $_P; do
+      _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
+      if port_listening "$_proto" "$_lp"; then
+        _lis="true"
+      else
+        _lis="false"; _sec_ports_status="fail"
+        _m="落地 $_i 端口 $_lp/$_proto 没监听"
+        [ -n "$_sec_ports_items" ] && _sec_ports_items="$_sec_ports_items,"
+        _sec_ports_items="$_sec_ports_items{\"level\":\"fail\",\"message\":\"$(jesc "$_m")\"}"
+        [ -n "$_issues_json" ] && _issues_json="$_issues_json,"
+        _issues_json="$_issues_json{\"code\":\"port_not_listening\",\"landing\":$_i,\"message\":\"$(jesc "$_m")\",\"fix\":\"restart_realm\"}"
+      fi
+      [ -n "$_ports_json" ] && _ports_json="$_ports_json,"
+      _ports_json="$_ports_json{\"landing_index\":$_i,\"proto\":\"$_proto\",\"listen\":$_lp,\"remote\":$_rp,\"listening\":$_lis}"
+    done
+    # TLS 端点：优先监听 443，其次落地 443
+    TLS_LISTEN=""; TLS_REMOTE=""
+    for _spec in $_P; do
+      _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
+      if [ "$_proto" = "tcp" ] && [ "$_lp" = "443" ]; then TLS_LISTEN="$_lp"; TLS_REMOTE="$_rp"; break; fi
+    done
+    if [ -z "$TLS_LISTEN" ]; then
+      for _spec in $_P; do
+        _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
+        if [ "$_proto" = "tcp" ] && [ "$_rp" = "443" ]; then TLS_LISTEN="$_lp"; TLS_REMOTE="$_rp"; break; fi
+      done
+    fi
+    # 续签方式（与 5/5 同一套判定）
+    _renew="自动"; _need_manual=false
+    case " $_P " in
+      *" tcp:80:80 "*) _renew="自动（走 80）" ;;
+      *) if [ "$SHARE443" = "1" ]; then _renew="自动（走 443 SNI 分流）"; else _renew="手动（80 改了监听端口，见 README“手动续签证书”）"; _need_manual=true; fi ;;
+    esac
+    if [ -z "$TLS_LISTEN" ]; then
+      # 明文落地，没有证书
+      [ -n "$_certs_json" ] && _certs_json="$_certs_json,"
+      _certs_json="$_certs_json{\"index\":$_i,\"landing\":\"$(jesc "$_L")\",\"domain\":\"$(jesc "$_D")\",\"days_left\":null,\"expiry\":null,\"renew_mode\":\"$(jesc "$_renew")\",\"need_manual\":$_need_manual}"
+      _i=$((_i + 1))
+      continue
+    fi
+    SNI_ARGS=()
+    [ -n "$_D" ] && SNI_ARGS=(-servername "$_D")
+    if command -v openssl >/dev/null 2>&1; then
+      FP_RELAY="$(echo | timeout 10 openssl s_client -connect 127.0.0.1:$TLS_LISTEN "${SNI_ARGS[@]}" 2>/dev/null | openssl x509 -fingerprint -sha256 -noout 2>/dev/null)"
+      ENDDATE="$(echo | timeout 10 openssl s_client -connect 127.0.0.1:$TLS_LISTEN "${SNI_ARGS[@]}" 2>/dev/null | openssl x509 -enddate -noout 2>/dev/null)"
+    else
+      FP_RELAY=""; ENDDATE=""
+    fi
+    # TLS 直通
+    if [ -z "$FP_RELAY" ]; then
+      _sec_tls_status="fail"
+      _m="落地 $_i 穿过中转连 $TLS_LISTEN 拿不到证书"
+      [ -n "$_sec_tls_items" ] && _sec_tls_items="$_sec_tls_items,"
+      _sec_tls_items="$_sec_tls_items{\"level\":\"fail\",\"message\":\"$(jesc "$_m")\"}"
+      [ -n "$_issues_json" ] && _issues_json="$_issues_json,"
+      _issues_json="$_issues_json{\"code\":\"tls_unreachable\",\"landing\":$_i,\"message\":\"$(jesc "$_m")\",\"fix\":\"restart_realm\"}"
+    elif [ "$_L" = "<未知，/etc/realm/relay.conf 缺失>" ]; then
+      _m="落地 $_i 经中转的证书已拿到（指纹 $(jesc "$FP_RELAY")），不知道落地地址，没法直连对比"
+      [ -n "$_sec_tls_items" ] && _sec_tls_items="$_sec_tls_items,"
+      _sec_tls_items="$_sec_tls_items{\"level\":\"warn\",\"message\":\"$(jesc "$_m")\"}"
+      [ "$_sec_tls_status" = "pass" ] && _sec_tls_status="warn"
+    else
+      FP_DIRECT="$(echo | timeout 10 openssl s_client -connect "$_L:$TLS_REMOTE" "${SNI_ARGS[@]}" 2>/dev/null | openssl x509 -fingerprint -sha256 -noout 2>/dev/null)"
+      if [ -z "$FP_DIRECT" ]; then
+        _m="落地 $_i 直连拿不到证书（经中转的证书已拿到）"
+        [ -n "$_sec_tls_items" ] && _sec_tls_items="$_sec_tls_items,"
+        _sec_tls_items="$_sec_tls_items{\"level\":\"warn\",\"message\":\"$(jesc "$_m")\"}"
+        [ "$_sec_tls_status" = "pass" ] && _sec_tls_status="warn"
+      elif [ "$FP_RELAY" = "$FP_DIRECT" ]; then
+        _m="落地 $_i 证书指纹与直连落地完全一致"
+        [ -n "$_sec_tls_items" ] && _sec_tls_items="$_sec_tls_items,"
+        _sec_tls_items="$_sec_tls_items{\"level\":\"pass\",\"message\":\"$(jesc "$_m")\"}"
+      else
+        _sec_tls_status="fail"
+        _m="落地 $_i 证书指纹与直连落地不一致"
+        [ -n "$_sec_tls_items" ] && _sec_tls_items="$_sec_tls_items,"
+        _sec_tls_items="$_sec_tls_items{\"level\":\"fail\",\"message\":\"$(jesc "$_m")\"}"
+        [ -n "$_issues_json" ] && _issues_json="$_issues_json,"
+        _issues_json="$_issues_json{\"code\":\"fingerprint_mismatch\",\"landing\":$_i,\"message\":\"$(jesc "$_m")\",\"fix\":\"manual\"}"
+      fi
+    fi
+    # 证书天数
+    _days_json="null"; _exp_json="null"; _cert_level="pass"; _cert_msg=""
+    if [ -n "$ENDDATE" ]; then
+      END_STR="${ENDDATE#notAfter=}"
+      END_TS="$(date -d "$END_STR" +%s 2>/dev/null || echo "")"
+      if [ -n "$END_TS" ]; then
+        NOW_TS="$(date +%s)"
+        DAYS=$(( (END_TS - NOW_TS) / 86400 ))
+        END_FMT="$(date -d "@$END_TS" +%Y-%m-%d 2>/dev/null || echo "$END_STR")"
+        _days_json="$DAYS"; _exp_json="\"$(jesc "$END_FMT")\""
+        if [ "$DAYS" -lt 0 ]; then
+          _cert_level="fail"; _cert_msg="落地 $_i 证书已过期 $((0 - DAYS)) 天（到期 $END_FMT）"
+          _sec_cert_status="fail"
+          [ -n "$_issues_json" ] && _issues_json="$_issues_json,"
+          _issues_json="$_issues_json{\"code\":\"cert_expired\",\"landing\":$_i,\"message\":\"$(jesc "$_cert_msg")\",\"fix\":\"manual_renew\"}"
+        elif [ "$DAYS" -lt 7 ]; then
+          _cert_level="fail"; _cert_msg="落地 $_i 证书只剩 $DAYS 天（到期 $END_FMT）"
+          _sec_cert_status="fail"
+          [ -n "$_issues_json" ] && _issues_json="$_issues_json,"
+          _issues_json="$_issues_json{\"code\":\"cert_expiring\",\"landing\":$_i,\"message\":\"$(jesc "$_cert_msg")\",\"fix\":\"manual_renew\"}"
+        elif [ "$DAYS" -lt 30 ]; then
+          _cert_level="warn"; _cert_msg="落地 $_i 证书剩余 $DAYS 天（到期 $END_FMT）"
+          [ "$_sec_cert_status" = "pass" ] && _sec_cert_status="warn"
+          [ -n "$_issues_json" ] && _issues_json="$_issues_json,"
+          _issues_json="$_issues_json{\"code\":\"cert_expiring\",\"landing\":$_i,\"message\":\"$(jesc "$_cert_msg")\",\"fix\":\"manual_renew\"}"
+        else
+          _cert_msg="落地 $_i 证书剩余 $DAYS 天（到期 $END_FMT）"
+        fi
+      else
+        _cert_level="warn"; _cert_msg="落地 $_i 证书到期日解析失败"
+        [ "$_sec_cert_status" = "pass" ] && _sec_cert_status="warn"
+      fi
+    else
+      _cert_level="warn"; _cert_msg="落地 $_i 经中转拿不到证书，算不出到期天数"
+      [ "$_sec_cert_status" = "pass" ] && _sec_cert_status="warn"
+    fi
+    [ -n "$_sec_cert_items" ] && _sec_cert_items="$_sec_cert_items,"
+    _sec_cert_items="$_sec_cert_items{\"level\":\"$_cert_level\",\"message\":\"$(jesc "$_cert_msg")\"}"
+    [ -n "$_certs_json" ] && _certs_json="$_certs_json,"
+    _certs_json="$_certs_json{\"index\":$_i,\"landing\":\"$(jesc "$_L")\",\"domain\":\"$(jesc "$_D")\",\"days_left\":$_days_json,\"expiry\":$_exp_json,\"renew_mode\":\"$(jesc "$_renew")\",\"need_manual\":$_need_manual}"
+    _i=$((_i + 1))
+  done
+  [ -z "$_sec_ports_items" ] && _sec_ports_items='{"level":"pass","message":"监听端口全部正常"}'
+  [ -z "$_sec_tls_items" ] && _sec_tls_items='{"level":"pass","message":"无 TLS 落地，跳过直通验证"}'
+  [ -z "$_sec_cert_items" ] && _sec_cert_items='{"level":"pass","message":"无证书落地"}'
+  printf '%s' "{\"ok\":true,\"realm\":{\"running\":$([ "$_rj_running" = "1" ] && echo true || echo false),\"version\":\"$(jesc "$_rj_version")\",\"bbr\":\"$(jesc "$_rj_bbr")\"},\"sections\":[{\"name\":\"realm 进程\",\"status\":\"$_sec_realm_status\",\"items\":[$_sec_realm_items]},{\"name\":\"监听端口\",\"status\":\"$_sec_ports_status\",\"items\":[$_sec_ports_items]},{\"name\":\"BBR\",\"status\":\"$_sec_bbr_status\",\"items\":[{\"level\":\"$_sec_bbr_status\",\"message\":\"BBR：$(jesc "$_rj_bbr")\"}]},{\"name\":\"TLS 直通验证\",\"status\":\"$_sec_tls_status\",\"items\":[$_sec_tls_items]},{\"name\":\"证书到期天数\",\"status\":\"$_sec_cert_status\",\"items\":[$_sec_cert_items]}],\"certs\":[$_certs_json],\"ports\":[$_ports_json],\"issues\":[$_issues_json]}"
+  echo ""
+  exit 0
+fi
 
 echo "== 1/5 realm 进程 =="
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
