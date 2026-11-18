@@ -447,3 +447,59 @@ func TestHandleAddLandingExistingRelay(t *testing.T) {
 		t.Fatalf("已有中转时首次调用应带 --add，实际：%q", first)
 	}
 }
+
+func TestHandleCloudflare(t *testing.T) {
+	s := newTestAddLandingServer(t, t.TempDir(), t.TempDir())
+	post := func(body string) (int, map[string]any) {
+		req := httptest.NewRequest("POST", "/api/v1/settings/cloudflare", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		s.handleCloudflare(rec, req)
+		var resp map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		return rec.Code, resp
+	}
+	// 空令牌拒绝
+	if code, _ := post(`{"token":""}`); code != 400 {
+		t.Fatalf("空令牌应 400，实际 %d", code)
+	}
+	// cfut_ 新令牌：接受，无警告
+	cfut := "cfut_1111111111111111111111111111111111111111"
+	if code, resp := post(`{"token":"` + cfut + `"}`); code != 200 || resp["ok"] != true {
+		t.Fatalf("cfut_ 令牌应接受：code=%d resp=%v", code, resp)
+	} else if _, hasWarning := resp["warning"]; hasWarning {
+		t.Fatalf("cfut_ 令牌不应警告：%v", resp)
+	}
+	if s.cfg.CloudflareToken != cfut {
+		t.Fatalf("令牌没存进配置：%q", s.cfg.CloudflareToken)
+	}
+	// 旧版 40 位令牌：接受，无警告
+	old := "1111111111111111111111111111111111111111"
+	if code, resp := post(`{"token":"` + old + `"}`); code != 200 || resp["ok"] != true {
+		t.Fatalf("40 位令牌应接受：code=%d resp=%v", code, resp)
+	} else if _, hasWarning := resp["warning"]; hasWarning {
+		t.Fatalf("40 位令牌不应警告：%v", resp)
+	}
+	// 格式不对的令牌：接受但带警告（不拦）
+	if code, resp := post(`{"token":"short"}`); code != 200 || resp["warning"] == nil {
+		t.Fatalf("短令牌应接受并警告：code=%d resp=%v", code, resp)
+	}
+	// GET settings 应报告 has_token，令牌本身不回显
+	req := httptest.NewRequest("GET", "/api/v1/settings", nil)
+	rec := httptest.NewRecorder()
+	s.handleSettings(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("settings 状态=%d", rec.Code)
+	}
+	var st map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+		t.Fatalf("settings 不是 JSON：%v", err)
+	}
+	cf, _ := st["cloudflare"].(map[string]any)
+	if cf["has_token"] != true {
+		t.Fatalf("has_token 应为 true：%v", st["cloudflare"])
+	}
+	if strings.Contains(rec.Body.String(), "short") {
+		t.Fatalf("settings 不应回显令牌")
+	}
+}
