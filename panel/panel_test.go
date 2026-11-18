@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -867,5 +868,151 @@ func TestUpdateCheckFetchFailure(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "检查更新失败") {
 		t.Fatalf("拉取失败时正文应含“检查更新失败”，实际：%s", rec.Body.String())
+	}
+}
+
+// ---------- 审计日志分页 ----------
+
+// writeAuditEntries 往指定文件按时间顺序写 n 条审计记录（第 i 条比第 0 条晚 i 秒）。
+func writeAuditEntries(t *testing.T, path string, base time.Time, n int) {
+	t.Helper()
+	var sb strings.Builder
+	for i := 0; i < n; i++ {
+		b, err := json.Marshal(AuditEntry{
+			TS:     base.Add(time.Duration(i) * time.Second).Format(time.RFC3339),
+			User:   "admin",
+			Action: fmt.Sprintf("action-%02d", i),
+			Target: "target",
+			Result: "成功",
+		})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		sb.Write(b)
+		sb.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, []byte(sb.String()), 0o600); err != nil {
+		t.Fatalf("写审计文件失败：%v", err)
+	}
+}
+
+func TestAuditPagination(t *testing.T) {
+	s := newTestAddLandingServer(t, t.TempDir(), t.TempDir())
+	h := s.routes()
+	cookie := loginTestCookie(t, h)
+	writeAuditEntries(t, filepath.Join(s.env.PanelHome, "audit.log"), time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC), 55)
+
+	get := func(q string) (int, map[string]any) {
+		req := httptest.NewRequest("GET", "/api/v1/audit?"+q, nil)
+		req.Header.Set("Cookie", cookie)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var body map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return rec.Code, body
+	}
+	entries := func(body map[string]any) []any {
+		es, _ := body["entries"].([]any)
+		return es
+	}
+	action := func(e any) string {
+		m, _ := e.(map[string]any)
+		s, _ := m["action"].(string)
+		return s
+	}
+
+	// 第 1 页：20 条，总数 55，共 3 页，第一条是最新的一条
+	code, b := get("page=1&page_size=20")
+	if code != 200 || len(entries(b)) != 20 || b["total"] != float64(55) || b["total_pages"] != float64(3) || b["page"] != float64(1) || b["page_size"] != float64(20) {
+		t.Fatalf("page=1：code=%d body=%v", code, b)
+	}
+	if action(entries(b)[0]) != "action-54" || action(entries(b)[19]) != "action-35" {
+		t.Fatalf("第 1 页顺序不对：首=%s 末=%s want action-54/action-35", action(entries(b)[0]), action(entries(b)[19]))
+	}
+	// 第 2 页：20 条
+	code, b = get("page=2&page_size=20")
+	if code != 200 || len(entries(b)) != 20 || action(entries(b)[0]) != "action-34" || action(entries(b)[19]) != "action-15" {
+		t.Fatalf("page=2：code=%d entries=%d 首=%s", code, len(entries(b)), action(entries(b)[0]))
+	}
+	// 第 3 页：15 条，最后一页最后一条是最旧的
+	code, b = get("page=3&page_size=20")
+	if code != 200 || len(entries(b)) != 15 || action(entries(b)[14]) != "action-00" {
+		t.Fatalf("page=3：code=%d entries=%d 末=%s", code, len(entries(b)), action(entries(b)[14]))
+	}
+	// 越界页：空页，不报错，总数不变
+	code, b = get("page=4&page_size=20")
+	if code != 200 || len(entries(b)) != 0 || b["total"] != float64(55) || b["total_pages"] != float64(3) {
+		t.Fatalf("page=4 越界：code=%d body=%v", code, b)
+	}
+	// 非法 page：0、abc 都按第 1 页
+	if code, b := get("page=0&page_size=20"); code != 200 || b["page"] != float64(1) || len(entries(b)) != 20 {
+		t.Fatalf("page=0：code=%d body=%v", code, b)
+	}
+	if code, b := get("page=abc&page_size=20"); code != 200 || b["page"] != float64(1) {
+		t.Fatalf("page=abc：code=%d body=%v", code, b)
+	}
+	// page_size 钳制：0→1，500→100，abc→默认 20
+	if code, b := get("page=1&page_size=0"); code != 200 || b["page_size"] != float64(1) || len(entries(b)) != 1 {
+		t.Fatalf("page_size=0：code=%d body=%v", code, b)
+	}
+	if code, b := get("page=1&page_size=500"); code != 200 || b["page_size"] != float64(100) || len(entries(b)) != 55 || b["total_pages"] != float64(1) {
+		t.Fatalf("page_size=500：code=%d body=%v", code, b)
+	}
+	if code, b := get("page=1&page_size=abc"); code != 200 || b["page_size"] != float64(20) || len(entries(b)) != 20 {
+		t.Fatalf("page_size=abc：code=%d body=%v", code, b)
+	}
+	// 不带参数：默认第 1 页、每页 20 条
+	if code, b := get(""); code != 200 || b["page"] != float64(1) || b["page_size"] != float64(20) || len(entries(b)) != 20 {
+		t.Fatalf("无参数：code=%d body=%v", code, b)
+	}
+}
+
+func TestAuditPaginationRotated(t *testing.T) {
+	s := newTestAddLandingServer(t, t.TempDir(), t.TempDir())
+	h := s.routes()
+	cookie := loginTestCookie(t, h)
+	// 旧份 .1：25 条（较早），当前文件：25 条（较新）
+	writeAuditEntries(t, filepath.Join(s.env.PanelHome, "audit.log.1"), time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC), 25)
+	writeAuditEntries(t, filepath.Join(s.env.PanelHome, "audit.log"), time.Date(2026, 11, 18, 1, 0, 0, 0, time.UTC), 25)
+
+	get := func(q string) (int, map[string]any) {
+		req := httptest.NewRequest("GET", "/api/v1/audit?"+q, nil)
+		req.Header.Set("Cookie", cookie)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var body map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return rec.Code, body
+	}
+	entries := func(body map[string]any) []any {
+		es, _ := body["entries"].([]any)
+		return es
+	}
+	ts := func(e any) string {
+		m, _ := e.(map[string]any)
+		s, _ := m["ts"].(string)
+		return s
+	}
+
+	// 总数 50，共 3 页；第 1 页全是当前文件里最新的 20 条
+	code, b := get("page=1&page_size=20")
+	if code != 200 || len(entries(b)) != 20 || b["total"] != float64(50) || b["total_pages"] != float64(3) {
+		t.Fatalf("page=1：code=%d body=%v", code, b)
+	}
+	if ts(entries(b)[0]) != "2026-11-18T01:00:24Z" {
+		t.Fatalf("第 1 页首条时间=%s want 2026-11-18T01:00:24Z", ts(entries(b)[0]))
+	}
+	// 第 2 页：当前文件剩 5 条 + 旧份最新 15 条
+	code, b = get("page=2&page_size=20")
+	if code != 200 || len(entries(b)) != 20 {
+		t.Fatalf("page=2：code=%d entries=%d", code, len(entries(b)))
+	}
+	if ts(entries(b)[0]) != "2026-11-18T01:00:04Z" || ts(entries(b)[5]) != "2026-11-18T00:00:24Z" {
+		t.Fatalf("第 2 页跨文件顺序不对：首=%s 第6条=%s", ts(entries(b)[0]), ts(entries(b)[5]))
+	}
+	// 第 3 页：旧份剩 10 条
+	code, b = get("page=3&page_size=20")
+	if code != 200 || len(entries(b)) != 10 || ts(entries(b)[9]) != "2026-11-18T00:00:00Z" {
+		t.Fatalf("page=3：code=%d entries=%d 末=%s", code, len(entries(b)), ts(entries(b)[9]))
 	}
 }

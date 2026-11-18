@@ -522,26 +522,40 @@ func (s *Server) audit(user, action, target, result, detail string) {
 	_, _ = f.Write(append(b, '\n'))
 }
 
-func (s *Server) readAudit(limit int) []AuditEntry {
-	data, err := os.ReadFile(filepath.Join(s.env.PanelHome, "audit.log"))
-	if err != nil {
-		return []AuditEntry{}
-	}
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+// readAuditPage 按时间倒序读审计记录，返回当前页条目与总条数。
+// 连轮转旧份一起读（audit.log 最新，其次 .1/.2/.3），这样翻页能看到轮转前的旧记录。
+// 单次扫描：文件本身被轮转限制在 10MB 以内，读全文件再切片是可接受的；
+// 只保留当前页的条目进内存，total 是全部有效记录数。page 从 1 开始。
+func (s *Server) readAuditPage(page, pageSize int) ([]AuditEntry, int) {
+	files := []string{"audit.log", "audit.log.1", "audit.log.2", "audit.log.3"}
+	offset := (page - 1) * pageSize
+	end := offset + pageSize
 	var out []AuditEntry
-	for i := len(lines) - 1; i >= 0 && len(out) < limit; i-- {
-		if strings.TrimSpace(lines[i]) == "" {
+	total := 0
+	for _, name := range files {
+		data, err := os.ReadFile(filepath.Join(s.env.PanelHome, name))
+		if err != nil {
 			continue
 		}
-		var e AuditEntry
-		if json.Unmarshal([]byte(lines[i]), &e) == nil {
-			out = append(out, e)
+		lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			if strings.TrimSpace(lines[i]) == "" {
+				continue
+			}
+			var e AuditEntry
+			if json.Unmarshal([]byte(lines[i]), &e) != nil {
+				continue
+			}
+			if total >= offset && total < end {
+				out = append(out, e)
+			}
+			total++
 		}
 	}
 	if out == nil {
 		out = []AuditEntry{}
 	}
-	return out
+	return out, total
 }
 
 // sanitize 脱敏：去掉可能出现的 token/密码哈希片段。

@@ -770,13 +770,33 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
-	limit := 100
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
-			limit = n
+	page := 1
+	if v := r.URL.Query().Get("page"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			page = n
 		}
 	}
-	writeJSON(w, 200, okResp(map[string]any{"entries": s.readAudit(limit)}))
+	pageSize := 20
+	if v := r.URL.Query().Get("page_size"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			pageSize = n
+		}
+	}
+	if pageSize < 1 {
+		pageSize = 1
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	entries, total := s.readAuditPage(page, pageSize)
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	writeJSON(w, 200, okResp(map[string]any{
+		"entries": entries, "total": total, "page": page,
+		"page_size": pageSize, "total_pages": totalPages,
+	}))
 }
 
 var _ = sort.Strings

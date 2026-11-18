@@ -933,14 +933,49 @@ async function loadBackups() {
     }));
   } catch (e) { wrap.innerHTML = '<div class="empty">备份列表不可用：' + esc(e.message) + '</div>'; }
 }
-async function loadAudit() {
+// 跳页输入钳制：非数字返回 null（调用方给轻提示），小于 1 取 1，大于总页数取总页数
+function clampAuditPage(v, totalPages) {
+  const p = parseInt(v, 10);
+  if (isNaN(p)) return null;
+  if (p < 1) return 1;
+  if (p > totalPages) return totalPages;
+  return p;
+}
+let auditPage = 1;
+const AUDIT_PAGE_SIZE = 20;
+async function loadAudit(page) {
+  if (page) auditPage = page;
   const wrap = $('#audit-list');
   try {
-    const r = await api('/api/v1/audit?limit=100');
+    const r = await api('/api/v1/audit?page=' + auditPage + '&page_size=' + AUDIT_PAGE_SIZE);
     const entries = r.entries || [];
-    if (!entries.length) { wrap.innerHTML = '<div class="empty">暂无审计记录。</div>'; return; }
-    wrap.innerHTML = '<div class="table-wrap"><table><thead><tr><th>时间</th><th>用户</th><th>操作</th><th>对象</th><th>结果</th></tr></thead><tbody>' +
+    const total = r.total || 0, totalPages = r.total_pages || 0, cur = r.page || auditPage;
+    if (!total) { wrap.innerHTML = '<div class="empty">暂无审计记录。</div>'; return; }
+    let html = '<div class="table-wrap"><table><thead><tr><th>时间</th><th>用户</th><th>操作</th><th>对象</th><th>结果</th></tr></thead><tbody>' +
       entries.map((en) => '<tr><td>' + esc(fmtDate(en.ts)) + '</td><td>' + esc(en.user || '') + '</td><td>' + esc(en.action || '') + '</td><td>' + esc(en.target || '') + '</td><td>' + esc(en.result || '') + (en.detail ? '<br><span class="small">' + esc(en.detail) + '</span>' : '') + '</td></tr>').join('') + '</tbody></table></div>';
+    // 分页条：最多显示 5 个页码，当前页前后各留 2 个
+    let start = Math.max(1, Math.min(cur - 2, totalPages - 4)), end = Math.min(totalPages, start + 4);
+    if (end - start < 4) start = Math.max(1, end - 4);
+    let nums = '';
+    for (let p = start; p <= end; p++) nums += '<button class="btn sm' + (p === cur ? ' active' : '') + '" type="button" data-audit-page="' + p + '"' + (p === cur ? ' disabled' : '') + '>' + p + '</button>';
+    html += '<div class="pager"><span class="pager-info">共 ' + total + ' 条，第 ' + cur + ' / ' + totalPages + ' 页</span>' +
+      '<button class="btn sm" type="button" data-audit-page="prev"' + (cur <= 1 ? ' disabled' : '') + '>上一页</button>' + nums +
+      '<button class="btn sm" type="button" data-audit-page="next"' + (cur >= totalPages ? ' disabled' : '') + '>下一页</button>' +
+      '<span class="pager-jump">跳至 <input id="audit-jump" class="pager-input" type="number" min="1" max="' + totalPages + '" value="' + cur + '" aria-label="页码"> 页 <button class="btn sm" type="button" id="audit-jump-btn">跳转</button></span></div>';
+    wrap.innerHTML = html;
+    $$('[data-audit-page]', wrap).forEach((b) => b.addEventListener('click', () => {
+      const v = b.dataset.auditPage;
+      loadAudit(v === 'prev' ? cur - 1 : v === 'next' ? cur + 1 : Number(v));
+    }));
+    const doJump = () => {
+      const inp = $('#audit-jump', wrap);
+      const p = clampAuditPage(inp.value, totalPages);
+      if (p === null) { toast('请输入有效页码', 'err'); inp.value = cur; return; }
+      if (p === cur) { inp.value = cur; return; }
+      loadAudit(p);
+    };
+    $('#audit-jump-btn', wrap).addEventListener('click', doJump);
+    $('#audit-jump', wrap).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doJump(); } });
   } catch (e) { wrap.innerHTML = '<div class="empty">审计日志不可用：' + esc(e.message) + '</div>'; }
 }
 
