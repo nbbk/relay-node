@@ -63,6 +63,38 @@ port_listening() {
   fi
 }
 
+pick_tls_endpoint() { # $1=PORTS $2=证书域名(SNI，可空) -> 打印 "监听端口 落地端口"，找不到返回 1
+  # 找 TLS 端点：优先监听 443，其次落地 443，再逐个 TCP 端口握手试
+  # （自定义端口 TLS 如 24443 就靠握手这一档；明文端口握手立刻失败，不误判）。
+  # 端口在监听但握手失败的也算端点（返回它，下游会报“拿不到证书”而不是误判明文）。
+  local _spec _proto _rest _lp _rp _fp _first_listening_lp="" _first_listening_rp=""
+  for _spec in $1; do
+    _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
+    if [ "$_proto" = "tcp" ] && [ "$_lp" = "443" ]; then printf '%s %s' "$_lp" "$_rp"; return 0; fi
+  done
+  for _spec in $1; do
+    _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
+    if [ "$_proto" = "tcp" ] && [ "$_rp" = "443" ]; then printf '%s %s' "$_lp" "$_rp"; return 0; fi
+  done
+  if command -v openssl >/dev/null 2>&1; then
+    for _spec in $1; do
+      _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
+      [ "$_proto" = "tcp" ] || continue
+      if port_listening tcp "$_lp"; then
+        [ -z "$_first_listening_lp" ] && _first_listening_lp="$_lp" && _first_listening_rp="$_rp"
+        if [ -n "$2" ]; then
+          _fp="$(echo | timeout 3 openssl s_client -connect 127.0.0.1:"$_lp" -servername "$2" 2>/dev/null | openssl x509 -fingerprint -sha256 -noout 2>/dev/null)"
+        else
+          _fp="$(echo | timeout 3 openssl s_client -connect 127.0.0.1:"$_lp" 2>/dev/null | openssl x509 -fingerprint -sha256 -noout 2>/dev/null)"
+        fi
+        if [ -n "$_fp" ]; then printf '%s %s' "$_lp" "$_rp"; return 0; fi
+      fi
+    done
+  fi
+  if [ -n "$_first_listening_lp" ]; then printf '%s %s' "$_first_listening_lp" "$_first_listening_rp"; return 0; fi
+  return 1
+}
+
 if [ "$JSON_MODE" = "1" ]; then
   # ---- realm 运行状态 ----
   _rj_running=0; _rj_version=""; _rj_bbr=""
@@ -111,17 +143,10 @@ if [ "$JSON_MODE" = "1" ]; then
       [ -n "$_ports_json" ] && _ports_json="$_ports_json,"
       _ports_json="$_ports_json{\"landing_index\":$_i,\"proto\":\"$_proto\",\"listen\":$_lp,\"remote\":$_rp,\"listening\":$_lis}"
     done
-    # TLS 端点：优先监听 443，其次落地 443
+    # TLS 端点：优先监听 443，其次落地 443，再逐个 TCP 端口握手试（自定义端口 TLS 如 24443）
     TLS_LISTEN=""; TLS_REMOTE=""
-    for _spec in $_P; do
-      _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
-      if [ "$_proto" = "tcp" ] && [ "$_lp" = "443" ]; then TLS_LISTEN="$_lp"; TLS_REMOTE="$_rp"; break; fi
-    done
-    if [ -z "$TLS_LISTEN" ]; then
-      for _spec in $_P; do
-        _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
-        if [ "$_proto" = "tcp" ] && [ "$_rp" = "443" ]; then TLS_LISTEN="$_lp"; TLS_REMOTE="$_rp"; break; fi
-      done
+    if _ep="$(pick_tls_endpoint "$_P" "$_D")"; then
+      TLS_LISTEN="${_ep%% *}"; TLS_REMOTE="${_ep##* }"
     fi
     # 续签方式（与 5/5 同一套判定）；任意门模式域名指落地，续签直接走落地
     _renew="自动"; _need_manual=false
@@ -134,7 +159,8 @@ if [ "$JSON_MODE" = "1" ]; then
       esac
     fi
     if [ -z "$TLS_LISTEN" ]; then
-      # 明文落地，没有证书
+      # 明文落地，没有证书（续签方式也按明文算：前面按“没 80 就手动”算出的不适用）
+      _renew="无证书（明文模式）"; _need_manual=false
       [ -n "$_certs_json" ] && _certs_json="$_certs_json,"
       _certs_json="$_certs_json{\"index\":$_i,\"landing\":\"$(jesc "$_L")\",\"domain\":\"$(jesc "$_D")\",\"mode\":\"$_M\",\"days_left\":null,\"expiry\":null,\"renew_mode\":\"$(jesc "$_renew")\",\"need_manual\":$_need_manual}"
       _i=$((_i + 1))
@@ -302,17 +328,10 @@ else
     else
       echo "  落地 $_i：$_L"
     fi
-    # 找到 TLS 端点：优先监听端口是 443 的那条，其次找 remote 是 443 的那条
+    # 找到 TLS 端点：优先监听 443，其次落地 443，再逐个 TCP 端口握手试（自定义端口 TLS 如 24443）
     TLS_LISTEN=""; TLS_REMOTE=""
-    for _spec in $_P; do
-      _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
-      if [ "$_proto" = "tcp" ] && [ "$_lp" = "443" ]; then TLS_LISTEN="$_lp"; TLS_REMOTE="$_rp"; break; fi
-    done
-    if [ -z "$TLS_LISTEN" ]; then
-      for _spec in $_P; do
-        _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
-        if [ "$_proto" = "tcp" ] && [ "$_rp" = "443" ]; then TLS_LISTEN="$_lp"; TLS_REMOTE="$_rp"; break; fi
-      done
+    if _ep="$(pick_tls_endpoint "$_P" "$_D")"; then
+      TLS_LISTEN="${_ep%% *}"; TLS_REMOTE="${_ep##* }"
     fi
     if [ -z "$TLS_LISTEN" ]; then
       warn "落地 $_i 没配到落地 443 的端口，跳过 TLS 直通验证。"
@@ -361,17 +380,10 @@ else
       [ -n "$_M" ] || _M="standard"
     fi
     if [ -z "$_L" ]; then _i=$((_i + 1)); continue; fi
-    # 找 TLS 端点（和 4/5 同一套逻辑：优先监听 443，其次落地 443）
+    # 找 TLS 端点（和 4/5 同一套逻辑：优先监听 443，其次落地 443，再逐个 TCP 端口握手试）
     TLS_LISTEN=""; TLS_REMOTE=""
-    for _spec in $_P; do
-      _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
-      if [ "$_proto" = "tcp" ] && [ "$_lp" = "443" ]; then TLS_LISTEN="$_lp"; TLS_REMOTE="$_rp"; break; fi
-    done
-    if [ -z "$TLS_LISTEN" ]; then
-      for _spec in $_P; do
-        _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
-        if [ "$_proto" = "tcp" ] && [ "$_rp" = "443" ]; then TLS_LISTEN="$_lp"; TLS_REMOTE="$_rp"; break; fi
-      done
+    if _ep="$(pick_tls_endpoint "$_P" "$_D")"; then
+      TLS_LISTEN="${_ep%% *}"; TLS_REMOTE="${_ep##* }"
     fi
     if [ -z "$TLS_LISTEN" ]; then
       echo "  落地 $_i：$_L（没配 443，明文模式，没有证书）"
