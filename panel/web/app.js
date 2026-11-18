@@ -64,11 +64,12 @@ function downloadFile(name, text) {
 }
 
 /* ---------- API ---------- */
-async function api(path, opts) {
+async function api(path, opts, noAuthRedirect) {
   const res = await fetch(path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts || {}));
   let data = null;
   try { data = await res.json(); } catch (e) { /* 非 JSON 响应 */ }
-  if (res.status === 401) { showLogin(); throw new Error('登录已过期，请重新登录'); }
+  // 登录请求本身的 401 是“密码错了”，不是会话过期：不走过期分支，让服务端文案（账号或密码不对）原样透到登录框
+  if (res.status === 401 && !noAuthRedirect) { showLogin(); throw new Error('登录已过期，请重新登录'); }
   if (res.status === 403) throw new Error((data && data.error) || '无权限（403）：当前 IP 不在白名单内，或会话无效');
   if (res.status === 409) throw new Error((data && data.error) || '正在操作，请稍等（409）');
   if (res.status === 429) throw new Error((data && data.error) || '请求过于频繁或登录失败过多被锁定，请稍后再试（429）');
@@ -76,7 +77,7 @@ async function api(path, opts) {
   if (data && data.ok === false) throw new Error(data.error || '操作失败');
   return data || {};
 }
-async function apiPost(path, body) { return api(path, { method: 'POST', body: JSON.stringify(body || {}) }); }
+async function apiPost(path, body, noAuthRedirect) { return api(path, { method: 'POST', body: JSON.stringify(body || {}) }, noAuthRedirect); }
 
 /* ---------- 弹窗 ---------- */
 function openModal(html) {
@@ -206,14 +207,14 @@ function initLogin() {
     const btn = $('#login-btn'); btn.disabled = true; btn.textContent = '登录中…';
     $('#login-error').classList.add('hidden'); $('#login-locked').classList.add('hidden');
     try {
-      await apiPost('/api/v1/login', { username, password });
+      await apiPost('/api/v1/login', { username, password }, true);
       $('#login-pass').value = '';
       await checkMe();
     } catch (err) {
       const msg = String(err.message || '');
       if (msg.indexOf('429') >= 0 || msg.indexOf('锁定') >= 0 || msg.indexOf('locked') >= 0) $('#login-locked').classList.remove('hidden');
       const box = $('#login-error');
-      box.textContent = msg.indexOf('401') >= 0 || msg.indexOf('用户名或密码') >= 0 ? '用户名或密码错误，请重试' : msg;
+      box.textContent = msg.indexOf('401') >= 0 || msg.indexOf('账号或密码') >= 0 || msg.indexOf('用户名或密码') >= 0 ? '用户名或密码错误，请重试' : msg;
       box.classList.remove('hidden');
     } finally { btn.disabled = false; btn.textContent = '登录'; }
   });

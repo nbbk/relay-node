@@ -642,3 +642,44 @@ func TestServeEmbeddedWeb(t *testing.T) {
 		t.Fatalf("5 次失败后登录应 429 锁定，实际 %d", code)
 	}
 }
+
+// TestLoginErrorMessage 登录报错文案：错密码时服务端返回 401 + “账号或密码不对”，
+// 前端 api() 的登录 401 豁免与登录框映射保证它显示为“用户名或密码错误”，而不是“登录已过期”。
+func TestLoginErrorMessage(t *testing.T) {
+	s := newTestAddLandingServer(t, t.TempDir(), t.TempDir())
+	h := s.routes()
+	login := func(password string) (int, string) {
+		req := httptest.NewRequest("POST", "/api/v1/login", strings.NewReader(`{"username":"admin","password":"`+password+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+	// 错密码：401，且正文就是服务端文案“账号或密码不对”
+	code, body := login("wrong-password")
+	if code != 401 {
+		t.Fatalf("错密码登录状态=%d want 401", code)
+	}
+	if !strings.Contains(body, "账号或密码不对") {
+		t.Fatalf("错密码登录正文=%s want 包含“账号或密码不对”", body)
+	}
+	// 正确密码：200
+	if code, _ := login("test-password-123"); code != 200 {
+		t.Fatalf("正确密码登录状态=%d want 200", code)
+	}
+	// 前端：登录请求走 api() 的 401 豁免，登录框映射接住服务端文案
+	js, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatalf("读 app.js：%v", err)
+	}
+	for _, want := range []string{
+		"noAuthRedirect",
+		"if (res.status === 401 && !noAuthRedirect)",
+		"apiPost('/api/v1/login', { username, password }, true)",
+		"msg.indexOf('账号或密码')",
+	} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("app.js 缺 %q", want)
+		}
+	}
+}
