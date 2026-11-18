@@ -792,6 +792,8 @@ async function loadSettingsPage() {
     $('#whitelist-input').value = (st.ip_whitelist || []).join('\n');
     $('#https-domain').value = st.https_domain || '';
     $('#https-status').textContent = st.https_enabled ? 'HTTPS 已开启' + (st.https_domain ? '（域名：' + st.https_domain + '）' : '（自签证书）') : '当前为 HTTP，未开启 HTTPS。';
+    const cf = st.cloudflare || {};
+    $('#cf-status').textContent = cf.has_token ? '已保存 Cloudflare Token（绑域名开 HTTPS 可用）' : '未保存 Token（绑域名开 HTTPS 前要先填）';
     const tg = st.telegram || {};
     $('#tg-enabled').checked = !!tg.enabled;
     $('#tg-chat').value = tg.chat_id || '';
@@ -851,6 +853,15 @@ function initSettings() {
     try {
       await apiPost('/api/v1/settings/telegram', { enabled: $('#tg-enabled').checked, bot_token: token || undefined, chat_id: chatId });
       toast('Telegram 设置已保存', 'ok'); $('#tg-token').value = '';
+    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+  });
+  $('#cf-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const token = $('#cf-token').value.trim();
+    if (!token) { toast('请先填写 Token', 'err'); return; }
+    try {
+      const r = await apiPost('/api/v1/settings/cloudflare', { token });
+      toast('Cloudflare Token 已保存' + (r.warning ? '：' + r.warning : ''), 'ok'); $('#cf-token').value = ''; loadSettingsPage();
     } catch (err) { toast('保存失败：' + err.message, 'err'); }
   });
   $('#tg-test').addEventListener('click', async () => {
