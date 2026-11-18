@@ -199,6 +199,10 @@ html[data-theme="dark"] .log-box{background:#020617}
 .scrim{position:fixed; inset:0; background:rgba(15,23,42,.5); z-index:55}
 .menu-btn{display:none}
 .sidebar-close{display:none}
+/* 侧边栏底部仓库链接：小字、低调 */
+.repo-links{margin-top:10px; display:flex; flex-direction:column; gap:4px}
+.repo-links a{color:var(--muted); font-size:12px; word-break:break-all}
+.repo-links a:hover{color:var(--accent)}
 
 /* ---- 响应式 ---- */
 @media (max-width:900px){

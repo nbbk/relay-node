@@ -659,24 +659,27 @@ func TestMobileDrawerAndUpdatePoll(t *testing.T) {
 	body := get("/").Body.String()
 	for _, want := range []string{
 		`id="menu-btn"`, `id="scrim"`, `id="sidebar-close"`,
+		`https://github.com/nbbk/relay-node`, `https://github.com/nbbk/tiktok-node`, `https://github.com/nbbk/sing-box-node`,
+		`target="_blank"`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("首页缺 %q（手机抽屉结构）", want)
+			t.Fatalf("首页缺 %q（手机抽屉结构或仓库链接）", want)
 		}
 	}
 	if strings.Contains(body, "bottom-nav") {
 		t.Fatalf("首页不应再含底部导航条 bottom-nav（iOS 上不可靠，已改汉堡抽屉）")
 	}
 	css := get("/style.css").Body.String()
-	for _, want := range []string{".sidebar.open", ".menu-btn", ".scrim"} {
+	for _, want := range []string{".sidebar.open", ".menu-btn", ".scrim", ".repo-links"} {
 		if !strings.Contains(css, want) {
-			t.Fatalf("style.css 缺 %q（抽屉样式）", want)
+			t.Fatalf("style.css 缺 %q（抽屉样式或仓库链接样式）", want)
 		}
 	}
 	js := get("/app.js").Body.String()
 	for _, want := range []string{
 		"initDrawer", "openDrawer", "closeDrawer",
 		"pollUpdateDone", "更新完成，请重新登录", "更新超时，请手动刷新页面", "正在更新…",
+		"https://github.com/nbbk/relay-node",
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js 缺 %q（抽屉或更新轮询逻辑）", want)
