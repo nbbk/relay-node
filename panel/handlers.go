@@ -2700,20 +2700,64 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	b, err := os.ReadFile("/var/log/realm.log")
-	if err != nil {
-		// journalctl 回退
-		if res, err2 := runCmdOut(nil, 10*time.Second, "journalctl", "-u", "realm", "-n", strconv.Itoa(lines), "--no-pager"); err2 == nil {
-			writeJSON(w, 200, okResp(map[string]any{"lines": strings.Split(strings.TrimRight(res.Stdout, "\n"), "\n")}))
-			return
+	out, note := collectLogLines(b, err, lines, func(n int) (string, error) {
+		res, err2 := runCmdOut(nil, 10*time.Second, "journalctl", "-u", "realm", "-n", strconv.Itoa(n), "--no-pager")
+		if err2 != nil {
+			return "", err2
 		}
-		writeJSON(w, 200, okResp(map[string]any{"lines": []string{}, "note": "日志文件不存在：realm 还没跑过，或日志不在 /var/log/realm.log"}))
-		return
+		return res.Stdout, nil
+	})
+	resp := map[string]any{"lines": out}
+	if note != "" {
+		resp["note"] = note
 	}
-	all := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
-	if len(all) > lines {
-		all = all[len(all)-lines:]
+	writeJSON(w, 200, okResp(resp))
+}
+
+// filterLogLines 去掉空行（空字符串或只含空白字符的行）与 journalctl 的
+// “无记录”标记行（-- No entries --）。
+func filterLogLines(lines []string) []string {
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		if t := strings.TrimSpace(l); t == "" || t == "-- No entries --" {
+			continue
+		}
+		out = append(out, l)
 	}
-	writeJSON(w, 200, okResp(map[string]any{"lines": all}))
+	return out
+}
+
+// collectLogLines 决定实时日志页显示什么。
+// fileContent/fileErr 是 /var/log/realm.log 的读取结果；journal 是 journalctl 回退（出错返回 error）。
+// 返回要显示的行与空时的提示（有行时提示为空串）。
+// realm 日志级别是 warn，正常运行时不产生日志，文件常常是空的：这时回退查 journalctl
+// （systemd 的启动/停止记录），有内容就显示出来；两边都没有才返回 warn 级别的说明。
+func collectLogLines(fileContent []byte, fileErr error, n int, journal func(int) (string, error)) ([]string, string) {
+	if fileErr == nil {
+		all := filterLogLines(strings.Split(string(fileContent), "\n"))
+		if len(all) > n {
+			all = all[len(all)-n:]
+		}
+		if len(all) > 0 {
+			return all, ""
+		}
+		// 文件为空（或只有空行）：回退查 journalctl
+	}
+	if journal != nil {
+		if out, err := journal(n); err == nil {
+			jl := filterLogLines(strings.Split(out, "\n"))
+			if len(jl) > n {
+				jl = jl[len(jl)-n:]
+			}
+			if len(jl) > 0 {
+				return jl, ""
+			}
+		}
+	}
+	if fileErr != nil {
+		return []string{}, "日志文件不存在：realm 还没跑过，或日志不在 /var/log/realm.log"
+	}
+	return []string{}, "暂无日志：realm 日志级别为 warn，正常运行时不产生日志，只有警告或错误时才会记录。"
 }
 
 func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {

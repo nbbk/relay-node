@@ -1313,8 +1313,10 @@ async function loadLogs() {
   const box = $('#log-box');
   try {
     const r = await api('/api/v1/logs?lines=200');
-    const lines = r.lines || [];
-    box.textContent = lines.length ? lines.join('\n') : '暂无日志（日志文件不存在或为空）。';
+    // 后端可能返回空字符串行（如空日志文件切出来的 [""]）：先过滤再渲染，
+    // 否则 lines.length=1 会被判为有内容，日志框只剩空白。
+    const lines = (r.lines || []).filter((l) => String(l).trim() !== '');
+    box.textContent = lines.length ? lines.join('\n') : (r.note || '暂无日志（日志文件不存在或为空）。');
     box.scrollTop = box.scrollHeight;
   } catch (e) { box.textContent = '日志加载失败：' + e.message; }
 }
