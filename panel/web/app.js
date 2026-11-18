@@ -138,6 +138,7 @@ const PAGES = [
   { id: 'settings', title: '设置', icon: '🔧' },
   { id: 'firewall', title: '端口管理', icon: '🧱' },
   { id: 'traffic', title: '流量', icon: '📊' },
+  { id: 'central', title: '集中管理', icon: '🖥️' },
 ];
 let currentPage = 'overview';
 let landingsCache = [];
@@ -210,6 +211,7 @@ function loadPage(page) {
   else if (page === 'settings') return loadSettingsPage();
   else if (page === 'firewall') return loadFirewall();
   else if (page === 'traffic') return loadTrafficPage();
+  else if (page === 'central') return loadCentral();
   return Promise.resolve();
 }
 function stopLogsTimer() { if (logsTimer) { clearInterval(logsTimer); logsTimer = null; } }
@@ -970,6 +972,8 @@ async function loadSettingsPage() {
     const lat = st.latency || {};
     $('#lat-enabled').checked = lat.enabled !== false;
     $('#lat-interval').value = lat.interval_min || 5;
+    const ct = st.central_token || {};
+    $('#central-token-status').textContent = ct.has_token ? '已生成令牌' + (ct.created_at ? '（生成于 ' + fmtDate(ct.created_at) + '）' : '') + '：主面板登记时用它；轮换后旧令牌立即失效，撤销后任何主面板都连不进来。' : '未生成令牌：没生成就等于没开集中管理，别人连不进来。';
     $('#update-box').innerHTML = '<div class="kv"><span>当前版本</span><b>' + esc(st.version || '—') + '</b></div>' +
       '<div class="kv"><span>最新版本</span><b>' + esc(st.latest_version || '—') + '</b></div>' +
       '<div class="kv"><span>状态</span><b>' + (st.update_available ? '<span class="badge yellow">有更新</span>' : '<span class="badge green">已是最新</span>') + '</b></div>' +
@@ -1051,6 +1055,19 @@ function initSettings() {
     try { await apiPost('/api/v1/settings/telegram/test', {}); toast('测试消息已发送，请查看 Telegram', 'ok'); }
     catch (err) { toast('发送失败：' + err.message, 'err'); }
   });
+  on('#central-token-generate', 'click', async () => { await centralTokenGenerate(false); });
+  on('#central-token-rotate', 'click', async () => {
+    const ok = await confirmModal('轮换令牌', '<p>轮换后旧令牌立即失效，已登记这台面板的主面板都要重新登记。确定吗？</p>', '轮换令牌', true);
+    if (!ok) return;
+    await centralTokenGenerate(true);
+  });
+  on('#central-token-revoke', 'click', async () => {
+    const ok = await confirmModal('撤销令牌', '<p>撤销后任何主面板都连不进来，集中管理立即断开。确定吗？</p>', '撤销令牌', true);
+    if (!ok) return;
+    try { await apiPost('/api/v1/settings/central-token/revoke', {}); toast('令牌已撤销', 'ok'); loadSettingsPage(); }
+    catch (err) { toast('撤销失败：' + err.message, 'err'); }
+  });
+  on('#central-token-copy', 'click', (e) => { copyText($('#central-token-value').textContent, e.target); });
   on('#update-check', 'click', async () => {
     try {
       const r = await api('/api/v1/update/check');
@@ -1472,6 +1489,221 @@ function initTraffic() {
   on('#traffic-reset-total', 'click', () => reset('total'));
 }
 
+/* ---------- 集中管理（v1.2.0） ---------- */
+let centralRemotes = [];
+let centralDetailId = null;
+let centralDetailPage = 1;
+let centralDetailLandings = [];
+
+// apiRaw：与 api() 一样走 fetch，但业务失败（ok=false）时不抛错、把整包返回，
+// 调用方才能按 side 写清是主面板的问题还是远程面板的问题。
+async function apiRaw(path, opts) {
+  const res = await fetch(path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts || {}));
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* 非 JSON 响应 */ }
+  if (res.status === 401) { showLogin(); throw new Error('登录已过期，请重新登录'); }
+  if (!res.ok) throw new Error((data && data.error) || ('请求失败（HTTP ' + res.status + '）'));
+  return data || {};
+}
+async function apiPostRaw(path, body) { return apiRaw(path, { method: 'POST', body: JSON.stringify(body || {}) }); }
+// 代理操作失败时的文案：side=remote 是远程面板的问题，side=local 是主面板的问题。
+function centralOpError(d) {
+  if (!d) return '操作失败';
+  if (d.ok === false) return '失败（' + (d.side === 'remote' ? '远程面板的问题' : '主面板的问题') + '）：' + (d.error || '操作失败');
+  return d.error || '操作失败';
+}
+async function centralTokenGenerate(rotated) {
+  try {
+    const r = await apiPost('/api/v1/settings/central-token/generate', {});
+    $('#central-token-value').textContent = r.token || '';
+    const box = $('#central-token-once');
+    if (box) { box.classList.remove('hidden'); box.hidden = false; }
+    toast(rotated ? '令牌已轮换，旧令牌已失效' : '令牌已生成，记得复制保存', 'ok');
+    loadSettingsPage();
+  } catch (err) { toast('生成失败：' + err.message, 'err'); }
+}
+async function loadCentral() {
+  const wrap = $('#central-list');
+  const detail = $('#central-detail');
+  if (detail) detail.innerHTML = '';
+  centralDetailId = null;
+  try {
+    const r = await api('/api/v1/central/remotes');
+    centralRemotes = r.remotes || [];
+    if (!centralRemotes.length) {
+      wrap.innerHTML = '<div class="empty">还没登记远程面板。<br>到被管面板的设置页生成远程管理令牌，再在上面填地址和令牌登记。登记后这里会显示每台远程面板的在线状态、版本、落地数与磁盘使用率。</div>';
+      return;
+    }
+    wrap.innerHTML = centralRemotes.map((rm) => {
+      const disk = (rm.disk_pct == null) ? '—' : Math.round(rm.disk_pct) + '%';
+      const badge = rm.online ? '<span class="badge green">在线</span>' : '<span class="badge red">离线</span>';
+      const checked = rm.last_checked_at ? esc(fmtDate(rm.last_checked_at)) : '尚未拉取';
+      return '<div class="card" style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">' +
+        '<h2>' + esc(rm.name) + '</h2>' + badge + '</div>' +
+        '<div class="kv"><span>地址</span><b class="mono">' + esc(rm.base_url) + '</b></div>' +
+        '<div class="kv"><span>版本</span><b>' + esc(rm.version || '—') + '</b></div>' +
+        '<div class="kv"><span>落地数</span><b>' + esc(rm.landing_count == null ? '—' : rm.landing_count) + '</b></div>' +
+        '<div class="kv"><span>磁盘使用率</span><b>' + disk + '</b></div>' +
+        '<div class="kv"><span>realm</span><b>' + (rm.realm_running ? '在跑' : '没在跑') + '</b></div>' +
+        '<div class="kv"><span>上次检查</span><b>' + checked + '</b></div>' +
+        (rm.online ? '' : '<div class="error-box">' + esc(rm.error || '远程面板连不上') + '</div>') +
+        '<div class="btn-row">' +
+        '<button class="btn secondary sm" type="button" data-central-open="' + esc(rm.base_url) + '">打开远程面板 ↗</button>' +
+        '<button class="btn secondary sm" type="button" data-central-landings="' + esc(rm.id) + '">查看落地</button>' +
+        '<button class="btn secondary sm" type="button" data-central-links="' + esc(rm.id) + '">查看链接</button>' +
+        '<button class="btn secondary sm" type="button" data-central-add="' + esc(rm.id) + '">＋ 加落地</button>' +
+        '<button class="btn secondary sm" type="button" data-central-restart="' + esc(rm.id) + '">重启 realm</button>' +
+        '<button class="btn danger sm" type="button" data-central-del="' + esc(rm.id) + '">取消登记</button></div></div>';
+    }).join('');
+    $$('[data-central-open]', wrap).forEach((b) => b.addEventListener('click', () => window.open(b.dataset.centralOpen, '_blank', 'noopener')));
+    $$('[data-central-landings]', wrap).forEach((b) => b.addEventListener('click', () => loadCentralLandings(b.dataset.centralLandings)));
+    $$('[data-central-links]', wrap).forEach((b) => b.addEventListener('click', () => centralLinks(b.dataset.centralLinks)));
+    $$('[data-central-add]', wrap).forEach((b) => b.addEventListener('click', () => centralAddLanding(b.dataset.centralAdd)));
+    $$('[data-central-restart]', wrap).forEach((b) => b.addEventListener('click', () => centralRestart(b.dataset.centralRestart)));
+    $$('[data-central-del]', wrap).forEach((b) => b.addEventListener('click', () => centralDeregister(b.dataset.centralDel)));
+  } catch (e) {
+    wrap.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
+  }
+}
+async function loadCentralLandings(id, page) {
+  if (page) centralDetailPage = page;
+  centralDetailId = id;
+  const rm = centralRemotes.find((x) => x.id === id);
+  const detail = $('#central-detail');
+  detail.innerHTML = '<div class="card">加载中…</div>';
+  try {
+    const r = await api('/api/v1/central/remotes/' + encodeURIComponent(id) + '/landings');
+    centralDetailLandings = r.landings || [];
+    const pg = paginate(centralDetailLandings, centralDetailPage);
+    centralDetailPage = pg.cur;
+    const cachedNote = r.note ? '<div class="warn-box">' + esc(r.note) + '</div>' : '';
+    if (!centralDetailLandings.length) {
+      detail.innerHTML = '<div class="card"><h2>' + esc(rm ? rm.name : id) + ' 的落地</h2>' + cachedNote + '<div class="empty">这台远程面板还没有落地。</div></div>';
+      return;
+    }
+    detail.innerHTML = '<div class="card"><h2>' + esc(rm ? rm.name : id) + ' 的落地</h2>' + cachedNote +
+      pg.slice.map((l) => {
+        const ports = (l.ports || []).map((p) => esc(p.proto) + ' ' + esc(p.listen) + '→' + esc(p.remote)).join('、') || '—';
+        const on = l.online === true ? '<span class="badge green">在线</span>' : l.online === false ? '<span class="badge red">离线</span>' : '<span class="badge">未知</span>';
+        const lat = l.latency_ms == null ? '—' : esc(l.latency_ms) + ' ms';
+        return '<div class="kv"><span>' + esc(l.domain || l.landing) + ' <span class="small">#' + esc(l.index) + '</span></span><span>' + on + ' ' + lat + '</span></div>' +
+          '<div class="kv"><span>落地</span><b>' + esc(l.landing) + '</b></div>' +
+          '<div class="kv"><span>监听端口</span><b>' + ports + '</b></div>' +
+          '<div class="btn-row"><button class="btn danger sm" type="button" data-central-del-landing="' + esc(l.index) + '">删除该落地</button></div>';
+      }).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'central') + '</div>';
+    $$('[data-central-del-landing]', detail).forEach((b) => b.addEventListener('click', () => centralDeleteLanding(id, Number(b.dataset.centralDelLanding))));
+    if (pg.totalPages > 1) wirePager(detail, 'central', pg.cur, pg.totalPages, (p) => loadCentralLandings(id, p));
+  } catch (e) {
+    detail.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
+  }
+}
+async function centralLinks(id) {
+  const rm = centralRemotes.find((x) => x.id === id);
+  const m = openModal('<h2>' + esc(rm ? rm.name : '') + ' 的节点链接</h2><div id="central-links-body">加载中…</div><div class="btn-row"><button class="btn secondary" id="central-links-close" type="button">关闭</button></div>');
+  onIn(m, '#central-links-close', 'click', closeModal);
+  try {
+    const r = await api('/api/v1/central/remotes/' + encodeURIComponent(id) + '/links');
+    const groups = r.groups || [];
+    const body = $('#central-links-body', m);
+    if (!groups.length) { body.innerHTML = '<div class="empty">这台远程面板还没有节点链接。</div>'; return; }
+    body.innerHTML = groups.map((g) => '<h3>' + esc(g.landing || '') + '</h3>' + linksHtml(g.links || [], g.qr || {})).join('');
+  } catch (e) {
+    const body = $('#central-links-body', m);
+    if (body) body.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>';
+  }
+}
+function centralAddLanding(id) {
+  const rm = centralRemotes.find((x) => x.id === id);
+  const m = openModal('<h2>给 ' + esc(rm ? rm.name : '') + ' 加落地</h2>' +
+    '<p class="muted">提交后主面板会先校验，再用令牌调远程面板加落地；远程面板跑安装脚本要一会儿，请耐心等。</p>' +
+    '<label>落地 IP 或域名</label><input id="central-add-landing" placeholder="203.0.113.1">' +
+    '<label>预设</label><select id="central-add-preset"><option value="1">预设 1：tiktok-node（Xray）</option><option value="2">预设 2：sing-box-node</option><option value="3">预设 3：自定义端口</option></select>' +
+    '<div id="central-add-custom-wrap" class="hidden"><label>自定义端口</label><input id="central-add-custom" placeholder="443,8388"></div>' +
+    '<label>证书域名</label><input id="central-add-cert" placeholder="example.com">' +
+    '<div class="btn-row"><button class="btn" id="central-add-ok" type="button">提交并添加落地</button><button class="btn secondary" id="central-add-cancel" type="button">取消</button></div>');
+  onIn(m, '#central-add-cancel', 'click', closeModal);
+  onIn(m, '#central-add-preset', 'change', () => {
+    const w = $('#central-add-custom-wrap', m);
+    if (w) w.classList.toggle('hidden', $('#central-add-preset', m).value !== '3');
+  });
+  onIn(m, '#central-add-ok', 'click', async () => {
+    const landing = $('#central-add-landing', m).value.trim();
+    const preset = $('#central-add-preset', m).value;
+    const customPorts = $('#central-add-custom', m).value.trim();
+    const certDomain = $('#central-add-cert', m).value.trim();
+    if (!landing) { toast('请先填落地 IP 或域名', 'err'); return; }
+    if (preset === '3' && !customPorts) { toast('自定义端口必填', 'err'); return; }
+    closeModal();
+    toast('正在远程加落地，请稍等…');
+    try {
+      const d = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(id) + '/landings', { landing, preset, custom_ports: customPorts, cert_domain: certDomain });
+      if (d.ok === false) { toast(centralOpError(d), 'err'); return; }
+      toast('远程加落地成功', 'ok');
+      loadCentral();
+    } catch (err) { toast('远程加落地失败：' + err.message, 'err'); }
+  });
+}
+async function centralDeleteLanding(id, index) {
+  const ok = await confirmModal('删除远程落地', '<p>确定删除这台远程面板上的落地 <b>#' + index + '</b> 吗？删除是软删除：先进入远程面板的回收站保留 7 天。</p>', '删除（进回收站）', true);
+  if (!ok) return;
+  try {
+    const d = await apiRaw('/api/v1/central/remotes/' + encodeURIComponent(id) + '/landings/' + index, { method: 'DELETE' });
+    if (d.ok === false) { toast(centralOpError(d), 'err'); return; }
+    toast('远程落地已删除（进回收站）', 'ok');
+    loadCentral();
+    if (centralDetailId === id) loadCentralLandings(id);
+  } catch (err) { toast('删除失败：' + err.message, 'err'); }
+}
+async function centralRestart(id) {
+  const rm = centralRemotes.find((x) => x.id === id);
+  const ok = await confirmModal('重启远程 realm', '<p>确定重启远程面板 ' + esc(rm ? rm.name : '') + ' 上的 realm 吗？正在用的节点会短暂断开。</p>', '重启 realm');
+  if (!ok) return;
+  try {
+    const d = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(id) + '/service/restart', {});
+    if (d.ok === false) { toast(centralOpError(d), 'err'); return; }
+    toast('远程 realm 已重启', 'ok');
+    loadCentral();
+  } catch (err) { toast('重启失败：' + err.message, 'err'); }
+}
+async function centralDeregister(id) {
+  const rm = centralRemotes.find((x) => x.id === id);
+  const ok = await confirmModal('取消登记', '<p>确定取消登记远程面板 <b>' + esc(rm ? rm.name : '') + '</b> 吗？只删主面板的登记，不影响远程面板本身。</p>', '取消登记', true);
+  if (!ok) return;
+  try {
+    await api('/api/v1/central/remotes/' + encodeURIComponent(id), { method: 'DELETE' });
+    toast('已取消登记', 'ok');
+    loadCentral();
+  } catch (e) { toast('取消失败：' + e.message, 'err'); }
+}
+async function centralRefreshAll() {
+  try {
+    const r = await api('/api/v1/central/remotes');
+    centralRemotes = r.remotes || [];
+    for (const rm of centralRemotes) {
+      try { await apiPost('/api/v1/central/remotes/' + encodeURIComponent(rm.id) + '/poll', {}); } catch (e) { /* 单台失败不影响其他 */ }
+    }
+    await loadCentral();
+    toast('已刷新', 'ok');
+  } catch (e) { toast('刷新失败：' + e.message, 'err'); }
+}
+function initCentral() {
+  on('#central-refresh', 'click', centralRefreshAll);
+  on('#central-add-form', 'submit', async (e) => {
+    e.preventDefault();
+    const name = $('#central-name').value.trim();
+    const baseUrl = $('#central-url').value.trim();
+    const token = $('#central-token').value.trim();
+    if (!baseUrl || !token) { toast('请填远程面板地址和令牌', 'err'); return; }
+    try {
+      const d = await apiPostRaw('/api/v1/central/remotes', { name, base_url: baseUrl, token });
+      if (d.ok === false) { toast(centralOpError(d), 'err'); return; }
+      toast('远程面板已登记', 'ok');
+      e.target.reset();
+      loadCentral();
+    } catch (err) { toast('登记失败：' + err.message, 'err'); }
+  });
+}
+
 /* ---------- 启动 ---------- */
 document.addEventListener('DOMContentLoaded', () => {
   // 单个初始化失败不能拖垮后面的：逐个包 try/catch，checkMe 必须执行，
@@ -1491,6 +1723,7 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initUpdatePoll);
   safeInit(initFirewall);
   safeInit(initTraffic);
+  safeInit(initCentral);
   let refreshing = false;
   const refreshBtn = on('#refresh-btn', 'click', async () => {
     if (refreshing || !refreshBtn) return; // 正在刷时再点无效
