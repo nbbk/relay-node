@@ -32,6 +32,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/fix", s.requireAuth(s.handleFix))
 	// 落地
 	mux.HandleFunc("POST /api/v1/landings", s.requireAuth(s.handleAddLanding))
+	mux.HandleFunc("PUT /api/v1/landings/{index}", s.requireAuth(s.handleUpdateLanding))
+	mux.HandleFunc("POST /api/v1/landings/{index}/orig-link", s.requireAuth(s.handleSetOrigLink))
 	mux.HandleFunc("POST /api/v1/landings/{index}/add-node", s.requireAuth(s.handleAddNode))
 	mux.HandleFunc("POST /api/v1/landings/{index}/renew", s.requireAuth(s.handleRenew))
 	mux.HandleFunc("POST /api/v1/landings/{index}/add-traffic", s.requireAuth(s.handleAddTraffic))
@@ -45,6 +47,7 @@ func (s *Server) routes() http.Handler {
 	// 节点链接
 	mux.HandleFunc("GET /api/v1/links", s.requireAuth(s.handleLinks))
 	mux.HandleFunc("POST /api/v1/links/twin", s.requireAuth(s.handleTwin))
+	mux.HandleFunc("POST /api/v1/links/delete", s.requireAuth(s.handleDeleteLinksGroups))
 	// 证书
 	mux.HandleFunc("GET /api/v1/certs", s.requireAuth(s.handleCerts))
 	mux.HandleFunc("GET /api/v1/certs/renew-guide", s.requireAuth(s.handleRenewGuide))
@@ -267,19 +270,30 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			latErr, latCheckedAt, latTarget = lat.Error, lat.CheckedAt, lat.Target
 		}
 		ci, ok := certByIndex[l.Index]
-		if !ok {
-			// 回退：TLS 直取
-			tlsPort := 0
-			for _, p := range l.Ports {
-				if p.Proto == "tcp" && p.Listen == 443 {
-					tlsPort = p.Listen
-				}
-			}
-			if tlsPort > 0 {
-				ci = fetchCert(tlsPort, l.CertDomain)
+		// check.sh days_left 为 null 的条目也会让 ok==true（自定义端口 TLS 落地
+		// 就是这种情况），null 不算拿到证书，要继续走下面的握手回退。
+		hasCert := ok && ci.DaysLeft != nil
+		if !hasCert {
+			// 回退：按落地实际的 TCP 监听端口逐个握手拿证书。
+			// 以前只认 443，自定义端口 TLS 落地（如 24443）永远显示无证书。
+			if ci2, ok2 := probeCertForLanding(l); ok2 {
+				ci, hasCert = ci2, true
 			}
 		}
-		renewMode, _ := renewModeFor(l, rc.Share443)
+		renewMode, _ := renewModeFor(l, rc.Share443, hasCert)
+		// 卡片直接出中转链接：加落地时存了原始链接的，这里现场算好返回；
+		// 没存的卡片上显示补粘贴入口（前端按 orig_link 为空判断）。
+		var links []labelledLink
+		qr := map[string]string{}
+		if ext.OrigLink != "" {
+			if rl, dl, label, manual := s.computeTwinLinks(ext.OrigLink, l.Landing, l.CertDomain, &l, rc, ext.OrigLinkName); manual == "" {
+				links = []labelledLink{{Label: label, Link: rl}, {Label: "直连", Link: dl}}
+				qr = linksQR(links)
+			}
+		}
+		if links == nil {
+			links = []labelledLink{}
+		}
 		lt := s.traffic.get(l.Landing)
 		used := trafficUsed(lt, ext.TrafficLimitMode)
 		pct := 0.0
@@ -297,12 +311,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			subnodes = []SubNode{}
 		}
 		landings = append(landings, map[string]any{
-			"index": l.Index, "landing": l.Landing, "domain": l.Domain, "cert_domain": l.CertDomain,
-			"preset": l.Preset, "mode_note": l.ModeNote, "mode": l.Mode, "ports": l.Ports,
+			"index": l.Index, "landing": l.Landing, "name": l.displayName(), "domain": l.Domain, "cert_domain": l.CertDomain,
+			"preset": l.Preset, "sb_mode": deriveSBMode(l), "custom_ports": portsToCustomString(l.Ports), "want_udp": hasUDPPorts(l.Ports),
+			"mode_note": l.ModeNote, "mode": l.Mode, "ports": l.Ports,
 			"online": online, "latency_ms": latencyMs,
 			"latency_error": latErr, "latency_checked_at": latCheckedAt, "latency_target": latTarget,
 			"cert_days_left": ci.DaysLeft, "cert_expiry": ci.Expiry, "renew_mode": renewMode,
 			"expiry": ext.Expiry, "days_left": daysLeft,
+			"orig_link": ext.OrigLink, "orig_link_name": ext.OrigLinkName, "links": links, "qr": qr,
+			"speed_limit_mbps": ext.SpeedLimitMbps,
 			"traffic": map[string]any{
 				"today_up": dayUp(lt), "today_down": dayDown(lt),
 				"month_up": lt.UpMonth, "month_down": lt.DownMonth,
@@ -446,72 +463,107 @@ func shareOptions(c80, c443 bool) []map[string]string {
 
 // ---------- 添加落地 ----------
 
-func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Landing           string         `json:"landing"`
-		Preset            string         `json:"preset"`
-		SBMode            string         `json:"sb_mode"`
-		CustomPorts       string         `json:"custom_ports"`
-		WantUDP           bool           `json:"want_udp"`
-		CertDomain        string         `json:"cert_domain"`
-		DurationDays      int            `json:"duration_days"`
-		TrafficLimitBytes int64          `json:"traffic_limit_bytes"`
-		TrafficLimitMode  string         `json:"traffic_limit_mode"`
-		SpeedLimitMbps    int            `json:"speed_limit_mbps"`
-		ShareMode         string         `json:"share_mode"`
-		ListenOverrides   map[string]int `json:"listen_overrides"`
-		Mode              string         `json:"mode"`
-		RelayAddr         string         `json:"relay_addr"`
-		DoorPortOverrides map[string]int `json:"door_port_overrides"`
+// addLandingReq 添加/编辑落地的请求体（两者字段一致：编辑是全量替换，
+// 表单预填当前值）。DurationDays：0=永久，>0=从现在起 N 天后到期，
+// -1=保持不变（仅编辑时用，添加落地不发 -1）。
+type addLandingReq struct {
+	Landing           string         `json:"landing"`
+	Preset            string         `json:"preset"`
+	SBMode            string         `json:"sb_mode"`
+	CustomPorts       string         `json:"custom_ports"`
+	WantUDP           bool           `json:"want_udp"`
+	CertDomain        string         `json:"cert_domain"`
+	DurationDays      int            `json:"duration_days"`
+	TrafficLimitBytes int64          `json:"traffic_limit_bytes"`
+	TrafficLimitMode  string         `json:"traffic_limit_mode"`
+	SpeedLimitMbps    int            `json:"speed_limit_mbps"`
+	ShareMode         string         `json:"share_mode"`
+	ListenOverrides   map[string]int `json:"listen_overrides"`
+	Mode              string         `json:"mode"`
+	RelayAddr         string         `json:"relay_addr"`
+	DoorPortOverrides map[string]int `json:"door_port_overrides"`
+	// OrigLink 原始节点链接（选填）：存面板 state，用来拼中转+直连链接；
+	// 不传给安装脚本、不进日志与审计。Name 显示名（选填，默认=落地地址）。
+	OrigLink string `json:"orig_link"`
+	Name     string `json:"name"`
+	// LinkName 生成 twin 链接时用的节点名称（选填）：直连备注是
+	// “<名称>-直连”、中转备注是“<名称>-中转”；空着用原始链接自己的备注名。
+	LinkName string `json:"link_name"`
+}
+
+// validateLandingReqFields 添加/编辑落地共用的服务端二次校验，
+// 返回错误文案，空串=通过。
+func validateLandingReqFields(req addLandingReq) string {
+	if !validIPOrDomain(req.Landing) {
+		return "落地地址不对：填 IP 或域名"
 	}
+	if req.Preset != "1" && req.Preset != "2" && req.Preset != "3" {
+		return "预设只能是 1/2/3"
+	}
+	if req.Preset == "2" && req.SBMode != "" && req.SBMode != "1" && req.SBMode != "2" {
+		return "sing-box 模式只能是 1（TLS）或 2（明文）"
+	}
+	if req.Preset == "3" {
+		if _, err := parseCustomPorts(req.CustomPorts, req.WantUDP); err != nil {
+			return err.Error()
+		}
+	}
+	if req.CertDomain != "" && !validDomain(req.CertDomain) {
+		return "证书域名格式不对"
+	}
+	if req.TrafficLimitMode != "" && req.TrafficLimitMode != "total" && req.TrafficLimitMode != "monthly" {
+		return "流量限制模式只能是 total 或 monthly"
+	}
+	if req.TrafficLimitBytes < 0 || req.SpeedLimitMbps < 0 || req.DurationDays < -1 {
+		return "数值不能为负"
+	}
+	if req.ShareMode != "" && req.ShareMode != "1" && req.ShareMode != "2" && req.ShareMode != "3" && req.ShareMode != "4" {
+		return "分流方式只能是 1/2/3/4"
+	}
+	if req.Mode != "" && req.Mode != "standard" && req.Mode != "door" {
+		return "模式只能是 standard（标准模式）或 door（任意门模式）"
+	}
+	if req.RelayAddr != "" && !validIPOrDomain(req.RelayAddr) {
+		return "中转地址不对：填 IP 或域名"
+	}
+	for k, v := range req.DoorPortOverrides {
+		rp, err := strconv.Atoi(strings.TrimSpace(k))
+		if err != nil || !validPort(rp) || !validPort(v) {
+			return "转发端口覆盖格式不对：键和值都须是 1-65535 的端口，如 {\"443\": 30443}"
+		}
+	}
+	for k, v := range req.ListenOverrides {
+		rp, err := strconv.Atoi(strings.TrimSpace(k))
+		if err != nil || !validPort(rp) || !validPort(v) {
+			return "监听端口覆盖格式不对：键和值都须是 1-65535 的端口，如 {\"443\": 10443}"
+		}
+	}
+	if req.OrigLink != "" {
+		if _, err := parseNodeLink(req.OrigLink); err != nil {
+			return "原始节点链接不对：" + err.Error()
+		}
+	}
+	if req.Name != "" && (len(req.Name) > 64 || strings.ContainsAny(req.Name, "\"\n\r")) {
+		return "名称太长或含有非法字符（不能超过 64 字，不能含引号与换行）"
+	}
+	if req.LinkName != "" && (len(req.LinkName) > 64 || strings.ContainsAny(req.LinkName, "\n\r")) {
+		return "节点名称太长或含有非法字符（不能超过 64 字，不能含换行）"
+	}
+	return ""
+}
+
+func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
+	var req addLandingReq
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, 400, errResp("请求格式不对"))
 		return
 	}
-	if !validIPOrDomain(req.Landing) {
-		writeJSON(w, 400, errResp("落地地址不对：填 IP 或域名"))
-		return
-	}
-	if req.Preset != "1" && req.Preset != "2" && req.Preset != "3" {
-		writeJSON(w, 400, errResp("预设只能是 1/2/3"))
-		return
-	}
-	if req.Preset == "2" && req.SBMode != "" && req.SBMode != "1" && req.SBMode != "2" {
-		writeJSON(w, 400, errResp("sing-box 模式只能是 1（TLS）或 2（明文）"))
-		return
-	}
-	if req.Preset == "3" {
-		if _, err := parseCustomPorts(req.CustomPorts, req.WantUDP); err != nil {
-			writeJSON(w, 400, errResp(err.Error()))
-			return
-		}
-	}
-	if req.CertDomain != "" && !validDomain(req.CertDomain) {
-		writeJSON(w, 400, errResp("证书域名格式不对"))
-		return
-	}
-	if req.TrafficLimitMode != "" && req.TrafficLimitMode != "total" && req.TrafficLimitMode != "monthly" {
-		writeJSON(w, 400, errResp("流量限制模式只能是 total 或 monthly"))
-		return
-	}
-	if req.TrafficLimitBytes < 0 || req.SpeedLimitMbps < 0 || req.DurationDays < 0 {
-		writeJSON(w, 400, errResp("数值不能为负"))
-		return
-	}
-	if req.ShareMode != "" && req.ShareMode != "1" && req.ShareMode != "2" && req.ShareMode != "3" && req.ShareMode != "4" {
-		writeJSON(w, 400, errResp("分流方式只能是 1/2/3/4"))
-		return
-	}
-	if req.Mode != "" && req.Mode != "standard" && req.Mode != "door" {
-		writeJSON(w, 400, errResp("模式只能是 standard（标准模式）或 door（任意门模式）"))
+	if msg := validateLandingReqFields(req); msg != "" {
+		writeJSON(w, 400, errResp(msg))
 		return
 	}
 	if req.Mode == "" {
 		req.Mode = "standard"
-	}
-	if req.RelayAddr != "" && !validIPOrDomain(req.RelayAddr) {
-		writeJSON(w, 400, errResp("中转地址不对：填 IP 或域名"))
-		return
 	}
 	// door_port_overrides：键是落地端口、值是转发端口，统一归一化成 map[int]int。
 	doorOverridesReq := map[int]int{}
@@ -630,6 +682,8 @@ func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
 	ext.TrafficLimitBytes = req.TrafficLimitBytes
 	ext.TrafficLimitMode = req.TrafficLimitMode
 	ext.SpeedLimitMbps = req.SpeedLimitMbps
+	ext.OrigLink = req.OrigLink
+	ext.OrigLinkName = req.LinkName
 	s.stateMu.Unlock()
 	_ = s.saveState()
 	// 跑 --nodes 生成链接（失败不阻塞）
@@ -639,15 +693,61 @@ func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
 	if b, err := os.ReadFile(s.nodesFilePath()); err == nil {
 		groups = parseNodesTxt(b)
 	}
-	// 找新落地的分组（最后一个匹配该 landing 的）
+	// 找新落地的分组（最后一个匹配该 landing 的）与编号
 	var links []labelledLink
 	landingIndex := 0
-	if rc2, _, err := s.readRelayConf(); err == nil {
+	var newLanding *Landing
+	var rc2 *RelayConf
+	if rc2x, _, err := s.readRelayConf(); err == nil {
+		rc2 = rc2x
 		landingIndex = len(rc2.Landings)
+		for i := range rc2.Landings {
+			if rc2.Landings[i].Landing == req.Landing {
+				newLanding = &rc2.Landings[i]
+				landingIndex = rc2.Landings[i].Index
+			}
+		}
 		for _, g := range groups {
 			if g.Landing == req.Landing {
 				links = g.Links
 				landingIndex = g.LandingIndex
+			}
+		}
+	}
+	// 名称写进 relay.conf（NAME[_N]，只改显示，不动转发）
+	if req.Name != "" && newLanding != nil {
+		suffix := ""
+		if newLanding.Index != 1 {
+			suffix = "_" + strconv.Itoa(newLanding.Index)
+		}
+		if rc2 != nil {
+			lines := setRelayConfValue(rc2.Lines, "NAME"+suffix, req.Name)
+			_ = s.writeRelayConfAtomic([]byte(strings.Join(lines, "\n") + "\n"))
+		}
+	}
+	// 存了原始链接：现场算中转+直连链接，写进 nodes.txt（显式传落地真实编号，
+	// 不用最大编号+1，避免 1.2.1 已知的撞号问题），卡片上直接出链接。
+	manualNote := ""
+	if req.OrigLink != "" && newLanding != nil {
+		landingIP := req.Landing
+		if !isIP(landingIP) {
+			if ips, err := net.LookupIP(landingIP); err == nil && len(ips) > 0 {
+				landingIP = ips[0].String()
+			}
+		}
+		sni := req.CertDomain
+		if sni == "" {
+			if pl, err := parseNodeLink(req.OrigLink); err == nil {
+				sni = pl.SNI
+			}
+		}
+		rl, dl, label, manual := s.computeTwinLinks(req.OrigLink, landingIP, sni, newLanding, rc2, req.LinkName)
+		if manual != "" {
+			manualNote = manual
+		} else {
+			links = []labelledLink{{Label: label, Link: rl}, {Label: "直连", Link: dl}}
+			if err := upsertLandingLinks(s.nodesFilePath(), landingIP, req.Landing, landingIndex, label, rl, dl); err != nil {
+				manualNote = fmt.Sprintf("链接已生成，但写历史失败：%v", err)
 			}
 		}
 	}
@@ -673,7 +773,614 @@ func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.audit(user, "添加落地", req.Landing, "成功", "")
-	writeJSON(w, 200, okResp(map[string]any{"landing_index": landingIndex, "links": links, "qr": qr, "door_note": doorNote}))
+	resp := map[string]any{"landing_index": landingIndex, "links": links, "qr": qr, "door_note": doorNote}
+	if manualNote != "" {
+		resp["manual"] = manualNote
+	}
+	writeJSON(w, 200, okResp(resp))
+}
+
+// ---------- 补粘贴原始链接 ----------
+
+// handleSetOrigLink 给已加的落地补粘贴原始节点链接（卡片上的
+// “粘贴原始链接生成中转链接”入口与管理页共用）：存 state、现场算链接、
+// 写进 nodes.txt（显式传落地真实编号），卡片上直接出中转链接。
+// 原始链接只存 state.json（600），不进日志与审计。
+func (s *Server) handleSetOrigLink(w http.ResponseWriter, r *http.Request) {
+	index, err := pathIndex(r)
+	if err != nil {
+		writeJSON(w, 400, errResp("落地编号不对"))
+		return
+	}
+	l, rc, err := s.landingByIndex(index)
+	if err != nil {
+		writeJSON(w, 404, errResp(err.Error()))
+		return
+	}
+	var req struct {
+		OrigLink string `json:"orig_link"`
+		LinkName string `json:"link_name"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	req.OrigLink = strings.TrimSpace(req.OrigLink)
+	req.LinkName = strings.TrimSpace(req.LinkName)
+	if req.LinkName != "" && (len(req.LinkName) > 64 || strings.ContainsAny(req.LinkName, "\n\r")) {
+		writeJSON(w, 400, errResp("节点名称太长或含有非法字符（不能超过 64 字，不能含换行）"))
+		return
+	}
+	if req.OrigLink == "" {
+		writeJSON(w, 400, errResp("原始节点链接不能为空"))
+		return
+	}
+	if _, err := parseNodeLink(req.OrigLink); err != nil {
+		writeJSON(w, 400, errResp("原始节点链接不对："+err.Error()))
+		return
+	}
+	if !s.tryOpLock(w) {
+		return
+	}
+	defer s.opMu.Unlock()
+	user := s.currentUser(r)
+	s.stateMu.Lock()
+	s.state.ext(l.Landing).OrigLink = req.OrigLink
+	s.state.ext(l.Landing).OrigLinkName = req.LinkName
+	s.stateMu.Unlock()
+	_ = s.saveState()
+	landingIP := l.Landing
+	if !isIP(landingIP) {
+		if ips, err := net.LookupIP(landingIP); err == nil && len(ips) > 0 {
+			landingIP = ips[0].String()
+		}
+	}
+	sni := l.CertDomain
+	if sni == "" {
+		if pl, err := parseNodeLink(req.OrigLink); err == nil {
+			sni = pl.SNI
+		}
+	}
+	rl, dl, label, manual := s.computeTwinLinks(req.OrigLink, landingIP, sni, l, rc, req.LinkName)
+	if manual != "" {
+		// 链接已存下（以后模式/地址改了能重算），这次只是生成失败：照实返回原因
+		writeJSON(w, 200, map[string]any{"ok": true, "relay_link": rl, "direct_link": dl, "manual": manual, "relay_label": label})
+		return
+	}
+	links := []labelledLink{{Label: label, Link: rl}, {Label: "直连", Link: dl}}
+	persistErr := ""
+	if err := upsertLandingLinks(s.nodesFilePath(), landingIP, l.Landing, index, label, rl, dl); err != nil {
+		persistErr = fmt.Sprintf("历史记录保存失败：%v", err)
+	}
+	s.audit(user, "补粘贴原始链接", fmt.Sprintf("落地 %d（%s）", index, l.displayName()), "成功", "")
+	resp := okResp(map[string]any{"links": links, "qr": linksQR(links), "relay_label": label})
+	if persistErr != "" {
+		resp["persist_error"] = persistErr
+	}
+	writeJSON(w, 200, resp)
+}
+
+// ---------- 编辑落地 ----------
+
+func boolTo01(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
+}
+
+func boolToOnOff(b bool) string {
+	if b {
+		return "开"
+	}
+	return "关"
+}
+
+// appendEndpointsForLanding 把一个落地的 endpoints 段追加到 config.toml 文本后
+// （分流走的端口不写进 realm：80 归 nginx、443 归 haproxy）。
+func appendEndpointsForLanding(tomlData []byte, l Landing, share80, share443 bool) []byte {
+	var add strings.Builder
+	for _, p := range l.Ports {
+		if p.Proto == "tcp" && p.Listen == 80 && share80 {
+			continue
+		}
+		if p.Proto == "tcp" && p.Listen == 443 && share443 {
+			continue
+		}
+		add.WriteString(fmt.Sprintf("\n[[endpoints]]\nlisten = \"0.0.0.0:%d\"\nremote = \"%s:%d\"\n", p.Listen, l.Landing, p.Remote))
+	}
+	return append(append([]byte{}, tomlData...), []byte(add.String())...)
+}
+
+// rebuildRelayConfForEdit 编辑后重建 relay.conf 行：只改目标落地那几行
+// （地址、预设、模式、端口、证书域名、名称），其余行原样保留；
+// ALL_PORTS 按全部落地重算；SHARE80/SHARE443 按 newShare 落盘；
+// RELAY_ADDR 只在任意门模式给了新值时才改。
+func rebuildRelayConfForEdit(rc *RelayConf, index int, nl Landing, newShare80, newShare443 bool, relayAddr string) []string {
+	suffix := ""
+	if index != 1 {
+		suffix = "_" + strconv.Itoa(index)
+	}
+	lines := rc.Lines
+	set := func(key, value string) { lines = setRelayConfValue(lines, key, value) }
+	set("LANDING"+suffix, nl.Landing)
+	if !isIP(nl.Landing) {
+		set("LANDING_IS_DOMAIN"+suffix, "1")
+		set("DOMAIN"+suffix, nl.Landing)
+	} else {
+		set("LANDING_IS_DOMAIN"+suffix, "0")
+		set("DOMAIN"+suffix, "")
+	}
+	set("CERT_DOMAIN"+suffix, nl.CertDomain)
+	set("PRESET"+suffix, nl.Preset)
+	set("MODE_NOTE"+suffix, nl.ModeNote)
+	if nl.Mode == "door" {
+		set("MODE"+suffix, "door")
+	} else {
+		lines = removeRelayConfValue(lines, "MODE"+suffix)
+	}
+	set("PORTS"+suffix, portsToSpecString(nl.Ports))
+	// 名称只改显示；等于落地地址或空着就不存 NAME 键，显示时回落到地址
+	if nl.Name != "" && nl.Name != nl.Landing {
+		set("NAME"+suffix, nl.Name)
+	} else {
+		lines = removeRelayConfValue(lines, "NAME"+suffix)
+	}
+	if relayAddr != "" {
+		set("RELAY_ADDR", relayAddr)
+	}
+	set("SHARE80", boolTo01(newShare80))
+	set("SHARE443", boolTo01(newShare443))
+	// ALL_PORTS 重算（其余落地的端口不变，只把本落地换成新的）
+	var all []string
+	seen := map[string]bool{}
+	for _, l := range rc.Landings {
+		ports := l.PortsRaw
+		if l.Index == index {
+			ports = portsToSpecString(nl.Ports)
+		}
+		for _, spec := range strings.Fields(ports) {
+			if !seen[spec] {
+				seen[spec] = true
+				all = append(all, spec)
+			}
+		}
+	}
+	lines = removeRelayConfValue(lines, "ALL_PORTS")
+	lines = append(lines, `ALL_PORTS="`+strings.Join(all, " ")+`"`)
+	return lines
+}
+
+// regenShareConfigs 编辑后重建分流配置：
+// 仍开着的分流跑 proxy.sh --regen-80/--regen-443（按新 relay.conf 重生成配置并重载）；
+// 刚关掉的分流清掉旧配置、释放端口，让 realm 能重新监听。
+// proxy.sh 不在时直接返回 nil（测试环境）。失败返回错误说明，由调用方回滚。
+func (s *Server) regenShareConfigs(oldShare80, oldShare443, newShare80, newShare443 bool) error {
+	proxy := filepath.Join(s.env.KitDir, "proxy.sh")
+	if _, err := os.Stat(proxy); err != nil {
+		return nil
+	}
+	env := []string{"REALM_DIR=" + s.env.RealmDir}
+	if newShare80 {
+		if _, err := s.runScript("proxy.sh", 60*time.Second, env, "--regen-80"); err != nil {
+			return fmt.Errorf("80 分流配置重生成失败：%v", err)
+		}
+	} else if oldShare80 {
+		// 80 分流刚关：删掉 relay-80.conf，重载 nginx 释放 80
+		_ = os.Remove("/etc/nginx/conf.d/relay-80.conf")
+		if err := runCmd(nil, 10*time.Second, "nginx", "-t"); err == nil {
+			_ = runCmd(nil, 10*time.Second, "systemctl", "reload", "nginx")
+		}
+	}
+	if newShare443 {
+		if _, err := s.runScript("proxy.sh", 60*time.Second, env, "--regen-443"); err != nil {
+			return fmt.Errorf("443 分流配置重生成失败：%v", err)
+		}
+	} else if oldShare443 {
+		// 443 分流刚关：haproxy 整个配置都是 relay-node 生成的，停掉它释放 443
+		_ = runCmd(nil, 10*time.Second, "systemctl", "stop", "haproxy")
+		_ = runCmd(nil, 10*time.Second, "pkill", "-x", "haproxy")
+	}
+	return nil
+}
+
+func (s *Server) handleUpdateLanding(w http.ResponseWriter, r *http.Request) {
+	index, err := pathIndex(r)
+	if err != nil {
+		writeJSON(w, 400, errResp("落地编号不对"))
+		return
+	}
+	old, rc, err := s.landingByIndex(index)
+	if err != nil {
+		writeJSON(w, 404, errResp(err.Error()))
+		return
+	}
+	var req addLandingReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	if msg := validateLandingReqFields(req); msg != "" {
+		writeJSON(w, 400, errResp(msg))
+		return
+	}
+	if req.Mode == "" {
+		req.Mode = "standard"
+	}
+	// 地址不能撞上别的落地（否则扩展状态与 twin 分组都会认错落地）
+	for _, l := range rc.Landings {
+		if l.Index != index && l.Landing == req.Landing {
+			writeJSON(w, 400, errResp("该落地地址已存在：先改掉另一个落地的地址"))
+			return
+		}
+	}
+	// ---- 算新端口（与添加落地同一套规则，但排除自己旧端口）----
+	ports := presetPorts(req.Preset, req.SBMode, req.CustomPorts, req.WantUDP)
+	rcExcl := &RelayConf{Share80: rc.Share80, Share443: rc.Share443}
+	for _, l := range rc.Landings {
+		if l.Index != index {
+			rcExcl.Landings = append(rcExcl.Landings, l)
+		}
+	}
+	ignoreSelf := map[string]bool{}
+	for _, p := range old.Ports {
+		ignoreSelf[fmt.Sprintf("%s:%d", p.Proto, p.Listen)] = true
+	}
+	doorNote := ""
+	if req.Mode == "door" {
+		ports = doorMapPorts(ports)
+		if len(req.DoorPortOverrides) > 0 {
+			ov := map[int]int{}
+			for k, v := range req.DoorPortOverrides {
+				rp, _ := strconv.Atoi(strings.TrimSpace(k))
+				ov[rp] = v
+			}
+			ports = applyDoorPortOverrides(ports, ov)
+			if conflicts, _, _ := s.checkPortConflictsExcluding(ports, rcExcl, ignoreSelf); len(conflicts) > 0 {
+				writeJSON(w, 400, errResp("端口已被占用："+strings.Join(conflicts, ", ")+"。改一下转发端口覆盖再提交。"))
+				return
+			}
+		} else if newPorts, bumps, err := s.bumpDoorPortsExcluding(ports, rcExcl, ignoreSelf); err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		} else {
+			ports = newPorts
+			if len(bumps) > 0 {
+				var notes []string
+				for _, b := range bumps {
+					notes = append(notes, fmt.Sprintf("转发端口 %d 已被占用，已改用 %d", b.Old, b.New))
+				}
+				doorNote = strings.Join(notes, "；")
+			}
+		}
+	} else {
+		if len(req.ListenOverrides) > 0 {
+			for k, v := range req.ListenOverrides {
+				rp, _ := strconv.Atoi(strings.TrimSpace(k))
+				for i := range ports {
+					if ports[i].Listen == rp {
+						ports[i].Listen = v
+					}
+				}
+			}
+		}
+		conflicts, realm80, realm443 := s.checkPortConflictsExcluding(ports, rcExcl, ignoreSelf)
+		if len(conflicts) > 0 && req.ShareMode == "" {
+			if realm80 || realm443 {
+				writeJSON(w, 200, map[string]any{"ok": false, "need_choice": true,
+					"conflicts":           conflicts,
+					"conflict_with_realm": map[string]bool{"80": realm80, "443": realm443},
+					"options":             shareOptions(realm80, realm443)})
+				return
+			}
+			writeJSON(w, 400, errResp("端口已被占用："+strings.Join(conflicts, ", ")+"。先停掉占端口的程序，或用 listen_overrides 改监听端口。"))
+			return
+		}
+		if req.ShareMode != "" {
+			// 分流方式只解决 80/443 的冲突，其余端口冲突仍要拒绝
+			var rest []string
+			for _, c := range conflicts {
+				if (req.ShareMode == "2" || req.ShareMode == "4") && c == "80/tcp" {
+					continue
+				}
+				if (req.ShareMode == "3" || req.ShareMode == "4") && c == "443/tcp" {
+					continue
+				}
+				rest = append(rest, c)
+			}
+			if len(rest) > 0 {
+				writeJSON(w, 400, errResp("端口已被占用："+strings.Join(rest, ", ")+"。分流只能解决 80/443 的冲突，其余端口请改监听端口。"))
+				return
+			}
+			if req.ShareMode == "1" && len(conflicts) > 0 {
+				writeJSON(w, 400, errResp("端口已被占用："+strings.Join(conflicts, ", ")+"。方式 1 需要填高位监听端口覆盖。"))
+				return
+			}
+		}
+	}
+	// ---- 新落地字段 ----
+	isDomain := !isIP(req.Landing)
+	domain := ""
+	if isDomain {
+		domain = req.Landing
+	}
+	certDomain := req.CertDomain
+	if certDomain == "" {
+		if isDomain {
+			certDomain = req.Landing
+		} else {
+			certDomain = old.CertDomain
+		}
+	}
+	newPortsStr := portsToSpecString(ports)
+	newLanding := Landing{Index: index, Landing: req.Landing, Domain: domain, CertDomain: certDomain, Preset: req.Preset, ModeNote: modeNoteFor(req.Preset, req.SBMode, req.Mode == "door"), Mode: req.Mode, Ports: ports, PortsRaw: newPortsStr, Name: req.Name}
+	// 分流开关：显式选 2/3/4 就开对应项；否则沿用旧开关，但没落地再用 80/443 就关掉
+	newShare80, newShare443 := rc.Share80, rc.Share443
+	if req.ShareMode == "2" || req.ShareMode == "4" {
+		newShare80 = true
+	}
+	if req.ShareMode == "3" || req.ShareMode == "4" {
+		newShare443 = true
+	}
+	has80, has443 := false, false
+	for _, l := range rc.Landings {
+		pl := l.Ports
+		if l.Index == index {
+			pl = ports
+		}
+		for _, p := range pl {
+			if p.Proto == "tcp" && p.Listen == 80 && p.Remote == 80 {
+				has80 = true
+			}
+			if p.Proto == "tcp" && p.Listen == 443 && p.Remote == 443 {
+				has443 = true
+			}
+		}
+	}
+	if !has80 {
+		newShare80 = false
+	}
+	if !has443 {
+		newShare443 = false
+	}
+	relayAddrForConf := ""
+	if req.Mode == "door" && req.RelayAddr != "" && req.RelayAddr != rc.RelayAddr {
+		relayAddrForConf = req.RelayAddr
+	}
+	needsRestart := old.Landing != req.Landing || old.PortsRaw != newPortsStr || old.Mode != req.Mode ||
+		old.CertDomain != certDomain || old.Preset != req.Preset || relayAddrForConf != "" ||
+		newShare80 != rc.Share80 || newShare443 != rc.Share443
+	// ---- 审计用的改动清单（不含原始链接本身，只记“已更新/已清空”）----
+	var changes []string
+	if old.Landing != req.Landing {
+		changes = append(changes, fmt.Sprintf("地址：%s→%s", old.Landing, req.Landing))
+	}
+	if old.PortsRaw != newPortsStr {
+		changes = append(changes, fmt.Sprintf("端口：%s→%s", old.PortsRaw, newPortsStr))
+	}
+	if old.Mode != req.Mode {
+		changes = append(changes, fmt.Sprintf("模式：%s→%s", old.Mode, req.Mode))
+	}
+	if old.CertDomain != certDomain {
+		changes = append(changes, fmt.Sprintf("证书域名：%s→%s", old.CertDomain, certDomain))
+	}
+	if old.displayName() != newLanding.displayName() {
+		changes = append(changes, fmt.Sprintf("名称：%s→%s", old.displayName(), newLanding.displayName()))
+	}
+	if relayAddrForConf != "" {
+		changes = append(changes, fmt.Sprintf("中转地址：%s→%s", rc.RelayAddr, relayAddrForConf))
+	}
+	if newShare80 != rc.Share80 {
+		changes = append(changes, "80 分流："+boolToOnOff(rc.Share80)+"→"+boolToOnOff(newShare80))
+	}
+	if newShare443 != rc.Share443 {
+		changes = append(changes, "443 分流："+boolToOnOff(rc.Share443)+"→"+boolToOnOff(newShare443))
+	}
+	if !s.tryOpLock(w) {
+		return
+	}
+	defer s.opMu.Unlock()
+	user := s.currentUser(r)
+	if _, err := s.backupNow("编辑落地前自动备份", "realm"); err != nil {
+		writeJSON(w, 500, errResp("备份失败，操作已取消："+err.Error()))
+		return
+	}
+	// 旧扩展状态（改地址前先取出来，写完再决定迁不迁移）
+	s.stateMu.Lock()
+	oldExt := *s.state.ext(old.Landing)
+	s.stateMu.Unlock()
+	// 1. relay.conf + config.toml（原子写，失败回滚）
+	newConfLines := rebuildRelayConfForEdit(rc, index, newLanding, newShare80, newShare443, relayAddrForConf)
+	newConf := []byte(strings.Join(newConfLines, "\n") + "\n")
+	oldConf := []byte(strings.Join(rc.Lines, "\n"))
+	tomlData, _ := s.readConfigToml()
+	oldToml := tomlData
+	var newToml []byte
+	if needsRestart {
+		newToml = removeEndpointsFromToml(tomlData, old.Landing)
+		newToml = appendEndpointsForLanding(newToml, newLanding, newShare80, newShare443)
+		// realm 无 endpoint 会 panic：留占位
+		if !strings.Contains(string(newToml), "[[endpoints]]") {
+			newToml = append(newToml, []byte("\n[[endpoints]]\nlisten = \"127.0.0.1:9\"\nremote = \"127.0.0.1:9\"\n")...)
+		}
+		if err := s.writeConfigTomlAtomic(newToml); err != nil {
+			writeJSON(w, 500, errResp("写 config.toml 失败："+err.Error()))
+			return
+		}
+	}
+	if err := s.writeRelayConfAtomic(newConf); err != nil {
+		if needsRestart {
+			_ = s.writeConfigTomlAtomic(oldToml)
+		}
+		writeJSON(w, 500, errResp("写 relay.conf 失败，已回滚："+err.Error()))
+		return
+	}
+	rollback := func() {
+		if needsRestart {
+			_ = s.writeConfigTomlAtomic(oldToml)
+		}
+		_ = s.writeRelayConfAtomic(oldConf)
+		_ = s.regenShareConfigs(newShare80, newShare443, rc.Share80, rc.Share443)
+		_ = s.restartRealm()
+	}
+	// 2. 新开分流：跑 proxy.sh --enable-share*（装组件、写配置、挪端口、重启 realm）
+	if needsRestart && ((newShare80 && !rc.Share80) || (newShare443 && !rc.Share443)) {
+		env := []string{"REALM_DIR=" + s.env.RealmDir}
+		if newShare80 && !rc.Share80 {
+			if res, err := s.runScript("proxy.sh", 120*time.Second, env, "--enable-share80"); err != nil {
+				rollback()
+				writeJSON(w, 500, errResp("开 80 分流失败，已回滚："+sanitize(lastLines(res.Stdout+res.Stderr, 5))))
+				return
+			}
+		}
+		if newShare443 && !rc.Share443 {
+			if res, err := s.runScript("proxy.sh", 120*time.Second, env, "--enable-share443"); err != nil {
+				rollback()
+				writeJSON(w, 500, errResp("开 443 分流失败，已回滚："+sanitize(lastLines(res.Stdout+res.Stderr, 5))))
+				return
+			}
+		}
+	}
+	// 3. 分流配置重生成（仍开着的重生成，刚关的清配置放端口）+ 重启 realm + 验端口
+	if needsRestart {
+		if err := s.regenShareConfigs(rc.Share80, rc.Share443, newShare80, newShare443); err != nil {
+			rollback()
+			writeJSON(w, 500, errResp("分流配置重生成失败，已回滚："+err.Error()))
+			return
+		}
+		if err := s.restartRealm(); err != nil {
+			rollback()
+			writeJSON(w, 500, errResp("重启 realm 失败，已回滚："+err.Error()))
+			return
+		}
+		if err := verifyPorts(newLanding.Ports); err != nil {
+			// 端口没起来只警告：配置已生效，可能是落地机本身不通，不回滚
+			doorNote = appendNote(doorNote, "注意："+err.Error())
+		}
+	}
+	// 4. 扩展状态：改地址时旧键整体迁移到新键（到期、流量限制、限速、子节点、原始链接全在里面），不能丢
+	s.stateMu.Lock()
+	ext := s.state.ext(old.Landing)
+	if req.Landing != old.Landing {
+		if _, exists := s.state.Landings[req.Landing]; !exists {
+			s.state.Landings[req.Landing] = ext
+		}
+		delete(s.state.Landings, old.Landing)
+		ext = s.state.ext(req.Landing)
+		// 流量计数跟着地址走（累计、月度、采样基数一起搬）
+		s.traffic.rename(old.Landing, req.Landing)
+		// 延迟探测结果跟新地址走：旧探测目标的结果删掉，下一轮重探；
+		// 证书提醒日期也跟着新地址走，避免重复提醒
+		s.latency.remove(latencyStoreKey(*old))
+		s.latencyMu.Lock()
+		delete(s.latencyAlerts, latencyStoreKey(*old))
+		s.latencyMu.Unlock()
+		if d, ok := s.certAlertDay[old.Landing]; ok {
+			s.certAlertDay[req.Landing] = d
+			delete(s.certAlertDay, old.Landing)
+		}
+	}
+	if req.DurationDays > 0 {
+		ext.Expiry = time.Now().Add(time.Duration(req.DurationDays) * 24 * time.Hour).UTC().Format(time.RFC3339)
+		changes = append(changes, fmt.Sprintf("有效期：从现在起 %d 天", req.DurationDays))
+	} else if req.DurationDays == 0 && oldExt.Expiry != "" {
+		ext.Expiry = ""
+		changes = append(changes, "有效期：改为永久")
+	}
+	gb := func(b int64) string {
+		if b <= 0 {
+			return "不限"
+		}
+		return fmt.Sprintf("%.0f GB", float64(b)/1073741824)
+	}
+	if ext.TrafficLimitBytes != req.TrafficLimitBytes || ext.TrafficLimitMode != req.TrafficLimitMode {
+		changes = append(changes, fmt.Sprintf("流量上限：%s→%s", gb(oldExt.TrafficLimitBytes), gb(req.TrafficLimitBytes)))
+	}
+	ext.TrafficLimitBytes = req.TrafficLimitBytes
+	ext.TrafficLimitMode = req.TrafficLimitMode
+	if ext.SpeedLimitMbps != req.SpeedLimitMbps {
+		changes = append(changes, fmt.Sprintf("限速：%d→%d Mbps", oldExt.SpeedLimitMbps, req.SpeedLimitMbps))
+	}
+	ext.SpeedLimitMbps = req.SpeedLimitMbps
+	if ext.OrigLink != req.OrigLink {
+		if req.OrigLink == "" {
+			changes = append(changes, "原始链接：已清空")
+		} else {
+			changes = append(changes, "原始链接：已更新")
+		}
+	}
+	if ext.OrigLinkName != req.LinkName {
+		if req.LinkName == "" {
+			changes = append(changes, "节点名称：已清空（改回用原始链接备注名）")
+		} else {
+			changes = append(changes, fmt.Sprintf("节点名称：%s", req.LinkName))
+		}
+	}
+	ext.OrigLink = req.OrigLink
+	ext.OrigLinkName = req.LinkName
+	s.stateMu.Unlock()
+	_ = s.saveState()
+	// 5. 流量链与限速重建（端口或限额变了才重建）
+	if needsRestart || ext.TrafficLimitBytes != oldExt.TrafficLimitBytes || ext.TrafficLimitMode != oldExt.TrafficLimitMode || ext.SpeedLimitMbps != oldExt.SpeedLimitMbps {
+		if rc2, _, err := s.readRelayConf(); err == nil {
+			_ = s.ensureTrafficChains(rc2.Landings)
+		}
+		if err := s.applySpeedLimit(newLanding, req.SpeedLimitMbps); err != nil {
+			doorNote = appendNote(doorNote, "限速未生效："+err.Error())
+		}
+	}
+	// 6. 原始链接还在：用新地址/端口重算链接，更新 nodes.txt；
+	//    地址变了先删旧分组，避免历史里同时出现新旧两个分组
+	var links []labelledLink
+	qr := map[string]string{}
+	if req.OrigLink != "" {
+		landingIP := req.Landing
+		if !isIP(landingIP) {
+			if ips, err := net.LookupIP(landingIP); err == nil && len(ips) > 0 {
+				landingIP = ips[0].String()
+			}
+		}
+		sni := certDomain
+		if sni == "" {
+			if pl, err := parseNodeLink(req.OrigLink); err == nil {
+				sni = pl.SNI
+			}
+		}
+		rc2, _, _ := s.readRelayConf()
+		rl, dl, label, manual := s.computeTwinLinks(req.OrigLink, landingIP, sni, &newLanding, rc2, req.LinkName)
+		if manual == "" {
+			links = []labelledLink{{Label: label, Link: rl}, {Label: "直连", Link: dl}}
+			qr = linksQR(links)
+			if req.Landing != old.Landing {
+				_ = removeLinksGroup(s.nodesFilePath(), old.Landing)
+			}
+			if err := upsertLandingLinks(s.nodesFilePath(), landingIP, req.Landing, index, label, rl, dl); err != nil {
+				doorNote = appendNote(doorNote, "历史记录保存失败："+err.Error())
+			}
+		} else {
+			doorNote = appendNote(doorNote, "链接生成失败："+manual)
+		}
+	} else if req.Landing != old.Landing {
+		// 地址变了、原始链接已清空：旧分组也删掉，别留着指向旧地址的链接
+		_ = removeLinksGroup(s.nodesFilePath(), old.Landing)
+	}
+	if len(changes) == 0 {
+		changes = append(changes, "无实质改动")
+	}
+	s.audit(user, "编辑落地", fmt.Sprintf("落地 %d（%s）", index, newLanding.displayName()), "成功", strings.Join(changes, "；"))
+	resp := okResp(map[string]any{"landing_index": index, "links": links, "qr": qr, "door_note": doorNote, "restarted": needsRestart})
+	writeJSON(w, 200, resp)
+}
+
+// appendNote 把一条提示拼到已有提示后面（空串时不留前导分号）。
+func appendNote(base, addition string) string {
+	if addition == "" {
+		return base
+	}
+	if base == "" {
+		return addition
+	}
+	return base + "；" + addition
 }
 
 func boolToYN(b bool) string {
@@ -701,6 +1408,14 @@ func presetPorts(preset, sbMode, customPorts string, wantUDP bool) []PortSpec {
 
 // checkPortConflicts 预检：返回冲突 "80/tcp" 列表 + 是否 80/443 被已装落地（config.toml）占用。
 func (s *Server) checkPortConflicts(ports []PortSpec, rc *RelayConf) ([]string, bool, bool) {
+	return s.checkPortConflictsExcluding(ports, rc, nil)
+}
+
+// checkPortConflictsExcluding 与 checkPortConflicts 同一套规则，多一个 ignore：
+// 键是 "协议:端口"（如 "tcp:443"），落在里面的端口不算冲突。
+// 编辑落地时用它排除被编辑落地自己的旧监听端口——realm 正监听着它们，
+// 重启后会释放重绑，不算真冲突；不排除的话只改个证书域名都会报端口冲突。
+func (s *Server) checkPortConflictsExcluding(ports []PortSpec, rc *RelayConf, ignore map[string]bool) ([]string, bool, bool) {
 	listening := listeningPorts()
 	inConfig := map[int]bool{}
 	if rc != nil {
@@ -726,6 +1441,9 @@ func (s *Server) checkPortConflicts(ports []PortSpec, rc *RelayConf) ([]string, 
 	for _, p := range ports {
 		key := fmt.Sprintf("%s:%d", p.Proto, p.Listen)
 		if skip[key] {
+			continue
+		}
+		if ignore[key] {
 			continue
 		}
 		if listening[key] || inConfig[p.Listen] {
@@ -791,7 +1509,15 @@ type doorBump struct {
 // 冲突的转发端口 +10000，还冲突再 +1000，直到空闲且不与本批其他 listen 撞；
 // 顺延后仍找不到空闲端口时返回错误。无冲突时返回原 ports 与空记录。
 func (s *Server) bumpDoorPorts(ports []PortSpec, rc *RelayConf) ([]PortSpec, []doorBump, error) {
-	conflicts, _, _ := s.checkPortConflicts(ports, rc)
+	return s.bumpDoorPortsExcluding(ports, rc, nil)
+}
+
+// bumpDoorPortsExcluding 与 bumpDoorPorts 同一套顺延逻辑，多一个 ignore
+// （"协议:端口"，如 "tcp:20443"）：落在里面的端口在找空闲候选时也算空闲。
+// 编辑落地时传被编辑落地自己的旧监听端口——realm 正监听着它们，
+// 重启后会释放，候选端口撞上它们不算真冲突。
+func (s *Server) bumpDoorPortsExcluding(ports []PortSpec, rc *RelayConf, ignore map[string]bool) ([]PortSpec, []doorBump, error) {
+	conflicts, _, _ := s.checkPortConflictsExcluding(ports, rc, ignore)
 	if len(conflicts) == 0 {
 		return ports, nil, nil
 	}
@@ -854,7 +1580,8 @@ func (s *Server) bumpDoorPorts(ports []PortSpec, rc *RelayConf) ([]PortSpec, []d
 			if free {
 				for _, i := range idxs {
 					ck := fmt.Sprintf("%s:%d", out[i].Proto, cand)
-					if listening[ck] || batch[ck] {
+					// ignore 里的端口是被编辑落地自己的旧监听，realm 重启后释放，算空闲
+					if (listening[ck] && !ignore[ck]) || batch[ck] {
 						free = false
 						break
 					}
@@ -1047,8 +1774,8 @@ func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Days int `json:"days"`
 	}
-	if err := decodeJSON(r, &req); err != nil || req.Days <= 0 {
-		writeJSON(w, 400, errResp("续期天数须大于 0"))
+	if err := decodeJSON(r, &req); err != nil || req.Days < 1 || req.Days > 3650 {
+		writeJSON(w, 400, errResp("续期天数须在 1–3650 天之间"))
 		return
 	}
 	l, _, err := s.landingByIndex(index)
@@ -1225,7 +1952,7 @@ func endpointsForLanding(data []byte, landing string) string {
 // rebuildRelayConfAfterDelete 删落地后重建 relay.conf：被删编号之后的前移一位，LANDING_COUNT-1。
 func rebuildRelayConfAfterDelete(rc *RelayConf, delIndex int) []string {
 	// 收集各落地字段
-	type lf struct{ landing, isDomain, domain, cert, preset, mode, doorMode, ports string }
+	type lf struct{ landing, isDomain, domain, cert, preset, mode, doorMode, ports, name string }
 	var list []lf
 	for _, l := range rc.Landings {
 		if l.Index == delIndex {
@@ -1236,7 +1963,7 @@ func rebuildRelayConfAfterDelete(rc *RelayConf, delIndex int) []string {
 			suffix = "_" + strconv.Itoa(l.Index)
 		}
 		get := func(f string) string { return rc.Raw[f+suffix] }
-		list = append(list, lf{get("LANDING"), get("LANDING_IS_DOMAIN"), get("DOMAIN"), get("CERT_DOMAIN"), get("PRESET"), get("MODE_NOTE"), get("MODE"), get("PORTS")})
+		list = append(list, lf{get("LANDING"), get("LANDING_IS_DOMAIN"), get("DOMAIN"), get("CERT_DOMAIN"), get("PRESET"), get("MODE_NOTE"), get("MODE"), get("PORTS"), get("NAME")})
 	}
 	// 保留非落地行
 	landingKeys := map[string]bool{}
@@ -1280,6 +2007,10 @@ func rebuildRelayConfAfterDelete(rc *RelayConf, delIndex int) []string {
 		// 不写的话删一个落地会把其余 door 落地的模式丢掉。
 		if f.doorMode != "" {
 			lines = append(lines, "MODE"+suffix+"="+f.doorMode)
+		}
+		// NAME 同理：只在非空时写回，删落地不丢其余落地的名称
+		if f.name != "" {
+			lines = append(lines, `NAME`+suffix+`="`+f.name+`"`)
 		}
 	}
 	lines = append(lines, fmt.Sprintf("LANDING_COUNT=%d", len(list)))
@@ -1544,16 +2275,24 @@ func (s *Server) handleLinks(w http.ResponseWriter, r *http.Request) {
 	if groups == nil {
 		groups = []linkGroup{}
 	}
-	// 每个分组标模式：按 landing_index 查 relay.conf，查不到默认标准模式。
+	// 每个分组标模式与名称：按 landing_index 查 relay.conf，查不到默认标准模式、
+	// 名称默认落地地址。手动 twin 分组（没登记）没有名称，用落地地址。
 	modeByIndex := map[int]string{}
+	nameByIndex := map[int]string{}
 	if rc, _, err := s.readRelayConf(); err == nil {
 		for _, l := range rc.Landings {
 			modeByIndex[l.Index] = l.Mode
+			nameByIndex[l.Index] = l.displayName()
 		}
 	}
 	for i := range groups {
 		if m, ok := modeByIndex[groups[i].LandingIndex]; ok && m != "" {
 			groups[i].Mode = m
+		}
+		if n, ok := nameByIndex[groups[i].LandingIndex]; ok && n != "" {
+			groups[i].Name = n
+		} else {
+			groups[i].Name = groups[i].Landing
 		}
 		// 没登记过的下标（如手动 twin 分组）保留 parseNodesTxt 按链接行推断的模式
 		groups[i].QR = map[string]string{}
@@ -1566,11 +2305,123 @@ func (s *Server) handleLinks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, okResp(map[string]any{"groups": groups}))
 }
 
+// handleDeleteLinksGroups 删除历史记录里的指定分组（只删 nodes.txt 里的
+// 历史，不动落地转发与节点本身）：POST /api/v1/links/delete，
+// body {indices:[...]}，indices 是 GET /api/v1/links 返回的分组在文件里的
+// 序号（0 起，按文件顺序，与 parseNodesTxt / splitNodesTxt 同序）。
+// 删完写审计日志一次。注意：之后再跑 install.sh --nodes 会把已登记落地的
+// 历史重新生成出来（--nodes 本来就会给登记过的落地补链接），手动 twin 分组
+// 删了就不再回来。
+func (s *Server) handleDeleteLinksGroups(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Indices []int `json:"indices"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	if len(req.Indices) == 0 {
+		writeJSON(w, 400, errResp("请先勾选要删除的历史记录"))
+		return
+	}
+	user := s.currentUser(r)
+	removed, landings, err := removeLinksGroups(s.nodesFilePath(), req.Indices)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	if removed == 0 {
+		writeJSON(w, 400, errResp("没有删掉任何记录：序号可能已过期，请刷新页面再试"))
+		return
+	}
+	s.audit(user, "删除历史记录", strings.Join(landings, "、"), "成功", fmt.Sprintf("删了 %d 组历史记录（只删历史，不影响落地转发与节点本身）", removed))
+	writeJSON(w, 200, okResp(map[string]any{"removed": removed}))
+}
+
+// computeTwinLinks 从一条原始节点链接算出中转+直连链接（twin/door 逻辑唯一入口，
+// 节点链接页、加落地、补粘贴、编辑后重算都走这里，不再各写一份）。
+// linkName 是节点名称（选填）：直连备注改成“<名称>-直连”，中转备注改成
+// “<名称>-中转”；空着就用原始链接自己的备注名；原始链接也没有备注名就不改名。
+// 返回 relayLink、directLink、relayLabel（"中转"或"任意门"）、manual
+// （空串=成功；非空=只能手动处理的原因，此时 relayLink/directLink 按下面规则回退）。
+func (s *Server) computeTwinLinks(origLink, landingIP, sni string, landing *Landing, rc *RelayConf, linkName string) (relayLink, directLink, relayLabel, manual string) {
+	if _, err := parseNodeLink(origLink); err != nil {
+		return origLink, "", "中转", "链接不对：" + err.Error()
+	}
+	relayLabel = "中转"
+	isDoor := landing != nil && landing.Mode == "door"
+	if isDoor {
+		relayLabel = "任意门"
+	}
+	res, err := s.runScript("install.sh", 60*time.Second, nil, "--twin", origLink, landingIP, sni)
+	twin := strings.TrimSpace(res.Stdout)
+	if err != nil || strings.HasPrefix(twin, "__MANUAL__:") {
+		reason := strings.TrimPrefix(twin, "__MANUAL__:")
+		if reason == "" {
+			reason = "这条链接不会自动生成直连，请手动改地址（把地址换成落地 IP，TLS 的 SNI 填域名）"
+		}
+		return origLink, "", relayLabel, reason
+	}
+	// 中转链接：原链接按实际监听端口换（install.sh --nodes 的逻辑在面板侧简化：端口不变，
+	// 除非该落地监听端口与落地端口不同——这里用 relay.conf 查）
+	relayLink = origLink
+	if isDoor {
+		// 任意门模式：跑 install.sh --door 生成任意门链接（地址换成中转地址、端口换成转发端口）。
+		forwardPort := 0
+		if pl, err := parseNodeLink(origLink); err == nil && pl.Port > 0 {
+			forwardPort = pl.Port
+			for _, p := range landing.Ports {
+				if p.Remote == pl.Port {
+					forwardPort = p.Listen
+					break
+				}
+			}
+		}
+		if rc.RelayAddr == "" {
+			return "", twin, relayLabel, "任意门地址还没设置：先到「设置 → 任意门地址」填好中转地址，再重新生成"
+		}
+		dres, derr := s.runScript("install.sh", 60*time.Second, nil, "--door", origLink, rc.RelayAddr, strconv.Itoa(forwardPort), sni)
+		doorLink := strings.TrimSpace(dres.Stdout)
+		if derr != nil || strings.HasPrefix(doorLink, "__MANUAL__:") {
+			reason := strings.TrimPrefix(doorLink, "__MANUAL__:")
+			if reason == "" {
+				reason = "任意门链接生成失败，请手动改地址（把地址换成中转地址、端口换成转发端口）"
+			}
+			return "", twin, relayLabel, reason
+		}
+		relayLink = doorLink
+	} else if landing != nil {
+		if pl, err := parseNodeLink(origLink); err == nil && pl.Port > 0 {
+			for _, p := range landing.Ports {
+				if p.Remote == pl.Port && p.Listen != p.Remote {
+					relayLink = setLinkPort(origLink, p.Listen)
+				}
+			}
+		}
+	}
+	// 备注改名：直连“<名称>-直连”、中转“<名称>-中转”，导进手机能分清；
+	// 名称空着就用原始链接自己的备注名，都没有就不改名。
+	base := strings.TrimSpace(linkName)
+	if base == "" {
+		if pl, err := parseNodeLink(origLink); err == nil {
+			base = pl.Name
+		}
+	}
+	if base != "" {
+		relayLink = setLinkName(relayLink, base+"-中转")
+		twin = setLinkName(twin, base+"-直连")
+	}
+	return relayLink, twin, relayLabel, ""
+}
+
 func (s *Server) handleTwin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Link      string `json:"link"`
 		LandingIP string `json:"landing_ip"`
 		SNI       string `json:"sni"`
+		// Name 节点名称（选填）：直连备注“<名称>-直连”、中转备注“<名称>-中转”；
+		// 空着用原始链接自己的备注名。
+		Name string `json:"name"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, 400, errResp("请求格式不对"))
@@ -1608,59 +2459,10 @@ func (s *Server) handleTwin(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	relayLabel := "中转"
-	isDoor := landing != nil && landing.Mode == "door"
-	if isDoor {
-		relayLabel = "任意门"
-	}
-	res, err := s.runScript("install.sh", 60*time.Second, nil, "--twin", req.Link, landingIP, sni)
-	twin := strings.TrimSpace(res.Stdout)
-	if err != nil || strings.HasPrefix(twin, "__MANUAL__:") {
-		reason := strings.TrimPrefix(twin, "__MANUAL__:")
-		if reason == "" {
-			reason = "这条链接不会自动生成直连，请手动改地址（把地址换成落地 IP，TLS 的 SNI 填域名）"
-		}
-		writeJSON(w, 200, map[string]any{"ok": true, "relay_link": req.Link, "direct_link": "", "manual": reason, "relay_label": relayLabel})
+	relayLink, twin, relayLabel, manual := s.computeTwinLinks(req.Link, landingIP, sni, landing, rc, req.Name)
+	if manual != "" {
+		writeJSON(w, 200, map[string]any{"ok": true, "relay_link": relayLink, "direct_link": twin, "manual": manual, "relay_label": relayLabel})
 		return
-	}
-	// 中转链接：原链接按实际监听端口换（install.sh --nodes 的逻辑在面板侧简化：端口不变，
-	// 除非该落地监听端口与落地端口不同——这里用 relay.conf 查）
-	relayLink := req.Link
-	if isDoor {
-		// 任意门模式：跑 install.sh --door 生成任意门链接（地址换成中转地址、端口换成转发端口）。
-		forwardPort := 0
-		if pl, err := parseNodeLink(req.Link); err == nil && pl.Port > 0 {
-			forwardPort = pl.Port
-			for _, p := range landing.Ports {
-				if p.Remote == pl.Port {
-					forwardPort = p.Listen
-					break
-				}
-			}
-		}
-		if rc.RelayAddr == "" {
-			writeJSON(w, 200, map[string]any{"ok": true, "relay_link": "", "direct_link": twin, "manual": "任意门地址还没设置：先到「设置 → 任意门地址」填好中转地址，再重新生成", "relay_label": relayLabel})
-			return
-		}
-		dres, derr := s.runScript("install.sh", 60*time.Second, nil, "--door", req.Link, rc.RelayAddr, strconv.Itoa(forwardPort), sni)
-		doorLink := strings.TrimSpace(dres.Stdout)
-		if derr != nil || strings.HasPrefix(doorLink, "__MANUAL__:") {
-			reason := strings.TrimPrefix(doorLink, "__MANUAL__:")
-			if reason == "" {
-				reason = "任意门链接生成失败，请手动改地址（把地址换成中转地址、端口换成转发端口）"
-			}
-			writeJSON(w, 200, map[string]any{"ok": true, "relay_link": "", "direct_link": twin, "manual": reason, "relay_label": relayLabel})
-			return
-		}
-		relayLink = doorLink
-	} else if landing != nil {
-		if pl, err := parseNodeLink(req.Link); err == nil && pl.Port > 0 {
-			for _, p := range landing.Ports {
-				if p.Remote == pl.Port && p.Listen != p.Remote {
-					relayLink = setLinkPort(req.Link, p.Listen)
-				}
-			}
-		}
 	}
 	qr := map[string]string{}
 	if q, err := qrDataURI(relayLink); err == nil {
@@ -1725,27 +2527,33 @@ func (s *Server) handleCerts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, l := range rc.Landings {
-		renewMode, needManual := renewModeFor(l, rc.Share443)
 		var daysLeft any
 		var expiry string
+		hasCert := false
 		if c, ok := certByIndex[l.Index]; ok {
-			daysLeft = c["days_left"]
+			// days_left 为 null 不算拿到证书（自定义端口 TLS 落地就是这种情况），
+			// 继续走下面的握手回退。
+			if dl, ok := c["days_left"].(float64); ok {
+				daysLeft = int(dl)
+				hasCert = true
+			} else if c["days_left"] != nil {
+				daysLeft = c["days_left"]
+				hasCert = true
+			}
 			if e, ok := c["expiry"].(string); ok {
 				expiry = e
 			}
-		} else {
-			tlsPort := 0
-			for _, p := range l.Ports {
-				if p.Proto == "tcp" && p.Listen == 443 {
-					tlsPort = p.Listen
-				}
-			}
-			if tlsPort > 0 {
-				ci := fetchCert(tlsPort, l.CertDomain)
-				daysLeft = ci.DaysLeft
+		}
+		if !hasCert {
+			// 回退：按落地实际的 TCP 监听端口逐个握手（以前只认 443）。
+			if ci, ok := probeCertForLanding(l); ok {
+				daysLeft = *ci.DaysLeft
 				expiry = ci.Expiry
+				hasCert = true
 			}
 		}
+		// renewMode 按探测结果判：握手成功就不是明文落地。
+		renewMode, needManual := renewModeFor(l, rc.Share443, hasCert)
 		certs = append(certs, map[string]any{
 			"landing_index": l.Index, "landing": l.Landing, "domain": l.CertDomain,
 			"days_left": daysLeft, "expiry": expiry, "renew_mode": renewMode, "need_manual": needManual,
