@@ -42,6 +42,15 @@ curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/install.sh | b
 
 预设：`1` = tiktok-node（80 + 443）｜`2` = sing-box-node（80 + 443 + 8388 + 8443 + 8444，含 UDP）｜`3` = 自定义端口。装完自动跑 `check.sh` 自检。
 
+填写示例（落地是 tiktok-node，落地 IP `202.155.138.195`）：
+
+```text
+输入落地服务器 IP 或域名：202.155.138.195
+选预设 [1/2/3，默认 1]：1
+```
+
+落地是 sing-box-node 就选 `2`（再问 TLS 还是明文：TLS 选 `1`）。
+
 ### 3. 域名改指（只做一次）
 
 把域名 A 记录从落地 IP 改指到**中转机 IP**，等 DNS 生效后客户端配置一个字都不用改，直接走中转。也可以不改域名、只把客户端地址改成中转 IP（SNI 保持域名不变）。
