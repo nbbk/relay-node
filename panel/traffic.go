@@ -78,6 +78,25 @@ func (t *trafficStore) get(landing string) *landingTraffic {
 	return lt
 }
 
+// rename 改地址时把流量计数搬到新键（旧键删除）：
+// 累计流量、月度用量、采样基数一起搬，不丢数；新键已有数据时不覆盖（保留新键的）。
+func (t *trafficStore) rename(old, new string) {
+	if old == new {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	lt, ok := t.data[old]
+	if !ok {
+		return
+	}
+	if _, exists := t.data[new]; !exists {
+		t.data[new] = lt
+	}
+	delete(t.data, old)
+	t.saveLocked()
+}
+
 // addDelta 累计增量（采样用）；处理计数器重启清零（快照比上次小则按新值重记基数，不算负增量）。
 func (t *trafficStore) addDelta(landing string, counters map[string][2]int64) {
 	t.mu.Lock()
