@@ -150,6 +150,18 @@ func (t *latencyStore) set(key string, r *LatencyResult) {
 	t.saveLocked()
 }
 
+// remove 删掉指定键的结果（编辑改地址后旧探测目标的结果不留着占地方，
+// 新地址下一轮探测会重新生成）。
+func (t *latencyStore) remove(key string) {
+	if key == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.data, key)
+	t.saveLocked()
+}
+
 // prune 删掉不在 keep 里的结果（落地删了之后旧结果不留着占地方）。
 func (t *latencyStore) prune(keep map[string]bool) {
 	t.mu.Lock()
