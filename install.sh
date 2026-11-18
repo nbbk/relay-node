@@ -3,6 +3,7 @@
 # 用法：
 #   本地：bash install.sh [落地IP或域名] [预设 1/2/3]
 #   远程一键：curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/install.sh | bash
+#   只补生成双节点链接：bash install.sh --nodes（读 /etc/realm/relay.conf，不重装）
 #   （不给参数则交互询问；落地不用装任何东西，转发目标就是落地现成的端口）
 # 架构：中转只做原样字节转发，不解密、不改协议。TLS 握手仍是客户端和落地机之间
 #        端到端完成，UUID、SNI、WS 路径全部不变；域名 A 记录改指到中转机后，
@@ -23,6 +24,14 @@ else
   mkdir -p "$HOME/relay-node-kit"
   cd "$HOME/relay-node-kit"
 fi
+
+# 只跑第 7 步：bash install.sh --nodes（下面解析到 --nodes 后跳过 1-6 步）
+NODES_ONLY=0
+if [ "${1:-}" = "--nodes" ]; then
+  NODES_ONLY=1
+  shift
+fi
+SNI_ASKED=0
 
 REALM_VERSION="${REALM_VERSION:-}"   # 可手动指定，如 REALM_VERSION=v2.9.6
 REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/nbbk/relay-node/main}"
@@ -73,6 +82,392 @@ port_in_use() {
 is_ip() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
 
 valid_port() { [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
+
+# ---------- 第 7 步：双节点链接（粘贴原链接 -> 中转原链接 + 直连 twin） ----------
+# sni 域名只从原链接里取（链接地址是域名 -> query 的 sni= -> query 的 host=），
+# 实在取不到才问用户一次；LANDING 是 IP 时 DOMAIN 为空，不能依赖它。
+query_param() { # $1=query $2=name -> 打印值，找不到返回 1
+  local q="$1" name="$2" kv
+  local -a parts=()
+  IFS='&' read -ra parts <<< "$q" || true
+  for kv in "${parts[@]}"; do
+    case "$kv" in
+      "$name="*) printf '%s' "${kv#"$name="}"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+query_set_param() { # $1=query $2=name $3=value -> 新 query（有则替换，没有则追加）
+  local q="$1" name="$2" value="$3" kv found=0 out=""
+  local -a parts=()
+  IFS='&' read -ra parts <<< "$q" || true
+  for kv in "${parts[@]}"; do
+    case "$kv" in
+      "$name="*) kv="$name=$value"; found=1 ;;
+    esac
+    if [ -z "$out" ]; then out="$kv"; else out="$out&$kv"; fi
+  done
+  if [ "$found" = "0" ]; then
+    if [ -z "$out" ]; then out="$name=$value"; else out="$out&$name=$value"; fi
+  fi
+  printf '%s' "$out"
+}
+
+frag_direct() { # $1=frag $2=原来有没有 fragment(0/1) -> 加 -直连 后缀的新 frag（已有不再重复加）
+  local frag="$1" has="$2"
+  if [ "$has" = "1" ]; then
+    case "$frag" in
+      *"%E7%9B%B4%E8%BF%9E"*|*"直连"*) printf '%s' "$frag" ;;
+      *) printf '%s' "$frag-%E7%9B%B4%E8%BF%9E" ;;
+    esac
+  else
+    printf '%s' "%E7%9B%B4%E8%BF%9E"
+  fi
+}
+
+twin_plain() { # vless/trojan：换地址 host，加/改 sni，名字加 -直连
+  local link="$1" lip="$2" sni="$3"
+  local scheme="${link%%://*}"
+  scheme="$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')"
+  local rest="${link#*://}"
+  local frag="" base="$rest" has_frag=0
+  if [[ "$base" == *"#"* ]]; then frag="${base##*#}"; base="${base%#*}"; has_frag=1; fi
+  local query="" has_query=0
+  if [[ "$base" == *"?"* ]]; then query="${base#*\?}"; base="${base%%\?*}"; has_query=1; fi
+  local auth="$base" path=""
+  if [[ "$base" == */* ]]; then auth="${base%%/*}"; path="/${base#*/}"; fi
+  local userinfo="" hostport="$auth"
+  if [[ "$auth" == *"@"* ]]; then userinfo="${auth%@*}"; hostport="${auth##*@}"; fi
+  local port=""
+  if [[ "$hostport" == *:* ]]; then
+    local p="${hostport##*:}"
+    if [[ "$p" =~ ^[0-9]+$ ]]; then port="$p"; fi
+  fi
+  if [ -n "$sni" ]; then
+    query="$(query_set_param "$query" "sni" "$sni")"
+    has_query=1
+  fi
+  frag="$(frag_direct "$frag" "$has_frag")"
+  local out="$scheme://"
+  [ -n "$userinfo" ] && out+="$userinfo@"
+  out+="$lip"
+  [ -n "$port" ] && out+=":$port"
+  out+="$path"
+  [ "$has_query" = "1" ] && out+="?$query"
+  out+="#$frag"
+  printf '%s' "$out"
+}
+
+ss_legacy_twin() { # 传统 base64 形式 ss://base64(method:password@host:port) -> 新 base64 体，失败返回 1
+  local core="$1" lip="$2"
+  python3 - "$core" "$lip" <<'PYEOF' 2>/dev/null || return 1
+import sys, base64
+s, lip = sys.argv[1], sys.argv[2]
+s += '=' * (-len(s) % 4)
+try:
+    raw = base64.urlsafe_b64decode(s).decode()
+except Exception:
+    sys.exit(1)
+if '@' not in raw:
+    sys.exit(1)
+ui, hp = raw.rsplit('@', 1)
+if ':' in hp:
+    host, port = hp.rsplit(':', 1)
+    new = ui + '@' + lip + ':' + port
+else:
+    new = ui + '@' + lip
+print(base64.b64encode(new.encode()).decode())
+PYEOF
+}
+
+twin_ss() { # ss：只换地址 host，不加 sni；SIP002 直接换，传统 base64 形式走 python3 解码
+  local link="$1" lip="$2"
+  local rest="${link#*://}"
+  local frag="" core="$rest" has_frag=0
+  if [[ "$core" == *"#"* ]]; then frag="${core##*#}"; core="${core%#*}"; has_frag=1; fi
+  local query="" has_query=0
+  if [[ "$core" == *"?"* ]]; then query="${core#*\?}"; core="${core%%\?*}"; has_query=1; fi
+  local out_core="" tail=""
+  if [[ "$core" == *"@"* ]]; then
+    local userinfo="${core%@*}" after="${core##*@}"
+    local hostport="${after%%/*}"
+    if [ "$after" != "$hostport" ]; then tail="/${after#*/}"; fi
+    local port=""
+    if [[ "$hostport" == *:* ]]; then
+      local p="${hostport##*:}"
+      if [[ "$p" =~ ^[0-9]+$ ]]; then port="$p"; fi
+    fi
+    out_core="$userinfo@$lip"
+    [ -n "$port" ] && out_core+=":$port"
+    out_core+="$tail"
+  else
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo "__MANUAL__:传统 base64 格式的 ss 链接需要 python3 才能改地址"
+      return 1
+    fi
+    out_core="$(ss_legacy_twin "$core" "$lip" || true)"
+    if [ -z "$out_core" ]; then
+      echo "__MANUAL__:传统 base64 格式的 ss 链接解码失败"
+      return 1
+    fi
+  fi
+  frag="$(frag_direct "$frag" "$has_frag")"
+  local out="ss://$out_core"
+  [ "$has_query" = "1" ] && out+="?$query"
+  out+="#$frag"
+  printf '%s' "$out"
+}
+
+vmess_twin() { # vmess：python3 解 base64 JSON，改 add=落地IP、sni=域名、ps 加 -直连
+  local b64="$1" lip="$2" sni="$3"
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "__MANUAL__:vmess 链接需要 python3 解码"
+    return 1
+  fi
+  local out=""
+  out="$(python3 - "$b64" "$lip" "$sni" <<'PYEOF' 2>/dev/null || true
+import sys, json, base64
+b64, lip, sni = sys.argv[1], sys.argv[2], sys.argv[3]
+b64 += '=' * (-len(b64) % 4)
+try:
+    j = json.loads(base64.urlsafe_b64decode(b64))
+except Exception:
+    sys.exit(1)
+j['add'] = lip
+if sni:
+    j['sni'] = sni
+ps = j.get('ps') or 'vmess'
+if '直连' not in ps:
+    j['ps'] = ps + '-直连'
+print('vmess://' + base64.b64encode(json.dumps(j, ensure_ascii=False, separators=(',', ':')).encode()).decode())
+PYEOF
+)"
+  if [ -z "$out" ]; then
+    echo "__MANUAL__:vmess 链接解码失败"
+    return 1
+  fi
+  printf '%s' "$out"
+}
+
+twin_uri() { # $1=link $2=落地IP $3=sni域名 -> echo twin；失败 echo __MANUAL__:原因 并 return 1
+  local link="$1" lip="$2" sni="$3"
+  local scheme="${link%%://*}"
+  scheme="$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')"
+  case "$scheme" in
+    vless|trojan)
+      twin_plain "$link" "$lip" "$sni"
+      ;;
+    ss)
+      twin_ss "$link" "$lip"
+      ;;
+    vmess)
+      local b64="${link#*://}"
+      b64="${b64%%#*}"
+      vmess_twin "$b64" "$lip" "$sni"
+      ;;
+    *)
+      echo "__MANUAL__:不识别的链接格式"
+      return 1
+      ;;
+  esac
+}
+
+link_sni_domain() { # $1=link -> 打印 sni 用的域名（链接地址是域名 -> query 的 sni= -> query 的 host=），找不到返回 1
+  local link="$1"
+  local scheme="${link%%://*}"
+  scheme="$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')"
+  local rest="${link#*://}"
+  local core="${rest%%#*}"
+  local q=""
+  if [[ "$core" == *"?"* ]]; then q="${core#*\?}"; core="${core%%\?*}"; fi
+  local host="" v=""
+  case "$scheme" in
+    vless|trojan)
+      local auth="${core%%/*}"
+      host="${auth##*@}"
+      host="${host%%:*}"
+      host="${host#[}"
+      host="${host%]}"
+      if [ -n "$host" ] && ! is_ip "$host"; then printf '%s' "$host"; return 0; fi
+      ;;
+    ss)
+      if [[ "$core" == *"@"* ]]; then
+        local after="${core##*@}"
+        host="${after%%/*}"
+        host="${host%%:*}"
+        if [ -n "$host" ] && ! is_ip "$host"; then printf '%s' "$host"; return 0; fi
+      fi
+      ;;
+    vmess)
+      if command -v python3 >/dev/null 2>&1; then
+        python3 - "$core" <<'PYEOF' 2>/dev/null || true
+import sys, json, base64
+s = sys.argv[1]
+s += '=' * (-len(s) % 4)
+try:
+    j = json.loads(base64.urlsafe_b64decode(s))
+except Exception:
+    sys.exit(0)
+def isdom(x):
+    return isinstance(x, str) and x and ('.' in x) and not all(c.isdigit() or c == '.' for c in x)
+for k in ('sni', 'host', 'add'):
+    v = j.get(k)
+    if isdom(v):
+        print(v)
+        break
+PYEOF
+      fi
+      return 0
+      ;;
+  esac
+  v="$(query_param "$q" "sni" || true)"
+  if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
+  v="$(query_param "$q" "host" || true)"
+  if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
+  return 1
+}
+
+try_install_qrencode() { # 有就直接用；没有就试着装一个，装不上也不报错
+  command -v qrencode >/dev/null 2>&1 && return 0
+  echo "没找到 qrencode，尝试安装（装不上也不影响链接生成）..."
+  local _to=""
+  command -v timeout >/dev/null 2>&1 && _to="timeout 120"
+  if command -v apt-get >/dev/null 2>&1; then
+    $_to apt-get install -y qrencode >/dev/null 2>&1 || true
+    command -v qrencode >/dev/null 2>&1 && return 0
+    $_to apt-get update >/dev/null 2>&1 || true
+    $_to apt-get install -y qrencode >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then
+    $_to dnf install -y qrencode >/dev/null 2>&1 || true
+  elif command -v yum >/dev/null 2>&1; then
+    $_to yum install -y qrencode >/dev/null 2>&1 || true
+  fi
+  command -v qrencode >/dev/null 2>&1
+}
+
+step7_nodes() { # 第 7 步：双节点链接（可选；跳过不报错，始终 return 0）
+  echo ""
+  echo "== 7/7 双节点链接（直连 + 中转） =="
+  local landing_ip="" _resolve_note=""
+  if is_ip "$LANDING"; then
+    landing_ip="$LANDING"
+  else
+    landing_ip="$(getent hosts "$LANDING" 2>/dev/null | awk '{print $1}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+    if [ -z "$landing_ip" ]; then
+      landing_ip="$LANDING"
+      _resolve_note="（域名现在解析不到，直连先用域名本身；等 DNS 恢复后重跑 bash install.sh --nodes 再生成）"
+    fi
+  fi
+  echo "粘贴你原来的节点链接（可多条，一行一条，粘完空行回车结束；直接回车跳过）："
+  local -a links=()
+  local _line="" _tty=0
+  if [ -t 0 ] && exec 3<&0 2>/dev/null; then
+    _tty=1
+  elif [ -r /dev/tty ] && exec 3</dev/tty 2>/dev/null; then
+    _tty=1
+  fi
+  if [ "$_tty" = "1" ]; then
+    while IFS= read -r _line <&3; do
+      _line="$(printf '%s' "$_line" | tr -d ' \t\r')"
+      [ -z "$_line" ] && break
+      links+=("$_line")
+    done
+    exec 3<&- 2>/dev/null || true
+  else
+    echo "（当前没有可交互的终端，跳过这一步；装完可再跑 bash install.sh --nodes 补生成。）"
+    return 0
+  fi
+  if [ "${#links[@]}" = "0" ]; then
+    echo "已跳过双节点生成（以后随时跑 bash install.sh --nodes 补生成）。"
+    return 0
+  fi
+  if [ -n "$_resolve_note" ]; then
+    echo "注意：$landing_ip $_resolve_note"
+  fi
+  local nodes_dir="$HOME/relay-node-kit"
+  mkdir -p "$nodes_dir" 2>/dev/null || true
+  local nodes_file="$nodes_dir/nodes.txt"
+  {
+    echo "# relay-node 双节点（$(date -u +%Y-%m-%dT%H:%M:%SZ)）"
+    echo "# 落地：$LANDING（${MODE_NOTE:-}）"
+    echo "# 中转：原链接不动，域名改指到中转机后自动走中转；直连：地址换成落地 IP $landing_ip + sni=域名"
+  } > "$nodes_file" 2>/dev/null || nodes_file="/dev/null"
+  local -a ORIGS=() TWINS=()
+  local i=0 _orig="" _sni="" _out="" _twin="" _reason="" _scheme_l=""
+  for _orig in "${links[@]}"; do
+    i=$((i + 1))
+    _sni="$(link_sni_domain "$_orig" || true)"
+    _scheme_l="$(printf '%s' "${_orig%%://*}" | tr '[:upper:]' '[:lower:]')"
+    if [ -z "$_sni" ] && [ "$SNI_ASKED" != "1" ]; then
+      case "$_scheme_l" in
+        vless|trojan|vmess)
+          SNI_ASKED=1
+          ask "第 $i 条链接里没找到域名，直连要用的域名（SNI，就是证书上的那个域名；不知道就直接回车）: " SNI_DOMAIN
+          _sni="${SNI_DOMAIN:-}"
+          ;;
+      esac
+    fi
+    echo ""
+    echo "---- 第 $i 条 ----"
+    echo "中转：$_orig"
+    _twin=""
+    if _out="$(twin_uri "$_orig" "$landing_ip" "$_sni" 2>/dev/null)"; then
+      _twin="$_out"
+      echo "直连：$_twin"
+    else
+      _reason="${_out#__MANUAL__:}"
+      [ -n "$_reason" ] || _reason="这条不会自动生成"
+      echo "直连：$_reason，请手动改地址（把地址换成 $landing_ip，TLS 的 SNI 填域名）。"
+    fi
+    ORIGS+=("$_orig")
+    TWINS+=("$_twin")
+    {
+      echo ""
+      echo "[第 $i 条]"
+      echo "中转：$_orig"
+      [ -n "$_twin" ] && echo "直连：$_twin"
+    } >> "$nodes_file" 2>/dev/null || true
+  done
+  echo ""
+  echo "两条链接已存到 $nodes_file"
+  if try_install_qrencode; then
+    local j=0 n=0
+    for j in "${!ORIGS[@]}"; do
+      n=$((j + 1))
+      echo ""
+      echo "中转二维码（第 $n 条）："
+      qrencode -t ANSIUTF8 "${ORIGS[$j]}" 2>/dev/null || echo "（这条二维码生成失败，复制链接导入）"
+      qrencode -o "$nodes_dir/nodes-relay-$n.png" "${ORIGS[$j]}" 2>/dev/null || true
+      if [ -n "${TWINS[$j]}" ]; then
+        echo "直连二维码（第 $n 条）："
+        qrencode -t ANSIUTF8 "${TWINS[$j]}" 2>/dev/null || echo "（这条二维码生成失败，复制链接导入）"
+        qrencode -o "$nodes_dir/nodes-direct-$n.png" "${TWINS[$j]}" 2>/dev/null || true
+      fi
+    done
+    echo ""
+    echo "二维码 PNG 已存到 $nodes_dir/nodes-relay-N.png、nodes-direct-N.png"
+  else
+    echo "没有 qrencode（也没装上），复制上面两条链接导入即可；想看二维码可装好 qrencode 后再跑 bash install.sh --nodes。"
+  fi
+  return 0
+}
+
+# 只生成双节点：bash install.sh --nodes（读 /etc/realm/relay.conf 里的落地信息，不重装）
+if [ "$NODES_ONLY" = "1" ]; then
+  if [ ! -f /etc/realm/relay.conf ]; then
+    echo "没找到 /etc/realm/relay.conf：中转还没装过，先正常跑一次安装（bash install.sh），再跑 bash install.sh --nodes。"
+    exit 1
+  fi
+  # shellcheck disable=SC1091
+  . /etc/realm/relay.conf
+  if [ -z "${LANDING:-}" ]; then
+    echo "relay.conf 里没有 LANDING，先正常安装一次。"
+    exit 1
+  fi
+  step7_nodes
+  exit 0
+fi
 
 echo "== 1/6 落地目标与转发预设 =="
 if [ -z "$LANDING" ]; then
@@ -397,3 +792,6 @@ if [ "$DRY_RUN" != "1" ] && [ -f check.sh ]; then
   echo ""
   bash check.sh || true
 fi
+
+# ---------- 第 7 步：双节点链接（可选，跳过不报错） ----------
+step7_nodes || true
