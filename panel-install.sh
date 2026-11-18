@@ -57,6 +57,71 @@ public_ip() {
   printf '%s' "$ip"
 }
 
+# ---------- Go 版本与磁盘工具 ----------
+GO_MIN="1.22"      # 面板要求 Go >= 1.22（go.mod 写死，代码用了 Go 1.22 才有的 r.PathValue）
+GO_VER="1.23.0"    # 官方包版本（没有或太旧时下载这个）
+GO_INSTALL_DIR="${GO_INSTALL_DIR:-/usr/local/go}"
+
+go_version() { # 输出已装 Go 的版本号（如 1.19.8），没装或解析不出输出空
+  local v=""
+  if command -v go >/dev/null 2>&1; then
+    v="$(go version 2>/dev/null | sed -n 's/^go version go\([0-9][0-9.]*\).*/\1/p' | head -1)"
+  fi
+  printf '%s' "$v"
+}
+
+ver_ge() { # $1=当前版本 $2=最低版本（主.次，如 1.22）：当前 >= 最低返回 0
+  local cur="$1" need="$2"
+  local cur_major cur_minor need_major need_minor
+  cur_major="${cur%%.*}"; cur="${cur#*.}"; cur_minor="${cur%%.*}"
+  need_major="${need%%.*}"; need="${need#*.}"; need_minor="${need%%.*}"
+  case "$cur_major$cur_minor$need_major$need_minor" in *[!0-9]*) return 1;; esac
+  if [ "$cur_major" -gt "$need_major" ]; then return 0; fi
+  if [ "$cur_major" -lt "$need_major" ]; then return 1; fi
+  [ "$cur_minor" -ge "$need_minor" ]
+}
+
+go_ok() { # 已装 Go 版本 >= $GO_MIN 返回 0
+  local v
+  v="$(go_version)"
+  [ -n "$v" ] && ver_ge "$v" "$GO_MIN"
+}
+
+disk_avail_mb() { # $1=目录：输出可用空间 MB（整数）；拿不到输出空
+  local avail=""
+  avail="$(df -m --output=avail "$1" 2>/dev/null | tail -1 | tr -d ' ')"
+  case "$avail" in ''|*[!0-9]*) avail="";; esac
+  printf '%s' "$avail"
+}
+
+disk_low() { # $1=目录 $2=阈值 MB：可用空间 < 阈值返回 0（拿不到空间时返回 1，不拦）
+  local avail
+  avail="$(disk_avail_mb "$1")"
+  [ -n "$avail" ] && [ "$avail" -lt "$2" ]
+}
+
+install_official_go() { # 下官方 Go 包（$GO_VER）装到 $GO_INSTALL_DIR，PATH 最前面；失败返回 1
+  local arch go_arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) go_arch="amd64" ;;
+    aarch64|arm64) go_arch="arm64" ;;
+    *) echo "不支持的架构：$arch（Go 官方只提供 amd64 / arm64 的 Linux 包）"; return 1 ;;
+  esac
+  echo "正在下官方包 go$GO_VER..."
+  curl -fsSL --max-time 120 -o "$SRC_DIR/go.tar.gz" "https://go.dev/dl/go$GO_VER.linux-$go_arch.tar.gz" 2>/dev/null \
+    || curl -fsSL --max-time 120 -o "$SRC_DIR/go.tar.gz" "https://dl.google.com/go/go$GO_VER.linux-$go_arch.tar.gz" 2>/dev/null \
+    || { if disk_low "$TMP_DIR" 100; then echo "Go 下载失败：磁盘空间不够（$TMP_DIR 只剩 $(disk_avail_mb "$TMP_DIR")MB），先腾地方再重跑。"; else echo "Go 下载失败：请检查网络，或手动装好 Go 再跑。"; fi; return 1; }
+  rm -rf "$GO_INSTALL_DIR"
+  tar -C "$(dirname "$GO_INSTALL_DIR")" -xzf "$SRC_DIR/go.tar.gz" 2>/dev/null || { echo "Go 解压失败。"; return 1; }
+  if [ ! -x "$GO_INSTALL_DIR/bin/go" ]; then
+    # 解压出来是 <dirname>/go，目标名不一样时搬过去
+    mv "$(dirname "$GO_INSTALL_DIR")/go" "$GO_INSTALL_DIR" 2>/dev/null || { echo "Go 安装失败。"; return 1; }
+  fi
+  export PATH="$GO_INSTALL_DIR/bin:$PATH"
+  return 0
+}
+
 # ---------- 卸载 ----------
 if [ "$REMOVE" = "1" ]; then
   echo "卸载可视化面板（不动 realm 转发）..."
@@ -93,11 +158,19 @@ fi
 # ---------- 安装 ----------
 [ "$(id -u)" = "0" ] || { echo "请用 root 跑（面板要改 /etc/realm、管 systemd）：sudo bash panel-install.sh"; exit 1; }
 
+# 0. 磁盘预检：TMPDIR（默认 /tmp）至少留 500MB（源码包 + Go 包 + 编译临时文件），不够直接退出
+TMP_DIR="${TMPDIR:-/tmp}"
+if disk_low "$TMP_DIR" 500; then
+  echo "磁盘空间不够：$TMP_DIR 只剩 $(disk_avail_mb "$TMP_DIR")MB，装面板至少要 500MB 空闲。"
+  echo "先腾地方再重跑：df -h 看哪里满了；清 /tmp；清日志 journalctl --vacuum-size=100M；不用 docker 的话 docker system prune -af。"
+  exit 1
+fi
+
 echo "安装 relay-node 可视化面板..."
 echo "（现场编译：下载源码 -> 装 Go -> 编译出单二进制；不需要预编译好的二进制文件）"
 
 # 1. 下载源码包
-SRC_DIR="$(mktemp -d)"
+SRC_DIR="$(mktemp -d)" || { echo "建临时目录失败：磁盘可能满了（mktemp 在 $TMP_DIR 建不出目录），先腾地方再重跑：df -h 看哪里满了；清 /tmp；清日志 journalctl --vacuum-size=100M。"; exit 1; }
 trap 'rm -rf "$SRC_DIR"' EXIT
 if [ "$DRY_RUN" = "1" ]; then
   echo "[dry-run] 跳过下载源码包（$REPO_TARBALL）"
@@ -107,7 +180,11 @@ else
     if command -v git >/dev/null 2>&1 && git clone --depth 1 https://github.com/nbbk/relay-node.git "$SRC_DIR/repo" 2>/dev/null; then
       echo "tarball 下载失败，已用 git clone 拿到源码。"
     else
-      echo "源码下载失败：请检查本机能否访问 github.com，或手动下载后重跑。"
+      if disk_low "$TMP_DIR" 100; then
+        echo "源码下载失败：磁盘空间不够（$TMP_DIR 只剩 $(disk_avail_mb "$TMP_DIR")MB），下载写不进去。先腾地方再重跑：df -h 看哪里满了；清 /tmp；清日志 journalctl --vacuum-size=100M。"
+      else
+        echo "源码下载失败：请检查本机能否访问 github.com，或手动下载后重跑。"
+      fi
       exit 1
     fi
   else
@@ -117,35 +194,25 @@ else
   [ -d "$SRC_DIR/repo/panel" ] || { echo "源码包里没有 panel/ 目录，下载可能不对。"; exit 1; }
 fi
 
-# 2. 装 Go（没有才装）
-if command -v go >/dev/null 2>&1; then
+# 2. 装 Go（没有，或版本 < $GO_MIN，都装官方 Go $GO_VER；apt 的 golang-go 太旧，如 Debian 11 的 1.19，编不过面板）
+if go_ok; then
   echo "Go 已有：$(go version)"
 else
-  echo "本机没有 Go，正在装..."
+  if command -v go >/dev/null 2>&1; then
+    echo "本机 Go 版本太旧：$(go version)（面板要求 Go >= $GO_MIN，代码用了 Go 1.22 才有的功能），正在装官方 Go $GO_VER..."
+  else
+    echo "本机没有 Go，正在装官方 Go $GO_VER..."
+  fi
   if [ "$DRY_RUN" = "1" ]; then
-    echo "[dry-run] 跳过装 Go"
-  elif command -v apt-get >/dev/null 2>&1; then
-    (apt-get update -qq 2>/dev/null || true) && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq golang-go 2>/dev/null || true
+    echo "[dry-run] 跳过装 Go（会下官方包 go$GO_VER）"
+  else
+    install_official_go || exit 1
+    if ! go_ok; then
+      echo "Go 还是没有或版本不够（要求 >= $GO_MIN），当前：$(go version 2>/dev/null || echo '没有 go')，请手动装好 Go $GO_VER 再跑。"
+      exit 1
+    fi
+    echo "Go 已装好：$(go version)"
   fi
-  if ! command -v go >/dev/null 2>&1; then
-    # apt 没装上：直接下官方包
-    GO_VER="1.23.0"
-    ARCH="$(uname -m)"
-    case "$ARCH" in
-      x86_64|amd64) GO_ARCH="amd64" ;;
-      aarch64|arm64) GO_ARCH="arm64" ;;
-      *) echo "不支持的架构：$ARCH（Go 官方只提供 amd64 / arm64 的 Linux 包）"; exit 1 ;;
-    esac
-    echo "apt 没装上 Go，改下官方包 go$GO_VER..."
-    curl -fsSL --max-time 120 -o "$SRC_DIR/go.tar.gz" "https://go.dev/dl/go$GO_VER.linux-$GO_ARCH.tar.gz" 2>/dev/null \
-      || curl -fsSL --max-time 120 -o "$SRC_DIR/go.tar.gz" "https://dl.google.com/go/go$GO_VER.linux-$GO_ARCH.tar.gz" 2>/dev/null \
-      || { echo "Go 下载失败：请检查网络，或手动装好 Go 再跑。"; exit 1; }
-    rm -rf /usr/local/go
-    tar -C /usr/local -xzf "$SRC_DIR/go.tar.gz" 2>/dev/null || { echo "Go 解压失败。"; exit 1; }
-    export PATH="$PATH:/usr/local/go/bin"
-  fi
-  command -v go >/dev/null 2>&1 || { echo "Go 还是没有，请手动装好 Go 再跑。"; exit 1; }
-  echo "Go 已装好：$(go version)"
 fi
 
 # 3. 编译出单二进制
