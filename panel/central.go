@@ -644,6 +644,9 @@ func validateRemoteAddLandingBody(body []byte) error {
 		Mode              string         `json:"mode"`
 		RelayAddr         string         `json:"relay_addr"`
 		DoorPortOverrides map[string]int `json:"door_port_overrides"`
+		OrigLink          string         `json:"orig_link"`
+		Name              string         `json:"name"`
+		LinkName          string         `json:"link_name"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
@@ -693,6 +696,17 @@ func validateRemoteAddLandingBody(body []byte) error {
 		if err != nil || !validPort(rp) || !validPort(v) {
 			return fmt.Errorf("转发端口覆盖格式不对：键和值都须是 1-65535 的端口，如 {\"443\": 30443}")
 		}
+	}
+	if req.OrigLink != "" {
+		if _, err := parseNodeLink(req.OrigLink); err != nil {
+			return fmt.Errorf("原始节点链接不对：%v", err)
+		}
+	}
+	if req.Name != "" && (len(req.Name) > 64 || strings.ContainsAny(req.Name, "\"\n\r")) {
+		return fmt.Errorf("名称太长或含有非法字符（不能超过 64 字，不能含引号与换行）")
+	}
+	if req.LinkName != "" && (len(req.LinkName) > 64 || strings.ContainsAny(req.LinkName, "\n\r")) {
+		return fmt.Errorf("节点名称太长或含有非法字符（不能超过 64 字，不能含换行）")
 	}
 	return nil
 }
