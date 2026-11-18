@@ -25,6 +25,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"port": s.cfg.Port, "https_enabled": s.cfg.HTTPSEnabled, "https_domain": s.cfg.HTTPSDomain,
 		"ip_whitelist": s.cfg.IPWhitelist, "relay_addr": relayAddr,
 		"telegram":   map[string]any{"enabled": s.cfg.Telegram.Enabled, "chat_id": s.cfg.Telegram.ChatID, "has_token": s.cfg.Telegram.BotToken != ""},
+		"monitor":    s.cfg.Monitor,
 		"cloudflare": map[string]any{"has_token": s.cfg.CloudflareToken != ""},
 		"version":    Version, "latest_version": latest, "update_available": update,
 	}))
@@ -779,6 +780,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		"https_enabled": s.cfg.HTTPSEnabled, "https_domain": s.cfg.HTTPSDomain,
 		"ip_whitelist": s.cfg.IPWhitelist,
 		"telegram":     map[string]any{"enabled": s.cfg.Telegram.Enabled, "chat_id": s.cfg.Telegram.ChatID},
+		"monitor":      s.cfg.Monitor,
 		"version":      Version,
 	}
 	out := map[string]any{
