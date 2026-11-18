@@ -79,11 +79,9 @@ func (s *Server) routes() http.Handler {
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	// 前端文件由 embed 提供（panel/web/index.html）
+	// 前端文件由 embed 提供（panel/web/index.html 等），按路径分发；
+	// API 路由（/api/v1/...）在 ServeMux 里更具体，优先于这里的 catch-all。
+	// 注意：这里不能按路径 404——/style.css、/app.js 也要走 serveEmbeddedWeb。
 	serveEmbeddedWeb(w, r)
 }
 

@@ -2,7 +2,6 @@ package main
 
 import (
 	"embed"
-	"io/fs"
 	"net/http"
 	"strings"
 )
@@ -10,26 +9,38 @@ import (
 //go:embed web
 var webFS embed.FS
 
+// serveEmbeddedWeb 内嵌前端（panel/web/），按请求路径分发：
+//
+//	/ → index.html
+//	/style.css、/app.js 等真实存在的文件 → 按原路径返回，Content-Type 按后缀
+//	未知无后缀路径 → SPA 回退 index.html
+//	不存在且带后缀的资源 → 404（绝不返回 index.html：否则浏览器拿到的 CSS/JS
+//	  是 HTML 文档，样式和脚本全失效，登录页与后台会堆在一起显示）
 func serveEmbeddedWeb(w http.ResponseWriter, r *http.Request) {
-	// 前端文件内嵌在二进制里（panel/web/）
-	if _, err := fs.Stat(webFS, "web/index.html"); err == nil {
-		data, err := webFS.ReadFile("web/index.html")
-		if err == nil {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = w.Write(data)
-			return
-		}
-	}
-	// 静态文件（app.js / style.css 等）
 	p := strings.TrimPrefix(r.URL.Path, "/")
-	if p != "" && p != "/" {
-		if data, err := webFS.ReadFile("web/" + p); err == nil {
-			w.Header().Set("Content-Type", contentTypeFor(p))
-			_, _ = w.Write(data)
-			return
-		}
+	if p == "" {
+		p = "index.html"
 	}
-	data, _ := webFS.ReadFile("web/placeholder.html")
+	// 防目录穿越（embed FS 本身也会拒绝，先拦住更稳）
+	if strings.Contains(p, "..") {
+		http.NotFound(w, r)
+		return
+	}
+	if data, err := webFS.ReadFile("web/" + p); err == nil {
+		w.Header().Set("Content-Type", contentTypeFor(p))
+		_, _ = w.Write(data)
+		return
+	}
+	// 文件不存在：带后缀的当 404；无后缀路径当 SPA 回退
+	if strings.Contains(p, ".") {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := webFS.ReadFile("web/index.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(data)
 }

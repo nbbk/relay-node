@@ -175,12 +175,13 @@ function stopLogsTimer() { if (logsTimer) { clearInterval(logsTimer); logsTimer 
 
 /* ---------- 登录 ---------- */
 function showLogin() {
-  $('#app').classList.add('hidden');
-  $('#login-view').classList.remove('hidden');
+  // class 与 hidden 属性一起切：只靠 class 的话，style.css 加载失败时两边会堆在一起
+  $('#app').classList.add('hidden'); $('#app').hidden = true;
+  $('#login-view').classList.remove('hidden'); $('#login-view').hidden = false;
 }
 function showApp() {
-  $('#login-view').classList.add('hidden');
-  $('#app').classList.remove('hidden');
+  $('#login-view').classList.add('hidden'); $('#login-view').hidden = true;
+  $('#app').classList.remove('hidden'); $('#app').hidden = false;
 }
 async function checkMe() {
   try {

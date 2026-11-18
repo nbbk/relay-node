@@ -13,11 +13,13 @@
 <!-- 内联 manifest：可“存到主屏幕”，无外部依赖 -->
 <link rel="manifest" href='data:application/manifest+json,{"name":"relay-node 面板","short_name":"中转面板","display":"standalone","start_url":".","theme_color":"%232563eb","background_color":"%23f4f6fa","icons":[]}'>
 <link rel="stylesheet" href="style.css">
+<!-- 内联关键样式：即使 style.css 加载失败，登录页与后台也不会堆在一起显示 -->
+<style>.hidden{display:none!important}</style>
 </head>
 <body>
 
-<!-- 登录页 -->
-<div id="login-view" class="login-wrap hidden">
+<!-- 登录页（hidden 属性是原生兜底：样式文件加载失败时也不会与后台堆在一起显示） -->
+<div id="login-view" class="login-wrap hidden" hidden>
   <div class="login-card">
     <div class="brand">relay<span>-node</span> 面板</div>
     <p class="sub">中转节点可视化管理 · 请登录</p>
@@ -34,8 +36,8 @@
   </div>
 </div>
 
-<!-- 主界面 -->
-<div id="app" class="hidden">
+<!-- 主界面（hidden 属性是原生兜底：样式文件加载失败时也不会与登录页堆在一起显示） -->
+<div id="app" class="hidden" hidden>
   <aside class="sidebar" id="sidebar">
     <div class="brand">relay<span>-node</span></div>
     <nav id="side-nav"></nav>

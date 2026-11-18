@@ -503,3 +503,142 @@ func TestHandleCloudflare(t *testing.T) {
 		t.Fatalf("settings 不应回显令牌")
 	}
 }
+
+// ---------- 内嵌前端分发（修登录页堆叠 bug：/style.css、/app.js 曾返回 404，
+// 样式脚本全失效，登录页与后台堆在一起） ----------
+
+func TestServeEmbeddedWeb(t *testing.T) {
+	s := newTestAddLandingServer(t, t.TempDir(), t.TempDir())
+	h := s.routes()
+	get := func(path string, cookie string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", path, nil)
+		if cookie != "" {
+			req.Header.Set("Cookie", cookie)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// / 返回 HTML，且带内联 hidden 兜底样式与 hidden 属性
+	rec := get("/", "")
+	if rec.Code != 200 {
+		t.Fatalf("/ 状态=%d want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("/ Content-Type=%q want text/html", ct)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"relay-node 面板",
+		".hidden{display:none!important}",
+		`id="login-view" class="login-wrap hidden" hidden`,
+		`id="app" class="hidden" hidden`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("/ 首页缺 %q", want)
+		}
+	}
+
+	// /style.css 必须是真 CSS，不是 HTML
+	rec = get("/style.css", "")
+	if rec.Code != 200 {
+		t.Fatalf("/style.css 状态=%d want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/css") {
+		t.Fatalf("/style.css Content-Type=%q want text/css", ct)
+	}
+	css := strings.TrimSpace(rec.Body.String())
+	if strings.HasPrefix(css, "<!DOCTYPE") || strings.HasPrefix(css, "<html") {
+		t.Fatalf("/style.css 拿到的是 HTML 文档")
+	}
+	if !strings.Contains(css, ".hidden") {
+		t.Fatalf("/style.css 里没有 .hidden 定义")
+	}
+
+	// /app.js 必须是真 JS，不是 HTML
+	rec = get("/app.js", "")
+	if rec.Code != 200 {
+		t.Fatalf("/app.js 状态=%d want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
+		t.Fatalf("/app.js Content-Type=%q want javascript", ct)
+	}
+	js := strings.TrimSpace(rec.Body.String())
+	if strings.HasPrefix(js, "<!DOCTYPE") || strings.HasPrefix(js, "<html") {
+		t.Fatalf("/app.js 拿到的是 HTML 文档")
+	}
+	if !strings.Contains(js, "checkMe") {
+		t.Fatalf("/app.js 内容不对：没有 checkMe")
+	}
+
+	// 不存在且带后缀的资源 → 404，不再回 index.html
+	for _, p := range []string{"/nope.css", "/nope.js", "/nope.png"} {
+		if rec := get(p, ""); rec.Code != 404 {
+			t.Fatalf("%s 状态=%d want 404", p, rec.Code)
+		}
+	}
+	// 未知无后缀路径 → SPA 回退 index.html
+	rec = get("/overview", "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "relay-node 面板") {
+		t.Fatalf("/overview 应回退 index.html：状态=%d", rec.Code)
+	}
+	// 目录穿越：ServeMux 先把路径规范化（301 重定向）；直接调 handler 时含 .. 的路径 404
+	if rec := get("/../VERSION", ""); rec.Code != 301 {
+		t.Fatalf("/../VERSION 状态=%d want 301", rec.Code)
+	}
+	{
+		req := httptest.NewRequest("GET", "/../style.css", nil)
+		rec := httptest.NewRecorder()
+		serveEmbeddedWeb(rec, req)
+		if rec.Code != 404 {
+			t.Fatalf("serveEmbeddedWeb /../style.css 状态=%d want 404", rec.Code)
+		}
+	}
+
+	// API 路由仍优先于 catch-all：未登录 /api/v1/status → 401
+	rec = get("/api/v1/status", "")
+	if rec.Code != 401 {
+		t.Fatalf("未登录 /api/v1/status 状态=%d want 401", rec.Code)
+	}
+
+	// 登录流程：正确密码登录后 /api/v1/me → 200
+	login := func(password string) (int, string) {
+		req := httptest.NewRequest("POST", "/api/v1/login", strings.NewReader(`{"username":"admin","password":"`+password+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code, rec.Header().Get("Set-Cookie")
+	}
+	code, cookie := login("test-password-123")
+	if code != 200 {
+		t.Fatalf("正确密码登录状态=%d want 200", code)
+	}
+	if cookie == "" {
+		t.Fatalf("登录后没发会话 cookie")
+	}
+	sessionCookie := strings.SplitN(cookie, ";", 2)[0]
+	rec = get("/api/v1/me", sessionCookie)
+	if rec.Code != 200 {
+		t.Fatalf("登录后 /api/v1/me 状态=%d want 200：%s", rec.Code, rec.Body.String())
+	}
+
+	// 锁定逻辑只在真正失败时触发：5 次错密码各 401，第 6 次 429
+	s2 := newTestAddLandingServer(t, t.TempDir(), t.TempDir())
+	h2 := s2.routes()
+	login2 := func(password string) int {
+		req := httptest.NewRequest("POST", "/api/v1/login", strings.NewReader(`{"username":"admin","password":"`+password+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h2.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for i := 0; i < 5; i++ {
+		if code := login2("wrong-password"); code != 401 {
+			t.Fatalf("第 %d 次错密码状态=%d want 401", i+1, code)
+		}
+	}
+	if code := login2("test-password-123"); code != 429 {
+		t.Fatalf("5 次失败后登录应 429 锁定，实际 %d", code)
+	}
+}
