@@ -30,6 +30,7 @@ type PanelConfig struct {
 	IPWhitelist     []string    `json:"ip_whitelist"`
 	Telegram        TelegramCfg `json:"telegram"`
 	Monitor         MonitorCfg  `json:"monitor"`
+	Latency         LatencyCfg  `json:"latency"`
 	Version         string      `json:"version"`
 }
 
@@ -234,21 +235,25 @@ func (rc *RelayConf) fieldKeys(index int) []string {
 // ---------- 服务器 ----------
 
 type Server struct {
-	env           Env
-	cfg           PanelConfig
-	cfgPath       string
-	state         PanelState
-	stateMu       sync.Mutex
-	sessions      *sessionStore
-	opMu          sync.Mutex // 写操作锁（TryLock，占用时返回 409）
-	traffic       *trafficStore
-	auditMu       sync.Mutex
-	lastHealthOK  bool
-	lastHealthAt  time.Time
-	certAlertDay  map[string]string // landing -> 上次提醒日期
-	monitorMu     sync.Mutex
-	monitorAlerts map[string]*monitorAlertState
-	latestMonitor *SystemStats
+	env            Env
+	cfg            PanelConfig
+	cfgPath        string
+	state          PanelState
+	stateMu        sync.Mutex
+	sessions       *sessionStore
+	opMu           sync.Mutex // 写操作锁（TryLock，占用时返回 409）
+	traffic        *trafficStore
+	auditMu        sync.Mutex
+	lastHealthOK   bool
+	lastHealthAt   time.Time
+	certAlertDay   map[string]string // landing -> 上次提醒日期
+	monitorMu      sync.Mutex
+	monitorAlerts  map[string]*monitorAlertState
+	latestMonitor  *SystemStats
+	latency        *latencyStore
+	latencyMu      sync.Mutex
+	latencyAlerts  map[string]*latencyAlertState
+	latencyRoundMu sync.Mutex // 一轮探测的锁（后台循环与总览兜底互斥）
 }
 
 func newServer(env Env) (*Server, error) {
@@ -265,7 +270,7 @@ func newServer(env Env) (*Server, error) {
 		// 测试环境 REALM_DIR 可能不可写目录已存在则忽略
 		_ = os.MkdirAll(env.RealmDir, 0o755)
 	}
-	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), certAlertDay: map[string]string{}, lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}}
+	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), certAlertDay: map[string]string{}, lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}}
 	if err := s.loadConfig(); err != nil {
 		return nil, err
 	}
@@ -273,6 +278,7 @@ func newServer(env Env) (*Server, error) {
 		return nil, err
 	}
 	s.traffic.load()
+	s.latency.load()
 	return s, nil
 }
 
@@ -292,7 +298,7 @@ func (s *Server) loadConfig() error {
 		if err != nil {
 			return err
 		}
-		s.cfg = PanelConfig{Username: "admin", PasswordHash: h, Port: s.env.Port, Version: Version, Monitor: defaultMonitorCfg()}
+		s.cfg = PanelConfig{Username: "admin", PasswordHash: h, Port: s.env.Port, Version: Version, Monitor: defaultMonitorCfg(), Latency: defaultLatencyCfg()}
 		if s.env.Port == 0 {
 			s.cfg.Port = 11111
 		}
@@ -309,6 +315,8 @@ func (s *Server) loadConfig() error {
 	}
 	// 旧 config.json 里没有 monitor 一节时补默认值（1.1.10 之前装的面板）
 	s.cfg.Monitor.applyDefaults()
+	// 旧 config.json 里没有 latency 一节时补默认值（1.1.11 之前装的面板）
+	s.cfg.Latency.applyDefaults()
 	return nil
 }
 
