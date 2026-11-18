@@ -206,6 +206,28 @@ systemctl status realm --no-pager
 
 **装完汇总。** 脚本最后打印中转 IP、落地目标、转发端口表和下一步（域名改指），然后自动跑一遍 `check.sh` 自检（见 1.7）。远程一键安装时，`check.sh` 和 `stop.sh` 会自动从仓库拉到当前目录（`~/relay-node-kit/`）。
 
+**第 7 步：双节点链接（可选）。** 汇总之后脚本会问你要不要粘贴原节点链接，粘贴后直接给出直连 + 中转两条链接和二维码（直接回车跳过，装完随时可以只补生成一次：`bash install.sh --nodes`，它读 `/etc/realm/relay.conf` 里的落地信息，不重装）：
+
+```text
+粘贴你原来的节点链接（可多条，一行一条，粘完空行回车结束；直接回车跳过）：
+vless://58087f8b-f340-4721-beb7-5aae486ba0e7@yinni.930327.xyz:443?encryption=none&security=tls&type=ws&host=yinni.930327.xyz&path=%2Fs1momobvfylwonz4#TikTok-Node
+（空行回车结束）
+```
+
+输出示例：
+
+```text
+---- 第 1 条 ----
+中转：vless://58087f8b-f340-4721-beb7-5aae486ba0e7@yinni.930327.xyz:443?encryption=none&security=tls&type=ws&host=yinni.930327.xyz&path=%2Fs1momobvfylwonz4#TikTok-Node
+直连：vless://58087f8b-f340-4721-beb7-5aae486ba0e7@202.155.138.195:443?encryption=none&security=tls&type=ws&host=yinni.930327.xyz&path=%2Fs1momobvfylwonz4&sni=yinni.930327.xyz#TikTok-Node-%E7%9B%B4%E8%BF%9E
+```
+
+- `中转：` 是你粘贴的原链接，原样不动；域名改指到中转机后它自动走中转。
+- `直连：` 是自动生成的 twin：地址换成落地 IP，其余参数（UUID、WS 路径、端口）都不动，TLS 的加 `sni=域名`、名字后加 `-直连`。**直连必须带 SNI**：直连地址是 IP，证书是按域名签的，不填 SNI 的话 Caddy 拿不出对应的证书，TLS 握手会失败。
+- 生成规则：vless/trojan 换地址 + 加/改 `sni=`；ss 只换地址（不加 sni，插件参数原样保留）；vmess 解 base64 JSON 改 `add`（落地 IP）、`sni`（域名）、`ps` 后加 `-直连`（需要 python3，没有就提示手动改）；不认识的格式不报错，只提示手动改。
+- sni 域名按这个顺序取：原链接地址是域名就用它 → 链接 query 里的 `sni=` → query 里的 `host=` → 问你一次；都取不到就不加 sni 并说明直连可能证书报错。
+- 两条链接都会存进 `~/relay-node-kit/nodes.txt`（分组写清，方便以后翻）；有 qrencode 时终端里直接打印二维码，并存 PNG（`nodes-relay-N.png`、`nodes-direct-N.png`）。没有 qrencode 会试着装一个（apt/dnf/yum），装不上也不报错，只打印链接、复制导入即可。
+
 ### 1.4 域名 A 记录改指 + 验证生效
 
 装完中转后只做一次：去域名服务商（或 Cloudflare）把域名的 A 记录从**落地 IP** 改成**中转机 IP**，其他记录不动。
