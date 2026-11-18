@@ -147,6 +147,7 @@ LANDING=202.155.138.195 PRESET=2 bash install.sh
   1) tiktok-node（Xray）：80 + 443（TCP）  ← 默认，直接回车就是 1
   2) sing-box-node：80 + 443（TCP）+ 8388（TCP+UDP）+ 8443（UDP）+ 8444（UDP）
   3) 自定义端口（自己输）
+请输入你的选择：
 ② 选预设 [1/2/3]，直接回车选默认 1：
 ```
 
