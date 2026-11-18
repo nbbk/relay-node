@@ -128,13 +128,13 @@ func TestParseNodesTxtDoor(t *testing.T) {
 
 func TestRenewModeForDoor(t *testing.T) {
 	l := Landing{Mode: "door", Ports: parsePorts("tcp:20443:443")}
-	mode, manual := renewModeFor(l, false)
+	mode, manual := renewModeFor(l, false, true)
 	if mode != "自动（域名指落地，直接续签）" || manual {
 		t.Fatalf("door renew=(%q,%v) want (自动（域名指落地，直接续签）,false)", mode, manual)
 	}
 	// 标准模式不受影响：没配 80、443 又改了监听端口 → 手动
 	l2 := Landing{Mode: "standard", Ports: parsePorts("tcp:20443:443")}
-	mode2, manual2 := renewModeFor(l2, false)
+	mode2, manual2 := renewModeFor(l2, false, true)
 	if !manual2 || !strings.HasPrefix(mode2, "手动") {
 		t.Fatalf("standard renew=(%q,%v) want manual", mode2, manual2)
 	}
@@ -473,7 +473,8 @@ func TestHandleTwinDoor(t *testing.T) {
 	if !strings.Contains(string(log), "--door "+link+" 203.0.113.9 20443 example.com") {
 		t.Fatalf("--door 参数不对：\n%s", string(log))
 	}
-	// 标准模式对照：relay_label=中转，不调 --door，relay_link 就是原链接
+	// 标准模式对照：relay_label=中转，不调 --door；1.2.2 起备注按“<原备注>-中转 /
+	// <原备注>-直连”改名，不再是原链接本身
 	confStd := strings.Replace(conf, "MODE=\"door\"\n", "", 1)
 	confStd = strings.Replace(confStd, "tcp:20443:443", "tcp:443:443", 1)
 	if err := os.WriteFile(filepath.Join(realmDir, "relay.conf"), []byte(confStd), 0o644); err != nil {
@@ -483,8 +484,11 @@ func TestHandleTwinDoor(t *testing.T) {
 	if code != 200 || resp["relay_label"] != "中转" {
 		t.Fatalf("标准 twin：code=%d resp=%v", code, resp)
 	}
-	if resp["relay_link"] != link {
-		t.Fatalf("标准 relay_link=%v want 原链接", resp["relay_link"])
+	if resp["relay_link"] != "vless://11111111-2222-3333-4444-555555555555@example.com:443?security=tls&sni=example.com#test-%E4%B8%AD%E8%BD%AC" {
+		t.Fatalf("标准 relay_link=%v want 备注 test-中转", resp["relay_link"])
+	}
+	if resp["direct_link"] != "vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443?security=tls&sni=example.com#test-%E7%9B%B4%E8%BF%9E" {
+		t.Fatalf("标准 direct_link=%v want 备注 test-直连", resp["direct_link"])
 	}
 	log, _ = os.ReadFile(stubLog)
 	if strings.Count(string(log), "--door") != 1 {
