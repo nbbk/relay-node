@@ -5,6 +5,7 @@
 #   远程一键：curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/install.sh | bash
 #   只补生成双节点链接：bash install.sh --nodes（读 /etc/realm/relay.conf，不重装）
 #   追加一个落地节点：bash install.sh --add（不覆盖已有配置，直接往后加）
+#   只生成一条链接的直连 twin：bash install.sh --twin '<链接>' <落地IP> [sni域名]（面板调用）
 #   （不给参数则交互询问；落地不用装任何东西，转发目标就是落地现成的端口）
 # 多落地：一台中转机可以转多个落地节点（装完第 1 个后会问要不要再加一个，
 #        或事后跑 bash install.sh --add）。每个落地各有一组转发端口，监听端口
@@ -28,6 +29,9 @@
 #        到落地线路好的（香港/新加坡/日本）。
 set -euo pipefail
 
+# 面板（systemd 服务）调脚本时环境里可能没有 HOME；没它后面 $HOME 会触发 set -u 报错，先兜底
+HOME="${HOME:-/root}"
+
 # 工作目录：本地跑 bash install.sh 时用脚本所在目录；
 # 远程一键（curl | bash）时用 ~/relay-node-kit
 if [ -f "$0" ]; then
@@ -47,6 +51,12 @@ fi
 ADD_MODE=0
 if [ "${1:-}" = "--add" ]; then
   ADD_MODE=1
+  shift
+fi
+# 只生成直连 twin：bash install.sh --twin '<链接>' <落地IP> [sni域名]（面板调用，标准输出只打印 twin 一行）
+TWIN_MODE=0
+if [ "${1:-}" = "--twin" ]; then
+  TWIN_MODE=1
   shift
 fi
 SNI_ASKED=0
@@ -71,7 +81,9 @@ ask() {
   if [ -t 0 ]; then
     read -rp "$prompt" ans || true
   elif [ -r /dev/tty ]; then
-    read -rp "$prompt" ans </dev/tty 2>/dev/null || true
+    # 注意：/dev/tty 节点存在但没有控制终端时，直接重定向会报 No such device；
+    # 包一层 group 再重定向 stderr 才能真正静默
+    { read -rp "$prompt" ans </dev/tty || true; } 2>/dev/null
   fi
   [ -z "$ans" ] && ans="$default"
   printf -v "$varname" '%s' "$ans"
@@ -567,6 +579,7 @@ ensure_proxies_running() { # realm 启动后，顺带确认分流组件也在跑
       start_proxy443 || echo "注意：haproxy 没起来，443 分流暂时不通；先查 haproxy -c -f /etc/haproxy/haproxy.cfg，再 systemctl status haproxy。"
     fi
   fi
+  return 0
 }
 
 choose_share_mode() { # $1=80 是否被已装落地占（0/1） $2=443 是否被已装落地占（0/1）：打印带详细解释的选项并执行选择
@@ -596,8 +609,11 @@ choose_share_mode() { # $1=80 是否被已装落地占（0/1） $2=443 是否被
   [ "$_c443" = "1" ] && _opts="$_opts/3"
   [ "$_c80" = "1" ] && [ "$_c443" = "1" ] && _opts="$_opts/4"
   echo "请输入你的选择："
-  local _choice=""
-  ask "选哪种方式？[$_opts]，直接回车选默认 1： " _choice "1"
+  # 面板非交互调用：环境变量 SHARE_MODE 预设选择（1/2/3/4），不预设就交互问
+  local _choice="${SHARE_MODE:-}"
+  if [ -z "$_choice" ]; then
+    ask "选哪种方式？[$_opts]，直接回车选默认 1： " _choice "1"
+  fi
   case "$_choice" in
     1)
       return 0
@@ -1058,7 +1074,7 @@ step7_nodes() { # 第 7 步：双节点链接（可选；跳过不报错，始�
   local _line="" _tty=0
   if [ -t 0 ] && exec 3<&0 2>/dev/null; then
     _tty=1
-  elif [ -r /dev/tty ] && exec 3</dev/tty 2>/dev/null; then
+  elif [ -r /dev/tty ] && { exec 3</dev/tty; } 2>/dev/null; then
     _tty=1
   fi
   if [ "$_tty" = "1" ]; then
@@ -1162,6 +1178,21 @@ step7_nodes() { # 第 7 步：双节点链接（可选；跳过不报错，始�
   fi
   return 0
 }
+
+# 只生成一条链接的直连 twin：bash install.sh --twin '<链接>' <落地IP> [sni域名]
+# （面板调用；标准输出只打印 twin 链接一行，失败打印 __MANUAL__:原因）
+if [ "$TWIN_MODE" = "1" ]; then
+  _twin_link="${1:-}"; _twin_ip="${2:-}"; _twin_sni="${3:-}"
+  if [ -z "$_twin_link" ] || [ -z "$_twin_ip" ]; then
+    echo "__MANUAL__:用法：bash install.sh --twin '<链接>' <落地IP> [sni域名]"
+    exit 1
+  fi
+  if [ -z "$_twin_sni" ]; then
+    _twin_sni="$(link_sni_domain "$_twin_link" 2>/dev/null || true)"
+  fi
+  twin_uri "$_twin_link" "$_twin_ip" "$_twin_sni"
+  exit $?
+fi
 
 # 只生成双节点：bash install.sh --nodes（读 /etc/realm/relay.conf 里的落地信息，不重装）
 if [ "$NODES_ONLY" = "1" ]; then
@@ -1303,6 +1334,34 @@ precheck_ports() { # $1=标题（如 "2/6 端口预检（中转监听端口）"�
   # 其余端口被占，或分流选完还剩冲突，仍走原来的改监听流程
   echo ""
   echo "== $1 =="
+  # 面板非交互调用：LISTEN_OVERRIDES="80:10080,443:10443" 预设监听端口改法（只改中转监听，落地端口不变）
+  if [ -n "${LISTEN_OVERRIDES:-}" ]; then
+    local _ov _o _old _new _np _spec _proto _rest _lp _rp
+    IFS=',' read -ra _ov <<< "$LISTEN_OVERRIDES"
+    for _o in "${_ov[@]}"; do
+      _o="${_o//[[:space:]]/}"
+      [ -n "$_o" ] || continue
+      [[ "$_o" == *:* ]] || { echo "LISTEN_OVERRIDES 格式不对：$_o（应为 原端口:新端口）"; exit 1; }
+      _old="${_o%%:*}"; _new="${_o##*:}"
+      valid_port "$_old" && valid_port "$_new" || { echo "LISTEN_OVERRIDES 端口不合法：$_o（1-65535）"; exit 1; }
+      case " $PORTS " in
+        *" tcp:$_old:"*|*" udp:$_old:"*)
+          if port_in_use tcp "$_new" || port_in_use udp "$_new" || port_in_config "$_new"; then
+            echo "LISTEN_OVERRIDES 里新端口 $_new 已被占用，换一个。"
+            exit 1
+          fi
+          _np=""
+          for _spec in $PORTS; do
+            _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
+            [ "$_lp" = "$_old" ] && _lp="$_new"
+            _np="$_np $_proto:$_lp:$_rp"
+          done
+          PORTS="${_np# }"
+          echo "监听端口已按预设改好：$_old -> $_new（落地端口不变）"
+          ;;
+      esac
+    done
+  fi
   local _occupied="" _spec _proto _rest _lp _rp
   local _realm80=0 _realm443=0
   while true; do
@@ -1568,8 +1627,9 @@ EOF
   LANDING_COUNT="$_idx"
   echo "配置已追加：/etc/realm/config.toml（落地 $_idx，$MODE_NOTE）"
   # 分流开着时，分流配置也要重新生成（把新落地加进去），否则新落地分不到流量
-  [ "$SHARE80" = "1" ] && write_proxy80_config
-  [ "$SHARE443" = "1" ] && write_sni_config
+  # （用 if 而不用 && 链：没开分流时 && 链返回 1，set -e 会直接杀掉脚本）
+  if [ "$SHARE80" = "1" ]; then write_proxy80_config; fi
+  if [ "$SHARE443" = "1" ]; then write_sni_config; fi
 }
 
 setup_sysctl_once() { # BBR + fq + 大 TCP 缓冲；已存在就跳过，只建一次
@@ -1822,3 +1882,29 @@ for _k in "${!ADDED_LANDING[@]}"; do
   STEP7_INDEX="${ADDED_INDEX[$_k]}"
   step7_nodes || true
 done
+
+# ---------- 最后一步：可视化面板（只在全新安装结束时问一次；--add/--nodes/--twin 不问） ----------
+if [ "$ADD_MODE" = "0" ] && [ "$NODES_ONLY" = "0" ] && [ "$TWIN_MODE" = "0" ] && [ "$DRY_RUN" != "1" ]; then
+  if [ -x /usr/local/bin/relay-panel ]; then
+    echo ""
+    echo "可视化面板已装好（/usr/local/bin/relay-panel），SSH 跑 panel-info 可看地址和账号。"
+  else
+    echo ""
+    echo "请输入你的选择："
+    PANEL_INSTALL=""
+    ask "要不要装可视化面板？[y/N]，直接回车选默认 N（浏览器里点几下就能管中转，不装也不影响转发）： " PANEL_INSTALL "N"
+    if [ "$PANEL_INSTALL" = "y" ] || [ "$PANEL_INSTALL" = "Y" ]; then
+      if [ ! -f panel-install.sh ]; then
+        curl -fsSL --max-time 30 -o panel-install.sh "$REPO_RAW/panel-install.sh" 2>/dev/null || true
+        chmod +x panel-install.sh 2>/dev/null || true
+      fi
+      if [ -f panel-install.sh ]; then
+        echo "正在装面板..."
+        bash panel-install.sh || echo "面板没装上（不影响中转），以后随时跑 bash panel-install.sh 再装。"
+      else
+        echo "没拉到 panel-install.sh（网络问题），以后随时跑下面这条命令装面板："
+        echo "  curl -fsSL $REPO_RAW/panel-install.sh | bash"
+      fi
+    fi
+  fi
+fi
