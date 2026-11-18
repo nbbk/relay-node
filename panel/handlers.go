@@ -59,6 +59,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/port", s.requireAuth(s.handleChangePort))
 	mux.HandleFunc("POST /api/v1/settings/ip-whitelist", s.requireAuth(s.handleIPWhitelist))
 	mux.HandleFunc("POST /api/v1/settings/https", s.requireAuth(s.handleHTTPS))
+	mux.HandleFunc("POST /api/v1/settings/cloudflare", s.requireAuth(s.handleCloudflare))
 	mux.HandleFunc("POST /api/v1/settings/telegram", s.requireAuth(s.handleTelegram))
 	mux.HandleFunc("POST /api/v1/settings/telegram/test", s.requireAuth(s.handleTelegramTest))
 	mux.HandleFunc("GET /api/v1/update/check", s.requireAuth(s.handleUpdateCheck))
