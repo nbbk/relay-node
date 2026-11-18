@@ -21,6 +21,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"port": s.cfg.Port, "https_enabled": s.cfg.HTTPSEnabled, "https_domain": s.cfg.HTTPSDomain,
 		"ip_whitelist": s.cfg.IPWhitelist,
 		"telegram":     map[string]any{"enabled": s.cfg.Telegram.Enabled, "chat_id": s.cfg.Telegram.ChatID, "has_token": s.cfg.Telegram.BotToken != ""},
+		"cloudflare":   map[string]any{"has_token": s.cfg.CloudflareToken != ""},
 		"version":      Version, "latest_version": latest, "update_available": update,
 	}))
 }
@@ -214,6 +215,35 @@ func (s *Server) handleTelegramTest(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sendTelegram("relay-panel 测试消息：Telegram 提醒已接通。")
 	writeJSON(w, 200, okResp(map[string]any{"msg": "测试消息已发送，请到 Telegram 查看"}))
+}
+
+// handleCloudflare 保存 Cloudflare API Token（绑域名开 HTTPS 签证书用）。
+// 令牌只保存、不回显、不随导出走；新版令牌以 cfut_ 开头，旧版是 40 位十六进制，
+// 两者都接受，格式不对只提醒、不拦（以免将来格式再变把有效令牌挡在外面）。
+func (s *Server) handleCloudflare(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	token := strings.TrimSpace(req.Token)
+	if token == "" {
+		writeJSON(w, 400, errResp("令牌不能为空"))
+		return
+	}
+	s.cfg.CloudflareToken = token
+	if err := s.saveConfig(); err != nil {
+		writeJSON(w, 500, errResp("保存失败"))
+		return
+	}
+	s.audit(s.currentUser(r), "设置 Cloudflare Token", "", "成功", "")
+	if !strings.HasPrefix(token, "cfut_") && len(token) != 40 {
+		writeJSON(w, 200, map[string]any{"ok": true, "warning": "新版令牌以 cfut_ 开头，旧版是 40 位；当前令牌是 " + strconv.Itoa(len(token)) + " 位，请核对是否复制完整"})
+		return
+	}
+	writeJSON(w, 200, okResp(nil))
 }
 
 func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
