@@ -1554,9 +1554,8 @@ func (s *Server) handleLinks(w http.ResponseWriter, r *http.Request) {
 	for i := range groups {
 		if m, ok := modeByIndex[groups[i].LandingIndex]; ok && m != "" {
 			groups[i].Mode = m
-		} else {
-			groups[i].Mode = "standard"
 		}
+		// 没登记过的下标（如手动 twin 分组）保留 parseNodesTxt 按链接行推断的模式
 		groups[i].QR = map[string]string{}
 		for _, l := range groups[i].Links {
 			if q, err := qrDataURI(l.Link); err == nil {
@@ -1670,7 +1669,17 @@ func (s *Server) handleTwin(w http.ResponseWriter, r *http.Request) {
 	if q, err := qrDataURI(twin); err == nil {
 		qr["直连"] = q
 	}
-	writeJSON(w, 200, okResp(map[string]any{"relay_link": relayLink, "direct_link": twin, "qr": qr, "relay_label": relayLabel}))
+	// 写历史：twin 成功就持久化进 nodes.txt，刷新后历史页还能看到。
+	// 保存失败不拦本次返回，只在响应里带上原因。
+	persistErr := ""
+	if err := upsertTwinLinks(s.nodesFilePath(), landingIP, req.LandingIP, relayLabel, relayLink, twin); err != nil {
+		persistErr = fmt.Sprintf("历史记录保存失败：%v", err)
+	}
+	resp := okResp(map[string]any{"relay_link": relayLink, "direct_link": twin, "qr": qr, "relay_label": relayLabel})
+	if persistErr != "" {
+		resp["persist_error"] = persistErr
+	}
+	writeJSON(w, 200, resp)
 }
 
 // setLinkPort 换链接端口（vless/trojan；vmess/ss base64 换不了时原样返回）。

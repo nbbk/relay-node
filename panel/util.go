@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/skip2/go-qrcode"
 )
 
 // ---------- 日志轮转（防爆盘） ----------
@@ -394,49 +396,14 @@ func (s *Server) sendTelegram(msg string) {
 
 // ---------- QR ----------
 
+// qrDataURI 用纯 Go 生成二维码 PNG（data URI），不依赖主机装 qrencode。
+// 以前是 shell 出去调 qrencode，中转机上没装就出不了图；现在面板自己就能出。
 func qrDataURI(link string) (string, error) {
-	if !commandExists("qrencode") {
-		return "", fmt.Errorf("本机无 qrencode")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "qrencode", "-o", "-", "-t", "PNG", "--", link)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	png, err := qrcode.Encode(link, qrcode.Medium, 256)
+	if err != nil {
 		return "", err
 	}
-	// base64 编码
-	return "data:image/png;base64," + base64Encode(out.Bytes()), nil
-}
-
-func base64Encode(b []byte) string {
-	const enc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-	var sb strings.Builder
-	for i := 0; i < len(b); i += 3 {
-		var n uint32
-		rem := len(b) - i
-		n = uint32(b[i]) << 16
-		if rem > 1 {
-			n |= uint32(b[i+1]) << 8
-		}
-		if rem > 2 {
-			n |= uint32(b[i+2])
-		}
-		sb.WriteByte(enc[(n>>18)&63])
-		sb.WriteByte(enc[(n>>12)&63])
-		if rem > 1 {
-			sb.WriteByte(enc[(n>>6)&63])
-		} else {
-			sb.WriteByte('=')
-		}
-		if rem > 2 {
-			sb.WriteByte(enc[n&63])
-		} else {
-			sb.WriteByte('=')
-		}
-	}
-	return sb.String()
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(png), nil
 }
 
 // ---------- nodes.txt 解析 ----------
@@ -497,7 +464,225 @@ func parseNodesTxt(data []byte) []linkGroup {
 		}
 		_ = pendingLabel
 	}
+	// 模式按链接行推断：有“任意门”行就是任意门模式，否则标准模式。
+	// handleLinks 还会用 relay.conf 的登记再校正一次（登记过的落地以登记为准）。
+	for i := range groups {
+		for _, l := range groups[i].Links {
+			if l.Label == "任意门" {
+				groups[i].Mode = "door"
+				break
+			}
+		}
+		if groups[i].Mode == "" {
+			groups[i].Mode = "standard"
+		}
+	}
 	return groups
+}
+
+// ---------- nodes.txt：twin 持久化 ----------
+
+// twinGroupMarker 是面板 twin 生成的分组在 nodes.txt 分组头上的标记。
+// install.sh --nodes 再生成时会原样保留带这个标记的分组，不洗掉。
+const twinGroupMarker = "手动 twin"
+
+type nodesGroupBlock struct {
+	header  string // 完整分组头行，如 "## 落地 3：203.0.113.1（手动 twin）"
+	index   int
+	landing string
+	twin    bool
+	body    []string // 分组头之后、下一分组头之前的行（不含头行）
+}
+
+// splitNodesTxt 把 nodes.txt 按分组切开：preamble 是第一个分组头之前的行，
+// 每个分组一块（头行 + 体行）。
+func splitNodesTxt(data []byte) (preamble []string, groups []nodesGroupBlock) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var cur *nodesGroupBlock
+	flush := func() {
+		if cur != nil {
+			groups = append(groups, *cur)
+			cur = nil
+		}
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "## 落地 ") {
+			flush()
+			rest := strings.TrimPrefix(line, "## 落地 ")
+			idxStr := rest
+			if i := strings.Index(rest, "："); i >= 0 {
+				idxStr = rest[:i]
+			}
+			idx, _ := strconv.Atoi(idxStr)
+			landing := ""
+			if i := strings.Index(rest, "："); i >= 0 {
+				landing = strings.TrimSpace(rest[i+len("："):])
+				if j := strings.Index(landing, "（"); j >= 0 {
+					landing = landing[:j]
+				}
+			}
+			cur = &nodesGroupBlock{
+				header:  line,
+				index:   idx,
+				landing: landing,
+				twin:    strings.Contains(line, twinGroupMarker),
+			}
+			continue
+		}
+		if cur != nil {
+			cur.body = append(cur.body, line)
+		} else {
+			preamble = append(preamble, line)
+		}
+	}
+	flush()
+	return preamble, groups
+}
+
+// twinEntryLines 一条 twin 记录的行：[第 N 条] + 中转/任意门行 + 直连行。
+func twinEntryLines(num int, relayLabel, relayLink, directLink string) []string {
+	lines := []string{fmt.Sprintf("[第 %d 条]", num), relayLabel + "：" + relayLink}
+	if directLink != "" {
+		lines = append(lines, "直连："+directLink)
+	}
+	return lines
+}
+
+// entryHasLink 一条记录里是否已含相同的中转/任意门链接或直连链接。
+func entryHasLink(lines []string, relayLink, directLink string) bool {
+	for _, line := range lines {
+		for _, p := range []string{"中转：", "任意门：", "直连："} {
+			if strings.HasPrefix(line, p) {
+				v := strings.TrimSpace(strings.TrimPrefix(line, p))
+				if (relayLink != "" && v == relayLink) || (directLink != "" && v == directLink) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// upsertTwinEntry 在一个普通分组的体行里更新或追加一条 twin 记录：
+// 已有相同链接的那一条就原地替换，否则在末尾追加一条（编号顺延）。
+func upsertTwinEntry(body []string, relayLabel, relayLink, directLink string) []string {
+	entryStart := -1
+	replace := func(start, end int) []string {
+		num := 1
+		if start < len(body) {
+			_, _ = fmt.Sscanf(body[start], "[第 %d 条]", &num)
+		}
+		out := append([]string{}, body[:start]...)
+		out = append(out, twinEntryLines(num, relayLabel, relayLink, directLink)...)
+		out = append(out, body[end:]...)
+		return out
+	}
+	for i, line := range body {
+		if strings.HasPrefix(line, "[第 ") {
+			if entryStart >= 0 && entryHasLink(body[entryStart:i], relayLink, directLink) {
+				return replace(entryStart, i)
+			}
+			entryStart = i
+		}
+	}
+	if entryStart >= 0 && entryHasLink(body[entryStart:], relayLink, directLink) {
+		return replace(entryStart, len(body))
+	}
+	n := 0
+	for _, line := range body {
+		if strings.HasPrefix(line, "[第 ") {
+			n++
+		}
+	}
+	out := append([]string{}, body...)
+	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+		out = out[:len(out)-1]
+	}
+	out = append(out, "")
+	out = append(out, twinEntryLines(n+1, relayLabel, relayLink, directLink)...)
+	out = append(out, "")
+	return out
+}
+
+// upsertTwinLinks 把一组 twin 链接写进 nodes.txt（文件不存在则创建）：
+// 按落地 IP 找分组；找到 twin 标记分组就原地替换它的链接行；
+// 找到普通分组就追加一条（已有相同链接时不重复）；
+// 找不到就追加新分组 ## 落地 N：<IP>（手动 twin），N=现有最大编号+1。
+// 原子写：写临时文件 + 重命名，文件权限 0644。
+func upsertTwinLinks(path, landingIP, landingRaw, relayLabel, relayLink, directLink string) error {
+	var data []byte
+	if b, err := os.ReadFile(path); err == nil {
+		data = b
+	}
+	preamble, groups := splitNodesTxt(data)
+	matched := -1
+	for i, g := range groups {
+		if g.landing == landingIP || (landingRaw != "" && g.landing == landingRaw) {
+			matched = i
+			break
+		}
+	}
+	twinNote := "# 手动 twin：面板节点链接页生成，install.sh --nodes 不会洗掉"
+	if matched < 0 {
+		maxIdx := 0
+		for _, g := range groups {
+			if g.index > maxIdx {
+				maxIdx = g.index
+			}
+		}
+		groups = append(groups, nodesGroupBlock{
+			header:  fmt.Sprintf("## 落地 %d：%s（%s）", maxIdx+1, landingIP, twinGroupMarker),
+			index:   maxIdx + 1,
+			landing: landingIP,
+			twin:    true,
+			body:    append([]string{twinNote, ""}, twinEntryLines(1, relayLabel, relayLink, directLink)...),
+		})
+	} else if groups[matched].twin {
+		// twin 分组：原地替换链接行（重复 twin 不重复）
+		groups[matched].body = append([]string{twinNote, ""}, twinEntryLines(1, relayLabel, relayLink, directLink)...)
+	} else {
+		groups[matched].body = upsertTwinEntry(groups[matched].body, relayLabel, relayLink, directLink)
+	}
+	var sb strings.Builder
+	for _, line := range preamble {
+		sb.WriteString(line)
+		sb.WriteString("\n")
+	}
+	for _, g := range groups {
+		sb.WriteString(g.header)
+		sb.WriteString("\n")
+		for _, line := range g.body {
+			sb.WriteString(line)
+			sb.WriteString("\n")
+		}
+	}
+	out := sb.String()
+	if len(data) == 0 {
+		// 新文件：先写 install.sh --nodes 同款文件头
+		out = "# relay-node 双节点（" + time.Now().UTC().Format(time.RFC3339) + "）\n" +
+			"# 中转：原链接按实际监听端口走（监听端口改过时中转链接端口跟着改）；直连：地址换成落地 IP + sni=域名\n" +
+			"# 任意门：地址换成中转地址、端口换成转发端口；直连：地址换成落地 IP + sni=域名\n" + out
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(out), 0o644); err != nil {
+		return err
+	}
+	// WriteFile 受 umask 影响，显式 Chmod 保证 0644
+	_ = os.Chmod(tmp, 0o644)
+	if f, err := os.Open(tmp); err == nil {
+		_ = f.Sync()
+		_ = f.Close()
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // ---------- 任意门模式 ----------

@@ -63,6 +63,24 @@ function fallbackCopy(text, done) {
   try { document.execCommand('copy'); done(); } catch (e) { toast('复制失败，请手动复制', 'err'); }
   ta.remove();
 }
+// 复制二维码图片到剪贴板（需要浏览器支持 ClipboardItem）；不支持就提示改用下载
+function copyImage(dataURI, btn) {
+  const done = () => { toast('二维码图片已复制'); if (btn) { const t = btn.textContent; btn.textContent = '已复制 ✓'; setTimeout(() => { btn.textContent = t; }, 1500); } };
+  const fail = () => toast('浏览器不支持复制图片，请用下载保存', 'err');
+  if (!window.ClipboardItem || !navigator.clipboard || !navigator.clipboard.write) { fail(); return; }
+  fetch(dataURI).then((r) => r.blob()).then((blob) =>
+    navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]).then(done, fail)
+  ).catch(fail);
+}
+// 下载二维码图片为 PNG 文件（走 blob URL，各浏览器都认）
+function downloadImage(dataURI, name) {
+  fetch(dataURI).then((r) => r.blob()).then((blob) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name || '二维码.png'; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    toast('二维码图片已开始下载');
+  }).catch(() => toast('下载失败，请重试', 'err'));
+}
 function downloadFile(name, text) {
   const blob = new Blob([text], { type: 'application/json' });
   const a = document.createElement('a');
@@ -316,16 +334,27 @@ function linksHtml(links, qr) {
   if (qr) {
     h += '<div class="qr-wrap">';
     Object.keys(qr).forEach((k) => {
-      if (qr[k]) h += '<figure><img src="' + esc(qr[k]) + '" alt="' + esc(k) + ' 二维码"><figcaption>' + esc(k) + ' 二维码</figcaption></figure>';
+      if (qr[k]) h += '<figure data-qr="' + esc(qr[k]) + '"><img src="' + esc(qr[k]) + '" alt="' + esc(k) + ' 二维码"><figcaption>' + esc(k) + ' 二维码</figcaption>' +
+        '<div class="btn-row"><button class="btn secondary sm" type="button" data-copy-img>复制图片</button>' +
+        '<button class="btn secondary sm" type="button" data-download-img="' + esc(qrFileName(k)) + '">下载图片</button></div></figure>';
     });
     h += '</div>';
   }
   return h;
 }
+// 二维码下载文件名：标签只留字母数字中文横线，如 中转-二维码.png
+function qrFileName(label) {
+  const s = String(label || '链接').replace(/[^\w\u4e00-\u9fa5-]+/g, '');
+  return (s || '链接') + '-二维码.png';
+}
 // 事件委托：所有 data-copy 按钮
 document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-copy]');
   if (b) copyText(b.dataset.copy, b);
+  const ci = e.target.closest('[data-copy-img]');
+  if (ci) { const f = ci.closest('figure'); if (f && f.dataset.qr) copyImage(f.dataset.qr, ci); }
+  const di = e.target.closest('[data-download-img]');
+  if (di) { const f = di.closest('figure'); if (f && f.dataset.qr) downloadImage(f.dataset.qr, di.dataset.downloadImg); }
   const g = e.target.closest('[data-goto]');
   if (g) goto(g.dataset.goto);
   const x = e.target.closest('[data-expand-links]');
@@ -564,7 +593,7 @@ async function submitAdd(payload, shareChoice) {
     if (r.need_choice) { await showShareChoice(r, payload); return; }
     $('#add-result').innerHTML = '<div class="card"><h2>✅ 落地添加成功</h2>' +
       (r.door_note ? '<div class="warn-box">' + esc(r.door_note) + '</div>' : '') +
-      (r.qr ? '' : '<p class="muted">二维码不可用（服务器未装 qrencode），仅显示链接。</p>') +
+      ((r.qr && Object.keys(r.qr).length) ? '' : '<p class="muted">二维码生成失败，仅显示链接。</p>') +
       linksHtml(r.links, r.qr) + '</div>';
     toast('落地添加成功', 'ok');
     loadOverview();
@@ -820,6 +849,8 @@ function initTwin() {
       if (r.direct_link) links.push({ label: '直连', link: r.direct_link });
       $('#twin-result').innerHTML = '<div class="card" style="margin-top:16px"><h2>生成结果</h2>' +
         (r.manual ? '<div class="warn-box">' + esc(r.manual) + '</div>' : '') +
+        (r.persist_error ? '<div class="warn-box">' + esc(r.persist_error) + '</div>' : '') +
+        ((r.qr && Object.keys(r.qr).length) ? '' : '<p class="muted">二维码生成失败，仅显示链接。</p>') +
         linksHtml(links, r.qr) + '</div>';
       toast('twin 生成成功', 'ok');
     } catch (err) { toast('生成失败：' + err.message, 'err'); }

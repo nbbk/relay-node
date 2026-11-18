@@ -1429,7 +1429,12 @@ if [ "$NODES_ONLY" = "1" ]; then
     echo "relay.conf 里没有 LANDING，先正常安装一次。"
     exit 1
   fi
-  # nodes.txt 本次运行先截断一次，各落地按分组追加（不互相覆盖）
+  # nodes.txt 本次运行先截断一次，各落地按分组追加（不互相覆盖）。
+  # 但面板 twin 生成的手动分组（分组头带“手动 twin”标记）要原样保留：先抽出来，再生成完追加回去。
+  _twin_keep="$(mktemp 2>/dev/null || true)"
+  if [ -n "$_twin_keep" ] && [ -f "$HOME/relay-node-kit/nodes.txt" ]; then
+    awk '/^## 落地 /{twin=($0 ~ /手动 twin/)} twin' "$HOME/relay-node-kit/nodes.txt" > "$_twin_keep" 2>/dev/null || true
+  fi
   mkdir -p "$HOME/relay-node-kit" 2>/dev/null || true
   {
     echo "# relay-node 双节点（$(date -u +%Y-%m-%dT%H:%M:%SZ)）"
@@ -1459,6 +1464,11 @@ if [ "$NODES_ONLY" = "1" ]; then
     step7_nodes
     _idx=$((_idx + 1))
   done
+  # 把前面抽出来的手动 twin 分组原样追加回去（不洗掉面板 twin 的历史）
+  if [ -n "${_twin_keep:-}" ] && [ -s "$_twin_keep" ]; then
+    cat "$_twin_keep" >> "$HOME/relay-node-kit/nodes.txt" 2>/dev/null || true
+  fi
+  [ -n "${_twin_keep:-}" ] && rm -f "$_twin_keep"
   exit 0
 fi
 
