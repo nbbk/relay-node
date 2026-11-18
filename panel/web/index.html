@@ -18,8 +18,12 @@
 </head>
 <body>
 
-<!-- 登录页默认可见：即使 JS 初始化失败，用户看到的也是登录页而不是白板；鉴权成功后 JS 再把它藏起来、显示后台 -->
-<div id="login-view" class="login-wrap">
+<!-- 加载态（默认可见）：刷新时先显示它，等 app.js 校验完会话再决定显示登录页还是后台，
+  所以刷新不会先闪一下登录页。app.js 加载失败时，下面的内联兜底脚本 10 秒后会把登录页放出来。 -->
+<div id="loading-view" class="loading-wrap"><div class="loading-card"><div class="loading-spin">↻</div><p>正在加载面板…</p></div></div>
+
+<!-- 登录页默认隐藏：由 JS 在会话校验失败后才显示；内联兜底脚本在 app.js 失效时也会把它放出来 -->
+<div id="login-view" class="login-wrap hidden" hidden>
   <div class="login-card">
     <div class="brand">relay<span>-node</span> 面板</div>
     <p class="sub">中转节点可视化管理 · 请登录</p>
@@ -71,7 +75,7 @@
         <div id="check-result" style="margin-top:16px"></div>
         <div id="update-banner" style="margin-top:16px"></div>
         <h2 style="margin-top:20px">落地列表</h2>
-        <div class="grid cols-2" id="landing-cards"></div>
+        <div class="landing-grid" id="landing-cards"></div>
         <div id="overview-empty" class="empty hidden">中转还没装好，也没有落地节点。<br>去「添加落地」加第一个落地，中转会自动装好。<br><button class="btn" type="button" data-goto="add" style="margin-top:10px">＋ 添加第一个落地</button></div>
       </section>
 
@@ -83,6 +87,12 @@
             <div class="form-grid">
               <div><label for="add-landing">落地 IP 或域名 <span class="hint">必填，如 203.0.113.1</span></label>
                 <input id="add-landing" placeholder="203.0.113.1" required></div>
+              <div><label for="add-name">名称 / 备注 <span class="hint">选填，显示名，如 香港-01；空着显示落地地址</span></label>
+                <input id="add-name" placeholder="如 香港-01" maxlength="64"></div>
+              <div class="full"><label for="add-orig-link">原始节点链接 <span class="hint">选填，落地机上生成的节点链接（vless:// 等开头）；填了卡片上直接出中转链接与二维码，不填以后也能在管理里补粘贴</span></label>
+                <input id="add-orig-link" placeholder="vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443?security=tls&amp;sni=example.com#示例"></div>
+              <div><label for="add-link-name">节点名称 <span class="hint">选填，生成链接时的备注名；空着用原始链接自己的备注名</span></label>
+                <input id="add-link-name" placeholder="如 香港-01" maxlength="64"></div>
               <div><label for="add-preset">预设 <span class="hint">落地机装的节点类型</span></label>
                 <select id="add-preset">
                   <option value="1">预设 1：tiktok-node（Xray）</option>
@@ -144,12 +154,15 @@
             <div class="form-grid">
               <div><label for="twin-landing">落地 IP <span class="hint">必填</span></label><input id="twin-landing" placeholder="203.0.113.1" required></div>
               <div><label for="twin-sni">SNI / 域名 <span class="hint">可空，自动推断</span></label><input id="twin-sni" placeholder="example.com"></div>
+              <div><label for="twin-name">节点名称 <span class="hint">选填；直连备注“&lt;名称&gt;-直连”、中转备注“&lt;名称&gt;-中转”，空着用原链接备注名</span></label><input id="twin-name" placeholder="如 香港-01" maxlength="64"></div>
             </div>
             <div class="btn-row"><button class="btn" type="submit">生成 twin</button></div>
           </form>
           <div id="twin-result"></div>
         </div>
         <h2 style="margin-top:20px">历史记录（nodes.txt）</h2>
+        <p class="muted">每组默认折叠成一行，点一行展开看链接与二维码。删除只删历史记录，不影响落地转发与节点本身；导出是纯文本文件，一行一条链接。</p>
+        <div id="links-toolbar"></div>
         <div id="links-history"></div>
       </section>
 
@@ -460,6 +473,17 @@
 <div id="modal-root"></div>
 <div id="toast-wrap"></div>
 
+<script>
+  // 兜底：如果 app.js 没加载成功（404/语法错/初始化卡死），10 秒后显示登录页，页面不白板。
+  setTimeout(function () {
+    if (!window.__panelBooted) {
+      var lv = document.getElementById('loading-view');
+      if (lv) { lv.classList.add('hidden'); lv.hidden = true; }
+      var login = document.getElementById('login-view');
+      if (login) { login.classList.remove('hidden'); login.hidden = false; }
+    }
+  }, 10000);
+</script>
 <script src="app.js"></script>
 </body>
 </html>
