@@ -9,6 +9,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/stop.sh | bash -s -- --remove
 set -euo pipefail
 
+# 面板（systemd 服务）调脚本时环境里可能没有 HOME；没它下面 $HOME 会触发 set -u 报错，先兜底
+HOME="${HOME:-/root}"
+
 REMOVE=0
 [ "${1:-}" = "--remove" ] && REMOVE=1
 
@@ -188,6 +191,39 @@ if [ "$REMOVE" = "1" ]; then
         echo "  中转目录 $KIT_DIR 请手动删除：rm -rf $KIT_DIR"
         ;;
     esac
+  fi
+  # 可视化面板：问要不要一起删（面板装在同一台机器上时）
+  if [ -x /usr/local/bin/relay-panel ] || [ -f /etc/systemd/system/relay-panel.service ]; then
+    echo ""
+    _del_panel=""
+    if [ -t 0 ]; then
+      read -rp "要不要一起删可视化面板？[y/N]，直接回车选默认 N（只删中转，面板留着）： " _del_panel || true
+    elif [ -r /dev/tty ]; then
+      { read -rp "要不要一起删可视化面板？[y/N]，直接回车选默认 N（只删中转，面板留着）： " _del_panel </dev/tty || true; } 2>/dev/null
+    fi
+    if [ "$_del_panel" = "y" ] || [ "$_del_panel" = "Y" ]; then
+      _pi=""
+      for _d in "$KIT_DIR" /usr/local/share/relay-node "$HOME/relay-node-kit"; do
+        if [ -f "$_d/panel-install.sh" ]; then _pi="$_d/panel-install.sh"; break; fi
+      done
+      if [ -n "$_pi" ]; then
+        echo "正在删面板..."
+        PANEL_REMOVE_DATA=y bash "$_pi" --remove || echo "面板没删干净（不影响中转已删的结果），手动跑 bash panel-install.sh --remove。"
+      else
+        # 没找到安装脚本：直接删服务与二进制
+        if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+          systemctl stop relay-panel 2>/dev/null || true
+          systemctl disable relay-panel 2>/dev/null || true
+        fi
+        if pgrep -x relay-panel >/dev/null 2>&1; then
+          pkill -x relay-panel 2>/dev/null || true
+          sleep 1
+        fi
+        rm -f /etc/systemd/system/relay-panel.service /usr/local/bin/relay-panel /usr/local/bin/panel-info
+        rm -rf /etc/relay-panel
+        echo "  面板已删（服务、二进制、panel-info、面板数据）。"
+      fi
+    fi
   fi
   echo ""
   echo "中转已彻底删除。"
