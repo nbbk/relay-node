@@ -878,6 +878,8 @@ echo | openssl s_client -connect 203.0.113.1:443 -servername example.com 2>/dev/
 
 面板是给中转套的一个网页面板：浏览器里点几下，完成原来要 SSH 进服务器敲命令做的所有事。面板只改配置、不碰节点流量；面板挂了、关了，都不影响 realm 转发；SSH 加原脚本永远是兜底。
 
+> **只想先装面板？不用先装中转**：直接跑 `curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/panel-install.sh | bash` 只装面板，装完打开面板添加第一个落地，中转会自动装好。已有中转的机器装面板，现有落地会自动出现在面板里（面板读同一份 `/etc/realm/relay.conf`，不用重新添加）。
+
 ### 4.1 安装与登录
 
 **新装中转时**：install.sh 最后一步问“要不要装可视化面板？”，选 `y` 就装好。
@@ -887,6 +889,10 @@ echo | openssl s_client -connect 203.0.113.1:443 -servername example.com 2>/dev/
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/panel-install.sh | bash
 ```
+
+**只装面板（不用先装中转）**：直接跑上面这条命令，装完打开面板添加第一个落地，中转会自动装好。
+
+**已有中转的机器装面板**：同样跑上面这条命令，面板读同一份 `/etc/realm/relay.conf`，现有落地自动出现在面板里，不用重新添加。
 
 安装时问账号密码：直接回车用默认（用户名 `admin`、随机强密码），输入自己的就用输入的；装完最后显示一次全部信息（地址、端口、账号、密码）。**只显示一次**，记下来。
 

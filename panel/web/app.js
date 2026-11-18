@@ -282,6 +282,15 @@ async function loadOverview() {
       statCard('落地数量', String(landingsCache.length) + ' 个', '分流：80 ' + (s.share80 ? '分流中' : '直通') + ' / 443 ' + (s.share443 ? '分流中' : '直通')) +
       statCard('面板版本', esc(s.panel_version || '—'), '端口默认 11111，可在设置里改');
     renderLandingCards();
+    // 空状态文案：中转还没装（status 带 note）时提示加第一个落地会自动装中转；
+    // 中转已装但一个落地都没有时只提示去添加落地。
+    if (!landingsCache.length) {
+      if (s.note) {
+        $('#overview-empty').innerHTML = '中转还没装好，也没有落地节点。<br>去「添加落地」加第一个落地，中转会自动装好。<br><button class="btn" type="button" data-goto="add" style="margin-top:10px">＋ 添加第一个落地</button>';
+      } else {
+        $('#overview-empty').innerHTML = '还没有落地节点，去「添加落地」加第一个吧。';
+      }
+    }
     if (s.panel_version) $('#side-version').textContent = s.panel_version;
   } catch (e) {
     $('#overview-stats').innerHTML = '<div class="card"><div class="error-box">总览加载失败：' + esc(e.message) + '</div></div>';

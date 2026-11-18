@@ -58,6 +58,12 @@ curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/install.sh | b
 
 预设：`1` = tiktok-node（80 + 443）｜`2` = sing-box-node（80 + 443 + 8388 + 8443 + 8444，含 UDP）｜`3` = 自定义端口。装完自动跑 `check.sh` 自检。
 
+> **只想先装面板？不用先装中转**：直接跑下面这条命令只装面板，装完打开面板添加第一个落地，中转会自动装好：
+>
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/panel-install.sh | bash
+> ```
+
 装完最后还会问一句要不要装可视化面板（见下面“可视化面板”），选 `y` 就装好，浏览器里点几下就能管中转；不装也不影响转发。
 
 填写示例（落地是 tiktok-node，落地 IP `203.0.113.1`）：
@@ -92,6 +98,8 @@ vless://11111111-2222-3333-4444-555555555555@example.com:443?encryption=none&sec
 ### 安装
 
 - 新装中转时：install.sh 最后一步问“要不要装可视化面板？”，选 `y` 就装好。
+- 只装面板（不用先装中转）：直接跑下面这条命令，装完打开面板添加第一个落地，中转会自动装好。
+- 已装中转的机器装面板：现有落地自动出现在面板里（面板读同一份 `/etc/realm/relay.conf`），不用重新添加。
 - 已装中转的机器：单独跑一条命令：
 
   ```bash

@@ -64,7 +64,7 @@ STEP7_INDEX=1
 SHARE80=0        # 80 是否走按域名分流（nginx 监听 80，按 Host 分到各落地 80）
 SHARE443=0       # 443 是否走按 SNI 分流（haproxy 监听 443，按 SNI 分到各落地 443）
 SHARE_ASKED=0    # 本轮加落地时是否已问过分流方式（每加一个落地重置一次）
-CERT_DOMAIN=""   # 本轮落地的证书域名（分流按它认落地；落地填域名时就是它，填 IP 时再问）
+CERT_DOMAIN="${CERT_DOMAIN:-}"   # 本轮落地的证书域名（分流按它认落地；落地填域名时就是它，填 IP 时再问；面板非交互调用时可用环境变量预设）
 
 REALM_VERSION="${REALM_VERSION:-}"   # 可手动指定，如 REALM_VERSION=v2.9.6
 REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/nbbk/relay-node/main}"
@@ -1249,7 +1249,7 @@ collect_landing() { # $1=标题（如 "1/6 落地目标与转发预设"），收
   if is_ip "$LANDING"; then
     LANDING_IS_DOMAIN=0
     DOMAIN=""
-    CERT_DOMAIN=""
+    CERT_DOMAIN="${CERT_DOMAIN:-}"
     echo "落地：$LANDING（IP 直连，中转完全不碰 DNS）"
   else
     LANDING_IS_DOMAIN=1
@@ -1459,7 +1459,8 @@ setup_realm_once() { # 下载 realm；已存在且能跑就直接复用，不重
     *) echo "不支持的架构：$ARCH（realm 只提供 x86_64 / aarch64 的 Linux 包）"; exit 1 ;;
   esac
   if [ -z "$REALM_VERSION" ]; then
-    REALM_VERSION="$(curl -fsSL --max-time 15 "https://api.github.com/repos/zhboner/realm/releases/latest" 2>/dev/null | grep -o '"tag_name": *"v[^"]*"' | head -1 | sed 's/.*"v/v/;s/"//')"
+    # 注意：pipefail 下 curl 失败会直接杀脚本（set -e），加 || true 让失败走下面的固定回退版本
+    REALM_VERSION="$(curl -fsSL --max-time 15 "https://api.github.com/repos/zhboner/realm/releases/latest" 2>/dev/null | grep -o '"tag_name": *"v[^"]*"' | head -1 | sed 's/.*"v/v/;s/"//' || true)"
     if [ -z "$REALM_VERSION" ]; then
       REALM_VERSION="v2.9.6"
       echo "取 latest 失败，用固定回退版本 $REALM_VERSION（2026-08-30 发布，已核实直链可用）"
@@ -1801,7 +1802,7 @@ if [ "$ADD_MODE" = "1" ]; then
     exit 1
   fi
   # 先留住命令行给的落地/预设（下面读 relay.conf 会覆盖它们，读完再还回去）
-  _cli_landing="${LANDING:-}"; _cli_preset="${PRESET:-}"
+  _cli_landing="${LANDING:-}"; _cli_preset="${PRESET:-}"; _cli_cert_domain="${CERT_DOMAIN:-}"
   # shellcheck disable=SC1091
   . /etc/realm/relay.conf
   LANDING_COUNT="${LANDING_COUNT:-1}"
@@ -1809,8 +1810,10 @@ if [ "$ADD_MODE" = "1" ]; then
   SHARE80="${SHARE80:-0}"
   SHARE443="${SHARE443:-0}"
   echo "追加模式：当前已有 $LANDING_COUNT 个落地，继续加一个（不覆盖已有配置）。"
-  LANDING="$_cli_landing"; PRESET="$_cli_preset"
-  SB_MODE=""; CUSTOM_PORTS=""; WANT_UDP=""; PORTS=""; MODE_NOTE=""; DOMAIN=""; LANDING_IS_DOMAIN=0; CERT_DOMAIN=""; SHARE_ASKED=0
+  LANDING="$_cli_landing"; PRESET="$_cli_preset"; CERT_DOMAIN="$_cli_cert_domain"
+  # 注意：SB_MODE/CUSTOM_PORTS/WANT_UDP 不在这里清空——面板非交互调用时靠环境变量预设这三项，
+  # 清空会把面板传的值丢掉（collect_landing 里 ask() 会跳过已预设的值）；relay.conf 里也没有这三项，不用防泄漏
+  PORTS=""; MODE_NOTE=""; DOMAIN=""; LANDING_IS_DOMAIN=0; SHARE_ASKED=0
 fi
 
 echo "一共 7 步（前 6 步装中转，第 7 步生成双节点链接，可跳过）。每一步填完按回车继续；标了“默认”的，直接回车就是默认值。"

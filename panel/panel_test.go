@@ -2,6 +2,10 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -318,5 +322,128 @@ func TestShareOptions(t *testing.T) {
 	}
 	if len(shareOptions(true, false)) != 2 {
 		t.Fatalf("80 only should offer 2 options")
+	}
+}
+
+// ---------- 添加落地：中转未装时走完整安装 / 已装时走 --add ----------
+
+// addLandingStub 模拟 install.sh：记录参数与环境变量；完整安装时模拟写出 relay.conf。
+const addLandingStub = `#!/bin/bash
+echo "ARGS: $*" >> "$STUB_LOG"
+echo "ENV: LANDING=$LANDING PRESET=$PRESET SB_MODE=$SB_MODE CUSTOM_PORTS=$CUSTOM_PORTS WANT_UDP=$WANT_UDP CERT_DOMAIN=$CERT_DOMAIN ADD_ANOTHER=$ADD_ANOTHER SHARE_MODE=${SHARE_MODE:-} LISTEN_OVERRIDES=${LISTEN_OVERRIDES:-}" >> "$STUB_LOG"
+if [ "$1" = "--nodes" ]; then exit 0; fi
+mkdir -p "$REALM_DIR"
+cat > "$REALM_DIR/relay.conf" <<'EOF'
+LANDING=203.0.113.1
+LANDING_IS_DOMAIN=0
+DOMAIN=""
+CERT_DOMAIN="example.com"
+PRESET=3
+MODE_NOTE="自定义端口"
+PORTS="tcp:30080:30080 tcp:30443:30443"
+LANDING_COUNT=1
+ALL_PORTS="tcp:30080:30080 tcp:30443:30443"
+SHARE80=0
+SHARE443=0
+EOF
+touch "$REALM_DIR/config.toml"
+exit 0
+`
+
+func newTestAddLandingServer(t *testing.T, kitDir, realmDir string) *Server {
+	t.Helper()
+	t.Setenv("PANEL_INITIAL_PASSWORD", "test-password-123")
+	panelHome := t.TempDir()
+	s, err := newServer(Env{PanelHome: panelHome, RealmDir: realmDir, KitDir: kitDir, Port: 11111})
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	return s
+}
+
+func postAddLanding(t *testing.T, s *Server, body string) map[string]any {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/api/v1/landings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.handleAddLanding(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("HTTP 状态=%d 响应=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("响应不是 JSON：%v（%s）", err, rec.Body.String())
+	}
+	return resp
+}
+
+func TestHandleAddLandingFreshInstall(t *testing.T) {
+	kitDir := t.TempDir()
+	realmDir := t.TempDir()
+	stubLog := filepath.Join(t.TempDir(), "stub.log")
+	if err := os.WriteFile(filepath.Join(kitDir, "install.sh"), []byte(addLandingStub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STUB_LOG", stubLog)
+	t.Setenv("REALM_DIR", realmDir)
+	s := newTestAddLandingServer(t, kitDir, realmDir)
+
+	resp := postAddLanding(t, s, `{"landing":"203.0.113.1","preset":"3","custom_ports":"30080,30443","cert_domain":"example.com"}`)
+	if resp["ok"] != true {
+		t.Fatalf("中转未装时添加落地应成功：%v", resp)
+	}
+	if idx, _ := resp["landing_index"].(float64); idx != 1 {
+		t.Fatalf("landing_index=%v want 1", resp["landing_index"])
+	}
+	log, err := os.ReadFile(stubLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(log)), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("stub 日志太少：%q", string(log))
+	}
+	// 第一次调用必须是完整安装（不带 --add）
+	if lines[0] != "ARGS: " {
+		t.Fatalf("首次调用应不带 --add（完整安装），实际：%q", lines[0])
+	}
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"LANDING=203.0.113.1", "PRESET=3", "CUSTOM_PORTS=30080,30443", "CERT_DOMAIN=example.com", "ADD_ANOTHER=N"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("环境变量缺 %s，实际：%s", want, joined)
+		}
+	}
+	// stub 模拟安装写出的 relay.conf 应能被面板读到
+	if rc, _, err := s.readRelayConf(); err != nil || len(rc.Landings) != 1 {
+		t.Fatalf("安装后 relay.conf 读不到或落地数不对：%v %+v", err, rc)
+	}
+}
+
+func TestHandleAddLandingExistingRelay(t *testing.T) {
+	kitDir := t.TempDir()
+	realmDir := t.TempDir()
+	stubLog := filepath.Join(t.TempDir(), "stub.log")
+	if err := os.WriteFile(filepath.Join(kitDir, "install.sh"), []byte(addLandingStub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 预置已装好的中转（两个落地）
+	if err := os.WriteFile(filepath.Join(realmDir, "relay.conf"), []byte(sampleRelayConf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STUB_LOG", stubLog)
+	t.Setenv("REALM_DIR", realmDir)
+	s := newTestAddLandingServer(t, kitDir, realmDir)
+
+	resp := postAddLanding(t, s, `{"landing":"203.0.113.9","preset":"3","custom_ports":"30080,30443"}`)
+	if resp["ok"] != true {
+		t.Fatalf("已有中转时添加落地应成功：%v", resp)
+	}
+	log, err := os.ReadFile(stubLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := strings.Split(strings.TrimSpace(string(log)), "\n")[0]
+	if first != "ARGS: --add" {
+		t.Fatalf("已有中转时首次调用应带 --add，实际：%q", first)
 	}
 }

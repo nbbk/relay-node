@@ -532,7 +532,17 @@ func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
 		}
 		env = append(env, "LISTEN_OVERRIDES="+strings.Join(ov, ","))
 	}
-	res, err := s.runScript("install.sh", 300*time.Second, env, "--add")
+	// 中转还没装（relay.conf 不存在）时改跑完整安装（不带 --add），
+	// 面板里加第一个落地就把中转一起装好；完整安装要下载 realm、建服务，给更长的超时。
+	// 已装过中转时走 --add，只追加一个落地。
+	relayInstalled := rc != nil
+	installArgs := []string{"--add"}
+	installTimeout := 300 * time.Second
+	if !relayInstalled {
+		installArgs = nil
+		installTimeout = 600 * time.Second
+	}
+	res, err := s.runScript("install.sh", installTimeout, env, installArgs...)
 	if err != nil {
 		s.audit(user, "添加落地", req.Landing, "失败", sanitize(res.Stdout+res.Stderr))
 		writeJSON(w, 200, errResp("添加落地失败："+sanitize(lastLines(res.Stdout+res.Stderr, 5))))

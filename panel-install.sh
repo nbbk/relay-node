@@ -342,6 +342,10 @@ EOF
   echo "密码：${PANEL_PASS}"
   echo ""
   echo "浏览器打开上面这个地址，登录就能管中转。"
+  if [ ! -f /etc/realm/relay.conf ]; then
+    echo "中转还没装：打开面板添加第一个落地时，中转会自动装好；也可以现在先跑 install.sh 装中转："
+    echo "  curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/install.sh | bash"
+  fi
   echo "忘了地址或密码：SSH 上服务器跑 panel-info 就能重新看到。"
   echo "HTTPS：先用 http 打开，面板设置里可以一键开 HTTPS（IP 访问是自签证书，浏览器首次提示一次；绑域名可申请真证书）。"
 fi
