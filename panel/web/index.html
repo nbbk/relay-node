@@ -112,6 +112,12 @@
                 <input id="add-custom-ports" placeholder="443,8388"></div>
               <div><label for="add-cert-domain">证书域名 <span class="hint">用于签证书，如 example.com</span></label>
                 <input id="add-cert-domain" placeholder="example.com"></div>
+              <div><label for="add-cert-mode">证书签发方式 <span class="hint">决定证书怎么签、怎么续签；要和落地机装节点时选的方式一致</span></label>
+                <select id="add-cert-mode">
+                  <option value="http01" selected>默认走 80（HTTP-01）</option>
+                  <option value="dns01">DNS 验证 Cloudflare（DNS-01）</option>
+                </select></div>
+              <p class="small full">默认走 80：落地机装节点时用 80 端口验证域名签证书，最常用、不用多配；代价是 80 必须直通落地，改了监听端口或域名指着中转时，续签要手动把域名改回指向落地。DNS 验证：落地机用 Cloudflare 令牌在 DNS 里加验证记录签证书，续签全自动，域名指哪都行、不用 80；前提是装节点时选了 DNS 验证并配好令牌，没配令牌的落地别选这个。</p>
               <div><label for="add-duration">节点时长</label>
                 <select id="add-duration">
                   <option value="0">永久（默认）</option><option value="30">30 天</option><option value="90">90 天</option>

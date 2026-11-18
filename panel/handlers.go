@@ -311,7 +311,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			subnodes = []SubNode{}
 		}
 		landings = append(landings, map[string]any{
-			"index": l.Index, "landing": l.Landing, "name": l.displayName(), "domain": l.Domain, "cert_domain": l.CertDomain,
+			"index": l.Index, "landing": l.Landing, "name": l.displayName(), "domain": l.Domain, "cert_domain": l.CertDomain, "cert_mode": l.CertMode,
 			"preset": l.Preset, "sb_mode": deriveSBMode(l), "custom_ports": portsToCustomString(l.Ports), "want_udp": hasUDPPorts(l.Ports),
 			"mode_note": l.ModeNote, "mode": l.Mode, "ports": l.Ports,
 			"online": online, "latency_ms": latencyMs,
@@ -467,12 +467,15 @@ func shareOptions(c80, c443 bool) []map[string]string {
 // 表单预填当前值）。DurationDays：0=永久，>0=从现在起 N 天后到期，
 // -1=保持不变（仅编辑时用，添加落地不发 -1）。
 type addLandingReq struct {
-	Landing           string         `json:"landing"`
-	Preset            string         `json:"preset"`
-	SBMode            string         `json:"sb_mode"`
-	CustomPorts       string         `json:"custom_ports"`
-	WantUDP           bool           `json:"want_udp"`
-	CertDomain        string         `json:"cert_domain"`
+	Landing     string `json:"landing"`
+	Preset      string `json:"preset"`
+	SBMode      string `json:"sb_mode"`
+	CustomPorts string `json:"custom_ports"`
+	WantUDP     bool   `json:"want_udp"`
+	CertDomain  string `json:"cert_domain"`
+	// CertMode 证书签发方式：""=没填（按老逻辑判）、"http01"=默认走 80、
+	// "dns01"=DNS 验证 Cloudflare（续签不走 80，全自动）。
+	CertMode          string         `json:"cert_mode"`
 	DurationDays      int            `json:"duration_days"`
 	TrafficLimitBytes int64          `json:"traffic_limit_bytes"`
 	TrafficLimitMode  string         `json:"traffic_limit_mode"`
@@ -510,6 +513,9 @@ func validateLandingReqFields(req addLandingReq) string {
 	}
 	if req.CertDomain != "" && !validDomain(req.CertDomain) {
 		return "证书域名格式不对"
+	}
+	if req.CertMode != "" && req.CertMode != "http01" && req.CertMode != "dns01" {
+		return "证书签发方式只能是 http01（默认走 80）或 dns01（DNS 验证）"
 	}
 	if req.TrafficLimitMode != "" && req.TrafficLimitMode != "total" && req.TrafficLimitMode != "monthly" {
 		return "流量限制模式只能是 total 或 monthly"
@@ -725,6 +731,18 @@ func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
 			_ = s.writeRelayConfAtomic([]byte(strings.Join(lines, "\n") + "\n"))
 		}
 	}
+	// 证书签发方式写进 relay.conf（CERT_MODE[_N]；install.sh 不写这项，
+	// 面板自己补。没填就不写，旧逻辑继续生效）
+	if req.CertMode != "" && newLanding != nil && rc2 != nil {
+		suffix := ""
+		if newLanding.Index != 1 {
+			suffix = "_" + strconv.Itoa(newLanding.Index)
+		}
+		if rc3, _, err := s.readRelayConf(); err == nil {
+			lines := setRelayConfValue(rc3.Lines, "CERT_MODE"+suffix, req.CertMode)
+			_ = s.writeRelayConfAtomic([]byte(strings.Join(lines, "\n") + "\n"))
+		}
+	}
 	// 存了原始链接：现场算中转+直连链接，写进 nodes.txt（显式传落地真实编号，
 	// 不用最大编号+1，避免 1.2.1 已知的撞号问题），卡片上直接出链接。
 	manualNote := ""
@@ -912,6 +930,12 @@ func rebuildRelayConfForEdit(rc *RelayConf, index int, nl Landing, newShare80, n
 		set("DOMAIN"+suffix, "")
 	}
 	set("CERT_DOMAIN"+suffix, nl.CertDomain)
+	// 证书签发方式：有值才写，没值就删掉这键（旧 relay.conf 没这字段时不改写）
+	if nl.CertMode != "" {
+		set("CERT_MODE"+suffix, nl.CertMode)
+	} else {
+		lines = removeRelayConfValue(lines, "CERT_MODE"+suffix)
+	}
 	set("PRESET"+suffix, nl.Preset)
 	set("MODE_NOTE"+suffix, nl.ModeNote)
 	if nl.Mode == "door" {
@@ -1112,8 +1136,14 @@ func (s *Server) handleUpdateLanding(w http.ResponseWriter, r *http.Request) {
 			certDomain = old.CertDomain
 		}
 	}
+	// 证书签发方式：没填就沿用旧值（旧落地没这字段时保持空白、按老逻辑判）；
+	// 填了就写入，编辑时可补填。
+	certMode := req.CertMode
+	if certMode == "" {
+		certMode = old.CertMode
+	}
 	newPortsStr := portsToSpecString(ports)
-	newLanding := Landing{Index: index, Landing: req.Landing, Domain: domain, CertDomain: certDomain, Preset: req.Preset, ModeNote: modeNoteFor(req.Preset, req.SBMode, req.Mode == "door"), Mode: req.Mode, Ports: ports, PortsRaw: newPortsStr, Name: req.Name}
+	newLanding := Landing{Index: index, Landing: req.Landing, Domain: domain, CertDomain: certDomain, Preset: req.Preset, ModeNote: modeNoteFor(req.Preset, req.SBMode, req.Mode == "door"), Mode: req.Mode, Ports: ports, PortsRaw: newPortsStr, Name: req.Name, CertMode: certMode}
 	// 分流开关：显式选 2/3/4 就开对应项；否则沿用旧开关，但没落地再用 80/443 就关掉
 	newShare80, newShare443 := rc.Share80, rc.Share443
 	if req.ShareMode == "2" || req.ShareMode == "4" {
@@ -1163,6 +1193,9 @@ func (s *Server) handleUpdateLanding(w http.ResponseWriter, r *http.Request) {
 	}
 	if old.CertDomain != certDomain {
 		changes = append(changes, fmt.Sprintf("证书域名：%s→%s", old.CertDomain, certDomain))
+	}
+	if old.CertMode != certMode {
+		changes = append(changes, fmt.Sprintf("证书签发方式：%s→%s", certModeText(old.CertMode), certModeText(certMode)))
 	}
 	if old.displayName() != newLanding.displayName() {
 		changes = append(changes, fmt.Sprintf("名称：%s→%s", old.displayName(), newLanding.displayName()))
@@ -2097,7 +2130,7 @@ func (s *Server) handleDeleteLanding(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	s.state.Recycle = append(s.state.Recycle, RecycleItem{
 		ID: id, Landing: l.Landing, Domain: l.Domain, Ports: l.PortsRaw, ModeNote: l.ModeNote, Mode: l.Mode,
-		CertDomain: l.CertDomain, DeletedAt: now.Format(time.RFC3339),
+		CertDomain: l.CertDomain, CertMode: l.CertMode, DeletedAt: now.Format(time.RFC3339),
 		ExpiresAt:        now.Add(7 * 24 * time.Hour).Format(time.RFC3339),
 		RelayConfSnippet: strings.Join(snippet, "\n"), ConfigEndpoints: endpointsText, Ext: ext,
 	})
@@ -2207,6 +2240,10 @@ func (s *Server) handleRecycleRestore(w http.ResponseWriter, r *http.Request) {
 	// 恢复 door 落地的模式（旧回收站记录没存 Mode 时不写，默认标准模式）
 	if it.Mode != "" {
 		lines = append(lines, "MODE"+suffix+"="+it.Mode)
+	}
+	// 恢复证书签发方式（旧回收站记录没存时不写）
+	if it.CertMode != "" {
+		lines = append(lines, "CERT_MODE"+suffix+"=\""+it.CertMode+"\"")
 	}
 	lines = setRelayConfValue(lines, "LANDING_COUNT", strconv.Itoa(newIdx))
 	// ALL_PORTS 合并

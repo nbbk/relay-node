@@ -78,6 +78,7 @@ type RecycleItem struct {
 	ModeNote         string     `json:"mode_note"`
 	Mode             string     `json:"mode"`
 	CertDomain       string     `json:"cert_domain"`
+	CertMode         string     `json:"cert_mode"`
 	DeletedAt        string     `json:"deleted_at"`
 	ExpiresAt        string     `json:"expires_at"`
 	RelayConfSnippet string     `json:"relay_conf_snippet"`
@@ -123,6 +124,10 @@ type Landing struct {
 	// Name 显示名（relay.conf 的 NAME[_N]，编辑时可改；只改显示，
 	// 不动转发配置、端口、模式与状态键；空着就显示落地地址）。
 	Name string `json:"name"`
+	// CertMode 证书签发方式（relay.conf 的 CERT_MODE[_N]）：
+	// ""=没填（旧落地，按老逻辑判）、"http01"=默认走 80、
+	// "dns01"=DNS 验证 Cloudflare（续签不走 80，全自动）。
+	CertMode string `json:"cert_mode"`
 }
 
 // displayName 卡片标题、历史分组、集中管理里显示的名字：
@@ -182,7 +187,7 @@ func parseRelayConf(data []byte) *RelayConf {
 		if landing == "" {
 			continue
 		}
-		l := Landing{Index: i, Landing: landing, Domain: get("DOMAIN"), CertDomain: get("CERT_DOMAIN"), Preset: get("PRESET"), ModeNote: get("MODE_NOTE"), PortsRaw: get("PORTS"), Name: get("NAME")}
+		l := Landing{Index: i, Landing: landing, Domain: get("DOMAIN"), CertDomain: get("CERT_DOMAIN"), Preset: get("PRESET"), ModeNote: get("MODE_NOTE"), PortsRaw: get("PORTS"), Name: get("NAME"), CertMode: get("CERT_MODE")}
 		// MODE 缺字段的旧 relay.conf 默认标准模式（向后兼容）；只有 door 才记 door。
 		if get("MODE") == "door" {
 			l.Mode = "door"

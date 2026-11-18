@@ -635,6 +635,7 @@ func validateRemoteAddLandingBody(body []byte) error {
 		CustomPorts       string         `json:"custom_ports"`
 		WantUDP           bool           `json:"want_udp"`
 		CertDomain        string         `json:"cert_domain"`
+		CertMode          string         `json:"cert_mode"`
 		DurationDays      int            `json:"duration_days"`
 		TrafficLimitBytes int64          `json:"traffic_limit_bytes"`
 		TrafficLimitMode  string         `json:"traffic_limit_mode"`
@@ -669,6 +670,9 @@ func validateRemoteAddLandingBody(body []byte) error {
 	}
 	if req.CertDomain != "" && !validDomain(req.CertDomain) {
 		return fmt.Errorf("证书域名格式不对")
+	}
+	if req.CertMode != "" && req.CertMode != "http01" && req.CertMode != "dns01" {
+		return fmt.Errorf("证书签发方式只能是 http01（默认走 80）或 dns01（DNS 验证）")
 	}
 	if req.TrafficLimitMode != "" && req.TrafficLimitMode != "total" && req.TrafficLimitMode != "monthly" {
 		return fmt.Errorf("流量限制模式只能是 total 或 monthly")

@@ -390,7 +390,25 @@ func probeCertForLanding(l Landing) (certInfo, bool) {
 	return certInfo{}, false
 }
 
+// certModeText 证书签发方式的中文显示（审计清单用）。
+func certModeText(m string) string {
+	switch m {
+	case "http01":
+		return "默认走 80"
+	case "dns01":
+		return "DNS 验证"
+	default:
+		return "未设置"
+	}
+}
+
 func renewModeFor(l Landing, share443 bool, hasCert bool) (string, bool) {
+	// DNS-01：证书走 Cloudflare DNS 验证签发与续签，根本不走 80 端口，
+	// 落地机 Caddy 会自动续；不能因为没 80 就判手动（智利落地 24443
+	// 就是这么被误判的）。一律自动。
+	if l.CertMode == "dns01" {
+		return "自动（DNS 验证）", false
+	}
 	// 任意门模式：节点域名永远指着落地不动，续签直接走落地，不用改 A 记录。
 	if l.Mode == "door" {
 		return "自动（域名指落地，直接续签）", false

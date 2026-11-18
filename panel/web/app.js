@@ -698,6 +698,7 @@ function buildAddPayload() {
     custom_ports: customPorts || undefined,
     want_udp: $('#add-want-udp').checked,
     cert_domain: certDomain || undefined,
+    cert_mode: $('#add-cert-mode') ? $('#add-cert-mode').value : undefined,
     duration_days: duration,
     traffic_limit_bytes: Math.round(trafficGb * 1073741824),
     traffic_limit_mode: trafficGb > 0 ? $('#add-traffic-mode').value : undefined,
@@ -864,6 +865,11 @@ function editLanding(index) {
     '<div id="edit-custom-ports-wrap"' + (l.preset === '3' ? '' : ' class="hidden"') + '><label>自定义端口 <span class="hint">逗号分隔，如 443,8388；可写 监听:落地，如 10443:443</span></label>' +
     '<input id="edit-custom-ports" value="' + esc(customPorts) + '" placeholder="443,8388"></div>' +
     '<label>证书域名</label><input id="edit-cert-domain" value="' + esc(l.cert_domain || '') + '" placeholder="example.com">' +
+    '<label>证书签发方式 <span class="hint">决定续签方式怎么判；DNS 验证的落地续签不走 80，判自动</span></label><select id="edit-cert-mode">' +
+    '<option value=""' + (!l.cert_mode ? ' selected' : '') + '>未设置（按旧逻辑判断）</option>' +
+    '<option value="http01"' + (l.cert_mode === 'http01' ? ' selected' : '') + '>默认走 80（HTTP-01）</option>' +
+    '<option value="dns01"' + (l.cert_mode === 'dns01' ? ' selected' : '') + '>DNS 验证 Cloudflare（DNS-01）</option></select>' +
+    '<p class="small">默认走 80：落地机用 80 端口验证域名签证书，80 改了监听端口时续签要手动。DNS 验证：落地机用 Cloudflare 令牌在 DNS 里加验证记录签证书，续签全自动，不用 80；前提是装节点时选了 DNS 验证并配好令牌，没配令牌的落地别选这个。</p>' +
     '<label>节点时长</label><select id="edit-duration">' +
     '<option value="-1" selected>保持不变</option><option value="0">改为永久</option><option value="30">从现在起 30 天</option>' +
     '<option value="90">从现在起 90 天</option><option value="180">从现在起 180 天</option><option value="365">从现在起 365 天</option>' +
@@ -948,6 +954,7 @@ function buildEditPayload(m) {
     custom_ports: customPorts || undefined,
     want_udp: $('#edit-want-udp', m).checked,
     cert_domain: certDomain || undefined,
+    cert_mode: $('#edit-cert-mode', m).value || undefined,
     duration_days: duration,
     traffic_limit_bytes: Math.round(trafficGb * 1073741824),
     traffic_limit_mode: trafficGb > 0 ? $('#edit-traffic-mode', m).value : undefined,
@@ -1236,11 +1243,15 @@ async function loadCerts(page) {
         const days = c.days_left;
         const pct = days == null ? 0 : Math.max(0, Math.min(100, Math.round(days / 90 * 100)));
         const cls = days != null && days < 7 ? 'bad' : days != null && days < 30 ? 'warn' : '';
+        // 续签方式本身已含“自动/手动”，后缀只在没写明时补一个“（自动）”；
+        // 以前这里无条件补，自动的会叠成“自动（走 80）（自动）”，明文的会错写成“（自动）”。
+        const rm = c.renew_mode || '';
+        const renewSuffix = c.need_manual ? '（需手动续签，见下方六步引导）' : (rm.indexOf('自动') === 0 || rm.indexOf('无证书') === 0 ? '' : '（自动）');
         return '<div class="card" style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">' +
           '<h2>' + esc(c.domain || '') + '</h2>' + certBadge(days) + '</div>' +
           '<div class="kv"><span>落地</span><b>' + esc(c.landing || '') + '</b></div>' +
           '<div class="kv"><span>到期日</span><b>' + esc(c.expiry || '—') + '</b></div>' +
-          '<div class="kv"><span>续签方式</span><b>' + esc(c.renew_mode || '') + (c.need_manual ? '（需手动续签，见下方六步引导）' : '（自动）') + '</b></div>' +
+          '<div class="kv"><span>续签方式</span><b>' + esc(rm) + renewSuffix + '</b></div>' +
           '<div class="bar-row"><span>剩余天数进度（按 90 天有效期）</span><span>' + (days == null ? '未知' : days + ' 天') + '</span></div>' +
           '<div class="bar"><i class="' + cls + '" style="width:' + pct + '%"></i></div></div>';
       }).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'certs');
@@ -2014,6 +2025,7 @@ function centralAddLanding(id) {
     '<label>预设</label><select id="central-add-preset"><option value="1">预设 1：tiktok-node（Xray）</option><option value="2">预设 2：sing-box-node</option><option value="3">预设 3：自定义端口</option></select>' +
     '<div id="central-add-custom-wrap" class="hidden"><label>自定义端口</label><input id="central-add-custom" placeholder="443,8388"></div>' +
     '<label>证书域名</label><input id="central-add-cert" placeholder="example.com">' +
+    '<label>证书签发方式</label><select id="central-add-cert-mode"><option value="http01" selected>默认走 80（HTTP-01）</option><option value="dns01">DNS 验证 Cloudflare（DNS-01）</option></select>' +
     '<div class="btn-row"><button class="btn" id="central-add-ok" type="button">提交并添加落地</button><button class="btn secondary" id="central-add-cancel" type="button">取消</button></div>');
   onIn(m, '#central-add-cancel', 'click', closeModal);
   onIn(m, '#central-add-preset', 'change', () => {
@@ -2025,12 +2037,13 @@ function centralAddLanding(id) {
     const preset = $('#central-add-preset', m).value;
     const customPorts = $('#central-add-custom', m).value.trim();
     const certDomain = $('#central-add-cert', m).value.trim();
+    const certMode = $('#central-add-cert-mode', m).value;
     if (!landing) { toast('请先填落地 IP 或域名', 'err'); return; }
     if (preset === '3' && !customPorts) { toast('自定义端口必填', 'err'); return; }
     closeModal();
     toast('正在远程加落地，请稍等…');
     try {
-      const d = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(id) + '/landings', { landing, preset, custom_ports: customPorts, cert_domain: certDomain });
+      const d = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(id) + '/landings', { landing, preset, custom_ports: customPorts, cert_domain: certDomain, cert_mode: certMode });
       if (d.ok === false) { toast(centralOpError(d), 'err'); return; }
       toast('远程加落地成功', 'ok');
       loadCentral();

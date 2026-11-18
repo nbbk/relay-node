@@ -127,6 +127,8 @@ if [ "$JSON_MODE" = "1" ]; then
       [ -n "$_M" ] || _M="standard"
     fi
     if [ -z "$_L" ]; then _i=$((_i + 1)); continue; fi
+    # 证书签发方式（relay.conf 的 CERT_MODE[_N]，没有就是老落地，按原逻辑）
+    _CM="$(landing_field "$_i" CERT_MODE)"
     # 端口监听
     for _spec in $_P; do
       _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
@@ -148,9 +150,12 @@ if [ "$JSON_MODE" = "1" ]; then
     if _ep="$(pick_tls_endpoint "$_P" "$_D")"; then
       TLS_LISTEN="${_ep%% *}"; TLS_REMOTE="${_ep##* }"
     fi
-    # 续签方式（与 5/5 同一套判定）；任意门模式域名指落地，续签直接走落地
+    # 续签方式（与 5/5 同一套判定）；DNS-01 走 Cloudflare DNS 验证续签，
+    # 根本不走 80 端口，落地机自动续；任意门模式域名指落地，续签直接走落地
     _renew="自动"; _need_manual=false
-    if [ "$_M" = "door" ]; then
+    if [ "$_CM" = "dns01" ]; then
+      _renew="自动（DNS 验证）"
+    elif [ "$_M" = "door" ]; then
       _renew="自动（域名指落地，直接续签）"
     else
       case " $_P " in
@@ -159,8 +164,11 @@ if [ "$JSON_MODE" = "1" ]; then
       esac
     fi
     if [ -z "$TLS_LISTEN" ]; then
-      # 明文落地，没有证书（续签方式也按明文算：前面按“没 80 就手动”算出的不适用）
-      _renew="无证书（明文模式）"; _need_manual=false
+      # 明文落地，没有证书（续签方式也按明文算：前面按“没 80 就手动”算出的不适用）；
+      # DNS-01 落地即使暂时拿不到证书，续签方式仍是自动（DNS 验证），不改。
+      if [ "$_CM" != "dns01" ]; then
+        _renew="无证书（明文模式）"; _need_manual=false
+      fi
       [ -n "$_certs_json" ] && _certs_json="$_certs_json,"
       _certs_json="$_certs_json{\"index\":$_i,\"landing\":\"$(jesc "$_L")\",\"domain\":\"$(jesc "$_D")\",\"mode\":\"$_M\",\"days_left\":null,\"expiry\":null,\"renew_mode\":\"$(jesc "$_renew")\",\"need_manual\":$_need_manual}"
       _i=$((_i + 1))
@@ -380,6 +388,8 @@ else
       [ -n "$_M" ] || _M="standard"
     fi
     if [ -z "$_L" ]; then _i=$((_i + 1)); continue; fi
+    # 证书签发方式（relay.conf 的 CERT_MODE[_N]，没有就是老落地，按原逻辑）
+    _CM="$(landing_field "$_i" CERT_MODE)"
     # 找 TLS 端点（和 4/5 同一套逻辑：优先监听 443，其次落地 443，再逐个 TCP 端口握手试）
     TLS_LISTEN=""; TLS_REMOTE=""
     if _ep="$(pick_tls_endpoint "$_P" "$_D")"; then
@@ -391,9 +401,12 @@ else
       continue
     fi
     # 续签方式：80 直通或 80 分流都是自动；443 分流也是自动；只有 80 改了监听端口的才要手动
-    # 任意门模式域名指落地，续签直接走落地，也是自动
+    # 任意门模式域名指落地，续签直接走落地，也是自动；
+    # DNS-01 走 Cloudflare DNS 验证续签，不走 80 端口，落地机自动续
     _renew="自动"
-    if [ "$_M" = "door" ]; then
+    if [ "$_CM" = "dns01" ]; then
+      _renew="自动（DNS 验证）"
+    elif [ "$_M" = "door" ]; then
       _renew="自动（域名指落地，直接续签）"
     else
       case " $_P " in
