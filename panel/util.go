@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -343,6 +345,10 @@ func fetchCert(listenPort int, sni string) certInfo {
 }
 
 func renewModeFor(l Landing, share443 bool) (string, bool) {
+	// 任意门模式：节点域名永远指着落地不动，续签直接走落地，不用改 A 记录。
+	if l.Mode == "door" {
+		return "自动（域名指落地，直接续签）", false
+	}
 	for _, p := range l.Ports {
 		if p.Proto == "tcp" && p.Listen == 80 && p.Remote == 80 {
 			return "自动（走 80）", false
@@ -438,6 +444,7 @@ func base64Encode(b []byte) string {
 type linkGroup struct {
 	LandingIndex int               `json:"landing_index"`
 	Landing      string            `json:"landing"`
+	Mode         string            `json:"mode"`
 	Links        []labelledLink    `json:"links"`
 	QR           map[string]string `json:"qr"`
 }
@@ -480,6 +487,10 @@ func parseNodesTxt(data []byte) []linkGroup {
 			cur.Links = append(cur.Links, labelledLink{Label: "中转", Link: strings.TrimSpace(strings.TrimPrefix(line, "中转："))})
 			continue
 		}
+		if strings.HasPrefix(line, "任意门：") && cur != nil {
+			cur.Links = append(cur.Links, labelledLink{Label: "任意门", Link: strings.TrimSpace(strings.TrimPrefix(line, "任意门："))})
+			continue
+		}
 		if strings.HasPrefix(line, "直连：") && cur != nil {
 			cur.Links = append(cur.Links, labelledLink{Label: "直连", Link: strings.TrimSpace(strings.TrimPrefix(line, "直连："))})
 			continue
@@ -487,6 +498,149 @@ func parseNodesTxt(data []byte) []linkGroup {
 		_ = pendingLabel
 	}
 	return groups
+}
+
+// ---------- 任意门模式 ----------
+
+// doorMapPorts 任意门转发端口映射：转发端口（listen）= 落地端口（remote）+ 20000，
+// +20000 超 65535 时依次试 +10000、+1000；三个偏移都超了就保留原 listen
+// （install.sh 随后会明确报错“转发端口算不出来”，面板这里不静默丢端口）。
+// remote 与 proto 不变。
+func doorMapPorts(ports []PortSpec) []PortSpec {
+	out := make([]PortSpec, len(ports))
+	for i, p := range ports {
+		out[i] = p
+		for _, off := range []int{20000, 10000, 1000} {
+			if nl := p.Remote + off; nl >= 1 && nl <= 65535 {
+				out[i].Listen = nl
+				break
+			}
+		}
+	}
+	return out
+}
+
+// setLinkHost 只换节点链接里的地址（host），端口、SNI、名字等都不动；换不了原样返回。
+func setLinkHost(link, newHost string) string {
+	newHost = strings.TrimSpace(newHost)
+	if newHost == "" {
+		return link
+	}
+	pl, err := parseNodeLink(link)
+	if err != nil {
+		return link
+	}
+	switch pl.Scheme {
+	case "vless", "trojan":
+		u, err := url.Parse(strings.TrimSpace(link))
+		if err != nil || u.Host == "" {
+			return link
+		}
+		u.Host = hostPort(newHost, pl.Port)
+		return u.String()
+	case "ss":
+		u, err := url.Parse(strings.TrimSpace(link))
+		if err != nil {
+			return link
+		}
+		if u.User != nil {
+			// SIP002：ss://user@host:port
+			u.Host = hostPort(newHost, pl.Port)
+			return u.String()
+		}
+		// 没有 userinfo：可能是 ss://host:port（SIP002）或 ss://base64 传统形式。
+		// 先试传统 base64：整段 host 解出来是 method:password@host:port。
+		if u.Host != "" {
+			if raw, err := decodeSSOpaque(u.Host); err == nil {
+				if at := strings.LastIndex(string(raw), "@"); at >= 0 {
+					if _, pt, err := net.SplitHostPort(string(raw[at+1:])); err == nil {
+						nb := base64.RawURLEncoding.EncodeToString([]byte(string(raw[:at+1]) + net.JoinHostPort(newHost, pt)))
+						out := "ss://" + nb
+						if u.RawQuery != "" {
+							out += "?" + u.RawQuery
+						}
+						if u.Fragment != "" {
+							out += "#" + u.Fragment
+						}
+						return out
+					}
+				}
+			}
+			// 不是 base64 传统形式：按 SIP002 直接换 host
+			u.Host = hostPort(newHost, pl.Port)
+			return u.String()
+		}
+		// 传统 base64 形式：ss:base64(method:password@host:port)（无 //，Opaque 形式）
+		raw, err := decodeSSOpaque(u.Opaque)
+		if err != nil {
+			return link
+		}
+		at := strings.LastIndex(string(raw), "@")
+		if at < 0 {
+			return link
+		}
+		_, pt, err := net.SplitHostPort(string(raw[at+1:]))
+		if err != nil {
+			return link
+		}
+		nb := base64.RawURLEncoding.EncodeToString([]byte(string(raw[:at+1]) + net.JoinHostPort(newHost, pt)))
+		out := "ss://" + nb
+		if u.RawQuery != "" {
+			out += "?" + u.RawQuery
+		}
+		if u.Fragment != "" {
+			out += "#" + u.Fragment
+		}
+		return out
+	case "vmess":
+		trimmed := strings.TrimSpace(link)
+		idx := strings.Index(trimmed, "://")
+		if idx < 0 {
+			return link
+		}
+		rest := trimmed[idx+3:]
+		frag := ""
+		if i := strings.Index(rest, "#"); i >= 0 {
+			frag = rest[i:]
+			rest = rest[:i]
+		}
+		if i := strings.Index(rest, "?"); i >= 0 {
+			rest = rest[:i]
+		}
+		raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(rest, "="))
+		if err != nil {
+			raw, err = base64.StdEncoding.DecodeString(rest)
+			if err != nil {
+				return link
+			}
+		}
+		var j map[string]any
+		if err := json.Unmarshal(raw, &j); err != nil {
+			return link
+		}
+		j["add"] = newHost
+		nb, err := json.Marshal(j)
+		if err != nil {
+			return link
+		}
+		return "vmess://" + base64.RawURLEncoding.EncodeToString(nb) + frag
+	}
+	return link
+}
+
+func hostPort(host string, port int) string {
+	if port > 0 {
+		return net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	return host
+}
+
+// decodeSSOpaque 解 ss 传统形式的 base64（先 URL-safe 无填充，再标准编码）。
+func decodeSSOpaque(s string) ([]byte, error) {
+	if raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(s, "=")); err == nil {
+		return raw, nil
+	}
+	return base64.StdEncoding.DecodeString(s)
 }
 
 func (s *Server) nodesFilePath() string {
