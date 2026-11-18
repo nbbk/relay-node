@@ -11,8 +11,10 @@ REMOVE=0
 [ "${1:-}" = "--remove" ] && REMOVE=1
 
 # 读 install.sh 写的状态文件，拿到本次转发的端口表；没有就用默认全表
+# 多落地：优先用 ALL_PORTS（全部落地的端口并集），老 relay.conf 没有 ALL_PORTS 就用 PORTS
 PORTS=""
 [ -f /etc/realm/relay.conf ] && set -a && . /etc/realm/relay.conf && set +a
+[ -n "${ALL_PORTS:-}" ] && PORTS="$ALL_PORTS"
 [ -n "${PORTS:-}" ] || PORTS="tcp:80:80 tcp:443:443 tcp:8080:8080 tcp:8081:8081 tcp:8082:8082 tcp:8388:8388 udp:8388:8388 udp:8443:8443 udp:8444:8444"
 
 # 找到安装目录（解析为绝对路径）
