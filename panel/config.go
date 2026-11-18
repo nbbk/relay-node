@@ -31,7 +31,13 @@ type PanelConfig struct {
 	Telegram        TelegramCfg `json:"telegram"`
 	Monitor         MonitorCfg  `json:"monitor"`
 	Latency         LatencyCfg  `json:"latency"`
-	Version         string      `json:"version"`
+	// 远程管理令牌（v1.2.0，被管端）：只存 SHA-256 哈希，绝不存明文。
+	RemoteTokenHash      string `json:"remote_token_hash"`
+	RemoteTokenCreatedAt string `json:"remote_token_created_at"`
+	// 登记的远程面板（v1.2.0，主面板端）：Token 是明文（必须拿原文去调远程接口），
+	// 与 Telegram Token、Cloudflare 令牌同等待遇，只存在 600 权限的 config.json 里。
+	Remotes []RemotePanel `json:"remotes"`
+	Version string        `json:"version"`
 }
 
 // ---------- 面板扩展状态（PANEL_HOME/state.json） ----------
@@ -254,6 +260,9 @@ type Server struct {
 	latencyMu      sync.Mutex
 	latencyAlerts  map[string]*latencyAlertState
 	latencyRoundMu sync.Mutex // 一轮探测的锁（后台循环与总览兜底互斥）
+	centralMu      sync.Mutex // 集中管理缓存锁
+	centralCache   map[string]*RemoteStatusSnapshot
+	centralAlert   map[string]*centralAlertState
 }
 
 func newServer(env Env) (*Server, error) {
@@ -270,7 +279,7 @@ func newServer(env Env) (*Server, error) {
 		// 测试环境 REALM_DIR 可能不可写目录已存在则忽略
 		_ = os.MkdirAll(env.RealmDir, 0o755)
 	}
-	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), certAlertDay: map[string]string{}, lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}}
+	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), certAlertDay: map[string]string{}, lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}}
 	if err := s.loadConfig(); err != nil {
 		return nil, err
 	}
