@@ -81,6 +81,7 @@ p{margin:6px 0}
 .grid.cols-3{grid-template-columns:repeat(3,1fr)}
 .grid.cols-4{grid-template-columns:repeat(4,1fr)}
 .card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); padding:18px}
+.card.offline{border-color:var(--red)}
 .card h2{margin-bottom:6px}
 .stat-num{font-size:30px; font-weight:800; line-height:1.2}
 .stat-label{color:var(--muted); font-size:14px}
