@@ -274,6 +274,16 @@ function statusBadge(l) {
   if (l.online === true) return '<span class="badge green">在线</span>';
   return '<span class="badge grey">未知</span>';
 }
+/* ---------- 落地延迟显示（v1.1.11） ---------- */
+// 在线只显示毫秒数（延迟高不高不做红黄判定，避免误判），后面跟上次探测时间；
+// 离线标红并写清失败原因（超时 / 拒绝连接 / DNS 解析失败等），后面同样跟上次探测时间；
+// 还没探测过显示“尚未探测”。
+function latencyHtml(l) {
+  const when = l.latency_checked_at ? ' <span class="small">（上次探测 ' + esc(fmtDate(l.latency_checked_at)) + '）</span>' : '';
+  if (l.online === true) return esc(l.latency_ms == null ? '—' : l.latency_ms + ' ms') + when;
+  if (l.online === false) return '<span style="color:var(--red)">' + esc(l.latency_error || '离线') + '</span>' + when;
+  return '— <span class="small">（尚未探测）</span>';
+}
 function trafficBarHtml(l) {
   const t = l.traffic || {};
   if (!t.limit_bytes) return '<div class="bar-row"><span>流量：不限</span><span>' + fmtBytes(t.used_bytes || 0) + ' 已用</span></div>';
@@ -413,13 +423,13 @@ function renderLandingCards(page) {
   wrap.innerHTML = pg.slice.map((l) => {
     const exp = daysLeftText(l.expiry);
     const ports = (l.ports || []).map((p) => esc(p.proto) + ' ' + esc(p.listen) + '→' + esc(p.remote)).join('、') || '—';
-    return '<div class="card"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">' +
+    return '<div class="card' + (l.online === false ? ' offline' : '') + '"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">' +
       '<h2>' + esc(l.cert_domain || l.domain || l.landing) + '</h2>' + statusBadge(l) + '</div>' +
       '<div class="kv"><span>落地</span><b>' + esc(l.landing) + '</b></div>' +
       '<div class="kv"><span>监听端口</span><b>' + ports + '</b></div>' +
       '<div class="kv"><span>类型</span><b>' + esc(l.mode_note || '—') + '</b></div>' +
       '<div class="kv"><span>模式</span><b>' + modeText(l, relayAddr) + '</b></div>' +
-      '<div class="kv"><span>延迟</span><b>' + (l.latency_ms == null ? '—' : l.latency_ms + ' ms') + '</b></div>' +
+      '<div class="kv"><span>延迟</span><b>' + latencyHtml(l) + '</b></div>' +
       '<div class="kv"><span>证书</span><b>' + certBadge(l.cert_days_left) + ' · ' + esc(l.renew_mode || '') + '</b></div>' +
       '<div class="kv"><span>到期</span><b><span class="badge ' + exp.cls + '">' + esc(exp.text) + '</span></b></div>' +
       '<div style="margin-top:10px">' + trafficBarHtml(l) + '</div>' +
@@ -957,6 +967,9 @@ async function loadSettingsPage() {
     $('#mon-cpu-warn').value = mon.cpu_warn || 80;
     $('#mon-cpu-crit').value = mon.cpu_crit || 95;
     $('#mon-interval').value = mon.interval_min || 5;
+    const lat = st.latency || {};
+    $('#lat-enabled').checked = lat.enabled !== false;
+    $('#lat-interval').value = lat.interval_min || 5;
     $('#update-box').innerHTML = '<div class="kv"><span>当前版本</span><b>' + esc(st.version || '—') + '</b></div>' +
       '<div class="kv"><span>最新版本</span><b>' + esc(st.latest_version || '—') + '</b></div>' +
       '<div class="kv"><span>状态</span><b>' + (st.update_available ? '<span class="badge yellow">有更新</span>' : '<span class="badge green">已是最新</span>') + '</b></div>' +
@@ -1124,6 +1137,18 @@ function initMonitorSettings() {
     try {
       await apiPost('/api/v1/settings/monitor', body);
       toast('监控设置已保存，立即生效', 'ok');
+    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+  });
+}
+/* ---------- 延迟探测设置（顶层 init：绝不写在别的函数里面） ---------- */
+function initLatencySettings() {
+  on('#latency-form', 'submit', async (e) => {
+    e.preventDefault();
+    const interval = Number($('#lat-interval').value) || 5;
+    if (interval < 1 || interval > 60) { toast('探测间隔请填 1–60 分钟', 'err'); return; }
+    try {
+      await apiPost('/api/v1/settings/latency', { enabled: $('#lat-enabled').checked, interval_min: interval });
+      toast('延迟探测设置已保存，立即生效', 'ok');
     } catch (err) { toast('保存失败：' + err.message, 'err'); }
   });
 }
@@ -1462,6 +1487,7 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initService);
   safeInit(initSettings);
   safeInit(initMonitorSettings);
+  safeInit(initLatencySettings);
   safeInit(initUpdatePoll);
   safeInit(initFirewall);
   safeInit(initTraffic);
