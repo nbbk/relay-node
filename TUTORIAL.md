@@ -41,6 +41,8 @@
 
 中转机要监听 80、443 这些端口来收客户端流量，一个端口同一时间只能被一个程序占着。如果中转机上已经跑了网站、面板或者另一个节点，realm 就监听失败、装不上。安装脚本装之前会先检查，被占了会问你要不要改监听端口（只改中转这边，落地端口不变，建议用高位端口，如 443→10443），不用换机器。80 还要留给证书续签用（验证请求走 80 端口）。
 
+加第 2 个及以上落地时，80 或 443 被已装好的落地占了，脚本会停下来让你选一种解决方式（见 1.8）：改监听走高位端口（默认，续签手动）、80 按域名分流、443 按 SNI 分流。80 分流是中转机上的 nginx 按域名把证书验证请求分到对应落地的 80；443 分流是中转机上的 HAProxy 按 TLS 握手里的域名分流，几个落地共用 443，续签走 443 自动通。
+
 ### 双节点链接和二维码是怎么来的
 
 安装最后一步会让你粘贴原来的节点链接，粘完直接给你两条链接（中转、直连）和两个二维码，存进 `~/relay-node-kit/nodes.txt`。当时跳过也没事，装完随时跑 `bash install.sh --nodes` 就能单独补生成一次，不用重装。二维码要机器上有 qrencode，没有它会自己试着装，装不上也不影响，链接照常给你、复制导入就行。
@@ -100,10 +102,10 @@ tiktok-xray Up 3 days
   ...
 
 == 3/4 本机公网 IP ==
-公网 IP：202.155.138.195
+公网 IP：203.0.113.1
 
 == 4/4 给中转侧安装用的信息（照抄过去填） ==
-  落地地址：202.155.138.195
+  落地地址：203.0.113.1
   预设：1（tiktok-node：80 + 443）
   落地不用装任何东西，也不用重启；装完中转后把域名 A 记录改指到中转 IP 即可。
 ```
@@ -127,14 +129,14 @@ curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/install.sh | b
 
 ```bash
 bash install.sh [落地IP或域名] [预设 1/2/3]
-# 例如：bash install.sh 202.155.138.195 1
+# 例如：bash install.sh 203.0.113.1 1
 # 不给参数就交互询问
 ```
 
 也可以用环境变量一次写死、不交互（适合写进自己的部署脚本）：
 
 ```bash
-LANDING=202.155.138.195 PRESET=2 bash install.sh
+LANDING=203.0.113.1 PRESET=2 bash install.sh
 # 自定义端口也一样：LANDING=127.0.0.1 PRESET=3 CUSTOM_PORTS="443,8388" WANT_UDP=y bash install.sh
 ```
 
@@ -151,11 +153,11 @@ LANDING=202.155.138.195 PRESET=2 bash install.sh
 ② 选预设 [1/2/3]，直接回车选默认 1：
 ```
 
-填写示例（落地是 tiktok-node，落地 IP `202.155.138.195`）：
+填写示例（落地是 tiktok-node，落地 IP `203.0.113.1`）：
 
 ```text
 请填写你的落地 IP 或域名：
-① 落地服务器 IP（推荐填 IP，例如 202.155.138.195）或域名，填完按回车：202.155.138.195
+① 落地服务器 IP（推荐填 IP，例如 203.0.113.1）或域名，填完按回车：203.0.113.1
 ② 选预设 [1/2/3]，直接回车选默认 1：1
 ```
 
@@ -224,7 +226,7 @@ tcp_keepalive_probe = 3
 
 [[endpoints]]
 listen = "0.0.0.0:443"
-remote = "202.155.138.195:443"
+remote = "203.0.113.1:443"
 ```
 
 **第 5 步：网络加速（BBR / fq / TCP 缓冲 / TFO）。** 写入 `/etc/sysctl.d/99-relay-node.conf` 并应用。中转不碰 IPv6，不禁用（只加加速，不改其他已有配置）。
@@ -260,7 +262,7 @@ systemctl status realm --no-pager
 ```text
 请粘贴你原来的节点链接：
 （可多条，一行一条；粘完按一次回车（空行）结束；不想生成就直接回车跳过）
-vless://58087f8b-f340-4721-beb7-5aae486ba0e7@yinni.930327.xyz:443?encryption=none&security=tls&type=ws&host=yinni.930327.xyz&path=%2Fs1momobvfylwonz4#TikTok-Node
+vless://11111111-2222-3333-4444-555555555555@example.com:443?encryption=none&security=tls&type=ws&host=example.com&path=%2Fexample-path#TikTok-Node
 （空行回车结束）
 ```
 
@@ -268,8 +270,8 @@ vless://58087f8b-f340-4721-beb7-5aae486ba0e7@yinni.930327.xyz:443?encryption=non
 
 ```text
 ---- 第 1 条 ----
-中转：vless://58087f8b-f340-4721-beb7-5aae486ba0e7@yinni.930327.xyz:443?encryption=none&security=tls&type=ws&host=yinni.930327.xyz&path=%2Fs1momobvfylwonz4#TikTok-Node
-直连：vless://58087f8b-f340-4721-beb7-5aae486ba0e7@202.155.138.195:443?encryption=none&security=tls&type=ws&host=yinni.930327.xyz&path=%2Fs1momobvfylwonz4&sni=yinni.930327.xyz#TikTok-Node-%E7%9B%B4%E8%BF%9E
+中转：vless://11111111-2222-3333-4444-555555555555@example.com:443?encryption=none&security=tls&type=ws&host=example.com&path=%2Fexample-path#TikTok-Node
+直连：vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443?encryption=none&security=tls&type=ws&host=example.com&path=%2Fexample-path&sni=example.com#TikTok-Node-%E7%9B%B4%E8%BF%9E
 ```
 
 - `中转：` 是你粘贴的原链接，但端口会按实际监听端口走：如果监听端口改过（监听≠落地端口），中转链接里的端口自动换成监听端口（例如监听改成 1443，中转链接就是 `域名:1443`）；直连那条保持落地端口不变。域名改指到中转机后它自动走中转。
@@ -286,11 +288,11 @@ vless://58087f8b-f340-4721-beb7-5aae486ba0e7@yinni.930327.xyz:443?encryption=non
 
 ```bash
 # 查域名现在指到哪（应为中转机 IP）
-dig +short yinni.930327.xyz
+dig +short example.com
 # 换个公共 DNS 再查一次，排除本地缓存干扰
-dig +short yinni.930327.xyz @8.8.8.8
+dig +short example.com @8.8.8.8
 # 没装 dig 就用 nslookup
-nslookup yinni.930327.xyz 8.8.8.8
+nslookup example.com 8.8.8.8
 ```
 
 两条都返回中转机 IP 才算生效。如果还返回落地 IP，就是 DNS 还没生效，等一会儿再查；不要急着改客户端。
@@ -311,9 +313,9 @@ bash check.sh
 
 ```bash
 # 经中转的证书
-echo | openssl s_client -connect yinni.930327.xyz:443 -servername yinni.930327.xyz 2>/dev/null | openssl x509 -subject -dates -noout
+echo | openssl s_client -connect example.com:443 -servername example.com 2>/dev/null | openssl x509 -subject -dates -noout
 # 直连落地的证书（指纹/签发日期应完全一致）
-echo | openssl s_client -connect 202.155.138.195:443 -servername yinni.930327.xyz 2>/dev/null | openssl x509 -subject -dates -noout
+echo | openssl s_client -connect 203.0.113.1:443 -servername example.com 2>/dev/null | openssl x509 -subject -dates -noout
 ```
 
 ### 1.5 客户端两种用法
@@ -330,12 +332,12 @@ proxies:
     port: 443
     uuid: <原来那个 UUID，不变>
     tls: true
-    servername: yinni.930327.xyz   # 保持域名，不变
+    servername: example.com   # 保持域名，不变
     network: ws
     ws-opts:
       path: /原来那个路径，不变
       headers:
-        Host: yinni.930327.xyz    # 保持域名，不变
+        Host: example.com    # 保持域名，不变
 ```
 
 ### 1.6 端口对照表
@@ -371,12 +373,13 @@ proxies:
 bash check.sh
 ```
 
-它分 4 节，每节都有 `[通过] / [注意] / [风险]`：
+它分 5 节，每节都有 `[通过] / [注意] / [风险]`：
 
 1. **realm 进程**：`systemd 服务 realm 正在运行`（或无 systemd 时 `realm 进程正在运行`）+ 打印 realm 版本。
-2. **监听端口**：逐条核对本次转发的每个端口都在监听，例如 `[通过] 443/tcp 监听中 -> 202.155.138.195:443`。
+2. **监听端口**：逐条核对本次转发的每个端口都在监听，例如 `[通过] 443/tcp 监听中 -> 203.0.113.1:443`。
 3. **BBR**：`[通过] BBR 已启用（bbr）`；内核不支持时会显示 `[注意]`，不影响转发。
 4. **TLS 直通验证**：比对经中转与直连落地的证书指纹（见 1.4）。一致就是 `[通过]`；不一致会报 `[风险]`，立即排查，不要用。
+5. **证书到期天数**：逐个落地经中转连落地 443 读证书，显示剩余天数和续签方式，例如 `[通过] 落地 1（203.0.113.1）：证书剩余 62 天（到期 2027-01-18），续签方式：自动（走 80）。`。剩余 <30 天报 `[注意]`、<7 天或已过期报 `[风险]`；明文模式的落地没有证书，会显示“明文模式，没有证书”跳过。续签方式按实际情况显示：走 80 自动、走 443 SNI 分流自动、或手动（80 改了监听端口，见 1.9 手动续签证书）。Caddy 只在到期前 30 天内才开始续签，所以不用天天盯，看到 `[注意]` 再按 1.9 走就行。
 
 最后还有一段 UDP 端口说明：UDP 没法用 curl 测，SS / HY2 / TUIC 用客户端实测最准——连上、速度正常就是通的。
 
@@ -390,10 +393,72 @@ bash install.sh --add
 
 - 追加不覆盖已有配置：只往 `/etc/realm/config.toml` 后面追加新落地的转发规则，BBR、systemd 服务、realm 二进制都只建一次，改完自动重启生效。
 - 追加时第 1 步、第 2 步、第 7 步和第 1 个落地一模一样（填新落地 IP、选预设、粘贴新落地的原链接拿双节点）；第 7 步每个新增落地各跑一次。
-- **监听端口不能撞**：两个落地都走 443 时，第二个的监听端口必须改。预检发现被占会主动问你要不要改，选 `y` 再逐个填新监听端口（建议值是高位端口，原端口+10000，如 443→10443）；填任意合法端口（1-65535）都行。客户端链接端口跟着监听端口改——第 7 步生成的中转链接会自动换成实际监听端口，直连那条保持落地端口不变。
-- **80 端口只能被一个落地占用**：第 2 个落地的 80 改监听端口后，证书续签走不通这条路（验证只认 80 端口）；续签时把域名临时改回指向落地，续完再改回来。
-- 状态文件 `/etc/realm/relay.conf` 里 1 号落地用平铺变量（`LANDING`/`PORTS`），2 号起用 `_编号` 后缀（`LANDING_2`/`PORTS_2`），另有 `LANDING_COUNT` 和全部端口并集 `ALL_PORTS`；老版本单落地 relay.conf 没有这两行，新版 check.sh 和 `--nodes` 照样能读。
-- `bash check.sh` 会把每个落地都验一遍（监听端口 + TLS 证书指纹）；`bash install.sh --nodes` 会把每个落地的双节点都补生成一次；`bash stop.sh` 停的是全部落地，`--remove` 删的也是全部。
+- **监听端口不能撞**：两个落地都走 443 时，第二个的监听端口必须改（只改中转这边，落地端口不变）。加第 2 个及以上落地、80 或 443 被已装好的落地占了时，脚本会停下来让你选一种解决方式（只影响新加的这个落地，已经装好的不动；直接回车就是默认 1）。每个选项下面都有详细解释，照着选就行：
+
+  **1）改监听走高位端口**（默认）。最简单，什么都不用准备，装完就能用。第二个落地的 443 会改成 10443 这类高位端口，客户端链接要带上高位端口；证书续签要手动：到期前把域名 A 记录改回指向落地、续完再改回来（见 1.9）。适合只想最快装好、不介意链接带端口、到期记得手动续签的人。
+
+  **2）80 按域名分流**。中转机上跑一个轻量代理（nginx）监听 80，按域名把证书验证请求分到对应落地的 80，几个落地的证书续签都自动通，不用令牌、落地不用改。代价是中转 80 不再是纯转发、多一个代理组件；443 还是各走各的高位端口。适合想让续签自动、又不想动 443 的人。
+
+  **3）443 按 SNI 分流**。中转机按 TLS 握手里的域名分流，几个落地共用中转的 443，客户端链接不用带高位端口，证书续签走 443（TLS-ALPN-01）自动通。效果最彻底，但改动最大：中转 443 不再是 realm 纯转发，要多装一个分流组件。适合落地多、想让客户端链接保持干净的人。
+
+  **4）80 分流 + 443 分流一起用**。2 和 3 一起：80 和 443 都能共用，几个落地续签都自动通，客户端链接也不用带高位端口。代价是中转机上要多两个分流组件，80 和 443 都不再是 realm 纯转发。
+
+  只 80 冲突时只给 1/2 选，只 443 冲突时只给 1/3 选，两个都冲突时 1/2/3/4 都能选。选了分流后，再加落地直接加入分流、不再问；分流组件装不上或起不来时自动回退到方式 1（改监听走高位端口），不会装一半卡住。
+
+  443 分流为什么选 HAProxy：单个 `apt install haproxy` 就能装、专为 L4 设计、纯透传不解密（TLS 保持客户端与落地端到端直通），TLS-ALPN-01 能原样穿过。nginx stream 也能做，但要另装 `libnginx-mod-stream` 包、还要手动在 nginx.conf 里加顶层 `stream {}` 块，环节更多；sniproxy 上游已标记废弃、还有过缓冲区溢出 CVE；Caddy layer4 插件要 xcaddy 自定义编译，中转机上本来没有 Caddy，太重。80 分流用 nginx 是因为 80 走的是明文 HTTP 验证请求，七层按 Host 分流正合适。
+
+- **客户端链接端口跟着监听端口改**：第 7 步生成的中转链接会自动换成实际监听端口，直连那条保持落地端口不变。选了 443 SNI 分流的落地，中转链接不用带高位端口、就是原来的 443。
+- 状态文件 `/etc/realm/relay.conf` 里 1 号落地用平铺变量（`LANDING`/`PORTS`），2 号起用 `_编号` 后缀（`LANDING_2`/`PORTS_2`），另有 `LANDING_COUNT` 和全部端口并集 `ALL_PORTS`，以及分流开关 `SHARE80`/`SHARE443`（0/1）和各落地的证书域名 `CERT_DOMAIN[_编号]`；老版本单落地 relay.conf 没有这些行，新版 check.sh 和 `--nodes` 照样能读。
+- `bash check.sh` 会把每个落地都验一遍（监听端口 + TLS 证书指纹 + 各落地证书剩余天数）；`bash install.sh --nodes` 会把每个落地的双节点都补生成一次；`bash stop.sh` 停的是全部落地，`--remove` 删的也是全部（分流组件 nginx/haproxy 也会一起停/删，但不卸载软件包，只删 relay-node 生成的配置文件）。
+
+### 1.9 手动续签证书
+
+证书一般 90 天到期，到期没续上节点就不通了。`bash check.sh` 第 5 节会显示每个落地的证书剩余天数，不用自己记日子。
+
+**谁需要手动续签，谁不用：**
+
+- **需要**：选了方式 1（改监听走高位端口）的**第 2 个及以后落地**。它的 80 不再走中转转发，Caddy 的证书验证请求到不了落地，自动续签走不通。
+- **不用**：第 1 个落地（走中转 80 自动续）；选了 80 按域名分流或 443 按 SNI 分流的落地（续签自动通）。
+
+**时间窗口**：Caddy 只在证书到期前 30 天内才开始续，别太早操作，建议**到期前 2 周内**做。check.sh 剩余天数 <30 天报 `[注意]`、<7 天或已过期报 `[风险]`，看到 `[注意]` 再动手。
+
+**具体步骤**（以第 2 个落地、域名 `example.com`、落地 IP `203.0.113.1` 为例）：
+
+1. 用 check.sh 看各落地证书剩余天数，确认是哪个落地要续：
+
+   ```bash
+   bash check.sh
+   ```
+
+2. 把该落地的域名 A 记录改回指向落地机 IP（Cloudflare DNS 里改）：`example.com` 的 A 记录从中转机 IP 改回 `203.0.113.1`。
+
+3. 等 DNS 生效（TTL 一般 5 分钟），核对返回的是落地 IP：
+
+   ```bash
+   dig example.com +short
+   # 应返回 203.0.113.1
+   ```
+
+4. 重启落地 Caddy 触发续签（在落地机上跑，tiktok-node 和 sing-box-node 的容器名不一样）：
+
+   ```bash
+   # tiktok-node（落地机）：
+   cd ~/tiktok-node-kit && docker compose restart caddy
+   # 或：docker restart tiktok-caddy
+
+   # sing-box-node（落地机）：
+   cd ~/sing-box-node-kit && docker compose restart caddy
+   # 或：docker restart singbox-caddy
+   ```
+
+5. 核对新到期日（剩余天数应回到 90 天左右）：
+
+   ```bash
+   bash check.sh
+   # 第 5 节看该落地的剩余天数
+   ```
+
+6. 把域名 A 记录改回指向中转机 IP，等 DNS 生效后再跑一遍 `bash check.sh`，确认中转正常。
 
 ---
 
@@ -526,13 +591,13 @@ cat /etc/realm/relay.conf
 
 ```bash
 # 在中转机上测中转到落地的延迟（这是决定上限的一段）
-ping -c 10 202.155.138.195
+ping -c 10 203.0.113.1
 # 在本地分别测直连落地和走中转的延迟（以你的域名为例）
-ping -c 10 yinni.930327.xyz        # 现在指着中转机
-ping -c 10 202.155.138.195         # 直连落地
+ping -c 10 example.com        # 现在指着中转机
+ping -c 10 203.0.113.1         # 直连落地
 # 对比打开首页耗时
-curl -o /dev/null -s -w "经中转：%{time_total}s\n" https://yinni.930327.xyz/
-curl -o /dev/null -s -w "直连落地：%{time_total}s\n" --resolve yinni.930327.xyz:443:202.155.138.195 https://yinni.930327.xyz/
+curl -o /dev/null -s -w "经中转：%{time_total}s\n" https://example.com/
+curl -o /dev/null -s -w "直连落地：%{time_total}s\n" --resolve example.com:443:203.0.113.1 https://example.com/
 ```
 
 **原因：** 中转多一跳，总延迟 ≈ 你→中转 + 中转→落地。只要中转→落地那段线路差，总和就会比直连还慢——这不是 realm 的问题，realm 转发本身几乎不增加延迟（零拷贝，内存几 MB）。
@@ -551,12 +616,12 @@ curl -o /dev/null -s -w "直连落地：%{time_total}s\n" --resolve yinni.930327
 
 ```bash
 # 先查域名现在指到哪
-dig +short yinni.930327.xyz
-dig +short yinni.930327.xyz @8.8.8.8
+dig +short example.com
+dig +short example.com @8.8.8.8
 # 再跑自检（会比对经中转与直连落地的证书指纹）
 bash check.sh
 # 手动看经中转的证书是谁签的、域名对不对
-echo | openssl s_client -connect yinni.930327.xyz:443 -servername yinni.930327.xyz 2>/dev/null | openssl x509 -subject -issuer -dates -noout
+echo | openssl s_client -connect example.com:443 -servername example.com 2>/dev/null | openssl x509 -subject -issuer -dates -noout
 ```
 
 **原因（按常见程度）：**
@@ -605,6 +670,8 @@ ss -ulnp | grep -E '8388|8443|8444'
 **现象：** install.sh 第 2 步打印 `端口已被占用：443/tcp` 之类，然后问你要不要改监听端口。
 
 **先决定：** 不想改就选 `N` 退出，按下面查是谁占了、停掉它再重跑；想接着装就选 `y`，逐个填新监听端口（建议值是高位端口，原端口+10000，如 443→10443），只改中转这边、落地端口不变，客户端链接端口跟着改。
+
+占着端口的是已装好的落地（加第 2 个及以上落地时）：脚本不会直接问改监听，而是先让你选解决方式——改监听走高位端口、80 按域名分流、443 按 SNI 分流，见 1.8；只有 80/443 被中转机上别的程序占了，才走上面这个“改监听端口”的流程。
 
 **怎么查是谁占的：**
 
@@ -792,11 +859,11 @@ bash check.sh
 
 ```bash
 # 直连落地首页耗时
-curl -o /dev/null -s -w "直连落地：%{time_total}s HTTP %{http_code}\n" --resolve yinni.930327.xyz:443:202.155.138.195 https://yinni.930327.xyz/
+curl -o /dev/null -s -w "直连落地：%{time_total}s HTTP %{http_code}\n" --resolve example.com:443:203.0.113.1 https://example.com/
 # 经中转首页耗时（域名当前指着中转机）
-curl -o /dev/null -s -w "经中转：%{time_total}s HTTP %{http_code}\n" https://yinni.930327.xyz/
+curl -o /dev/null -s -w "经中转：%{time_total}s HTTP %{http_code}\n" https://example.com/
 # 直连落地 443 通不通
-echo | openssl s_client -connect 202.155.138.195:443 -servername yinni.930327.xyz 2>/dev/null | grep -E 'Verify return code|subject='
+echo | openssl s_client -connect 203.0.113.1:443 -servername example.com 2>/dev/null | grep -E 'Verify return code|subject='
 ```
 
 **结论判断：**
