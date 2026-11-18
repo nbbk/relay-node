@@ -328,6 +328,7 @@ document.addEventListener('click', (e) => {
 
 /* ---------- 总览 ---------- */
 async function loadOverview() {
+  loadMachineCard(); // 机器状态卡片独立加载，总览其他部分失败也不影响它
   try {
     const s = await api('/api/v1/status');
     statusCache = s;
@@ -363,6 +364,38 @@ async function loadOverview() {
 }
 function statCard(label, value, sub) {
   return '<div class="card"><div class="stat-label">' + esc(label) + '</div><div class="stat-num" style="font-size:22px">' + value + '</div><div class="small">' + esc(sub || '') + '</div></div>';
+}
+/* ---------- 机器状态卡片（总览顶部） ---------- */
+async function loadMachineCard() {
+  const wrap = $('#machine-card');
+  if (!wrap) return;
+  try {
+    const m = await api('/api/v1/monitor');
+    renderMachineCard(m);
+  } catch (e) { wrap.innerHTML = ''; }
+}
+function renderMachineCard(m) {
+  const wrap = $('#machine-card');
+  if (!wrap) return;
+  const st = (m && m.stats) || {};
+  const alerts = (m && m.alerts) || {};
+  const row = (label, pct, sub, key) => {
+    const lvl = alerts[key] || 'ok';
+    const badge = lvl === 'critical' ? '<span class="badge red">严重</span>' : lvl === 'warn' ? '<span class="badge yellow">警告</span>' : '<span class="badge green">正常</span>';
+    const cls = lvl === 'critical' ? 'bad' : lvl === 'warn' ? 'warn' : '';
+    const shown = pct == null ? '—' : (Math.round(pct * 10) / 10) + '%';
+    return '<div class="card"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div class="stat-label">' + esc(label) + '</div>' + badge + '</div>' +
+      '<div class="stat-num" style="font-size:22px">' + shown + '</div>' +
+      '<div class="small">' + esc(sub || '') + '</div>' +
+      '<div class="bar"><i class="' + cls + '" style="width:' + Math.min(100, Number(pct) || 0) + '%"></i></div></div>';
+  };
+  const diskSub = '根分区：共 ' + fmtBytes(st.disk_total_bytes || 0) + '，可用 ' + fmtBytes(st.disk_free_bytes || 0);
+  const memSub = '共 ' + fmtBytes(st.mem_total_bytes || 0) + '，可用 ' + fmtBytes(st.mem_avail_bytes || 0);
+  const cpuSub = '1 分钟平均负载 ' + (st.cpu_load1 == null ? '—' : st.cpu_load1) + ' / ' + (st.cpu_cores || '—') + ' 核';
+  wrap.innerHTML = '<h2 style="margin-top:4px">机器状态</h2><div class="grid cols-3">' +
+    row('磁盘（根分区）', st.disk_pct, diskSub, 'disk') +
+    row('内存', st.mem_pct, memSub, 'mem') +
+    row('CPU 负载（1 分钟平均负载 / 核心数）', st.cpu_pct, cpuSub, 'cpu') + '</div>';
 }
 let overviewPage = 1;
 function modeText(l, relayAddr) {
@@ -916,6 +949,14 @@ async function loadSettingsPage() {
     const tg = st.telegram || {};
     $('#tg-enabled').checked = !!tg.enabled;
     $('#tg-chat').value = tg.chat_id || '';
+    const mon = st.monitor || {};
+    $('#mon-disk-warn').value = mon.disk_warn || 85;
+    $('#mon-disk-crit').value = mon.disk_crit || 95;
+    $('#mon-mem-warn').value = mon.mem_warn || 80;
+    $('#mon-mem-crit').value = mon.mem_crit || 90;
+    $('#mon-cpu-warn').value = mon.cpu_warn || 80;
+    $('#mon-cpu-crit').value = mon.cpu_crit || 95;
+    $('#mon-interval').value = mon.interval_min || 5;
     $('#update-box').innerHTML = '<div class="kv"><span>当前版本</span><b>' + esc(st.version || '—') + '</b></div>' +
       '<div class="kv"><span>最新版本</span><b>' + esc(st.latest_version || '—') + '</b></div>' +
       '<div class="kv"><span>状态</span><b>' + (st.update_available ? '<span class="badge yellow">有更新</span>' : '<span class="badge green">已是最新</span>') + '</b></div>' +
@@ -1065,6 +1106,26 @@ function pollUpdateDone(btn) {
       // 其他失败（连不上、面板重启中）继续等
     }
   }, 3000);
+}
+/* ---------- 机器监控告警设置（顶层 init：绝不写在别的函数里面） ---------- */
+function initMonitorSettings() {
+  on('#monitor-form', 'submit', async (e) => {
+    e.preventDefault();
+    const num = (id, def) => { const v = Number($(id).value); return v ? v : def; };
+    const body = {
+      disk_warn: num('#mon-disk-warn', 85), disk_crit: num('#mon-disk-crit', 95),
+      mem_warn: num('#mon-mem-warn', 80), mem_crit: num('#mon-mem-crit', 90),
+      cpu_warn: num('#mon-cpu-warn', 80), cpu_crit: num('#mon-cpu-crit', 95),
+      interval_min: num('#mon-interval', 5),
+    };
+    if (body.disk_warn >= body.disk_crit || body.mem_warn >= body.mem_crit || body.cpu_warn >= body.cpu_crit) {
+      toast('警告阈值必须小于严重阈值，请检查后重填', 'err'); return;
+    }
+    try {
+      await apiPost('/api/v1/settings/monitor', body);
+      toast('监控设置已保存，立即生效', 'ok');
+    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+  });
 }
 function initUpdatePoll() {
   on('#update-apply', 'click', async () => {
@@ -1400,6 +1461,7 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initTwin);
   safeInit(initService);
   safeInit(initSettings);
+  safeInit(initMonitorSettings);
   safeInit(initUpdatePoll);
   safeInit(initFirewall);
   safeInit(initTraffic);
