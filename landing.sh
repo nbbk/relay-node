@@ -13,7 +13,7 @@ ask() {
   if [ -t 0 ]; then
     read -rp "$prompt" ans || true
   elif [ -r /dev/tty ]; then
-    read -rp "$prompt" ans </dev/tty 2>/dev/null || true
+    { read -rp "$prompt" ans </dev/tty || true; } 2>/dev/null
   fi
   [ -z "$ans" ] && ans="$default"
   printf -v "$varname" '%s' "$ans"
