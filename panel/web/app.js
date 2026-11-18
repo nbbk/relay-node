@@ -81,6 +81,24 @@ function downloadImage(dataURI, name) {
     toast('二维码图片已开始下载');
   }).catch(() => toast('下载失败，请重试', 'err'));
 }
+// 历史记录导出：纯文本，一行一条链接；每组先中转（/任意门）后直连，组与组之间空一行
+function linksExportText(groups) {
+  const parts = (groups || []).map((g) => (g.links || []).map((lk) => lk.link).join('\n')).filter((t) => t !== '');
+  if (!parts.length) return '';
+  return parts.join('\n\n') + '\n';
+}
+function linksExportFileName() {
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, '0');
+  return '节点链接-' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + '.txt';
+}
+function downloadTextFile(name, text) {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  toast('已导出 ' + name, 'ok');
+}
 function downloadFile(name, text) {
   const blob = new Blob([text], { type: 'application/json' });
   const a = document.createElement('a');
@@ -235,17 +253,27 @@ function loadPage(page) {
 function stopLogsTimer() { if (logsTimer) { clearInterval(logsTimer); logsTimer = null; } }
 
 /* ---------- 登录 ---------- */
+function hideLoading() {
+  const lv = $('#loading-view');
+  if (lv) { lv.classList.add('hidden'); lv.hidden = true; }
+}
 function showLogin() {
   // class 与 hidden 属性一起切：只靠 class 的话，style.css 加载失败时两边会堆在一起
+  hideLoading();
   const app = $('#app'), login = $('#login-view');
   if (app) { app.classList.add('hidden'); app.hidden = true; }
   if (login) { login.classList.remove('hidden'); login.hidden = false; }
 }
 function showApp() {
+  hideLoading();
   const app = $('#app'), login = $('#login-view');
   if (login) { login.classList.add('hidden'); login.hidden = true; }
   if (app) { app.classList.remove('hidden'); app.hidden = false; }
 }
+// 刷新当前页（弹窗里的续期/续量/编辑等操作完调它：人在哪页就刷哪页，不硬跳管理页）
+function refreshCurrentPage() { return loadPage(currentPage); }
+// 落地显示名：有名称用名称，没有用落地地址（后端 status 的 name 字段已按这个规则给）
+function displayNameOf(l) { return (l && (l.name || l.cert_domain || l.domain || l.landing)) || ''; }
 async function checkMe() {
   try {
     const me = await api('/api/v1/me');
@@ -438,6 +466,106 @@ function renderMachineCard(m) {
     row('内存', st.mem_pct, memSub, 'mem') +
     row('CPU 负载（1 分钟平均负载 / 核心数）', st.cpu_pct, cpuSub, 'cpu') + '</div>';
 }
+// 紧凑卡片分页：每页 12 张（桌面 3 列 × 4 行），与列表分页每页 20 条区分开
+const CARD_PAGE_SIZE = 12;
+function paginateCards(list, page) {
+  const total = list.length;
+  const totalPages = Math.max(1, Math.ceil(total / CARD_PAGE_SIZE));
+  const cur = Math.min(Math.max(page || 1, 1), totalPages);
+  return { slice: list.slice((cur - 1) * CARD_PAGE_SIZE, cur * CARD_PAGE_SIZE), total, totalPages, cur };
+}
+// 小卡片一行流量文字：已用 / 上限（百分比），不限只显示已用
+function trafficMiniText(l) {
+  const t = l.traffic || {};
+  if (!t.limit_bytes) return '不限 · 已用 ' + fmtBytes(t.used_bytes || 0);
+  return fmtBytes(t.used_bytes || 0) + ' / ' + fmtBytes(t.limit_bytes) + '（' + (Math.min(100, Number(t.pct) || 0)) + '%）';
+}
+// 紧凑小卡片：只显示名称、在线状态、模式、证书剩余天数、流量已用/上限、到期；
+// 点小卡片弹完整卡片弹窗；右上角小“编辑”按钮直接开编辑弹窗（点它不弹完整卡片）
+function landingMiniCard(l, relayAddr) {
+  const exp = daysLeftText(l.expiry);
+  return '<div class="mini-card' + (l.online === false ? ' offline' : '') + '" data-mini="' + l.index + '" role="button" tabindex="0">' +
+    '<div class="mini-top"><h3>' + esc(displayNameOf(l)) + '</h3>' + statusBadge(l) + '</div>' +
+    '<div class="mini-row"><span>模式</span><b>' + (l.mode === 'door' ? '任意门' : '标准') + '</b></div>' +
+    '<div class="mini-row"><span>证书</span><b>' + certBadge(l.cert_days_left) + '</b></div>' +
+    '<div class="mini-row"><span>流量</span><b>' + esc(trafficMiniText(l)) + '</b></div>' +
+    '<div class="mini-row"><span>到期</span><b><span class="badge ' + exp.cls + '">' + esc(exp.text) + '</span></b></div>' +
+    '<div class="btn-row"><button class="btn secondary sm" type="button" data-mini-edit="' + l.index + '">编辑</button>' +
+    '<button class="btn secondary sm" type="button" data-mini-open="' + l.index + '">详情</button></div></div>';
+}
+// 完整卡片内容（弹窗里用）：全部字段 + 链接/二维码 + 全部操作按钮
+function landingDetailHtml(l, relayAddr) {
+  const exp = daysLeftText(l.expiry);
+  const ports = (l.ports || []).map((p) => esc(p.proto) + ' ' + esc(p.listen) + '→' + esc(p.remote)).join('、') || '—';
+  let h = '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">' +
+    '<h2>' + esc(displayNameOf(l)) + '</h2>' + statusBadge(l) + '</div>' +
+    '<div class="kv"><span>落地</span><b>' + esc(l.landing) + '</b></div>' +
+    '<div class="kv"><span>监听端口</span><b>' + ports + '</b></div>' +
+    '<div class="kv"><span>类型</span><b>' + esc(l.mode_note || '—') + '</b></div>' +
+    '<div class="kv"><span>模式</span><b>' + modeText(l, relayAddr) + '</b></div>' +
+    '<div class="kv"><span>延迟</span><b>' + latencyHtml(l) + '</b></div>' +
+    '<div class="kv"><span>证书</span><b>' + certBadge(l.cert_days_left) + ' · ' + esc(l.renew_mode || '') + '</b></div>' +
+    '<div class="kv"><span>到期</span><b><span class="badge ' + exp.cls + '">' + esc(exp.text) + '</span>' + (l.expiry ? '（' + esc(fmtDate(l.expiry)) + '）' : '') + '</b></div>' +
+    '<div style="margin-top:10px">' + trafficBarHtml(l) + '</div>' +
+    ((l.subnodes && l.subnodes.length) ? '<div class="small">子节点：' + l.subnodes.map((sn) => esc(sn.domain)).join('、') + '</div>' : '');
+  if (l.subnodes && l.subnodes.length) {
+    h += '<h3 style="margin-top:14px">子节点（同一落地机上的多个节点，共用一条转发）</h3>' +
+      l.subnodes.map((sn) =>
+        '<div class="kv"><span>🔹 ' + esc(sn.domain) + '</span><span><button class="btn ghost sm" type="button" data-del-sub="' + esc(sn.domain) + '" data-idx="' + l.index + '">删除该节点</button></span></div>').join('');
+  }
+  h += '<h3 style="margin-top:14px">节点链接</h3>';
+  if (l.links && l.links.length) h += linksHtml(l.links, l.qr);
+  else h += '<p class="muted">还没存原始节点链接，卡片上拼不出中转链接。</p><div class="btn-row"><button class="btn secondary sm" type="button" data-paste-orig="' + l.index + '">粘贴原始链接生成中转链接</button></div>';
+  h += '<div class="btn-row">' +
+    '<button class="btn secondary sm" type="button" data-addnode="' + l.index + '">＋ 给落地加节点</button>' +
+    '<button class="btn secondary sm" type="button" data-renew="' + l.index + '">续期</button>' +
+    '<button class="btn secondary sm" type="button" data-addtraffic="' + l.index + '">续量</button>' +
+    '<button class="btn secondary sm" type="button" data-trafficset="' + l.index + '">流量限制</button>' +
+    '<button class="btn sm" type="button" data-edit="' + l.index + '">编辑</button>' +
+    '<button class="btn secondary sm" type="button" data-goto="links">查看链接</button>' +
+    '<button class="btn secondary sm" type="button" data-goto="certs">证书</button>' +
+    '<button class="btn danger sm" type="button" data-del="' + l.index + '">删除（进回收站）</button></div>';
+  return h;
+}
+// 点小卡片弹完整卡片弹窗；弹窗里的操作按钮走同一套函数
+function showLandingDetail(l) {
+  const relayAddr = (statusCache && statusCache.relay_addr) || '';
+  const m = openModal(landingDetailHtml(l, relayAddr) +
+    '<div class="btn-row"><button class="btn secondary" id="detail-close" type="button">关闭</button></div>');
+  if (!m) return;
+  onIn(m, '#detail-close', 'click', closeModal);
+  $$('[data-addnode]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); addNodeWizard(Number(b.dataset.addnode)); }));
+  $$('[data-renew]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); renewLanding(Number(b.dataset.renew)); }));
+  $$('[data-addtraffic]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); addTraffic(Number(b.dataset.addtraffic)); }));
+  $$('[data-trafficset]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); trafficSettings(Number(b.dataset.trafficset)); }));
+  $$('[data-edit]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); editLanding(Number(b.dataset.edit)); }));
+  $$('[data-del]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); deleteLanding(Number(b.dataset.del)); }));
+  $$('[data-paste-orig]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); pasteOrigLink(Number(b.dataset.pasteOrig)); }));
+  $$('[data-del-sub]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); deleteSubnode(Number(b.dataset.idx), b.dataset.delSub); }));
+  $$('[data-goto]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); goto(b.dataset.goto); }));
+}
+// 给一组小卡片容器接点击事件：点卡片弹详情，点“编辑”直接开编辑弹窗
+function wireMiniCards(wrap) {
+  $$('[data-mini]', wrap).forEach((card) => {
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('[data-mini-edit]') || e.target.closest('[data-mini-open]')) return;
+      const l = landingsCache.find((x) => x.index === Number(card.dataset.mini));
+      if (l) showLandingDetail(l);
+    });
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const l = landingsCache.find((x) => x.index === Number(card.dataset.mini));
+        if (l) showLandingDetail(l);
+      }
+    });
+  });
+  $$('[data-mini-edit]', wrap).forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); editLanding(Number(b.dataset.miniEdit)); }));
+  $$('[data-mini-open]', wrap).forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const l = landingsCache.find((x) => x.index === Number(b.dataset.miniOpen));
+    if (l) showLandingDetail(l);
+  }));
+}
 let overviewPage = 1;
 function modeText(l, relayAddr) {
   if (l.mode === 'door') return '任意门模式' + (relayAddr ? '（中转地址：' + esc(relayAddr) + '）' : '');
@@ -448,29 +576,12 @@ function renderLandingCards(page) {
   const wrap = $('#landing-cards');
   $('#overview-empty').classList.toggle('hidden', landingsCache.length > 0);
   if (!landingsCache.length) { wrap.innerHTML = ''; return; }
-  const pg = paginate(landingsCache, overviewPage);
+  const pg = paginateCards(landingsCache, overviewPage);
   overviewPage = pg.cur;
   const relayAddr = (statusCache && statusCache.relay_addr) || '';
-  wrap.innerHTML = pg.slice.map((l) => {
-    const exp = daysLeftText(l.expiry);
-    const ports = (l.ports || []).map((p) => esc(p.proto) + ' ' + esc(p.listen) + '→' + esc(p.remote)).join('、') || '—';
-    return '<div class="card' + (l.online === false ? ' offline' : '') + '"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">' +
-      '<h2>' + esc(l.cert_domain || l.domain || l.landing) + '</h2>' + statusBadge(l) + '</div>' +
-      '<div class="kv"><span>落地</span><b>' + esc(l.landing) + '</b></div>' +
-      '<div class="kv"><span>监听端口</span><b>' + ports + '</b></div>' +
-      '<div class="kv"><span>类型</span><b>' + esc(l.mode_note || '—') + '</b></div>' +
-      '<div class="kv"><span>模式</span><b>' + modeText(l, relayAddr) + '</b></div>' +
-      '<div class="kv"><span>延迟</span><b>' + latencyHtml(l) + '</b></div>' +
-      '<div class="kv"><span>证书</span><b>' + certBadge(l.cert_days_left) + ' · ' + esc(l.renew_mode || '') + '</b></div>' +
-      '<div class="kv"><span>到期</span><b><span class="badge ' + exp.cls + '">' + esc(exp.text) + '</span></b></div>' +
-      '<div style="margin-top:10px">' + trafficBarHtml(l) + '</div>' +
-      ((l.subnodes && l.subnodes.length) ? '<div class="small">子节点：' + l.subnodes.map((s) => esc(s.domain)).join('、') + '</div>' : '') +
-      '<div class="btn-row"><button class="btn secondary sm" type="button" data-manage="' + l.index + '">管理</button>' +
-      '<button class="btn secondary sm" type="button" data-goto="links">查看链接</button>' +
-      '<button class="btn secondary sm" type="button" data-goto="certs">证书</button></div></div>';
-  }).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'overview');
-  $$('[data-manage]', wrap).forEach((b) => b.addEventListener('click', () => goto('manage')));
-  if (pg.totalPages > 1) wirePager(wrap, 'overview', pg.cur, pg.totalPages, (p) => renderLandingCards(p));
+  wrap.innerHTML = pg.slice.map((l) => landingMiniCard(l, relayAddr)).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'ovcards');
+  wireMiniCards(wrap);
+  if (pg.totalPages > 1) wirePager(wrap, 'ovcards', pg.cur, pg.totalPages, (p) => renderLandingCards(p));
 }
 
 /* ---------- 一键体检 + 一键修复 ---------- */
@@ -571,8 +682,17 @@ function buildAddPayload() {
   if (speed < 0) { toast('限速不能为负', 'err'); return null; }
   const mode = $('#add-mode') ? $('#add-mode').value : 'standard';
   const relayAddr = (mode === 'door' && $('#add-relay-addr')) ? $('#add-relay-addr').value.trim() : '';
+  const name = $('#add-name') ? $('#add-name').value.trim() : '';
+  if (name && name.length > 64) { toast('名称不能超过 64 字', 'err'); return null; }
+  const origLink = $('#add-orig-link') ? $('#add-orig-link').value.trim() : '';
+  if (origLink && !/^(vless|trojan|ss|vmess):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss:// 或 vmess:// 开头', 'err'); return null; }
+  const linkName = $('#add-link-name') ? $('#add-link-name').value.trim() : '';
+  if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return null; }
   return {
     landing, preset, mode,
+    name: name || undefined,
+    orig_link: origLink || undefined,
+    link_name: linkName || undefined,
     relay_addr: relayAddr || undefined,
     sb_mode: preset === '2' ? $('#add-sb-mode').value : undefined,
     custom_ports: customPorts || undefined,
@@ -643,41 +763,18 @@ async function loadManage(page) {
   const wrap = $('#manage-list');
   try {
     const s = await api('/api/v1/status');
+    statusCache = s;
     landingsCache = s.landings || [];
     if (!landingsCache.length) { wrap.innerHTML = '<div class="empty">还没有落地节点。</div>'; }
     else {
-      const pg = paginate(landingsCache, managePage);
+      // 与总览同一套紧凑小卡片：点卡片弹完整卡片（子节点删除等操作都在弹窗里）
+      const pg = paginateCards(landingsCache, managePage);
       managePage = pg.cur;
       const relayAddr = s.relay_addr || '';
-      wrap.innerHTML = pg.slice.map((l) => {
-        const exp = daysLeftText(l.expiry);
-        const ports = (l.ports || []).map((p) => esc(p.proto) + ' ' + esc(p.listen) + '→' + esc(p.remote)).join('、') || '—';
-        const subs = (l.subnodes || []).map((sn) =>
-          '<div class="kv"><span>🔹 ' + esc(sn.domain) + '</span><span><button class="btn ghost sm" type="button" data-del-sub="' + esc(sn.domain) + '" data-idx="' + l.index + '">删除该节点</button></span></div>').join('');
-        return '<div class="card" style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">' +
-          '<h2>' + esc(l.cert_domain || l.domain || l.landing) + ' <span class="small">#' + l.index + '</span></h2>' + statusBadge(l) + '</div>' +
-          '<div class="kv"><span>落地</span><b>' + esc(l.landing) + '</b></div>' +
-          '<div class="kv"><span>监听端口</span><b>' + ports + '</b></div>' +
-          '<div class="kv"><span>类型</span><b>' + esc(l.mode_note || '—') + '</b></div>' +
-          '<div class="kv"><span>模式</span><b>' + modeText(l, relayAddr) + '</b></div>' +
-          '<div class="kv"><span>证书</span><b>' + certBadge(l.cert_days_left) + ' · ' + esc(l.renew_mode || '') + '</b></div>' +
-          '<div class="kv"><span>到期</span><b><span class="badge ' + exp.cls + '">' + esc(exp.text) + '</span>' + (l.expiry ? '（' + esc(fmtDate(l.expiry)) + '）' : '') + '</b></div>' +
-          '<div style="margin-top:8px">' + trafficBarHtml(l) + '</div>' +
-          (subs ? '<h3 style="margin-top:12px">子节点（同一落地机上的多个节点，共用一条转发）</h3>' + subs : '<p class="small">暂无子节点。</p>') +
-          '<div class="btn-row">' +
-          '<button class="btn secondary sm" type="button" data-addnode="' + l.index + '">＋ 给落地加节点</button>' +
-          '<button class="btn secondary sm" type="button" data-renew="' + l.index + '">续期</button>' +
-          '<button class="btn secondary sm" type="button" data-addtraffic="' + l.index + '">续量</button>' +
-          '<button class="btn secondary sm" type="button" data-trafficset="' + l.index + '">流量限制</button>' +
-          '<button class="btn danger sm" type="button" data-del="' + l.index + '">删除（进回收站）</button></div></div>';
-      }).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'manage');
-      $$('[data-del]', wrap).forEach((b) => b.addEventListener('click', () => deleteLanding(Number(b.dataset.del))));
-      $$('[data-renew]', wrap).forEach((b) => b.addEventListener('click', () => renewLanding(Number(b.dataset.renew))));
-      $$('[data-addtraffic]', wrap).forEach((b) => b.addEventListener('click', () => addTraffic(Number(b.dataset.addtraffic))));
-      $$('[data-trafficset]', wrap).forEach((b) => b.addEventListener('click', () => trafficSettings(Number(b.dataset.trafficset))));
-      $$('[data-addnode]', wrap).forEach((b) => b.addEventListener('click', () => addNodeWizard(Number(b.dataset.addnode))));
-      $$('[data-del-sub]', wrap).forEach((b) => b.addEventListener('click', () => deleteSubnode(Number(b.dataset.idx), b.dataset.delSub)));
-      if (pg.totalPages > 1) wirePager(wrap, 'manage', pg.cur, pg.totalPages, (p) => loadManage(p));
+      wrap.innerHTML = '<div class="landing-grid">' + pg.slice.map((l) => landingMiniCard(l, relayAddr)).join('') + '</div>' +
+        pagerHtml(pg.total, pg.cur, pg.totalPages, 'mgcards');
+      wireMiniCards(wrap);
+      if (pg.totalPages > 1) wirePager(wrap, 'mgcards', pg.cur, pg.totalPages, (p) => loadManage(p));
     }
   } catch (e) {
     wrap.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
@@ -716,23 +813,171 @@ async function loadRecycle(page) {
 }
 async function deleteLanding(index) {
   const l = landingsCache.find((x) => x.index === index);
-  const ok = await confirmModal('删除落地', '<p>确定删除落地 <b>' + esc(l ? (l.cert_domain || l.landing) : index) + '</b> 吗？</p><p>删除是软删除：先进入回收站保留 7 天，期间可以一键恢复；7 天后才真正清除。转发规则会立即撤掉。</p>', '删除（进回收站）', true);
+  const ok = await confirmModal('删除落地', '<p>确定删除落地 <b>' + esc(l ? displayNameOf(l) : index) + '</b> 吗？</p><p>删除是软删除：先进入回收站保留 7 天，期间可以一键恢复；7 天后才真正清除。转发规则会立即撤掉。</p>', '删除（进回收站）', true);
   if (!ok) return;
-  try { await api('/api/v1/landings/' + index, { method: 'DELETE' }); toast('已移入回收站', 'ok'); loadManage(); }
+  try { await api('/api/v1/landings/' + index, { method: 'DELETE' }); toast('已移入回收站', 'ok'); refreshCurrentPage(); }
   catch (e) { toast('删除失败：' + e.message, 'err'); }
 }
 async function renewLanding(index) {
   const m = openModal('<h2>续期</h2><p>续期只延长时限；如果是因为流量用完被停用，请另外「续量」。</p>' +
-    '<label>续期天数</label><select id="renew-days"><option value="30">30 天</option><option value="90" selected>90 天</option><option value="180">180 天</option><option value="365">365 天</option></select>' +
+    '<label>快捷天数</label><select id="renew-days"><option value="30">30 天</option><option value="90" selected>90 天</option><option value="180">180 天</option><option value="365">365 天</option></select>' +
+    '<label>自定义天数 <span class="hint">填了就用自定义（1–3650 天），不填用上面的快捷天数</span></label><input id="renew-days-custom" type="number" min="1" max="3650" placeholder="如 45">' +
     '<div class="btn-row"><button class="btn" id="renew-ok" type="button">确认续期</button><button class="btn secondary" id="renew-cancel" type="button">取消</button></div>');
   onIn(m, '#renew-cancel', 'click', closeModal);
   onIn(m, '#renew-ok', 'click', async () => {
-    const days = Number($('#renew-days', m).value);
+    const custom = $('#renew-days-custom', m).value.trim();
+    let days;
+    if (custom !== '') {
+      days = Number(custom);
+      if (!days || days < 1 || days > 3650) { toast('自定义天数请填 1–3650', 'err'); return; }
+    } else days = Number($('#renew-days', m).value);
     closeModal();
-    try { await apiPost('/api/v1/landings/' + index + '/renew', { days }); toast('续期成功，已延长 ' + days + ' 天', 'ok'); loadManage(); }
+    try { await apiPost('/api/v1/landings/' + index + '/renew', { days }); toast('续期成功，已延长 ' + days + ' 天', 'ok'); refreshCurrentPage(); }
     catch (e) { toast('续期失败：' + e.message, 'err'); }
   });
 }
+// 编辑落地：表单预填当前值，校验规则与添加落地一致；保存前二次确认
+// （写明重启 realm 会瞬断）。时长默认“保持不变”，改了才重算到期。
+function editLanding(index) {
+  const l = landingsCache.find((x) => x.index === index);
+  if (!l) { toast('找不到这个落地，请刷新页面再试', 'err'); return; }
+  const t = l.traffic || {};
+  const customPorts = l.custom_ports || '';
+  const sbMode = l.sb_mode || '';
+  const relayAddr = (statusCache && statusCache.relay_addr) || '';
+  const m = openModal('<h2>编辑落地：' + esc(displayNameOf(l)) + '</h2>' +
+    '<p class="muted">改地址、端口、模式后会重写转发配置并重启 realm，正在用的节点会瞬断几秒；到期与流量状态会跟着新地址走，不会丢。</p>' +
+    '<label>落地 IP 或域名</label><input id="edit-landing" value="' + esc(l.landing) + '">' +
+    '<label>名称 / 备注 <span class="hint">显示名，空着显示落地地址；改名只改显示，不动转发配置</span></label><input id="edit-name" value="' + esc(l.name && l.name !== l.landing ? l.name : '') + '" placeholder="' + esc(l.landing) + '" maxlength="64">' +
+    '<label>预设</label><select id="edit-preset">' +
+    '<option value="1"' + (l.preset === '1' ? ' selected' : '') + '>预设 1：tiktok-node（Xray）</option>' +
+    '<option value="2"' + (l.preset === '2' ? ' selected' : '') + '>预设 2：sing-box-node</option>' +
+    '<option value="3"' + (l.preset === '3' ? ' selected' : '') + '>预设 3：自定义端口</option></select>' +
+    '<label>模式</label><select id="edit-mode">' +
+    '<option value="standard"' + (l.mode !== 'door' ? ' selected' : '') + '>标准模式</option>' +
+    '<option value="door"' + (l.mode === 'door' ? ' selected' : '') + '>任意门模式</option></select>' +
+    '<div id="edit-relay-addr-wrap"' + (l.mode === 'door' ? '' : ' class="hidden"') + '><label>中转地址 <span class="hint">任意门链接用这个地址生成，空着用当前设置</span></label>' +
+    '<input id="edit-relay-addr" value="' + esc(relayAddr) + '" placeholder="留空 = 自动用中转机公网 IP"></div>' +
+    '<div id="edit-sb-mode-wrap"' + (l.preset === '2' ? '' : ' class="hidden"') + '><label>sing-box 模式</label><select id="edit-sb-mode">' +
+    '<option value="1"' + (sbMode !== '2' ? ' selected' : '') + '>TLS（443）</option>' +
+    '<option value="2"' + (sbMode === '2' ? ' selected' : '') + '>明文（8080）</option></select></div>' +
+    '<div id="edit-custom-ports-wrap"' + (l.preset === '3' ? '' : ' class="hidden"') + '><label>自定义端口 <span class="hint">逗号分隔，如 443,8388；可写 监听:落地，如 10443:443</span></label>' +
+    '<input id="edit-custom-ports" value="' + esc(customPorts) + '" placeholder="443,8388"></div>' +
+    '<label>证书域名</label><input id="edit-cert-domain" value="' + esc(l.cert_domain || '') + '" placeholder="example.com">' +
+    '<label>节点时长</label><select id="edit-duration">' +
+    '<option value="-1" selected>保持不变</option><option value="0">改为永久</option><option value="30">从现在起 30 天</option>' +
+    '<option value="90">从现在起 90 天</option><option value="180">从现在起 180 天</option><option value="365">从现在起 365 天</option>' +
+    '<option value="custom">自定义天数</option></select>' +
+    '<div id="edit-duration-custom-wrap" class="hidden"><label>自定义天数</label><input id="edit-duration-custom" type="number" min="1" max="3650" placeholder="如 60"></div>' +
+    '<label>流量上限（GB，0 = 不限）</label><input id="edit-traffic" type="number" min="0" step="1" value="' + Math.round((t.limit_bytes || 0) / 1073741824) + '">' +
+    '<label>流量上限算法</label><select id="edit-traffic-mode"><option value="total"' + (t.limit_mode !== 'monthly' ? ' selected' : '') + '>总量（整个生命周期）</option><option value="monthly"' + (t.limit_mode === 'monthly' ? ' selected' : '') + '>按月（每月重置）</option></select>' +
+    '<label>限速（Mbps，0 = 不限速）</label><input id="edit-speed" type="number" min="0" step="1" value="' + (l.speed_limit_mbps || 0) + '">' +
+    '<label class="checkbox-row"><input type="checkbox" id="edit-want-udp"' + (l.want_udp ? ' checked' : '') + '><span style="font-weight:400">同时转发 UDP（HY2 / TUIC 需要）</span></label>' +
+    '<label>原始节点链接 <span class="hint">选填；有它卡片上才出中转链接，改地址/端口后链接自动跟着重算</span></label><input id="edit-orig-link" value="' + esc(l.orig_link || '') + '" placeholder="vless://…">' +
+    '<label>节点名称 <span class="hint">选填；直连备注“&lt;名称&gt;-直连”、中转备注“&lt;名称&gt;-中转”</span></label><input id="edit-link-name" value="' + esc(l.orig_link_name || '') + '" placeholder="如 香港-01" maxlength="64">' +
+    '<div class="btn-row"><button class="btn" id="edit-ok" type="button">保存（重启 realm 生效）</button><button class="btn secondary" id="edit-cancel" type="button">取消</button></div>');
+  onIn(m, '#edit-cancel', 'click', closeModal);
+  const syncEdit = () => {
+    const pv = $('#edit-preset', m).value;
+    const sbw = $('#edit-sb-mode-wrap', m); if (sbw) sbw.classList.toggle('hidden', pv !== '2');
+    const cpw = $('#edit-custom-ports-wrap', m); if (cpw) cpw.classList.toggle('hidden', pv !== '3');
+    const raw = $('#edit-relay-addr-wrap', m); if (raw) raw.classList.toggle('hidden', $('#edit-mode', m).value !== 'door');
+  };
+  onIn(m, '#edit-preset', 'change', syncEdit);
+  onIn(m, '#edit-mode', 'change', syncEdit);
+  onIn(m, '#edit-duration', 'change', () => {
+    const w = $('#edit-duration-custom-wrap', m);
+    if (w) w.classList.toggle('hidden', $('#edit-duration', m).value !== 'custom');
+  });
+  onIn(m, '#edit-ok', 'click', async () => {
+    const payload = buildEditPayload(m);
+    if (!payload) return;
+    const ok = await confirmModal('保存编辑', '<p>保存后会重写转发配置并<b>重启 realm，正在用的节点会瞬断几秒</b>。确定保存吗？</p>', '保存并重启 realm');
+    if (!ok) return;
+    const btn = $('#edit-ok', m); if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
+    try {
+      await api('/api/v1/landings/' + index, { method: 'PUT', body: JSON.stringify(payload) });
+      closeModal();
+      toast('落地已更新，realm 已重启', 'ok');
+      refreshCurrentPage();
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = '保存（重启 realm 生效）'; }
+      toast('保存失败：' + e.message, 'err');
+    }
+  });
+}
+// 编辑表单取值：与 buildAddPayload 同一套校验（落地、证书域名、自定义端口、
+// 自定义天数、流量/限速非负、原始链接格式、名称长度）
+function buildEditPayload(m) {
+  const landing = $('#edit-landing', m).value.trim();
+  const certDomain = $('#edit-cert-domain', m).value.trim();
+  if (!landing) { toast('请填写落地 IP 或域名', 'err'); return null; }
+  if (!/^[A-Za-z0-9.-]+$/.test(landing)) { toast('落地 IP 或域名格式不正确', 'err'); return null; }
+  if (certDomain && !/^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(certDomain)) { toast('证书域名格式不正确，如 example.com', 'err'); return null; }
+  const preset = $('#edit-preset', m).value;
+  let customPorts = '';
+  if (preset === '3') {
+    customPorts = $('#edit-custom-ports', m).value.trim();
+    if (!customPorts) { toast('自定义端口必填，如 443,8388', 'err'); return null; }
+    if (!/^[\d,: ]+$/.test(customPorts)) { toast('自定义端口格式不正确，只能是数字、逗号和冒号', 'err'); return null; }
+  }
+  let duration = Number($('#edit-duration', m).value);
+  if ($('#edit-duration', m).value === 'custom') {
+    duration = Number($('#edit-duration-custom', m).value) || 0;
+    if (duration < 1 || duration > 3650) { toast('自定义天数请填 1–3650', 'err'); return null; }
+  }
+  const trafficGb = Number($('#edit-traffic', m).value) || 0;
+  if (trafficGb < 0) { toast('流量上限不能为负', 'err'); return null; }
+  const speed = Number($('#edit-speed', m).value) || 0;
+  if (speed < 0) { toast('限速不能为负', 'err'); return null; }
+  const mode = $('#edit-mode', m).value;
+  const relayAddr = (mode === 'door' && $('#edit-relay-addr', m)) ? $('#edit-relay-addr', m).value.trim() : '';
+  const name = $('#edit-name', m).value.trim();
+  if (name && name.length > 64) { toast('名称不能超过 64 字', 'err'); return null; }
+  const origLink = $('#edit-orig-link', m).value.trim();
+  if (origLink && !/^(vless|trojan|ss|vmess):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss:// 或 vmess:// 开头', 'err'); return null; }
+  const linkName = $('#edit-link-name', m).value.trim();
+  if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return null; }
+  return {
+    landing, preset, mode,
+    name: name || undefined,
+    orig_link: origLink || undefined,
+    link_name: linkName || undefined,
+    relay_addr: relayAddr || undefined,
+    sb_mode: preset === '2' ? $('#edit-sb-mode', m).value : undefined,
+    custom_ports: customPorts || undefined,
+    want_udp: $('#edit-want-udp', m).checked,
+    cert_domain: certDomain || undefined,
+    duration_days: duration,
+    traffic_limit_bytes: Math.round(trafficGb * 1073741824),
+    traffic_limit_mode: trafficGb > 0 ? $('#edit-traffic-mode', m).value : undefined,
+    speed_limit_mbps: speed,
+  };
+}
+// 补粘贴原始链接：给已加的落地补一个原始链接（+节点名称），卡片上立刻出中转链接
+async function pasteOrigLink(index) {
+  const l = landingsCache.find((x) => x.index === index);
+  const m = openModal('<h2>补粘贴原始链接' + (l ? '：' + esc(displayNameOf(l)) : '') + '</h2>' +
+    '<p class="muted">把落地机上生成的节点链接粘贴进来，面板会算出中转 + 直连链接，卡片上直接显示，历史记录里也会记一笔。原始链接只存在面板自己的状态文件里，不会进日志与审计。</p>' +
+    '<label>原始节点链接 <span class="hint">vless:// / trojan:// / ss:// / vmess:// 开头</span></label><input id="paste-orig-link" placeholder="vless://…">' +
+    '<label>节点名称 <span class="hint">选填；直连备注“&lt;名称&gt;-直连”、中转备注“&lt;名称&gt;-中转”，空着用原链接备注名</span></label><input id="paste-link-name" placeholder="如 香港-01" maxlength="64">' +
+    '<div class="btn-row"><button class="btn" id="paste-ok" type="button">生成中转链接</button><button class="btn secondary" id="paste-cancel" type="button">取消</button></div>');
+  onIn(m, '#paste-cancel', 'click', closeModal);
+  onIn(m, '#paste-ok', 'click', async () => {
+    const origLink = $('#paste-orig-link', m).value.trim();
+    const linkName = $('#paste-link-name', m).value.trim();
+    if (!origLink || !/^(vless|trojan|ss|vmess):\/\//.test(origLink)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
+    if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return; }
+    closeModal();
+    try {
+      const r = await apiPost('/api/v1/landings/' + index + '/orig-link', { orig_link: origLink, link_name: linkName || undefined });
+      openModal('<h2>✅ 中转链接已生成</h2>' + linksHtml(r.links, r.qr) +
+        '<div class="btn-row"><button class="btn" id="paste-done" type="button">完成</button></div>');
+      on('#paste-done', 'click', () => { closeModal(); refreshCurrentPage(); });
+    } catch (e) { toast('生成失败：' + e.message, 'err'); }
+  });
+}
+
 async function addTraffic(index) {
   const m = openModal('<h2>续量</h2><p>给流量上限增加额度。续完仍有余额且之前因流量停用的，会自动恢复转发。</p>' +
     '<label>增加多少 GB</label><input id="addtraffic-gb" type="number" min="1" step="1" value="50">' +
@@ -742,7 +987,7 @@ async function addTraffic(index) {
     const gb = Number($('#addtraffic-gb', m).value);
     if (!gb || gb < 1) { toast('请填大于 0 的 GB 数', 'err'); return; }
     closeModal();
-    try { await apiPost('/api/v1/landings/' + index + '/add-traffic', { bytes: Math.round(gb * 1073741824) }); toast('续量成功，已增加 ' + gb + ' GB', 'ok'); loadManage(); }
+    try { await apiPost('/api/v1/landings/' + index + '/add-traffic', { bytes: Math.round(gb * 1073741824) }); toast('续量成功，已增加 ' + gb + ' GB', 'ok'); refreshCurrentPage(); }
     catch (e) { toast('续量失败：' + e.message, 'err'); }
   });
 }
@@ -765,7 +1010,7 @@ async function trafficSettings(index) {
         limit_mode: gb > 0 ? $('#ts-mode', m).value : 'total',
         speed_limit_mbps: Number($('#ts-speed', m).value) || 0,
       });
-      toast('流量限制已保存', 'ok'); loadManage();
+      toast('流量限制已保存', 'ok'); refreshCurrentPage();
     } catch (e) { toast('保存失败：' + e.message, 'err'); }
   });
 }
@@ -774,7 +1019,7 @@ async function deleteSubnode(index, domain) {
   if (!ok) return;
   try {
     await api('/api/v1/landings/' + index + '/subnodes/' + encodeURIComponent(domain), { method: 'DELETE' });
-    toast('子节点已删除', 'ok'); loadManage();
+    toast('子节点已删除', 'ok'); refreshCurrentPage();
   } catch (e) { toast('删除失败：' + e.message + '（若接口未提供，请到落地机手动处理）', 'err'); }
 }
 
@@ -783,7 +1028,7 @@ async function addNodeWizard(index) {
   const l = landingsCache.find((x) => x.index === index);
   const m = openModal('<h2>给落地加节点（第 1 步，共 2 步）</h2>' +
     '<p>面板在中转机上，够不着落地机，所以分两步走：先填新子域名，拿到落地机命令；到落地机跑完命令，再把新链接粘贴回来登记。</p>' +
-    '<p class="small">落地：' + esc(l ? (l.cert_domain || l.landing) : index) + '</p>' +
+    '<p class="small">落地：' + esc(l ? displayNameOf(l) : index) + '</p>' +
     '<label>新子域名 <span class="hint">如 node2.example.com</span></label><input id="wizard-sub" placeholder="node2.example.com">' +
     '<div class="btn-row"><button class="btn" id="wz-next" type="button">生成落地机命令</button><button class="btn secondary" id="wz-cancel" type="button">取消</button></div>');
   onIn(m, '#wz-cancel', 'click', closeModal);
@@ -807,7 +1052,7 @@ async function addNodeWizard(index) {
           closeModal();
           openModal('<h2>✅ 子节点已登记</h2>' + linksHtml(r2.links, r2.qr) +
             '<div class="btn-row"><button class="btn" id="wz-close" type="button">完成</button></div>');
-          on('#wz-close', 'click', () => { closeModal(); loadManage(); });
+          on('#wz-close', 'click', () => { closeModal(); refreshCurrentPage(); });
         } catch (e) { toast('登记失败：' + e.message, 'err'); }
       });
     } catch (e) { toast('生成命令失败：' + e.message, 'err'); }
@@ -816,22 +1061,138 @@ async function addNodeWizard(index) {
 
 /* ---------- 节点链接 ---------- */
 let linksPage = 1;
+let linksGroupsCache = []; // 本页接口返回的全部历史分组（按文件顺序）
+// 勾选的分组：存全局序号（0 起，按文件顺序），翻页也不丢
+let linksSelected = new Set();
+function groupTagsHtml(g) {
+  const labels = (g.links || []).map((lk) => lk.label);
+  let h = '';
+  if (labels.indexOf('中转') >= 0) h += '<span class="tag relay">中转</span>';
+  if (labels.indexOf('任意门') >= 0) h += '<span class="tag relay">任意门</span>';
+  if (labels.indexOf('直连') >= 0) h += '<span class="tag direct">直连</span>';
+  return h;
+}
+function renderLinksToolbar() {
+  const bar = $('#links-toolbar');
+  if (!bar) return;
+  const n = linksSelected.size;
+  bar.innerHTML = '<div class="links-toolbar">' +
+    '<label><input type="checkbox" id="links-select-all"> 全选（本页）</label>' +
+    '<span class="small" id="links-selected-count">' + (n ? '已选 ' + n + ' 组' : '未选中') + '</span>' +
+    '<button class="btn secondary sm" type="button" id="links-batch-export" ' + (n ? '' : 'disabled') + '>批量导出</button>' +
+    '<button class="btn danger sm" type="button" id="links-batch-delete" ' + (n ? '' : 'disabled') + '>批量删除</button></div>';
+  onIn(bar, '#links-select-all', 'change', (e) => {
+    const boxes = $$('[data-group-check]', $('#links-history'));
+    boxes.forEach((cb) => {
+      cb.checked = e.target.checked;
+      const ord = Number(cb.dataset.groupCheck);
+      if (e.target.checked) linksSelected.add(ord); else linksSelected.delete(ord);
+    });
+    renderLinksToolbar();
+  });
+  onIn(bar, '#links-batch-export', 'click', () => {
+    const groups = linksGroupsCache.filter((g, i) => linksSelected.has(i));
+    const text = linksExportText(groups);
+    if (!text) { toast('选中的组里没有链接', 'err'); return; }
+    downloadTextFile(linksExportFileName(), text);
+  });
+  onIn(bar, '#links-batch-delete', 'click', async () => {
+    const ords = Array.from(linksSelected).sort((a, b) => a - b);
+    const ok = await confirmModal('批量删除历史记录', '<p>确定删除选中的 <b>' + ords.length + ' 组</b>历史记录吗？</p><p>只删历史记录（nodes.txt 里的这几组），不影响落地转发与节点本身。</p>', '删除 ' + ords.length + ' 组', true);
+    if (!ok) return;
+    try {
+      await apiPost('/api/v1/links/delete', { indices: ords });
+      linksSelected.clear();
+      toast('已删除 ' + ords.length + ' 组历史记录', 'ok');
+      loadLinks();
+    } catch (e) { toast('删除失败：' + e.message, 'err'); }
+  });
+}
 async function loadLinks(page) {
   if (page) linksPage = page;
   const wrap = $('#links-history');
   try {
     const r = await api('/api/v1/links');
     const groups = r.groups || [];
-    if (!groups.length) { wrap.innerHTML = '<div class="empty">暂无历史记录（nodes.txt 为空）。</div>'; return; }
+    linksGroupsCache = groups;
+    if (!groups.length) {
+      wrap.innerHTML = '<div class="empty">暂无历史记录（nodes.txt 为空）。</div>';
+      const bar = $('#links-toolbar'); if (bar) bar.innerHTML = '';
+      return;
+    }
     const pg = paginate(groups, linksPage);
     linksPage = pg.cur;
-    wrap.innerHTML = pg.slice.map((g) =>
-      '<div class="card" style="margin-bottom:16px"><h2>落地 #' + esc(g.landing_index) + ' · ' + esc(g.landing || '') + (g.mode === 'door' ? ' <span class="badge blue">任意门模式</span>' : '') + '</h2>' + linksHtml(g.links, g.qr) + '</div>').join('') +
-      pagerHtml(pg.total, pg.cur, pg.totalPages, 'links');
+    const start = (pg.cur - 1) * PAGE_SIZE;
+    wrap.innerHTML = pg.slice.map((g, i) => {
+      const ord = start + i;
+      const checked = linksSelected.has(ord) ? ' checked' : '';
+      return '<div class="card" style="margin-bottom:16px">' +
+        '<div class="group-head" data-group-head="' + ord + '">' +
+        '<input type="checkbox" data-group-check="' + ord + '"' + checked + ' aria-label="选中该组历史记录">' +
+        '<span class="group-title">' + esc(g.name || g.landing || '') + ' <span class="small">#' + esc(g.landing_index) + ' · ' + esc(g.landing || '') + '</span></span>' +
+        groupTagsHtml(g) +
+        (g.mode === 'door' ? ' <span class="badge blue">任意门模式</span>' : '') +
+        '<button class="btn secondary sm" type="button" data-group-export="' + ord + '">导出</button>' +
+        '<button class="btn danger sm" type="button" data-group-del="' + ord + '">删除</button>' +
+        '<button class="btn secondary sm" type="button" data-group-toggle="' + ord + '">展开 ▸</button></div>' +
+        '<div class="group-body hidden" data-group-body="' + ord + '">' + linksHtml(g.links, g.qr) + '</div></div>';
+    }).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'links');
+    renderLinksToolbar();
+    // 全选框状态：本页全勾才勾上
+    const all = $('#links-select-all');
+    if (all) {
+      const boxes = $$('[data-group-check]', wrap);
+      all.checked = boxes.length > 0 && boxes.every((cb) => cb.checked);
+    }
+    // 勾选框：只改选中集，不触发折叠
+    $$('[data-group-check]', wrap).forEach((cb) => cb.addEventListener('change', () => {
+      const ord = Number(cb.dataset.groupCheck);
+      if (cb.checked) linksSelected.add(ord); else linksSelected.delete(ord);
+      renderLinksToolbar();
+      const all2 = $('#links-select-all');
+      if (all2) {
+        const boxes = $$('[data-group-check]', wrap);
+        all2.checked = boxes.length > 0 && boxes.every((b) => b.checked);
+      }
+    }));
+    // 点行（除勾选框与按钮外）展开/收起
+    $$('[data-group-head]', wrap).forEach((head) => head.addEventListener('click', (e) => {
+      if (e.target.closest('input[type="checkbox"]') || e.target.closest('button')) return;
+      toggleLinksGroup(Number(head.dataset.groupHead));
+    }));
+    $$('[data-group-toggle]', wrap).forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); toggleLinksGroup(Number(b.dataset.groupToggle)); }));
+    $$('[data-group-export]', wrap).forEach((b) => b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const g = linksGroupsCache[Number(b.dataset.groupExport)];
+      const text = linksExportText([g]);
+      if (!text) { toast('该组没有链接可导出', 'err'); return; }
+      downloadTextFile(linksExportFileName(), text);
+    }));
+    $$('[data-group-del]', wrap).forEach((b) => b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const ord = Number(b.dataset.groupDel);
+      const g = linksGroupsCache[ord];
+      const ok = await confirmModal('删除历史记录', '<p>确定删除 <b>' + esc(g ? (g.name || g.landing || '') : ord) + '</b> 这一组历史记录吗？</p><p>只删历史记录，不影响落地转发与节点本身。</p>', '删除该组', true);
+      if (!ok) return;
+      try {
+        await apiPost('/api/v1/links/delete', { indices: [ord] });
+        linksSelected.delete(ord);
+        toast('该组历史记录已删除', 'ok');
+        loadLinks();
+      } catch (err) { toast('删除失败：' + err.message, 'err'); }
+    }));
     if (pg.totalPages > 1) wirePager(wrap, 'links', pg.cur, pg.totalPages, (p) => loadLinks(p));
   } catch (e) {
     wrap.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
   }
+}
+// 展开/收起一组历史记录（默认折叠）
+function toggleLinksGroup(ord) {
+  const body = $('[data-group-body="' + ord + '"]');
+  const btn = $('[data-group-toggle="' + ord + '"]');
+  if (!body) return;
+  const nowHidden = body.classList.toggle('hidden');
+  if (btn) btn.textContent = nowHidden ? '展开 ▸' : '收起 ▾';
 }
 function initTwin() {
   on('#twin-form', 'submit', async (e) => {
@@ -839,10 +1200,12 @@ function initTwin() {
     const link = $('#twin-link').value.trim();
     const landingIp = $('#twin-landing').value.trim();
     const sni = $('#twin-sni').value.trim();
+    const name = $('#twin-name') ? $('#twin-name').value.trim() : '';
+    if (name && name.length > 64) { toast('节点名称不能超过 64 字', 'err'); return; }
     if (!/^(vless|trojan|ss|vmess):\/\//.test(link)) { toast('链接格式不正确，需以 vless://、trojan://、ss:// 或 vmess:// 开头', 'err'); return; }
     if (!landingIp) { toast('请填写落地 IP', 'err'); return; }
     try {
-      const r = await apiPost('/api/v1/links/twin', { link, landing_ip: landingIp, sni });
+      const r = await apiPost('/api/v1/links/twin', { link, landing_ip: landingIp, sni, name: name || undefined });
       const relayLabel = r.relay_label || '中转';
       const links = [];
       if (r.relay_link) links.push({ label: relayLabel, link: r.relay_link });
@@ -886,7 +1249,7 @@ async function loadCerts(page) {
     // 续签引导的落地选择
     const sel = $('#renew-landing');
     const opts = (landingsCache.length ? landingsCache : certs.map((c) => ({ index: c.landing_index, cert_domain: c.domain, landing: c.landing })));
-    sel.innerHTML = opts.map((l) => '<option value="' + l.index + '">' + esc(l.cert_domain || l.domain || l.landing) + '</option>').join('');
+    sel.innerHTML = opts.map((l) => '<option value="' + l.index + '">' + esc(l.name || l.cert_domain || l.domain || l.landing) + '</option>').join('');
     if (opts.length) loadRenewGuide(Number(sel.value));
     sel.onchange = () => loadRenewGuide(Number(sel.value));
   } catch (e) {
@@ -1382,7 +1745,7 @@ async function loadTrafficPage() {
       drawChart([], '暂无数据');
       return;
     }
-    sel.innerHTML = landingsCache.map((l) => '<option value="' + l.index + '">' + esc(l.cert_domain || l.domain || l.landing) + '</option>').join('');
+    sel.innerHTML = landingsCache.map((l) => '<option value="' + l.index + '">' + esc(displayNameOf(l)) + '</option>').join('');
     if (!trafficLanding || !landingsCache.some((l) => l.index === trafficLanding)) trafficLanding = landingsCache[0].index;
     sel.value = String(trafficLanding);
     sel.onchange = () => { trafficLanding = Number(sel.value); loadTrafficData(); };
@@ -1617,7 +1980,7 @@ async function loadCentralLandings(id, page) {
         const ports = (l.ports || []).map((p) => esc(p.proto) + ' ' + esc(p.listen) + '→' + esc(p.remote)).join('、') || '—';
         const on = l.online === true ? '<span class="badge green">在线</span>' : l.online === false ? '<span class="badge red">离线</span>' : '<span class="badge">未知</span>';
         const lat = l.latency_ms == null ? '—' : esc(l.latency_ms) + ' ms';
-        return '<div class="kv"><span>' + esc(l.domain || l.landing) + ' <span class="small">#' + esc(l.index) + '</span></span><span>' + on + ' ' + lat + '</span></div>' +
+        return '<div class="kv"><span>' + esc(l.name || l.domain || l.landing) + ' <span class="small">#' + esc(l.index) + '</span></span><span>' + on + ' ' + lat + '</span></div>' +
           '<div class="kv"><span>落地</span><b>' + esc(l.landing) + '</b></div>' +
           '<div class="kv"><span>监听端口</span><b>' + ports + '</b></div>' +
           '<div class="btn-row"><button class="btn danger sm" type="button" data-central-del-landing="' + esc(l.index) + '">删除该落地</button></div>';
@@ -1637,7 +2000,7 @@ async function centralLinks(id) {
     const groups = r.groups || [];
     const body = $('#central-links-body', m);
     if (!groups.length) { body.innerHTML = '<div class="empty">这台远程面板还没有节点链接。</div>'; return; }
-    body.innerHTML = groups.map((g) => '<h3>' + esc(g.landing || '') + '</h3>' + linksHtml(g.links || [], g.qr || {})).join('');
+    body.innerHTML = groups.map((g) => '<h3>' + esc(g.name || g.landing || '') + '</h3>' + linksHtml(g.links || [], g.qr || {})).join('');
   } catch (e) {
     const body = $('#central-links-body', m);
     if (body) body.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>';
@@ -1737,6 +2100,13 @@ function initCentral() {
 
 /* ---------- 启动 ---------- */
 document.addEventListener('DOMContentLoaded', () => {
+  // 启动成功标记：index.html 里的内联兜底脚本靠它判断 app.js 是否跑起来了
+  window.__panelBooted = true;
+  // 看门狗：10 秒后还在加载态（会话校验挂起、网络卡住），直接放登录页，页面不白板
+  setTimeout(() => {
+    const lv = $('#loading-view');
+    if (lv && !lv.classList.contains('hidden')) showLogin();
+  }, 10000);
   // 单个初始化失败不能拖垮后面的：逐个包 try/catch，checkMe 必须执行，
   // 否则登录页和后台都出不来，页面就是白板。
   const safeInit = (fn) => { try { fn(); } catch (e) { /* 忽略：单个初始化失败不影响其他 */ } };
