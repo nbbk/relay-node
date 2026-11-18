@@ -404,13 +404,17 @@ curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/stop.sh | bash
 | ufw 放行规则 | 保留 | 保留（不会自动删，手动清理见 2.2） |
 | 停完验证 | 逐个检查转发端口已释放，仍被占会列出占用进程 | 同左 |
 
-**停完再启动**（只针对 `bash stop.sh` 保留配置的情况）：
+**停完再启动**（只针对 `bash stop.sh` 保留配置的情况）：再启动的命令就是下面这条，跑完中转按原配置重新起来：
 
 ```bash
 systemctl start realm
+# 查是不是起来了：
+systemctl status realm
 # 无 systemd 的机器：
 nohup /usr/local/bin/realm -c /etc/realm/config.toml >/var/log/realm.log 2>&1 &
 ```
+
+改了配置要生效不用停了再起，一条 `systemctl restart realm` 就行（停 + 起一次完成）。
 
 ### 2.2 手动彻底清理清单
 
