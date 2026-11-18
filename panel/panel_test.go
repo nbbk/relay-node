@@ -670,9 +670,9 @@ func TestMobileDrawerAndUpdatePoll(t *testing.T) {
 		t.Fatalf("首页不应再含底部导航条 bottom-nav（iOS 上不可靠，已改汉堡抽屉）")
 	}
 	css := get("/style.css").Body.String()
-	for _, want := range []string{".sidebar.open", ".menu-btn", ".scrim", ".repo-links"} {
+	for _, want := range []string{".sidebar.open", ".menu-btn", ".scrim", ".repo-links", ".spin-ico", "@keyframes spin"} {
 		if !strings.Contains(css, want) {
-			t.Fatalf("style.css 缺 %q（抽屉样式或仓库链接样式）", want)
+			t.Fatalf("style.css 缺 %q（抽屉样式、仓库链接样式或刷新转圈样式）", want)
 		}
 	}
 	js := get("/app.js").Body.String()
@@ -680,9 +680,16 @@ func TestMobileDrawerAndUpdatePoll(t *testing.T) {
 		"initDrawer", "openDrawer", "closeDrawer",
 		"pollUpdateDone", "更新完成，请重新登录", "更新超时，请手动刷新页面", "正在更新…",
 		"https://github.com/nbbk/relay-node",
+		// 共用前端分页（审计/端口表/各列表）：切页、分页条、绑定、跳页钳制
+		"function clampPage", "function paginate", "function pagerHtml", "function wirePager",
+		// 刷新按钮反馈：转圈 + 成功/失败 toast + 防重复点
+		"spinning", "已刷新", "刷新失败",
+		// 各列表分页命名空间 + 组内链接收起
+		"'overview'", "'manage'", "'recycle'", "'links'", "'certs'", "'backups'", "'firewall'", "'ports'",
+		"extra-links", "data-expand-links",
 	} {
 		if !strings.Contains(js, want) {
-			t.Fatalf("app.js 缺 %q（抽屉或更新轮询逻辑）", want)
+			t.Fatalf("app.js 缺 %q（抽屉、更新轮询、共用分页或刷新反馈逻辑）", want)
 		}
 	}
 }
