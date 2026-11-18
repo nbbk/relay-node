@@ -65,6 +65,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/telegram/test", s.requireAuth(s.handleTelegramTest))
 	mux.HandleFunc("GET /api/v1/update/check", s.requireAuth(s.handleUpdateCheck))
 	mux.HandleFunc("POST /api/v1/update/apply", s.requireAuth(s.handleUpdateApply))
+	// 机器状态监控告警（v1.1.10）
+	mux.HandleFunc("GET /api/v1/monitor", s.requireAuth(s.handleMonitor))
+	mux.HandleFunc("POST /api/v1/settings/monitor", s.requireAuth(s.handleMonitorSettings))
 	// 端口管理 / 流量 / 备份导出导入 / 审计
 	mux.HandleFunc("GET /api/v1/firewall", s.requireAuth(s.handleFirewallGet))
 	mux.HandleFunc("POST /api/v1/firewall", s.requireAuth(s.handleFirewallPost))
