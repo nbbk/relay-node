@@ -47,7 +47,7 @@ func TestQRDataURINoQrencode(t *testing.T) {
 
 const twinPersistLink = "vless://11111111-2222-3333-4444-555555555555@example.com:443?security=tls&sni=example.com#test"
 const twinPersistDirect = "vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443?security=tls&sni=example.com#test-直连"
-const twinPersistDoor = "vless://11111111-2222-3333-4444-555555555555@203.0.113.9:20443?security=tls&sni=example.com#test-任意门"
+const twinPersistDoor = "vless://11111111-2222-3333-4444-555555555555@203.0.113.9:20443?security=tls&sni=example.com#test-%E4%B8%AD%E8%BD%AC" // 1.2.2：中转/任意门备注统一是“<名称>-中转”，中文按 setLinkHost 规则百分号编码
 
 func TestUpsertTwinLinksNewFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nodes.txt")
