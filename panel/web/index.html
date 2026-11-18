@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>relay-node 面板</title>
+<meta name="description" content="relay-node 中转面板：落地管理、证书、流量、端口与服务">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="中转面板">
+<meta name="theme-color" content="#2563eb">
+<!-- 内联 manifest：可“存到主屏幕”，无外部依赖 -->
+<link rel="manifest" href='data:application/manifest+json,{"name":"relay-node 面板","short_name":"中转面板","display":"standalone","start_url":".","theme_color":"%232563eb","background_color":"%23f4f6fa","icons":[]}'>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 登录页 -->
+<div id="login-view" class="login-wrap hidden">
+  <div class="login-card">
+    <div class="brand">relay<span>-node</span> 面板</div>
+    <p class="sub">中转节点可视化管理 · 请登录</p>
+    <div id="login-error" class="error-box hidden"></div>
+    <div id="login-locked" class="warn-box hidden">登录失败次数过多，已临时锁定 5 分钟，请稍后再试。</div>
+    <form id="login-form">
+      <label for="login-user">用户名</label>
+      <input id="login-user" name="username" autocomplete="username" placeholder="admin" required>
+      <label for="login-pass">密码</label>
+      <input id="login-pass" name="password" type="password" autocomplete="current-password" placeholder="安装时设置的密码" required>
+      <div class="btn-row"><button class="btn block" type="submit" id="login-btn">登录</button></div>
+    </form>
+    <p class="small" style="margin-top:14px">忘记密码？请 SSH 到中转机执行 <span class="mono">panel-info</span> 查看账号信息。</p>
+  </div>
+</div>
+
+<!-- 主界面 -->
+<div id="app" class="hidden">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">relay<span>-node</span></div>
+    <nav id="side-nav"></nav>
+    <div class="foot">
+      <div>面板版本：<span id="side-version">—</span></div>
+      <div>登录用户：<span id="side-user">—</span></div>
+      <div style="margin-top:8px"><button class="btn secondary sm" id="logout-btn" type="button">退出登录</button></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="title" id="page-title">总览</div>
+      <button class="icon-btn" id="theme-btn" type="button" title="切换深色 / 浅色">🌙 深色</button>
+      <button class="icon-btn" id="refresh-btn" type="button">↻ 刷新</button>
+    </header>
+
+    <main class="content">
+      <!-- 总览 -->
+      <section class="page" id="page-overview">
+        <div class="page-head"><h1>总览</h1><div class="actions"><button class="btn" id="check-btn" type="button">一键体检</button><button class="btn secondary" data-goto="add" type="button">＋ 添加落地</button></div></div>
+        <div class="grid cols-4" id="overview-stats"></div>
+        <div id="check-result" style="margin-top:16px"></div>
+        <div id="update-banner" style="margin-top:16px"></div>
+        <h2 style="margin-top:20px">落地列表</h2>
+        <div class="grid cols-2" id="landing-cards"></div>
+        <div id="overview-empty" class="empty hidden">还没有落地节点，去「添加落地」加第一个吧。</div>
+      </section>
+
+      <!-- 添加落地 -->
+      <section class="page" id="page-add">
+        <div class="page-head"><h1>添加落地</h1></div>
+        <div class="card">
+          <form id="add-form">
+            <div class="form-grid">
+              <div><label for="add-landing">落地 IP 或域名 <span class="hint">必填，如 203.0.113.1</span></label>
+                <input id="add-landing" placeholder="203.0.113.1" required></div>
+              <div><label for="add-preset">预设 <span class="hint">落地机装的节点类型</span></label>
+                <select id="add-preset">
+                  <option value="1">预设 1：tiktok-node（Xray）</option>
+                  <option value="2">预设 2：sing-box-node</option>
+                  <option value="3">预设 3：自定义端口</option>
+                </select></div>
+              <div id="sb-mode-wrap" class="hidden"><label for="add-sb-mode">sing-box 模式</label>
+                <select id="add-sb-mode"><option value="1">TLS（443）</option><option value="2">明文（8080）</option></select></div>
+              <div id="custom-ports-wrap" class="hidden"><label for="add-custom-ports">自定义端口 <span class="hint">必填，逗号分隔，如 443,8388；可写 监听:落地，如 10443:443</span></label>
+                <input id="add-custom-ports" placeholder="443,8388"></div>
+              <div><label for="add-cert-domain">证书域名 <span class="hint">用于签证书，如 example.com</span></label>
+                <input id="add-cert-domain" placeholder="example.com"></div>
+              <div><label for="add-duration">节点时长</label>
+                <select id="add-duration">
+                  <option value="0">永久（默认）</option><option value="30">30 天</option><option value="90">90 天</option>
+                  <option value="180">180 天</option><option value="365">365 天</option><option value="custom">自定义天数</option>
+                </select></div>
+              <div id="duration-custom-wrap" class="hidden"><label for="add-duration-custom">自定义天数</label>
+                <input id="add-duration-custom" type="number" min="1" max="3650" placeholder="如 60"></div>
+              <div><label for="add-traffic">流量上限（GB）<span class="hint">0 = 不限</span></label>
+                <input id="add-traffic" type="number" min="0" step="1" placeholder="0"></div>
+              <div><label for="add-traffic-mode">流量上限算法</label>
+                <select id="add-traffic-mode"><option value="total">总量（整个生命周期）</option><option value="monthly">按月（每月重置）</option></select></div>
+              <div><label for="add-speed">限速（Mbps）<span class="hint">0 = 不限速</span></label>
+                <input id="add-speed" type="number" min="0" step="1" placeholder="0"></div>
+              <div class="checkbox-row"><input type="checkbox" id="add-want-udp"><label for="add-want-udp" style="margin:0;font-weight:400">同时转发 UDP（HY2 / TUIC 需要）</label></div>
+            </div>
+            <div class="btn-row"><button class="btn" type="submit" id="add-submit">提交并添加落地</button></div>
+            <p class="small">提交后面板会先预检端口；若 80 / 443 已被占用，会弹出方式选择（改监听走高位端口、按域名分流、按 SNI 分流等）。</p>
+          </form>
+        </div>
+        <div id="add-result" style="margin-top:16px"></div>
+      </section>
+
+      <!-- 落地管理 -->
+      <section class="page" id="page-manage">
+        <div class="page-head"><h1>落地管理</h1><div class="actions"><button class="btn secondary" data-goto="add" type="button">＋ 添加落地</button></div></div>
+        <div id="manage-list"></div>
+        <h2 style="margin-top:24px">回收站 <span class="small">（删除后保留 7 天，可恢复）</span></h2>
+        <div id="recycle-list"></div>
+      </section>
+
+      <!-- 节点链接 -->
+      <section class="page" id="page-links">
+        <div class="page-head"><h1>节点链接</h1></div>
+        <div class="card">
+          <h2>粘贴原链接，生成直连 + 中转</h2>
+          <p class="muted">把落地机上生成的节点链接粘贴进来，面板会生成中转版（twin）和直连版链接及二维码。</p>
+          <form id="twin-form">
+            <label for="twin-link">节点链接 <span class="hint">vless:// / trojan:// / ss:// / vmess:// 开头</span></label>
+            <input id="twin-link" placeholder="vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443?security=tls&amp;sni=example.com#示例" required>
+            <div class="form-grid">
+              <div><label for="twin-landing">落地 IP <span class="hint">必填</span></label><input id="twin-landing" placeholder="203.0.113.1" required></div>
+              <div><label for="twin-sni">SNI / 域名 <span class="hint">可空，自动推断</span></label><input id="twin-sni" placeholder="example.com"></div>
+            </div>
+            <div class="btn-row"><button class="btn" type="submit">生成 twin</button></div>
+          </form>
+          <div id="twin-result"></div>
+        </div>
+        <h2 style="margin-top:20px">历史记录（nodes.txt）</h2>
+        <div id="links-history"></div>
+      </section>
+
+      <!-- 证书 -->
+      <section class="page" id="page-certs">
+        <div class="page-head"><h1>证书</h1></div>
+        <p class="muted">证书剩余天数：&lt; 30 天变黄，&lt; 7 天变红。请注意：节点到期（你设的时长）和证书到期（90 天有效期）是两回事。</p>
+        <div id="cert-list"></div>
+        <div class="card" style="margin-top:16px">
+          <h2>手动续签六步引导</h2>
+          <p class="muted">适用于续签方式为“手动”的落地（80 改监听走高位端口，续签走不通中转）。做到哪一步就打勾，进度会保存。</p>
+          <label for="renew-landing">选择落地</label>
+          <select id="renew-landing"></select>
+          <ol class="steps" id="renew-steps"></ol>
+        </div>
+      </section>
+
+      <!-- 服务与日志 -->
+      <section class="page" id="page-service">
+        <div class="page-head"><h1>服务与日志</h1></div>
+        <div class="card">
+          <h2>realm 服务</h2>
+          <div id="service-status"></div>
+          <div class="btn-row">
+            <button class="btn" data-service="start" type="button">启动</button>
+            <button class="btn secondary" data-service="restart" type="button">重启</button>
+            <button class="btn danger" data-service="stop" type="button">停止</button>
+          </div>
+          <p class="small">分流组件（nginx / HAProxy）随 SHARE80 / SHARE443 一起启停。面板挂了、关了都不影响 realm 转发。</p>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h2>实时日志 <span class="small">（最近 200 行，每 10 秒自动刷新）</span></h2>
+          <div class="btn-row" style="margin:0 0 10px"><button class="btn secondary sm" id="logs-refresh" type="button">立即刷新</button>
+          <label class="checkbox-row" style="margin:0"><input type="checkbox" id="logs-auto" checked><span style="font-weight:400">自动刷新</span></label></div>
+          <div class="log-box" id="log-box">加载中…</div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h2>端口占用表</h2>
+          <div id="ports-table"></div>
+        </div>
+      </section>
+
+      <!-- 设置 -->
+      <section class="page" id="page-settings">
+        <div class="page-head"><h1>设置</h1></div>
+        <div class="grid cols-2">
+          <div class="card">
+            <h2>修改密码</h2>
+            <form id="pw-form">
+              <label for="pw-old">当前密码</label><input id="pw-old" type="password" required autocomplete="current-password">
+              <label for="pw-new">新密码 <span class="hint">至少 8 位</span></label><input id="pw-new" type="password" required autocomplete="new-password">
+              <label for="pw-new2">确认新密码</label><input id="pw-new2" type="password" required autocomplete="new-password">
+              <div class="btn-row"><button class="btn" type="submit">修改密码</button></div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>面板端口</h2>
+            <p class="muted">改端口后面板会重启自身，请用新端口重新打开（原页面会断开）。</p>
+            <form id="port-form">
+              <label for="panel-port">面板端口 <span class="hint">1–65535，默认 11111</span></label>
+              <input id="panel-port" type="number" min="1" max="65535" placeholder="11111" required>
+              <div class="btn-row"><button class="btn" type="submit">保存并重启面板</button></div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>IP 白名单</h2>
+            <p class="muted">只允许这些 IP 访问面板。留空 = 不限制。白名单外的 IP 访问任何接口都会返回 403。</p>
+            <form id="whitelist-form">
+              <label for="whitelist-input">允许的 IP <span class="hint">每行一个，如 203.0.113.5</span></label>
+              <textarea id="whitelist-input" rows="4" placeholder="203.0.113.5"></textarea>
+              <div class="btn-row"><button class="btn" type="submit">保存白名单</button></div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>HTTPS</h2>
+            <p class="muted">无域名时生成自签证书（浏览器首次会提示一次，点继续访问即可）；绑域名后自动申请真证书（DNS 验证，不占 80 端口）。</p>
+            <form id="https-form">
+              <label for="https-domain">域名 <span class="hint">可空，留空 = 自签证书</span></label>
+              <input id="https-domain" placeholder="example.com">
+              <div class="btn-row">
+                <button class="btn" id="https-enable" type="button">开启 HTTPS</button>
+                <button class="btn secondary" id="https-disable" type="button">关闭 HTTPS（回 HTTP）</button>
+              </div>
+            </form>
+            <div id="https-status" class="small"></div>
+          </div>
+          <div class="card">
+            <h2>Telegram 提醒</h2>
+            <p class="muted">证书快到期、中转挂了、落地到期或流量用完时自动发消息。需要 Bot Token 和 Chat ID。</p>
+            <form id="tg-form">
+              <div class="checkbox-row"><input type="checkbox" id="tg-enabled"><label for="tg-enabled" style="margin:0;font-weight:400">启用 Telegram 提醒</label></div>
+              <label for="tg-token">Bot Token <span class="hint">只保存，不回显</span></label>
+              <input id="tg-token" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+              <label for="tg-chat">Chat ID</label><input id="tg-chat" placeholder="如 123456789">
+              <div class="btn-row"><button class="btn" type="submit">保存</button><button class="btn secondary" id="tg-test" type="button">发送测试消息</button></div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>检查更新</h2>
+            <div id="update-box"></div>
+            <div class="btn-row"><button class="btn secondary" id="update-check" type="button">检查更新</button>
+            <button class="btn" id="update-apply" type="button">更新面板</button></div>
+            <p class="small">更新只重启面板自己，不动 realm，正在用的节点不断线；更新完自动跑一遍体检。</p>
+          </div>
+        </div>
+
+        <h2 style="margin-top:24px">备份 / 导出 / 导入</h2>
+        <div class="grid cols-2">
+          <div class="card">
+            <h2>备份</h2>
+            <div class="btn-row" style="margin-top:0"><button class="btn" id="backup-create" type="button">立即备份</button></div>
+            <div id="backup-list" style="margin-top:12px"></div>
+          </div>
+          <div class="card">
+            <h2>导出 / 导入整机配置</h2>
+            <p class="muted">导出：所有落地、方式、设置打包成一个 JSON 文件（不含密码哈希和 Telegram Token）。换中转机时导入就全回来了。</p>
+            <div class="btn-row" style="margin-top:0">
+              <button class="btn" id="export-btn" type="button">导出配置</button>
+              <label class="btn secondary" for="import-file" style="cursor:pointer">选择文件导入</label>
+              <input type="file" id="import-file" accept="application/json,.json" class="hidden">
+            </div>
+            <div id="import-result" style="margin-top:10px"></div>
+          </div>
+        </div>
+
+        <h2 style="margin-top:24px">审计日志</h2>
+        <div class="card"><div id="audit-list"></div></div>
+      </section>
+
+      <!-- 端口管理 -->
+      <section class="page" id="page-firewall">
+        <div class="page-head"><h1>端口管理</h1></div>
+        <div class="info-box">只管本机防火墙（ufw）。云厂商安全组（控制台里那层）面板管不了，还得去控制台开。</div>
+        <div id="firewall-status"></div>
+        <div class="grid cols-2" style="margin-top:16px">
+          <div class="card">
+            <h2>开放指定端口</h2>
+            <form id="fw-one-form">
+              <label for="fw-port">端口 <span class="hint">1–65535</span></label><input id="fw-port" type="number" min="1" max="65535" placeholder="8443" required>
+              <label for="fw-proto">协议</label><select id="fw-proto"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
+              <div class="btn-row"><button class="btn" type="submit">放行该端口</button></div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>开放端口范围</h2>
+            <form id="fw-range-form">
+              <div class="form-grid">
+                <div><label for="fw-from">起始端口</label><input id="fw-from" type="number" min="1" max="65535" placeholder="8000" required></div>
+                <div><label for="fw-to">结束端口</label><input id="fw-to" type="number" min="1" max="65535" placeholder="8100" required></div>
+              </div>
+              <label for="fw-range-proto">协议</label><select id="fw-range-proto"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
+              <div class="btn-row"><button class="btn" type="submit">放行该范围</button></div>
+            </form>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h2>快捷操作</h2>
+          <div class="btn-row" style="margin-top:0">
+            <button class="btn danger" id="fw-open-all" type="button">一键开放全部端口</button>
+            <button class="btn secondary" id="fw-restore" type="button">一键恢复只开必要端口</button>
+          </div>
+          <p class="small">“开放全部端口”会暴露所有端口（包括 SSH 等），建议只在需要时用，用完可一键恢复只开必要端口（面板端口 + 各落地监听端口 + 22）。</p>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h2>已开放的端口</h2>
+          <div id="firewall-rules"></div>
+        </div>
+      </section>
+
+      <!-- 流量 -->
+      <section class="page" id="page-traffic">
+        <div class="page-head"><h1>流量</h1></div>
+        <div class="card">
+          <div class="form-grid">
+            <div><label for="traffic-landing">选择落地</label><select id="traffic-landing"></select></div>
+            <div><label>时间范围</label>
+              <div class="btn-row" style="margin-top:0" role="group" aria-label="时间范围">
+                <button class="btn secondary sm" data-range="day" type="button">按天（最近 24 小时）</button>
+                <button class="btn secondary sm" data-range="month" type="button">按月（最近 30 天）</button>
+                <button class="btn secondary sm" data-range="total" type="button">累计</button>
+              </div>
+            </div>
+          </div>
+          <div id="traffic-unavailable" class="warn-box hidden"></div>
+          <canvas id="traffic-chart" width="900" height="280" style="width:100%;height:auto;margin-top:12px"></canvas>
+          <div id="traffic-summary" style="margin-top:12px"></div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h2>流量限制设置</h2>
+          <p class="muted">总量与按月是两种算法；与到期时间是“或”的关系，哪个先到节点就停用。续期只延长时限、续量只补流量。</p>
+          <form id="traffic-limit-form">
+            <div class="form-grid">
+              <div><label for="limit-bytes-gb">流量上限（GB）<span class="hint">0 = 不限</span></label><input id="limit-bytes-gb" type="number" min="0" step="1" placeholder="0"></div>
+              <div><label for="limit-mode">算法</label><select id="limit-mode"><option value="total">总量</option><option value="monthly">按月</option></select></div>
+              <div><label for="limit-speed">限速（Mbps）<span class="hint">0 = 不限速</span></label><input id="limit-speed" type="number" min="0" step="1" placeholder="0"></div>
+            </div>
+            <div class="btn-row">
+              <button class="btn" type="submit">保存限制</button>
+              <button class="btn secondary" id="traffic-reset-month" type="button">重置当月用量</button>
+              <button class="btn secondary" id="traffic-reset-total" type="button">重置累计用量</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 手机底部导航 -->
+  <nav class="bottom-nav" id="bottom-nav"><div class="nav-scroll" id="bottom-nav-inner"></div></nav>
+</div>
+
+<!-- 弹窗容器 -->
+<div id="modal-root"></div>
+<div id="toast-wrap"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
