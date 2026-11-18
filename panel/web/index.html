@@ -299,6 +299,17 @@
             </form>
           </div>
           <div class="card">
+            <h2>延迟探测</h2>
+            <p class="muted">后台定时对每个落地做 TCP 连接测延迟：只做 TCP 握手，不发任何应用层数据，不会干扰 TLS / Xray。探测目标是落地地址:落地端口（中转配置里的转发目标），不是中转机本地监听端口，所以能真实反映落地在线与否；任意门模式的落地同样探测。离线时总览卡片标红，并走上面配好的 Telegram 提醒（同一落地离线只提醒一次，持续离线每小时最多一次，恢复后报恢复）；没配 Telegram 就只在面板里标红。延迟只显示毫秒数，不做高低判定，避免误判。</p>
+            <form id="latency-form">
+              <div class="checkbox-row"><input type="checkbox" id="lat-enabled"><label for="lat-enabled" style="margin:0;font-weight:400">启用延迟探测</label></div>
+              <div><label for="lat-interval">探测间隔（分钟） <span class="hint">默认 5，可填 1–60</span></label>
+                <input id="lat-interval" type="number" min="1" max="60" placeholder="5"></div>
+              <div class="small">超时固定 3 秒，不可改；结果存在面板自己的 latency.json 里，重启面板不丢。</div>
+              <div class="btn-row"><button class="btn" type="submit">保存探测设置</button></div>
+            </form>
+          </div>
+          <div class="card">
             <h2>检查更新</h2>
             <div id="update-box"></div>
             <div class="btn-row"><button class="btn secondary" id="update-check" type="button">检查更新</button>
