@@ -16,6 +16,7 @@ func (s *Server) startBackground() {
 	go s.recycleCleanupLoop()
 	go s.monitorLoop()
 	go s.latencyLoop()
+	go s.centralLoop()
 }
 
 // 流量采样每 60 秒；采样后检查限量（剩余变化大时重建 quota）。
