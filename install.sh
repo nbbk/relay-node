@@ -8,8 +8,15 @@
 #   （不给参数则交互询问；落地不用装任何东西，转发目标就是落地现成的端口）
 # 多落地：一台中转机可以转多个落地节点（装完第 1 个后会问要不要再加一个，
 #        或事后跑 bash install.sh --add）。每个落地各有一组转发端口，监听端口
-#        不能撞：被占就改监听端口（只改中转这边，落地端口不变），建议值是高位
-#        端口（原端口+10000，如 443→10443），客户端链接端口跟着改。
+#        不能撞。加第 2 个及以上落地、80 或 443 被已装好的落地占了时，会让你
+#        选解决方式（默认 1，直接回车就是 1）：
+#        [1] 改监听走高位端口（现状，最简单；续签要手动改指向）
+#        [2] 80 按域名分流：中转机上跑 nginx 监听 80，按 Host 把验证请求分到
+#            对应落地的 80，几个落地续签都自动通；443 还是各走各的高位端口
+#        [3] 443 按 SNI 分流：中转机上跑 haproxy 监听 443，按 TLS 握手里的域
+#            名（SNI）分到对应落地的 443，几个落地共用 443，客户端链接不用带
+#            高位端口，续签走 TLS-ALPN-01 自动通；2 和 3 可以一起选
+#        单节点（第 1 个落地）默认走现在最简单的（HTTP-01 + realm 纯转发）。
 # 架构：中转只做原样字节转发，不解密、不改协议。TLS 握手仍是客户端和落地机之间
 #        端到端完成，UUID、SNI、WS 路径全部不变；域名 A 记录改指到中转机后，
 #        客户端配置一个字都不用改。
@@ -44,6 +51,10 @@ if [ "${1:-}" = "--add" ]; then
 fi
 SNI_ASKED=0
 STEP7_INDEX=1
+SHARE80=0        # 80 是否走按域名分流（nginx 监听 80，按 Host 分到各落地 80）
+SHARE443=0       # 443 是否走按 SNI 分流（haproxy 监听 443，按 SNI 分到各落地 443）
+SHARE_ASKED=0    # 本轮加落地时是否已问过分流方式（每加一个落地重置一次）
+CERT_DOMAIN=""   # 本轮落地的证书域名（分流按它认落地；落地填域名时就是它，填 IP 时再问）
 
 REALM_VERSION="${REALM_VERSION:-}"   # 可手动指定，如 REALM_VERSION=v2.9.6
 REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/nbbk/relay-node/main}"
@@ -122,6 +133,495 @@ landing_field() { # $1=落地编号 $2=字段名（LANDING/PORTS/MODE_NOTE/DOMAI
   local _var="$_field"
   [ "$_idx" != "1" ] && _var="${_field}_$_idx"
   printf '%s' "${!_var:-}"
+}
+
+# ---------- 分流（80 按域名分流 / 443 按 SNI 分流）辅助函数 ----------
+install_pkg() { # $1=包名 -> 装好返回 0；没包管理器或装不上返回 1（不报错，由调用方决定回退）
+  local pkg="$1" _to=""
+  command -v timeout >/dev/null 2>&1 && _to="timeout 180"
+  if command -v apt-get >/dev/null 2>&1; then
+    $_to apt-get install -y "$pkg" >/dev/null 2>&1 && return 0
+    $_to apt-get update >/dev/null 2>&1 || true
+    $_to apt-get install -y "$pkg" >/dev/null 2>&1 && return 0
+  elif command -v dnf >/dev/null 2>&1; then
+    $_to dnf install -y "$pkg" >/dev/null 2>&1 && return 0
+  elif command -v yum >/dev/null 2>&1; then
+    $_to yum install -y "$pkg" >/dev/null 2>&1 && return 0
+  fi
+  return 1
+}
+
+resolve_landing_ip() { # $1=落地地址（IP 或域名）-> 打印 IPv4；解析不到返回 1
+  local a="$1" ip=""
+  if is_ip "$a"; then printf '%s' "$a"; return 0; fi
+  ip="$(getent hosts "$a" 2>/dev/null | awk '{print $1}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+  [ -n "$ip" ] && printf '%s' "$ip"
+}
+
+landing_cert_domain() { # $1=落地编号 -> 打印该落地的证书域名（CERT_DOMAIN，没有就 fallback 到 DOMAIN）
+  local d
+  d="$(landing_field "$1" CERT_DOMAIN || true)"
+  [ -n "$d" ] || d="$(landing_field "$1" DOMAIN || true)"
+  printf '%s' "$d"
+}
+
+conf_get() { # $1=键名 -> 打印 /etc/realm/relay.conf 里该键的值（去引号），没有返回 1
+  local v
+  v="$(grep -E "^$1=" /etc/realm/relay.conf 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' || true)"
+  [ -n "$v" ] && printf '%s' "$v"
+}
+
+conf_set() { # $1=键名 $2=值 -> 写进 /etc/realm/relay.conf（有则替换，没有则追加）
+  local k="$1" v="$2"
+  [ -f /etc/realm/relay.conf ] || return 1
+  if grep -qE "^$k=" /etc/realm/relay.conf; then
+    sed -i "s|^$k=.*|$k=\"$v\"|" /etc/realm/relay.conf
+  else
+    echo "$k=\"$v\"" >> /etc/realm/relay.conf
+  fi
+}
+
+remove_realm_listen() { # $1=端口 -> 从 /etc/realm/config.toml 里删掉监听该端口的 [[endpoints]] 段（改前先备份）
+  local port="$1"
+  [ -f /etc/realm/config.toml ] || return 0
+  cp /etc/realm/config.toml /etc/realm/config.toml.bak 2>/dev/null || true
+  awk -v RS="" -v ORS="\n\n" -v port="$port" '
+    index($0, "listen = \"0.0.0.0:" port "\"") > 0 { next }
+    { print }
+  ' /etc/realm/config.toml > /tmp/relay-config.toml.new 2>/dev/null || return 0
+  mv /tmp/relay-config.toml.new /etc/realm/config.toml
+  # 去掉文件末尾多余的空行
+  sed -i -e :a -e '/^\n*$/{$d;N;};/\n$/ba' /etc/realm/config.toml 2>/dev/null || true
+  ensure_realm_has_endpoint
+  return 0
+}
+
+ensure_realm_has_endpoint() { # realm 没有 [[endpoints]] 会直接 panic 退出，所以全部分流后要留一个无害的回环占位
+  [ -f /etc/realm/config.toml ] || return 0
+  if ! grep -q '^\[\[endpoints\]\]' /etc/realm/config.toml; then
+    cat >> /etc/realm/config.toml <<'EOF'
+
+# 占位：所有端口都走分流时 realm 一个转发也没有，它会直接退出；留一个只监听本机的
+# 丢弃端口（127.0.0.1:9）让它能正常跑，不影响任何转发，也不出现在检查里。
+[[endpoints]]
+listen = "127.0.0.1:9"
+remote = "127.0.0.1:9"
+EOF
+    echo "realm 已没有转发端口，留了一个本机占位端口（127.0.0.1:9）让它能正常跑。"
+  fi
+}
+
+restore_realm_config() { # 分流启用失败时回滚：把 config.toml 从备份恢复
+  [ -f /etc/realm/config.toml.bak ] && mv /etc/realm/config.toml.bak /etc/realm/config.toml
+}
+
+ensure_cert_domain_current() { # 本轮落地的证书域名：落地填域名就是它；填 IP 时问用户一次；问不到返回 1
+  if [ -n "$CERT_DOMAIN" ]; then return 0; fi
+  if [ -n "$DOMAIN" ]; then CERT_DOMAIN="$DOMAIN"; return 0; fi
+  echo "请填写这个落地用的域名："
+  local _d=""
+  ask "落地是填 IP 的，分流要按域名认落地，请填写它的域名（证书上的域名，就是节点链接里的域名；不知道就直接回车）： " _d
+  [ -n "$_d" ] || return 1
+  CERT_DOMAIN="$_d"
+  return 0
+}
+
+ensure_cert_domains_all() { # $1=端口（80 或 443）：给 relay.conf 里所有带该端口的落地补齐 CERT_DOMAIN；补不齐返回 1
+  local _port="$1" _count _i _L _P _D
+  _count="$(conf_get LANDING_COUNT || echo 1)"
+  _i=1
+  while [ "$_i" -le "$_count" ]; do
+    if [ "$_i" = "1" ]; then
+      _L="$(conf_get LANDING || echo "")"; _P="$(conf_get PORTS || echo "")"; _D="$(conf_get CERT_DOMAIN || conf_get DOMAIN || echo "")"
+    else
+      _L="$(conf_get "LANDING_$_i" || echo "")"; _P="$(conf_get "PORTS_$_i" || echo "")"; _D="$(conf_get "CERT_DOMAIN_$_i" || conf_get "DOMAIN_$_i" || echo "")"
+    fi
+    if [ -n "$_L" ] && [ -n "$_P" ]; then
+      case " $_P " in
+        *" tcp:$_port:$_port "*)
+          if [ -z "$_D" ]; then
+            echo "请填写落地 $_i（$_L）用的域名："
+            local _d=""
+            ask "落地 $_i 是填 IP 的，分流要按域名认落地，请填写它的域名（证书上的域名，就是节点链接里的域名；不知道就直接回车）： " _d
+            [ -n "$_d" ] || return 1
+            if [ "$_i" = "1" ]; then conf_set CERT_DOMAIN "$_d"; else conf_set "CERT_DOMAIN_$_i" "$_d"; fi
+          fi
+          ;;
+      esac
+    fi
+    _i=$((_i + 1))
+  done
+  # 本轮正在加的落地（还没写进 relay.conf）：同样补齐
+  case " $PORTS " in
+    *" tcp:$_port:$_port "*)
+      ensure_cert_domain_current || return 1
+      ;;
+  esac
+  return 0
+}
+
+write_proxy80_config() { # 按 relay.conf 重新生成 nginx 80 分流配置（所有带 80 的落地按 Host 分流）
+  local nginx_conf="/etc/nginx/conf.d/relay-80.conf"
+  # 本轮正在加的落地还没写进 relay.conf，先存下来（子 shell 里 source relay.conf 会覆盖同名变量）
+  local _cur_landing="$LANDING" _cur_ports="$PORTS" _cur_cert="$CERT_DOMAIN"
+  echo "生成 80 分流配置：$nginx_conf"
+  mkdir -p /etc/nginx/conf.d 2>/dev/null || true
+  (
+    set -a; . /etc/realm/relay.conf 2>/dev/null; set +a
+    local _count="${LANDING_COUNT:-1}" _i=1 _L="" _P="" _D="" _map="" _first_up=""
+    while [ "$_i" -le "$_count" ]; do
+      if [ "$_i" = "1" ]; then
+        _L="$LANDING"; _P="$PORTS"; _D="$(landing_cert_domain 1)"
+      else
+        _L="$(landing_field "$_i" LANDING)"; _P="$(landing_field "$_i" PORTS)"; _D="$(landing_cert_domain "$_i")"
+      fi
+      if [ -n "$_L" ] && [ -n "$_P" ] && [ -n "$_D" ]; then
+        case " $_P " in
+          *" tcp:80:80 "*)
+            _map="$_map    $_D    $_L:80;\n"
+            [ -z "$_first_up" ] && _first_up="$_L:80"
+            ;;
+        esac
+      fi
+      _i=$((_i + 1))
+    done
+    # 本轮正在加的落地（还没写进 relay.conf）：用上面存下来的值补一条
+    if [ -n "$_cur_cert" ] && [ -n "$_cur_landing" ]; then
+      case " $_cur_ports " in
+        *" tcp:80:80 "*)
+          case "$_map" in
+            *"$_cur_cert"*) ;;
+            *) _map="$_map    $_cur_cert    $_cur_landing:80;\n" ;;
+          esac
+          [ -z "$_first_up" ] && _first_up="$_cur_landing:80"
+          ;;
+      esac
+    fi
+    if [ -z "$_map" ]; then
+      echo "没有带 80 端口的落地，80 分流配置没生成。"
+      exit 1
+    fi
+    {
+      echo "# relay-node 自动生成：80 按域名分流（ACME HTTP-01 续签用）"
+      echo "# 各落地按 HTTP 的 Host 分到对应落地的 80；匹配不到的走第 1 个带 80 的落地。"
+      echo "# 不要手改：下次加落地/重跑安装会按 relay.conf 重新生成覆盖。"
+      echo "# 落地 IP 变了不用改这里：proxy_pass 用变量 + resolver，每次请求现解析域名。"
+      echo ""
+      echo "map \$host \$relay80_upstream {"
+      printf '%b' "$_map"
+      echo "    default    $_first_up;"
+      echo "}"
+      echo ""
+      echo "server {"
+      echo "    listen 80 default_server;"
+      echo "    server_name _;"
+      echo "    resolver 1.1.1.1 8.8.8.8 valid=60s;"
+      echo "    location / {"
+      echo "        proxy_pass http://\$relay80_upstream;"
+      echo "        proxy_set_header Host \$host;"
+      echo "        proxy_set_header X-Real-IP \$remote_addr;"
+      echo "        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;"
+      echo "    }"
+      echo "}"
+    } > "$nginx_conf"
+  )
+}
+
+write_sni_config() { # 按 relay.conf 重新生成 haproxy 443 SNI 分流配置（TLS 透传，不解密）
+  local haproxy_cfg="/etc/haproxy/haproxy.cfg"
+  # 本轮正在加的落地还没写进 relay.conf，先存下来（子 shell 里 source relay.conf 会覆盖同名变量）
+  local _cur_landing="$LANDING" _cur_ports="$PORTS" _cur_cert="$CERT_DOMAIN"
+  local _new_idx=$((LANDING_COUNT + 1))
+  echo "生成 443 SNI 分流配置：$haproxy_cfg"
+  mkdir -p /etc/haproxy 2>/dev/null || true
+  (
+    set -a; . /etc/realm/relay.conf 2>/dev/null; set +a
+    local _count="${LANDING_COUNT:-1}" _i=1 _L="" _P="" _D="" _use="" _backends="" _first=""
+    while [ "$_i" -le "$_count" ]; do
+      if [ "$_i" = "1" ]; then
+        _L="$LANDING"; _P="$PORTS"; _D="$(landing_cert_domain 1)"
+      else
+        _L="$(landing_field "$_i" LANDING)"; _P="$(landing_field "$_i" PORTS)"; _D="$(landing_cert_domain "$_i")"
+      fi
+      if [ -n "$_L" ] && [ -n "$_P" ] && [ -n "$_D" ]; then
+        case " $_P " in
+          *" tcp:443:443 "*)
+            _use="$_use    use_backend be_L$_i if { req.ssl_sni -i $_D }\n"
+            if is_ip "$_L"; then
+              _backends="$_backends\nbackend be_L$_i\n    mode tcp\n    server L$_i $_L:443 check\n"
+            else
+              _backends="$_backends\nbackend be_L$_i\n    mode tcp\n    server L$_i $_L:443 resolvers relaydns resolve-prefer ipv4 check\n"
+            fi
+            [ -z "$_first" ] && _first="be_L$_i"
+            ;;
+        esac
+      fi
+      _i=$((_i + 1))
+    done
+    # 本轮正在加的落地（还没写进 relay.conf）：用上面存下来的值补一条
+    if [ -n "$_cur_cert" ] && [ -n "$_cur_landing" ]; then
+      case " $_cur_ports " in
+        *" tcp:443:443 "*)
+          case "$_use" in
+            *"$_cur_cert"*) ;;
+            *)
+              _use="$_use    use_backend be_L$_new_idx if { req.ssl_sni -i $_cur_cert }\n"
+              if is_ip "$_cur_landing"; then
+                _backends="$_backends\nbackend be_L$_new_idx\n    mode tcp\n    server L$_new_idx $_cur_landing:443 check\n"
+              else
+                _backends="$_backends\nbackend be_L$_new_idx\n    mode tcp\n    server L$_new_idx $_cur_landing:443 resolvers relaydns resolve-prefer ipv4 check\n"
+              fi
+              ;;
+          esac
+          [ -z "$_first" ] && _first="be_L$_new_idx"
+          ;;
+      esac
+    fi
+    if [ -z "$_use" ]; then
+      echo "没有带 443 端口的落地，443 SNI 分流配置没生成。"
+      exit 1
+    fi
+    {
+      echo "# relay-node 自动生成：443 按 SNI 分流（TLS 透传，不解密）"
+      echo "# 各落地按 TLS 握手里的域名（SNI）分到对应落地的 443；匹配不到/没带 SNI 的走第 1 个带 443 的落地。"
+      echo "# 不要手改：下次加落地/重跑安装会按 relay.conf 重新生成覆盖。"
+      echo "# TLS-ALPN-01 能穿过：分流只读 ClientHello 里的 SNI，不改任何字节，落地 Caddy 自己完成验证。"
+      echo "global"
+      echo "    log /dev/log local0"
+      echo "    maxconn 1024"
+      echo "    # maxconn 只给 1024：个人中转同时连上千个连接用不上；1024 需要的句柄数能塞进"
+      echo "    # 4096 的系统上限（极简系统/容器常见），4096 反而会让 haproxy 因提不上句柄上限而拒绝启动"
+      echo ""
+      echo "defaults"
+      echo "    log global"
+      echo "    mode tcp"
+      echo "    option tcplog"
+      echo "    timeout connect 5s"
+      echo "    timeout client 60s"
+      echo "    timeout server 60s"
+      echo ""
+      echo "resolvers relaydns"
+      echo "    nameserver dns1 1.1.1.1:53"
+      echo "    nameserver dns2 8.8.8.8:53"
+      echo "    resolve_retries 3"
+      echo "    timeout retry 1s"
+      echo "    hold valid 60s"
+      echo ""
+      echo "frontend relay443"
+      echo "    bind *:443"
+      echo "    mode tcp"
+      echo "    option tcplog"
+      echo "    tcp-request inspect-delay 5s"
+      echo "    tcp-request content accept if { req.ssl_hello_type 1 }"
+      echo "    tcp-request content accept"
+      printf '%b' "$_use"
+      echo "    default_backend $_first"
+      printf '%b\n' "$_backends"
+    } > "$haproxy_cfg"
+  )
+}
+
+start_proxy80() { # 启动或重载 nginx（80 分流）；DRY_RUN 只写配置不启动
+  if [ "$DRY_RUN" = "1" ]; then echo "[dry-run] 跳过 nginx 启动/重载"; return 0; fi
+  if ! nginx -t 2>&1; then
+    echo "nginx 配置校验没过（上面是报错），80 分流没启用。"
+    return 1
+  fi
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    if systemctl is-active --quiet nginx 2>/dev/null; then
+      systemctl reload nginx && echo "nginx 已重载（80 按域名分流）"
+    else
+      systemctl enable --now nginx && echo "nginx 已启动（80 按域名分流）"
+    fi
+  else
+    if pgrep -x nginx >/dev/null 2>&1; then
+      nginx -s reload 2>/dev/null && echo "nginx 已重载（80 按域名分流）"
+    else
+      nginx 2>/dev/null && echo "nginx 已启动（80 按域名分流，无 systemd 环境）"
+    fi
+  fi
+}
+
+start_proxy443() { # 启动或重载 haproxy（443 SNI 分流）；DRY_RUN 只写配置不启动
+  if [ "$DRY_RUN" = "1" ]; then echo "[dry-run] 跳过 haproxy 启动/重载"; return 0; fi
+  if ! haproxy -c -f /etc/haproxy/haproxy.cfg 2>&1; then
+    echo "haproxy 配置校验没过（上面是报错），443 分流没启用。"
+    return 1
+  fi
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    if systemctl is-active --quiet haproxy 2>/dev/null; then
+      systemctl reload haproxy && echo "haproxy 已重载（443 按 SNI 分流）"
+    else
+      systemctl enable --now haproxy && echo "haproxy 已启动（443 按 SNI 分流）"
+    fi
+  else
+    if pgrep -x haproxy >/dev/null 2>&1; then
+      pkill -x haproxy 2>/dev/null || true; sleep 1
+    fi
+    haproxy -D -f /etc/haproxy/haproxy.cfg 2>/dev/null && echo "haproxy 已启动（443 按 SNI 分流，无 systemd 环境）"
+  fi
+}
+
+restart_realm_now() { # 重启 realm（分流启用时用：让它释放 80/443，代理才能监听）；DRY_RUN 跳过
+  if [ "$DRY_RUN" = "1" ]; then return 0; fi
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl restart realm 2>/dev/null || return 1
+    sleep 1
+    systemctl is-active --quiet realm 2>/dev/null || return 1
+  elif [ -f /var/run/realm.pid ] && kill -0 "$(cat /var/run/realm.pid)" 2>/dev/null; then
+    kill "$(cat /var/run/realm.pid)" 2>/dev/null || true
+    sleep 1
+    nohup /usr/local/bin/realm -c /etc/realm/config.toml >/var/log/realm.log 2>&1 &
+    echo $! > /var/run/realm.pid
+    sleep 1
+    kill -0 "$(cat /var/run/realm.pid)" 2>/dev/null || return 1
+  fi
+  return 0
+}
+
+enable_share80() { # 开 80 按域名分流：补域名 -> 装 nginx -> 写配置 -> 校验 -> 挪走 realm 的 80 -> 启动；失败回滚并返回 1
+  echo "开 80 按域名分流：中转机上跑 nginx 监听 80，按域名把请求分到各落地的 80。"
+  ensure_cert_domains_all 80 || { echo "没拿到分流要用的域名，80 分流开不了。"; return 1; }
+  if [ "$DRY_RUN" != "1" ] && ! command -v nginx >/dev/null 2>&1; then
+    echo "装 nginx（80 分流要用）..."
+    install_pkg nginx || { echo "nginx 装不上：包管理器源可能有问题，80 分流开不了。"; return 1; }
+  fi
+  if [ "$DRY_RUN" = "1" ] && ! command -v nginx >/dev/null 2>&1; then
+    echo "[dry-run] 本机没装 nginx，跳过安装与校验，只生成配置。"
+  fi
+  # 关掉 Debian/Ubuntu 自带的默认站点，避免和我们的 80 抢 default_server（正式安装才动，dry-run 不动）
+  if [ "$DRY_RUN" != "1" ] && [ -L /etc/nginx/sites-enabled/default ]; then
+    rm -f /etc/nginx/sites-enabled/default
+    echo "已停用 nginx 自带默认站点（它也监听 80，会和分流冲突）。"
+  elif [ "$DRY_RUN" = "1" ] && [ -L /etc/nginx/sites-enabled/default ]; then
+    echo "[dry-run] 正式安装时会停用 nginx 自带默认站点（它也监听 80）。"
+  fi
+  write_proxy80_config || return 1
+  if [ "$DRY_RUN" != "1" ] && ! nginx -t >/dev/null 2>&1; then
+    echo "nginx 配置校验没过，80 分流没启用。"
+    return 1
+  fi
+  remove_realm_listen 80
+  # realm 还在用旧配置占着 80，先重启让它释放端口，nginx 才能监听
+  if ! restart_realm_now; then
+    restore_realm_config
+    restart_realm_now || true
+    echo "realm 重启失败，已把配置恢复原样，80 分流没启用。"
+    return 1
+  fi
+  if ! start_proxy80; then
+    restore_realm_config
+    restart_realm_now || true
+    echo "nginx 启动失败，已把 realm 配置恢复原样，80 分流没启用。"
+    return 1
+  fi
+  SHARE80=1
+  conf_set SHARE80 1
+  echo "80 按域名分流已启用：几个落地的证书续签都自动通，不用手动改指向了。"
+  return 0
+}
+
+enable_share443() { # 开 443 按 SNI 分流：补域名 -> 装 haproxy -> 写配置 -> 校验 -> 挪走 realm 的 443 -> 启动；失败回滚并返回 1
+  echo "开 443 按 SNI 分流：中转机上跑 haproxy 监听 443，按 TLS 握手里的域名分到各落地的 443。"
+  ensure_cert_domains_all 443 || { echo "没拿到分流要用的域名，443 分流开不了。"; return 1; }
+  if [ "$DRY_RUN" != "1" ] && ! command -v haproxy >/dev/null 2>&1; then
+    echo "装 haproxy（443 SNI 分流要用）..."
+    install_pkg haproxy || { echo "haproxy 装不上：包管理器源可能有问题，443 分流开不了。"; return 1; }
+  fi
+  if [ "$DRY_RUN" = "1" ] && ! command -v haproxy >/dev/null 2>&1; then
+    echo "[dry-run] 本机没装 haproxy，跳过安装与校验，只生成配置。"
+  fi
+  write_sni_config || return 1
+  if [ "$DRY_RUN" != "1" ] && ! haproxy -c -f /etc/haproxy/haproxy.cfg >/dev/null 2>&1; then
+    echo "haproxy 配置校验没过，443 分流没启用。"
+    return 1
+  fi
+  remove_realm_listen 443
+  # realm 还在用旧配置占着 443，先重启让它释放端口，haproxy 才能监听
+  if ! restart_realm_now; then
+    restore_realm_config
+    restart_realm_now || true
+    echo "realm 重启失败，已把配置恢复原样，443 分流没启用。"
+    return 1
+  fi
+  if ! start_proxy443; then
+    restore_realm_config
+    restart_realm_now || true
+    echo "haproxy 启动失败，已把 realm 配置恢复原样，443 分流没启用。"
+    return 1
+  fi
+  SHARE443=1
+  conf_set SHARE443 1
+  echo "443 按 SNI 分流已启用：几个落地共用中转 443，客户端链接不用带高位端口，续签走 443 自动通。"
+  return 0
+}
+
+ensure_proxies_running() { # realm 启动后，顺带确认分流组件也在跑（重启后它们也要跟上）
+  if [ "$SHARE80" = "1" ]; then
+    if [ "$DRY_RUN" != "1" ]; then
+      start_proxy80 || echo "注意：nginx 没起来，80 分流暂时不通；先查 nginx -t，再 systemctl status nginx。"
+    fi
+  fi
+  if [ "$SHARE443" = "1" ]; then
+    if [ "$DRY_RUN" != "1" ]; then
+      start_proxy443 || echo "注意：haproxy 没起来，443 分流暂时不通；先查 haproxy -c -f /etc/haproxy/haproxy.cfg，再 systemctl status haproxy。"
+    fi
+  fi
+}
+
+choose_share_mode() { # $1=80 是否被已装落地占（0/1） $2=443 是否被已装落地占（0/1）：打印带详细解释的选项并执行选择
+  local _c80="$1" _c443="$2"
+  echo ""
+  echo "端口冲突了，要选一种办法解决（只影响新加的这个落地，已经装好的落地不动）："
+  echo "  1) 改监听走高位端口  ← 默认，直接回车就是 1"
+  echo "     最简单，什么都不用准备，装完就能用。第二个落地的 443 会改成 10443 这类高位端口，"
+  echo "     客户端链接要带上高位端口；证书续签要手动：到期前把域名 A 记录改回指向落地、续完再改回来。"
+  if [ "$_c80" = "1" ]; then
+    echo "  2) 80 按域名分流"
+    echo "     中转机上跑一个轻量代理监听 80，按域名把验证请求分到对应落地的 80，几个落地的证书续签都自动通，"
+    echo "     不用令牌、落地不用改。代价是中转 80 不再是纯转发、多一个代理组件；443 还是各走各的高位端口。"
+  fi
+  if [ "$_c443" = "1" ]; then
+    echo "  3) 443 按 SNI 分流"
+    echo "     中转机按 TLS 握手里的域名分流，几个落地共用中转的 443，客户端链接不用带高位端口，"
+    echo "     证书续签走 443 自动通。效果最彻底，但改动最大：中转 443 不再是 realm 纯转发，要多装一个分流组件。"
+  fi
+  if [ "$_c80" = "1" ] && [ "$_c443" = "1" ]; then
+    echo "  4) 80 分流 + 443 分流一起用"
+    echo "     2 和 3 一起：80 和 443 都能共用，几个落地续签都自动通，客户端链接也不用带高位端口。"
+    echo "     代价是中转机上要多两个分流组件，80 和 443 都不再是 realm 纯转发。"
+  fi
+  local _opts="1"
+  [ "$_c80" = "1" ] && _opts="$_opts/2"
+  [ "$_c443" = "1" ] && _opts="$_opts/3"
+  [ "$_c80" = "1" ] && [ "$_c443" = "1" ] && _opts="$_opts/4"
+  echo "请输入你的选择："
+  local _choice=""
+  ask "选哪种方式？[$_opts]，直接回车选默认 1： " _choice "1"
+  case "$_choice" in
+    1)
+      return 0
+      ;;
+    2)
+      [ "$_c80" = "1" ] || { echo "选不了 2：这次 80 没冲突。"; return 1; }
+      enable_share80 || return 1
+      return 0
+      ;;
+    3)
+      [ "$_c443" = "1" ] || { echo "选不了 3：这次 443 没冲突。"; return 1; }
+      enable_share443 || return 1
+      return 0
+      ;;
+    4)
+      { [ "$_c80" = "1" ] && [ "$_c443" = "1" ]; } || { echo "选不了 4：这次 80 和 443 不是都冲突。"; return 1; }
+      enable_share80 && enable_share443 || return 1
+      return 0
+      ;;
+    *)
+      echo "只能选 $_opts，默认按 1（改监听走高位端口）处理。"
+      return 0
+      ;;
+  esac
 }
 
 link_port() { # $1=节点链接 -> 打印端口号（vless/trojan/ss SIP002/vmess），取不到返回 1
@@ -712,16 +1212,18 @@ collect_landing() { # $1=标题（如 "1/6 落地目标与转发预设"），收
   echo "这一步要填两样：① 落地服务器的 IP 或域名 ② 转发预设（选 1/2/3）。"
   if [ -z "$LANDING" ]; then
     echo "请填写你的落地 IP 或域名："
-    ask "① 落地服务器 IP（推荐填 IP，例如 202.155.138.195）或域名，填完按回车： " LANDING
+    ask "① 落地服务器 IP（推荐填 IP，例如 203.0.113.1）或域名，填完按回车： " LANDING
   fi
   [ -n "$LANDING" ] || { echo "没给落地地址，装不了。重跑并输入落地 IP 或域名。"; exit 1; }
   if is_ip "$LANDING"; then
     LANDING_IS_DOMAIN=0
     DOMAIN=""
+    CERT_DOMAIN=""
     echo "落地：$LANDING（IP 直连，中转完全不碰 DNS）"
   else
     LANDING_IS_DOMAIN=1
     DOMAIN="$LANDING"
+    CERT_DOMAIN="$LANDING"
     echo "落地：$LANDING（域名，中转启动时解析一次）"
     if ! getent hosts "$LANDING" >/dev/null 2>&1; then
       echo "注意：本机现在解析不到 $LANDING（DNS 可能还没生效或出站 DNS 被拦）。"
@@ -796,16 +1298,25 @@ collect_landing() { # $1=标题（如 "1/6 落地目标与转发预设"），收
 
 precheck_ports() { # $1=标题（如 "2/6 端口预检（中转监听端口）"）：查 $PORTS 的监听端口
   # 同时查系统已占端口和 config.toml 里已配好的 realm 监听端口（追加的落地不能和已有的抢端口）
-  # 被占就问要不要改监听端口（只改中转这边，落地端口不变）；建议值是高位端口（原端口+10000）
+  # 已走分流的端口（SHARE80/SHARE443）不再当作冲突，新落地直接加入分流
+  # 80/443 被已装好的落地占了时，先让用户选解决方式（默认改监听走高位端口；也可以选分流）
+  # 其余端口被占，或分流选完还剩冲突，仍走原来的改监听流程
   echo ""
   echo "== $1 =="
   local _occupied="" _spec _proto _rest _lp _rp
+  local _realm80=0 _realm443=0
   while true; do
-    _occupied=""
+    _occupied=""; _realm80=0; _realm443=0
     for _spec in $PORTS; do
       _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"
+      if [ "$_proto" = "tcp" ] && [ "$_lp" = "80" ] && [ "$SHARE80" = "1" ]; then continue; fi
+      if [ "$_proto" = "tcp" ] && [ "$_lp" = "443" ] && [ "$SHARE443" = "1" ]; then continue; fi
       if port_in_use "$_proto" "$_lp" || port_in_config "$_lp"; then
         case " $_occupied " in *" $_lp/$_proto "*) ;; *) _occupied="$_occupied $_lp/$_proto";; esac
+        if port_in_config "$_lp"; then
+          [ "$_lp" = "80" ] && _realm80=1
+          [ "$_lp" = "443" ] && _realm443=1
+        fi
       fi
     done
     _occupied="${_occupied# }"
@@ -814,6 +1325,14 @@ precheck_ports() { # $1=标题（如 "2/6 端口预检（中转监听端口）"�
       return 0
     fi
     echo "端口已被占用：$_occupied"
+    if [ "$SHARE_ASKED" = "0" ] && { [ "$_realm80" = "1" ] || [ "$_realm443" = "1" ]; }; then
+      SHARE_ASKED=1
+      if ! choose_share_mode "$_realm80" "$_realm443"; then
+        echo "分流没启用，改回改监听走高位端口的方式。"
+      fi
+      echo "选完重查一遍："
+      continue
+    fi
     echo "请输入你的选择："
     CHANGE_LISTEN=""
     ask "这些端口被占了，要不要改监听端口（只改中转这边监听的端口，落地端口不变）？[y/N]，直接回车选默认 N： " CHANGE_LISTEN "N"
@@ -925,6 +1444,7 @@ setup_realm_once() { # 下载 realm；已存在且能跑就直接复用，不重
 write_config_fresh() { # 第 1 个落地：全新写 config.toml 与 relay.conf
   echo ""
   echo "== 4/6 写 realm 配置 =="
+  mkdir -p /etc/realm
   local HAS_UDP=0
   local _spec
   for _spec in $PORTS; do
@@ -967,16 +1487,20 @@ remote = "$LANDING:$_rp"
 EOF
   done
   # 给 check.sh / stop.sh 用的状态文件（多落地：1 号落地用平铺变量，2 号起用 _编号 后缀）
+  # CERT_DOMAIN 是证书上的域名（分流按它认落地）；SHARE80/SHARE443 是 80/443 是否走了分流共享
   cat > /etc/realm/relay.conf <<EOF
 LANDING=$LANDING
 LANDING_IS_DOMAIN=$LANDING_IS_DOMAIN
 DOMAIN="$DOMAIN"
+CERT_DOMAIN="$CERT_DOMAIN"
 PRESET=$PRESET
 MODE_NOTE="$MODE_NOTE"
 PORTS="$PORTS"
 REALM_VERSION="$REALM_VERSION"
 LANDING_COUNT=1
 ALL_PORTS="$PORTS"
+SHARE80=0
+SHARE443=0
 EOF
   LANDING_COUNT=1
   ALL_PORTS="$PORTS"
@@ -986,6 +1510,7 @@ EOF
 append_config() { # 再加一个落地：只往 config.toml 后追加 endpoints 段，不重写头部；更新 relay.conf
   local _idx=$((LANDING_COUNT + 1))
   local _spec _proto _rest _lp _rp
+  mkdir -p /etc/realm
   # 新落地要 UDP 但配置里关着，就打开
   local _has_udp=0
   for _spec in $PORTS; do
@@ -999,8 +1524,12 @@ append_config() { # 再加一个落地：只往 config.toml 后追加 endpoints 
     echo ""
     echo "# 追加落地 $_idx：$MODE_NOTE，落地 $LANDING（$(date -u +%Y-%m-%dT%H:%M:%SZ)）"
   } >> /etc/realm/config.toml
+  # 走分流的端口不写进 realm（80 归 nginx、443 归 haproxy），其余端口照常追加
+  local _skipped=""
   for _spec in $PORTS; do
     _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
+    if [ "$_proto" = "tcp" ] && [ "$_lp" = "80" ] && [ "$SHARE80" = "1" ]; then _skipped="$_skipped 80"; continue; fi
+    if [ "$_proto" = "tcp" ] && [ "$_lp" = "443" ] && [ "$SHARE443" = "1" ]; then _skipped="$_skipped 443"; continue; fi
     cat >> /etc/realm/config.toml <<EOF
 
 [[endpoints]]
@@ -1008,11 +1537,13 @@ listen = "0.0.0.0:$_lp"
 remote = "$LANDING:$_rp"
 EOF
   done
+  [ -n "$_skipped" ] && echo "端口${_skipped} 已走分流，不再写进 realm 配置（80 归 nginx、443 归 haproxy）。"
   # relay.conf：追加编号块，更新 LANDING_COUNT 与 ALL_PORTS（老 relay.conf 没有这两行也能补上）
   {
     echo "LANDING_$_idx=$LANDING"
     echo "LANDING_IS_DOMAIN_$_idx=$LANDING_IS_DOMAIN"
     echo "DOMAIN_$_idx=\"$DOMAIN\""
+    echo "CERT_DOMAIN_$_idx=\"$CERT_DOMAIN\""
     echo "PRESET_$_idx=$PRESET"
     echo "MODE_NOTE_$_idx=\"$MODE_NOTE\""
     echo "PORTS_$_idx=\"$PORTS\""
@@ -1036,6 +1567,9 @@ EOF
   ALL_PORTS="$_all"
   LANDING_COUNT="$_idx"
   echo "配置已追加：/etc/realm/config.toml（落地 $_idx，$MODE_NOTE）"
+  # 分流开着时，分流配置也要重新生成（把新落地加进去），否则新落地分不到流量
+  [ "$SHARE80" = "1" ] && write_proxy80_config
+  [ "$SHARE443" = "1" ] && write_sni_config
 }
 
 setup_sysctl_once() { # BBR + fq + 大 TCP 缓冲；已存在就跳过，只建一次
@@ -1139,6 +1673,9 @@ UNIT
     done
     echo "ufw 已放行监听端口"
   fi
+
+  # 分流组件也要起来（中转重启后它们也要跟上；没开分流时这两行什么都不做）
+  ensure_proxies_running
 }
 
 print_summary() { # 打印当前落地的汇总（中转 IP 只查一次）
@@ -1172,10 +1709,15 @@ print_summary() { # 打印当前落地的汇总（中转 IP 只查一次）
     [ "$_spec" = "tcp:80:80" ] && _has80=1
   done
   if [ "$_is_tls" = "1" ]; then
-    if [ "$_has80" = "1" ]; then
+    if [ "$SHARE80" = "1" ]; then
+      echo "  落地不用装任何东西，也不用重启；证书续签走 80 分流自动通，不用手动改指向。"
+    elif [ "$SHARE443" = "1" ]; then
+      echo "  落地不用装任何东西，也不用重启；证书续签走 443 分流（TLS-ALPN-01）自动通，不用手动改指向。"
+    elif [ "$_has80" = "1" ]; then
       echo "  落地不用装任何东西，也不用重启；证书续签走转发的 80 端口照常能通。"
     else
       echo "  注意：这个落地的 80 端口没走中转（被占了改了监听端口），证书续签时把域名临时改回指向落地，续完再改回来。"
+      echo "  具体步骤见 README / TUTORIAL 的“手动续签证书”一节；平时跑 bash check.sh 能看到各落地证书剩余天数。"
     fi
   else
     echo "  落地不用装任何东西，也不用重启。"
@@ -1204,13 +1746,16 @@ if [ "$ADD_MODE" = "1" ]; then
   . /etc/realm/relay.conf
   LANDING_COUNT="${LANDING_COUNT:-1}"
   ALL_PORTS="${ALL_PORTS:-${PORTS:-}}"
+  SHARE80="${SHARE80:-0}"
+  SHARE443="${SHARE443:-0}"
   echo "追加模式：当前已有 $LANDING_COUNT 个落地，继续加一个（不覆盖已有配置）。"
   LANDING="$_cli_landing"; PRESET="$_cli_preset"
-  SB_MODE=""; CUSTOM_PORTS=""; WANT_UDP=""; PORTS=""; MODE_NOTE=""; DOMAIN=""; LANDING_IS_DOMAIN=0
+  SB_MODE=""; CUSTOM_PORTS=""; WANT_UDP=""; PORTS=""; MODE_NOTE=""; DOMAIN=""; LANDING_IS_DOMAIN=0; CERT_DOMAIN=""; SHARE_ASKED=0
 fi
 
 echo "一共 7 步（前 6 步装中转，第 7 步生成双节点链接，可跳过）。每一步填完按回车继续；标了“默认”的，直接回车就是默认值。"
 echo "装完第 1 个落地后会问要不要再加一个落地节点，一台中转机可以转多个落地（事后追加：bash install.sh --add）。"
+echo "加第 2 个落地、80 或 443 被已装好的落地占了时，会让你选解决方式：默认改监听走高位端口，也可以选 80 分流 / 443 分流（续签自动）。"
 echo ""
 
 declare -a ADDED_LANDING=() ADDED_PORTS=() ADDED_MODE=() ADDED_DOMAIN=() ADDED_INDEX=()
@@ -1244,7 +1789,7 @@ while true; do
   ADD_ANOTHER=""
   ask "还要再加一个落地节点吗？[y/N]，直接回车选默认 N： " ADD_ANOTHER "N"
   if [ "$ADD_ANOTHER" = "y" ] || [ "$ADD_ANOTHER" = "Y" ]; then
-    LANDING=""; PRESET=""; SB_MODE=""; CUSTOM_PORTS=""; WANT_UDP=""; PORTS=""; MODE_NOTE=""; DOMAIN=""; LANDING_IS_DOMAIN=0; CHANGE_LISTEN=""
+    LANDING=""; PRESET=""; SB_MODE=""; CUSTOM_PORTS=""; WANT_UDP=""; PORTS=""; MODE_NOTE=""; DOMAIN=""; LANDING_IS_DOMAIN=0; CHANGE_LISTEN=""; CERT_DOMAIN=""; SHARE_ASKED=0
     continue
   fi
   break
