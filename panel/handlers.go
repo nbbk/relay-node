@@ -71,6 +71,24 @@ func (s *Server) routes() http.Handler {
 	// 落地延迟探测（v1.1.11）
 	mux.HandleFunc("GET /api/v1/latency", s.requireAuth(s.handleLatency))
 	mux.HandleFunc("POST /api/v1/settings/latency", s.requireAuth(s.handleLatencySettings))
+	// 多台集中管理（v1.2.0）：被管端令牌认证 + 主面板端会话认证
+	mux.HandleFunc("GET /api/v1/settings/central-token", s.requireAuth(s.handleCentralTokenGet))
+	mux.HandleFunc("POST /api/v1/settings/central-token/generate", s.requireAuth(s.handleCentralTokenGenerate))
+	mux.HandleFunc("POST /api/v1/settings/central-token/revoke", s.requireAuth(s.handleCentralTokenRevoke))
+	mux.HandleFunc("GET /api/v1/central/status", s.requireCentralToken(s.handleCentralStatus))
+	mux.HandleFunc("GET /api/v1/central/links", s.requireCentralToken(s.handleLinks))
+	mux.HandleFunc("POST /api/v1/central/landings", s.requireCentralToken(s.handleAddLanding))
+	mux.HandleFunc("DELETE /api/v1/central/landings/{index}", s.requireCentralToken(s.handleDeleteLanding))
+	mux.HandleFunc("POST /api/v1/central/service/{action}", s.requireCentralToken(s.handleService))
+	mux.HandleFunc("GET /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesList))
+	mux.HandleFunc("POST /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesAdd))
+	mux.HandleFunc("DELETE /api/v1/central/remotes/{id}", s.requireAuth(s.handleCentralRemotesDelete))
+	mux.HandleFunc("POST /api/v1/central/remotes/{id}/poll", s.requireAuth(s.handleCentralRemotesPoll))
+	mux.HandleFunc("GET /api/v1/central/remotes/{id}/landings", s.requireAuth(s.handleCentralRemoteLandings))
+	mux.HandleFunc("GET /api/v1/central/remotes/{id}/links", s.requireAuth(s.handleCentralRemoteLinks))
+	mux.HandleFunc("POST /api/v1/central/remotes/{id}/landings", s.requireAuth(s.handleCentralRemoteAddLanding))
+	mux.HandleFunc("DELETE /api/v1/central/remotes/{id}/landings/{index}", s.requireAuth(s.handleCentralRemoteDeleteLanding))
+	mux.HandleFunc("POST /api/v1/central/remotes/{id}/service/{action}", s.requireAuth(s.handleCentralRemoteService))
 	// 端口管理 / 流量 / 备份导出导入 / 审计
 	mux.HandleFunc("GET /api/v1/firewall", s.requireAuth(s.handleFirewallGet))
 	mux.HandleFunc("POST /api/v1/firewall", s.requireAuth(s.handleFirewallPost))
@@ -125,6 +143,10 @@ func (s *Server) ipWhitelistMiddleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) currentUser(r *http.Request) string {
+	// 令牌进来的请求（central/*）记 central，审计里能分清是主面板代理的操作
+	if v, ok := r.Context().Value(ctxUserKey).(string); ok && v != "" {
+		return v
+	}
 	if u, ok := s.sessions.get(r); ok {
 		return u
 	}
