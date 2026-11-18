@@ -93,6 +93,44 @@ TLS certificate synced
 - **令牌不对**：确认令牌是 `cfut_` 开头、权限只有 Zone DNS Edit + Zone Zone Read、Zone 只选你的域名。令牌泄露了就删掉重建，证书不用重签。
 - **域名不要开 Cloudflare 小云朵**：节点域名保持仅 DNS（灰云），不要代理。开了小云朵流量会先过 Cloudflare，节点就不是直连了。
 
+## 节点端是 V2bx
+
+V2bx（V2bX）同样原生支持 DNS 验证，配置在 `/etc/V2bX/config.json` 里：
+
+```json
+"CertConfig": {
+  "CertMode": "dns",
+  "CertDomain": "node.example.com",
+  "Provider": "cloudflare",
+  "Email": "admin@example.com",
+  "DNSEnv": {
+    "CLOUDFLARE_DNS_API_TOKEN": "cfut_你的令牌"
+  }
+}
+```
+
+改完配置 V2bx 会自动重启并申请证书。V2bX 一键安装脚本里选证书模式时也有 dns 选项（第 2 项），按提示填就行。
+
+## 节点端是 XrayR
+
+XrayR 也一样，配置在 `/etc/XrayR/config.yml` 里：
+
+```yaml
+CertConfig:
+  CertMode: dns
+  CertDomain: "node.example.com"
+  Provider: cloudflare
+  Email: admin@example.com
+  DNSEnv:
+    CLOUDFLARE_DNS_API_TOKEN: "cfut_你的令牌"
+```
+
+`CertMode` 可选 none、file、http、dns；`dns` 模式支持泛域名证书、端口被挡也没关系，续签全自动。
+
+## 关于令牌填法（V2bx / XrayR 注意）
+
+它俩网上的配置例子写的是旧填法（`CLOUDFLARE_EMAIL` + `CLOUDFLARE_API_KEY`，也就是 Global API Key）。优先用上面写的 `CLOUDFLARE_DNS_API_TOKEN`（有作用域的令牌，和 `CLOUDFLARE_TOKEN.md` 教程里开的那种一致）。如果你的版本不认这个变量、报错，再退一步：用 acme.sh 单独签（`acme.sh --issue --dns dns_cf`），然后把 `CertMode` 改成 `file`，指到签好的证书文件路径。
+
 ## 和现有落地节点的关系
 
 tiktok-node、sing-box-node 的安装里早就有了同样的选项：装到选证书方式那一步选 **[2] DNS 验证 Cloudflare**，效果一样，域名同样永久指中转。已装好的旧节点想换成 DNS 验证，下次重装时选 [2] 即可。
