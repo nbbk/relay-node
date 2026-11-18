@@ -61,6 +61,7 @@ type RecycleItem struct {
 	Domain           string     `json:"domain"`
 	Ports            string     `json:"ports"`
 	ModeNote         string     `json:"mode_note"`
+	Mode             string     `json:"mode"`
 	CertDomain       string     `json:"cert_domain"`
 	DeletedAt        string     `json:"deleted_at"`
 	ExpiresAt        string     `json:"expires_at"`
@@ -101,18 +102,20 @@ type Landing struct {
 	CertDomain string     `json:"cert_domain"`
 	Preset     string     `json:"preset"`
 	ModeNote   string     `json:"mode_note"`
+	Mode       string     `json:"mode"`
 	Ports      []PortSpec `json:"ports"`
 	PortsRaw   string     `json:"-"`
 }
 
 type RelayConf struct {
-	Raw      map[string]string `json:"-"`
-	Lines    []string          `json:"-"`
-	Landings []Landing         `json:"-"`
-	Count    int               `json:"-"`
-	Share80  bool              `json:"-"`
-	Share443 bool              `json:"-"`
-	AllPorts string            `json:"-"`
+	Raw       map[string]string `json:"-"`
+	Lines     []string          `json:"-"`
+	Landings  []Landing         `json:"-"`
+	Count     int               `json:"-"`
+	Share80   bool              `json:"-"`
+	Share443  bool              `json:"-"`
+	AllPorts  string            `json:"-"`
+	RelayAddr string            `json:"-"`
 }
 
 func parseRelayConf(data []byte) *RelayConf {
@@ -141,6 +144,7 @@ func parseRelayConf(data []byte) *RelayConf {
 	rc.Share80 = rc.Raw["SHARE80"] == "1"
 	rc.Share443 = rc.Raw["SHARE443"] == "1"
 	rc.AllPorts = rc.Raw["ALL_PORTS"]
+	rc.RelayAddr = rc.Raw["RELAY_ADDR"]
 	for i := 1; i <= rc.Count; i++ {
 		suffix := ""
 		if i != 1 {
@@ -152,6 +156,12 @@ func parseRelayConf(data []byte) *RelayConf {
 			continue
 		}
 		l := Landing{Index: i, Landing: landing, Domain: get("DOMAIN"), CertDomain: get("CERT_DOMAIN"), Preset: get("PRESET"), ModeNote: get("MODE_NOTE"), PortsRaw: get("PORTS")}
+		// MODE 缺字段的旧 relay.conf 默认标准模式（向后兼容）；只有 door 才记 door。
+		if get("MODE") == "door" {
+			l.Mode = "door"
+		} else {
+			l.Mode = "standard"
+		}
 		l.Ports = parsePorts(l.PortsRaw)
 		rc.Landings = append(rc.Landings, l)
 	}
@@ -197,6 +207,19 @@ func setRelayConfValue(lines []string, key, value string) []string {
 	return out
 }
 
+// removeRelayConfValue 删掉指定键的行（其余行原样保留），用于清除 RELAY_ADDR 这类可空的全局键。
+func removeRelayConfValue(lines []string, key string) []string {
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, key+"=") {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
 // removeLandingLines 删掉指定编号落地的 relay.conf 行（编号 1 用平铺键，>=2 用 _N 后缀），
 // 并把 LANDING_COUNT 减 1（编号 > 被删编号的落地需要整体前移一位——调用方用 rebuild 处理）。
 func (rc *RelayConf) fieldKeys(index int) []string {
@@ -204,7 +227,7 @@ func (rc *RelayConf) fieldKeys(index int) []string {
 	if index != 1 {
 		suffix = "_" + strconv.Itoa(index)
 	}
-	return []string{"LANDING" + suffix, "LANDING_IS_DOMAIN" + suffix, "DOMAIN" + suffix, "CERT_DOMAIN" + suffix, "PRESET" + suffix, "MODE_NOTE" + suffix, "PORTS" + suffix}
+	return []string{"LANDING" + suffix, "LANDING_IS_DOMAIN" + suffix, "DOMAIN" + suffix, "CERT_DOMAIN" + suffix, "PRESET" + suffix, "MODE_NOTE" + suffix, "MODE" + suffix, "PORTS" + suffix}
 }
 
 // ---------- 服务器 ----------
