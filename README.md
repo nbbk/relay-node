@@ -55,6 +55,7 @@ curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/install.sh | b
 填写示例（落地是 tiktok-node，落地 IP `202.155.138.195`）：
 
 ```text
+请填写你的落地 IP 或域名：
 ① 落地服务器 IP（推荐填 IP，例如 202.155.138.195）或域名，填完按回车：202.155.138.195
 ② 选预设 [1/2/3]，直接回车选默认 1：1
 ```
