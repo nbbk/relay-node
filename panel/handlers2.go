@@ -29,30 +29,109 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) latestVersion() (string, bool) {
 	// 缓存 1 小时，避免每次打开设置都拉网
 	if v, ok := latestVersionCache.get(); ok {
-		return v, v != "" && v != Version
+		return v, isNewerVersion(v, Version)
 	}
-	v := fetchLatestVersion()
+	v, err := fetchLatestVersion()
+	if err != nil {
+		// 拉取失败：不缓存，界面显示“—”，不冒充已是最新
+		return "", false
+	}
 	latestVersionCache.set(v)
-	return v, v != "" && v != Version
+	return v, isNewerVersion(v, Version)
 }
 
-func fetchLatestVersion() string {
+// latestVersionFresh 手动“检查更新”用：绕过 1 小时缓存，强制重新拉取。
+func (s *Server) latestVersionFresh() (string, bool, error) {
+	v, err := fetchLatestVersion()
+	if err != nil {
+		return "", false, err
+	}
+	latestVersionCache.set(v)
+	return v, isNewerVersion(v, Version), nil
+}
+
+// latestVersionURL 远端 VERSION 地址（包级变量，方便测试指向本地 mock 服务）。
+var latestVersionURL = "https://raw.githubusercontent.com/nbbk/relay-node/main/panel/VERSION"
+
+func fetchLatestVersion() (string, error) {
 	ctx, cancel := ctxTimeout(10 * time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://raw.githubusercontent.com/nbbk/relay-node/main/panel/VERSION", nil)
+	u := latestVersionURL
+	// RELAY_PANEL_VERSION_URL：测试/调试用，覆盖远端 VERSION 地址
+	if override := os.Getenv("RELAY_PANEL_VERSION_URL"); override != "" {
+		u = override
+	}
+	// cache-buster：避免 raw.githubusercontent.com 的 CDN 缓存滞后
+	sep := "?"
+	if strings.Contains(u, "?") {
+		sep = "&"
+	}
+	u += sep + "t=" + strconv.FormatInt(time.Now().Unix(), 10)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil || resp.StatusCode != 200 {
-		if resp != nil {
-			resp.Body.Close()
-		}
-		return ""
+	if err != nil {
+		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("远端版本号请求失败（HTTP %d）", resp.StatusCode)
+	}
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
-	return strings.TrimSpace(string(b))
+	v := strings.TrimSpace(string(b))
+	if v == "" {
+		return "", fmt.Errorf("远端版本号为空")
+	}
+	return v, nil
+}
+
+// isNewerVersion 只有远端版本号大于本地才算有更新；解析失败时回退到字符串不等。
+func isNewerVersion(latest, current string) bool {
+	ln, lok := parseVersionNums(latest)
+	cn, cok := parseVersionNums(current)
+	if !lok || !cok {
+		return latest != "" && latest != current
+	}
+	n := len(ln)
+	if len(cn) > n {
+		n = len(cn)
+	}
+	for i := 0; i < n; i++ {
+		var a, b int
+		if i < len(ln) {
+			a = ln[i]
+		}
+		if i < len(cn) {
+			b = cn[i]
+		}
+		if a != b {
+			return a > b
+		}
+	}
+	return false
+}
+
+func parseVersionNums(v string) ([]int, bool) {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "v")
+	if v == "" {
+		return nil, false
+	}
+	parts := strings.Split(v, ".")
+	nums := make([]int, 0, len(parts))
+	for _, p := range parts {
+		if i := strings.IndexAny(p, "-+"); i >= 0 {
+			p = p[:i]
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, false
+		}
+		nums = append(nums, n)
+	}
+	return nums, true
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
@@ -247,7 +326,12 @@ func (s *Server) handleCloudflare(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
-	latest, update := s.latestVersion()
+	// 手动检查必须绕过缓存、强制重拉；拉取失败要明确报错，不能返回“已是最新”
+	latest, update, err := s.latestVersionFresh()
+	if err != nil {
+		writeJSON(w, 502, errResp("检查更新失败："+err.Error()))
+		return
+	}
 	writeJSON(w, 200, okResp(map[string]any{"version": Version, "latest_version": latest, "update_available": update}))
 }
 
