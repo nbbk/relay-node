@@ -346,7 +346,51 @@ func fetchCert(listenPort int, sni string) certInfo {
 	return certInfo{DaysLeft: &days, Expiry: exp.Format("2006-01-02")}
 }
 
-func renewModeFor(l Landing, share443 bool) (string, bool) {
+// probeCertForLanding 按落地实际的 TCP 监听端口逐个握手拿证书（443 优先，
+// 其余按 PORTS 顺序，并行探测、先拿到先返回），任一端口拿到证书就算有证书。
+// 自定义端口 TLS 落地（如 24443）以前只认 443，根本不去握手，所以卡片上
+// 永远显示无证书；现在按实际端口探。SNI 用证书域名，没有就用落地域名。
+func probeCertForLanding(l Landing) (certInfo, bool) {
+	sni := l.CertDomain
+	if sni == "" {
+		sni = l.Domain
+	}
+	ports := make([]int, 0, len(l.Ports))
+	seen := map[int]bool{}
+	for _, p := range l.Ports {
+		if p.Proto == "tcp" && p.Listen == 443 && !seen[443] {
+			ports = append(ports, 443)
+			seen[443] = true
+		}
+	}
+	for _, p := range l.Ports {
+		if p.Proto == "tcp" && !seen[p.Listen] {
+			ports = append(ports, p.Listen)
+			seen[p.Listen] = true
+		}
+	}
+	if len(ports) == 0 {
+		return certInfo{}, false
+	}
+	ch := make(chan certInfo, len(ports))
+	for _, port := range ports {
+		go func(port int) { ch <- fetchCert(port, sni) }(port)
+	}
+	timeout := time.After(6 * time.Second)
+	for range ports {
+		select {
+		case ci := <-ch:
+			if ci.DaysLeft != nil {
+				return ci, true
+			}
+		case <-timeout:
+			return certInfo{}, false
+		}
+	}
+	return certInfo{}, false
+}
+
+func renewModeFor(l Landing, share443 bool, hasCert bool) (string, bool) {
 	// 任意门模式：节点域名永远指着落地不动，续签直接走落地，不用改 A 记录。
 	if l.Mode == "door" {
 		return "自动（域名指落地，直接续签）", false
@@ -359,7 +403,12 @@ func renewModeFor(l Landing, share443 bool) (string, bool) {
 	if share443 {
 		return "自动（走 443 SNI 分流）", false
 	}
-	// 没配 80/443 时：明文落地无证书，返回自动（无证书）
+	// 握手拿到证书的就不是明文落地：续签走不通中转才要手动。
+	if hasCert {
+		return "手动（80 改了监听端口，见 README“手动续签证书”）", true
+	}
+	// 没拿到证书：有 443 端口的可能是 TLS 但暂时不通，也按手动算；
+	// 只有 443 影子都没有的才判明文。
 	hasTLS := false
 	for _, p := range l.Ports {
 		if p.Remote == 443 {
@@ -409,11 +458,14 @@ func qrDataURI(link string) (string, error) {
 // ---------- nodes.txt 解析 ----------
 
 type linkGroup struct {
-	LandingIndex int               `json:"landing_index"`
-	Landing      string            `json:"landing"`
-	Mode         string            `json:"mode"`
-	Links        []labelledLink    `json:"links"`
-	QR           map[string]string `json:"qr"`
+	LandingIndex int    `json:"landing_index"`
+	Landing      string `json:"landing"`
+	// Name 分组显示名：登记过的落地用 relay.conf 的显示名（NAME[_N]，
+	// 没设就是落地地址），手动 twin 分组用落地地址。
+	Name  string            `json:"name"`
+	Mode  string            `json:"mode"`
+	Links []labelledLink    `json:"links"`
+	QR    map[string]string `json:"qr"`
 }
 
 type labelledLink struct {
@@ -612,6 +664,14 @@ func upsertTwinEntry(body []string, relayLabel, relayLink, directLink string) []
 // 找不到就追加新分组 ## 落地 N：<IP>（手动 twin），N=现有最大编号+1。
 // 原子写：写临时文件 + 重命名，文件权限 0644。
 func upsertTwinLinks(path, landingIP, landingRaw, relayLabel, relayLink, directLink string) error {
+	return upsertLandingLinks(path, landingIP, landingRaw, 0, relayLabel, relayLink, directLink)
+}
+
+// upsertLandingLinks 与 upsertTwinLinks 同一套写法，区别是新分组的编号：
+// index>0 时用该编号（已登记落地的真实编号，如加落地/补粘贴时传 relay.conf 里的编号），
+// index<=0 时自动取最大编号+1（与 upsertTwinLinks 相同）。
+// 指定编号已被别的落地占用时退回自动编号，不把 1.2.1 已知的撞号问题放大。
+func upsertLandingLinks(path, landingIP, landingRaw string, index int, relayLabel, relayLink, directLink string) error {
 	var data []byte
 	if b, err := os.ReadFile(path); err == nil {
 		data = b
@@ -626,15 +686,20 @@ func upsertTwinLinks(path, landingIP, landingRaw, relayLabel, relayLink, directL
 	}
 	twinNote := "# 手动 twin：面板节点链接页生成，install.sh --nodes 不会洗掉"
 	if matched < 0 {
-		maxIdx := 0
-		for _, g := range groups {
-			if g.index > maxIdx {
-				maxIdx = g.index
+		idx := index
+		if idx <= 0 {
+			idx = maxGroupIndex(groups) + 1
+		} else {
+			for _, g := range groups {
+				if g.index == idx {
+					idx = maxGroupIndex(groups) + 1
+					break
+				}
 			}
 		}
 		groups = append(groups, nodesGroupBlock{
-			header:  fmt.Sprintf("## 落地 %d：%s（%s）", maxIdx+1, landingIP, twinGroupMarker),
-			index:   maxIdx + 1,
+			header:  fmt.Sprintf("## 落地 %d：%s（%s）", idx, landingIP, twinGroupMarker),
+			index:   idx,
 			landing: landingIP,
 			twin:    true,
 			body:    append([]string{twinNote, ""}, twinEntryLines(1, relayLabel, relayLink, directLink)...),
@@ -645,6 +710,21 @@ func upsertTwinLinks(path, landingIP, landingRaw, relayLabel, relayLink, directL
 	} else {
 		groups[matched].body = upsertTwinEntry(groups[matched].body, relayLabel, relayLink, directLink)
 	}
+	return writeNodesTxt(path, data, preamble, groups)
+}
+
+func maxGroupIndex(groups []nodesGroupBlock) int {
+	maxIdx := 0
+	for _, g := range groups {
+		if g.index > maxIdx {
+			maxIdx = g.index
+		}
+	}
+	return maxIdx
+}
+
+// writeNodesTxt 把分组写回 nodes.txt（原子写：临时文件 + 重命名，0644）。
+func writeNodesTxt(path string, data []byte, preamble []string, groups []nodesGroupBlock) error {
 	var sb strings.Builder
 	for _, line := range preamble {
 		sb.WriteString(line)
@@ -685,7 +765,170 @@ func upsertTwinLinks(path, landingIP, landingRaw, relayLabel, relayLink, directL
 	return nil
 }
 
-// ---------- 任意门模式 ----------
+// findLinksGroup 按落地找 nodes.txt 分组：先精确比落地字符串，
+// 落地是域名时再解析成 IP 比一次（twin 分组头写的是 IP）。
+func findLinksGroup(groups []linkGroup, l Landing) *linkGroup {
+	for i := range groups {
+		if groups[i].Landing == l.Landing {
+			return &groups[i]
+		}
+	}
+	if !isIP(l.Landing) {
+		if ips, err := net.LookupIP(l.Landing); err == nil {
+			for _, ip := range ips {
+				for i := range groups {
+					if groups[i].Landing == ip.String() {
+						return &groups[i]
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// linksQR 给一组链接逐条生成二维码（纯 Go，不依赖主机 qrencode），
+// 生成失败的那条跳过，不阻塞其他链接。
+func linksQR(links []labelledLink) map[string]string {
+	qr := map[string]string{}
+	for _, l := range links {
+		if q, err := qrDataURI(l.Link); err == nil {
+			qr[l.Label] = q
+		}
+	}
+	return qr
+}
+
+// modeNoteFor 按预设算 MODE_NOTE（与 install.sh collect_landing 里同一套文案），
+// 编辑落地时面板自己写 relay.conf，不再跑安装脚本，所以这里要复刻一份。
+func modeNoteFor(preset, sbMode string, door bool) string {
+	var note string
+	switch preset {
+	case "1":
+		note = "tiktok-node（Xray）"
+	case "2":
+		if sbMode == "2" {
+			note = "sing-box-node 明文模式（HY2/TUIC 不启用）"
+		} else {
+			note = "sing-box-node TLS 模式"
+		}
+	default:
+		note = "自定义端口"
+	}
+	if door {
+		note += "（任意门）"
+	}
+	return note
+}
+
+// deriveSBMode 从端口反推预设 2 的 sing-box 模式：带 8443/8444 就是 TLS，
+// 否则是明文；非预设 2 返回空串。编辑表单预填用。
+func deriveSBMode(l Landing) string {
+	if l.Preset != "2" {
+		return ""
+	}
+	for _, p := range l.Ports {
+		if p.Remote == 8443 || p.Remote == 8444 {
+			return "1"
+		}
+	}
+	return "2"
+}
+
+// portsToCustomString 把端口表转回编辑表单的自定义端口写法
+// （"443,8388,8443:9443"，只取 TCP；监听与落地相同只写一个数）。
+// 预设 3 的落地编辑时预填用。
+func portsToCustomString(ports []PortSpec) string {
+	var parts []string
+	seen := map[string]bool{}
+	for _, p := range ports {
+		if p.Proto != "tcp" {
+			continue
+		}
+		var s string
+		if p.Listen == p.Remote {
+			s = strconv.Itoa(p.Listen)
+		} else {
+			s = fmt.Sprintf("%d:%d", p.Listen, p.Remote)
+		}
+		if !seen[s] {
+			seen[s] = true
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
+// hasUDPPorts 端口表里有没有 UDP 规格（编辑表单的 UDP 复选框预填用）。
+func hasUDPPorts(ports []PortSpec) bool {
+	for _, p := range ports {
+		if p.Proto == "udp" {
+			return true
+		}
+	}
+	return false
+}
+
+// removeLinksGroup 从 nodes.txt 里删掉指定落地的分组块（编辑改地址后旧分组
+// 的落地还是旧地址，删掉它再由 upsertLandingLinks 按新地址建新分组，
+// 避免历史里同时出现新旧两个分组）。
+func removeLinksGroup(path, landingIP string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil // 文件不存在就没什么可删的
+	}
+	preamble, groups := splitNodesTxt(data)
+	kept := groups[:0]
+	removed := false
+	for _, g := range groups {
+		if g.landing == landingIP {
+			removed = true
+			continue
+		}
+		kept = append(kept, g)
+	}
+	if !removed {
+		return nil
+	}
+	return writeNodesTxt(path, data, preamble, kept)
+}
+
+// removeLinksGroups 按文件序号（0 起，按文件顺序）从 nodes.txt 里删掉指定分组，
+// 只删历史，不动转发与节点。序号越界返回错误；重复序号只算一次。
+// 返回实际删掉的组数与这些组的落地地址（供审计日志写，不含链接本身）。
+func removeLinksGroups(path string, ordinals []int) (int, []string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, nil, fmt.Errorf("历史记录文件不存在或读不到")
+	}
+	preamble, groups := splitNodesTxt(data)
+	if len(groups) == 0 {
+		return 0, nil, fmt.Errorf("历史记录是空的，没什么可删")
+	}
+	drop := map[int]bool{}
+	for _, o := range ordinals {
+		if o < 0 || o >= len(groups) {
+			return 0, nil, fmt.Errorf("序号 %d 越界（共 %d 组），请刷新页面再试", o, len(groups))
+		}
+		drop[o] = true
+	}
+	kept := make([]nodesGroupBlock, 0, len(groups))
+	var landings []string
+	for i, g := range groups {
+		if drop[i] {
+			landings = append(landings, g.landing)
+			continue
+		}
+		kept = append(kept, g)
+	}
+	if len(landings) == 0 {
+		return 0, nil, nil
+	}
+	if err := writeNodesTxt(path, data, preamble, kept); err != nil {
+		return 0, nil, err
+	}
+	return len(landings), landings, nil
+}
 
 // doorMapPorts 任意门转发端口映射：转发端口（listen）= 落地端口（remote）+ 20000，
 // +20000 超 65535 时依次试 +10000、+1000；三个偏移都超了就保留原 listen
@@ -804,6 +1047,57 @@ func setLinkHost(link, newHost string) string {
 			return link
 		}
 		j["add"] = newHost
+		nb, err := json.Marshal(j)
+		if err != nil {
+			return link
+		}
+		return "vmess://" + base64.RawURLEncoding.EncodeToString(nb) + frag
+	}
+	return link
+}
+
+// setLinkName 只换节点链接的备注名（vless/trojan/ss 是 # 后面的片段，
+// vmess 是 JSON 里的 ps 字段），其余部分原样不动；换不了原样返回。
+// 中文备注经 url.URL.String() 百分号编码（与 setLinkHost 同一套规则），
+// 链接等价，客户端显示时会解码。
+func setLinkName(link, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return link
+	}
+	pl, err := parseNodeLink(link)
+	if err != nil {
+		return link
+	}
+	switch pl.Scheme {
+	case "vless", "trojan", "ss":
+		u, err := url.Parse(strings.TrimSpace(link))
+		if err != nil {
+			return link
+		}
+		u.Fragment = name
+		return u.String()
+	case "vmess":
+		trimmed := strings.TrimSpace(link)
+		b64raw := strings.TrimPrefix(trimmed, "vmess://")
+		frag := ""
+		if i := strings.Index(b64raw, "#"); i >= 0 {
+			frag = b64raw[i:]
+			b64raw = b64raw[:i]
+		}
+		b64raw = strings.SplitN(b64raw, "?", 2)[0]
+		raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(b64raw, "="))
+		if err != nil {
+			raw, err = base64.StdEncoding.DecodeString(b64raw)
+			if err != nil {
+				return link
+			}
+		}
+		var j map[string]any
+		if err := json.Unmarshal(raw, &j); err != nil {
+			return link
+		}
+		j["ps"] = name
 		nb, err := json.Marshal(j)
 		if err != nil {
 			return link
