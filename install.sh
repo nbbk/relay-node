@@ -359,7 +359,8 @@ step7_nodes() { # 第 7 步：双节点链接（可选；跳过不报错，始�
       _resolve_note="（域名现在解析不到，直连先用域名本身；等 DNS 恢复后重跑 bash install.sh --nodes 再生成）"
     fi
   fi
-  echo "粘贴你原来的节点链接（可多条，一行一条；粘完按一次回车（空行）结束；不想生成就直接回车跳过）："
+  echo "请粘贴你原来的节点链接："
+  echo "（可多条，一行一条；粘完按一次回车（空行）结束；不想生成就直接回车跳过）"
   local -a links=()
   local _line="" _tty=0
   if [ -t 0 ] && exec 3<&0 2>/dev/null; then
@@ -403,6 +404,7 @@ step7_nodes() { # 第 7 步：双节点链接（可选；跳过不报错，始�
       case "$_scheme_l" in
         vless|trojan|vmess)
           SNI_ASKED=1
+          echo "请填写直连要用的域名（SNI）："
           ask "第 $i 条链接里没找到域名，直连要用的域名（SNI，就是证书上的那个域名；不知道就直接回车）: " SNI_DOMAIN
           _sni="${SNI_DOMAIN:-}"
           ;;
@@ -526,6 +528,7 @@ case "$PRESET" in
   3)
     echo "自定义：输入要转发的端口，逗号分隔；监听端口默认与落地端口相同，"
     echo "  如需改监听端口，用 监听:落地 的写法，例如：443,8388,8443:9443"
+    echo "请填写要转发的端口列表："
     ask "端口列表（逗号分隔，填完按回车继续）： " CUSTOM_PORTS
     [ -n "$CUSTOM_PORTS" ] || { echo "没给端口，装不了。"; exit 1; }
     echo "请输入你的选择："
