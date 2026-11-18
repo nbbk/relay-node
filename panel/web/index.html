@@ -67,6 +67,7 @@
       <section class="page" id="page-overview">
         <div class="page-head"><h1>总览</h1><div class="actions"><button class="btn" id="check-btn" type="button">一键体检</button><button class="btn secondary" data-goto="add" type="button">＋ 添加落地</button></div></div>
         <div class="grid cols-4" id="overview-stats"></div>
+        <div id="machine-card" style="margin-top:16px"></div>
         <div id="check-result" style="margin-top:16px"></div>
         <div id="update-banner" style="margin-top:16px"></div>
         <h2 style="margin-top:20px">落地列表</h2>
@@ -264,6 +265,37 @@
               <input id="tg-token" type="password" placeholder="留空 = 保持原值" autocomplete="off">
               <label for="tg-chat">Chat ID</label><input id="tg-chat" placeholder="如 123456789">
               <div class="btn-row"><button class="btn" type="submit">保存</button><button class="btn secondary" id="tg-test" type="button">发送测试消息</button></div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>机器监控告警</h2>
+            <p class="muted">每 5 分钟采样一次磁盘、内存与 CPU，超阈值时总览页标红（严重）/标黄（警告），并走上面配好的 Telegram 提醒；没配 Telegram 就只在面板里标色，不报错。同一指标越过阈值只提醒一次，持续超标每小时最多再提醒一次，回落到阈值以下后恢复，下次再越过重新提醒。</p>
+            <form id="monitor-form">
+              <p class="muted">磁盘阈值（根分区使用率）：</p>
+              <div class="form-grid">
+                <div><label for="mon-disk-warn">警告阈值（%） <span class="hint">默认 85</span></label>
+                  <input id="mon-disk-warn" type="number" min="1" max="99" placeholder="85"></div>
+                <div><label for="mon-disk-crit">严重阈值（%） <span class="hint">默认 95</span></label>
+                  <input id="mon-disk-crit" type="number" min="1" max="99" placeholder="95"></div>
+              </div>
+              <p class="muted">内存阈值（已用 / 总量）：</p>
+              <div class="form-grid">
+                <div><label for="mon-mem-warn">警告阈值（%） <span class="hint">默认 80</span></label>
+                  <input id="mon-mem-warn" type="number" min="1" max="99" placeholder="80"></div>
+                <div><label for="mon-mem-crit">严重阈值（%） <span class="hint">默认 90</span></label>
+                  <input id="mon-mem-crit" type="number" min="1" max="99" placeholder="90"></div>
+              </div>
+              <p class="muted">CPU 阈值（1 分钟平均负载 ÷ 核心数，换算成百分比）：</p>
+              <div class="form-grid">
+                <div><label for="mon-cpu-warn">警告阈值（%） <span class="hint">默认 80</span></label>
+                  <input id="mon-cpu-warn" type="number" min="1" max="99" placeholder="80"></div>
+                <div><label for="mon-cpu-crit">严重阈值（%） <span class="hint">默认 95</span></label>
+                  <input id="mon-cpu-crit" type="number" min="1" max="99" placeholder="95"></div>
+              </div>
+              <p class="muted">采样间隔：</p>
+              <div><label for="mon-interval">采样间隔（分钟） <span class="hint">默认 5，可填 1–60</span></label>
+                <input id="mon-interval" type="number" min="1" max="60" placeholder="5"></div>
+              <div class="btn-row"><button class="btn" type="submit">保存监控设置</button></div>
             </form>
           </div>
           <div class="card">
