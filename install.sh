@@ -359,7 +359,7 @@ step7_nodes() { # 第 7 步：双节点链接（可选；跳过不报错，始�
       _resolve_note="（域名现在解析不到，直连先用域名本身；等 DNS 恢复后重跑 bash install.sh --nodes 再生成）"
     fi
   fi
-  echo "粘贴你原来的节点链接（可多条，一行一条，粘完空行回车结束；直接回车跳过）："
+  echo "粘贴你原来的节点链接（可多条，一行一条；粘完按一次回车（空行）结束；不想生成就直接回车跳过）："
   local -a links=()
   local _line="" _tty=0
   if [ -t 0 ] && exec 3<&0 2>/dev/null; then
@@ -469,9 +469,12 @@ if [ "$NODES_ONLY" = "1" ]; then
   exit 0
 fi
 
+echo "一共 7 步（前 6 步装中转，第 7 步生成双节点链接，可跳过）。每一步填完按回车继续；标了“默认”的，直接回车就是默认值。"
+echo ""
 echo "== 1/6 落地目标与转发预设 =="
+echo "这一步要填两样：① 落地服务器的 IP 或域名 ② 转发预设（选 1/2/3）。"
 if [ -z "$LANDING" ]; then
-  ask "输入落地服务器 IP 或域名（就是你 tiktok-node / sing-box-node 跑的那台）: " LANDING
+  ask "① 落地服务器 IP（推荐填 IP，例如 202.155.138.195）或域名，填完按回车： " LANDING
 fi
 [ -n "$LANDING" ] || { echo "没给落地地址，装不了。重跑并输入落地 IP 或域名。"; exit 1; }
 if is_ip "$LANDING"; then
@@ -491,10 +494,10 @@ fi
 if [ -z "$PRESET" ]; then
   echo ""
   echo "转发预设："
-  echo "  1) tiktok-node（Xray）：80 + 443（TCP）"
+  echo "  1) tiktok-node（Xray）：80 + 443（TCP）  ← 默认，直接回车就是 1"
   echo "  2) sing-box-node：80 + 443（TCP）+ 8388（TCP+UDP）+ 8443（UDP）+ 8444（UDP）"
   echo "  3) 自定义端口（自己输）"
-  ask "选预设 [1/2/3，默认 1]: " PRESET "1"
+  ask "② 选预设 [1/2/3]，直接回车选默认 1： " PRESET "1"
 fi
 
 # PORTS 格式：以空格分隔的 "协议:监听端口:落地端口"，如 "tcp:443:443 udp:8388:8388"
@@ -506,7 +509,9 @@ case "$PRESET" in
     MODE_NOTE="tiktok-node（Xray）"
     ;;
   2)
-    ask "落地 sing-box-node 是 TLS 模式还是明文模式？[1=TLS(443) 2=明文(8080-8082)，默认 1]: " SB_MODE "1"
+    echo "  1) TLS 模式（443）  ← 默认，直接回车就是 1"
+    echo "  2) 明文模式（8080-8082）"
+    ask "落地 sing-box-node 是 TLS 还是明文？[1/2]，直接回车选默认 1（TLS）： " SB_MODE "1"
     if [ "$SB_MODE" = "2" ]; then
       PORTS="tcp:8080:8080 tcp:8081:8081 tcp:8082:8082 tcp:8388:8388 udp:8388:8388"
       MODE_NOTE="sing-box-node 明文模式（HY2/TUIC 不启用）"
@@ -518,9 +523,9 @@ case "$PRESET" in
   3)
     echo "自定义：输入要转发的端口，逗号分隔；监听端口默认与落地端口相同，"
     echo "  如需改监听端口，用 监听:落地 的写法，例如：443,8388,8443:9443"
-    ask "端口列表: " CUSTOM_PORTS
+    ask "端口列表（逗号分隔，填完按回车继续）： " CUSTOM_PORTS
     [ -n "$CUSTOM_PORTS" ] || { echo "没给端口，装不了。"; exit 1; }
-    ask "这些端口要不要同时转 UDP？[y/N]: " WANT_UDP "N"
+    ask "这些端口要不要同时转 UDP？[y/N]，直接回车选默认 N： " WANT_UDP "N"
     IFS=',' read -ra _plist <<< "$CUSTOM_PORTS"
     for _e in "${_plist[@]}"; do
       _e="${_e//[[:space:]]/}"
