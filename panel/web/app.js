@@ -1509,6 +1509,8 @@ async function loadSettingsPage() {
     const bke = $('#bk-enabled'); if (bke) bke.checked = bk.enabled !== false;
     const bkt = $('#bk-time'); if (bkt) bkt.value = bk.time || '03:00';
     const bkk = $('#bk-keep'); if (bkk) bkk.value = bk.keep || 7;
+    // 异地备份（v1.3.11）：设置接口下发的脱敏状态填进表单。
+    renderRemoteBackupCard(st.remote_backup || {});
     // 面板名称（v1.3.4）：设置接口下发的当前名填进输入框。
     const pn = $('#panel-name');
     if (pn) pn.value = st.panel_name || 'CP管理';
@@ -1761,6 +1763,41 @@ function initSettings() {
     try { await apiPost('/api/v1/scheduled-backups/now', {}); toast('备份已创建', 'ok'); loadSchedBackups(); }
     catch (err) { toast('备份失败：' + err.message, 'err'); }
   });
+  // 异地备份（v1.3.11）
+  on('#rb-pass-set', 'click', async () => {
+    const np = $('#rb-passphrase').value;
+    if (!np || np.length < 8) { toast('口令至少 8 位', 'err'); return; }
+    try {
+      const r = await apiPost('/api/v1/settings/remote-backup/passphrase', { old_passphrase: $('#rb-old-passphrase').value, new_passphrase: np });
+      $('#rb-passphrase').value = ''; $('#rb-old-passphrase').value = '';
+      toast(r.warn ? r.warn : '口令已设置', 'ok');
+      renderRemoteBackupCard(r.remote_backup || {});
+    } catch (err) { toast('设置失败：' + err.message, 'err'); }
+  });
+  on('#rb-pass-clear', 'click', async () => {
+    const ok = await confirmModal('清除异地备份口令', '<p>清除后两个上传开关同时关闭，面板不再上传新备份。之前传上去的备份只要还记得口令，恢复时输口令照样解得开。确定清除吗？</p>', '清除口令', true);
+    if (!ok) return;
+    try { const r = await apiPost('/api/v1/settings/remote-backup/passphrase/clear', {}); toast('口令已清除', 'ok'); renderRemoteBackupCard(r.remote_backup || {}); }
+    catch (err) { toast('清除失败：' + err.message, 'err'); }
+  });
+  on('#rb-save', 'click', async () => {
+    try {
+      const r = await apiPost('/api/v1/settings/remote-backup', {
+        r2: { enabled: $('#rb-r2-enabled').checked, account_id: $('#rb-r2-account').value.trim(), bucket: $('#rb-r2-bucket').value.trim(), access_key: $('#rb-r2-access').value.trim(), secret_key: $('#rb-r2-secret').value, endpoint: $('#rb-r2-endpoint').value.trim() },
+        qiniu: { enabled: $('#rb-qn-enabled').checked, region: $('#rb-qn-region').value, endpoint: $('#rb-qn-endpoint').value.trim(), bucket: $('#rb-qn-bucket').value.trim(), access_key: $('#rb-qn-access').value.trim(), secret_key: $('#rb-qn-secret').value },
+      });
+      $('#rb-r2-secret').value = ''; $('#rb-qn-secret').value = '';
+      toast('异地备份设置已保存', 'ok'); renderRemoteBackupCard(r.remote_backup || {});
+    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+  });
+  on('#rb-r2-test', 'click', async () => {
+    try { const r = await apiPost('/api/v1/remote-backup/test/r2', {}); toast(r.detail || '测试通过', 'ok'); }
+    catch (err) { toast('测试失败：' + err.message, 'err'); }
+  });
+  on('#rb-qn-test', 'click', async () => {
+    try { const r = await apiPost('/api/v1/remote-backup/test/qiniu', {}); toast(r.detail || '测试通过', 'ok'); }
+    catch (err) { toast('测试失败：' + err.message, 'err'); }
+  });
   on('#export-btn', 'click', async () => {
     try {
       const res = await fetch('/api/v1/export');
@@ -1917,6 +1954,73 @@ async function loadSchedBackups() {
       catch (e) { toast('删除失败：' + e.message, 'err'); }
     }));
   } catch (e) { wrap.innerHTML = '<div class="empty">定时备份列表不可用：' + esc(e.message) + '</div>'; }
+}
+/* ---------- 异地备份（v1.3.11） ---------- */
+// renderRemoteBackupCard 设置页回填：口令状态、两个目的地的开关与字段、
+// 上次上传状态；开启的目的地拉远程列表。SecretKey 从不回填（留空 = 不变）。
+function renderRemoteBackupCard(rb) {
+  rb = rb || {};
+  const ps = $('#rb-pass-status');
+  if (ps) ps.textContent = rb.passphrase_set ? '口令已设置。换口令在上面填新口令与旧口令；清除口令会同时关闭两个上传开关，旧备份仍可用旧口令恢复。' : '还没设置异地备份口令。';
+  const r2 = rb.r2 || {}, qn = rb.qiniu || {};
+  const set = (id, v) => { const el = $(id); if (el) el.value = v || ''; };
+  const chk = (id, v) => { const el = $(id); if (el) el.checked = !!v; };
+  chk('#rb-r2-enabled', r2.enabled); set('#rb-r2-account', r2.account_id); set('#rb-r2-bucket', r2.bucket);
+  set('#rb-r2-access', r2.access_key); set('#rb-r2-endpoint', r2.endpoint_override);
+  chk('#rb-qn-enabled', qn.enabled); set('#rb-qn-bucket', qn.bucket); set('#rb-qn-access', qn.access_key);
+  set('#rb-qn-endpoint', qn.endpoint_override);
+  const qnr = $('#rb-qn-region'); if (qnr) qnr.value = qn.region || 'cn-east-1';
+  const st2 = $('#rb-r2-status'); if (st2) st2.textContent = r2.last_status ? '上次上传：' + r2.last_status : '';
+  const stq = $('#rb-qn-status'); if (stq) stq.textContent = qn.last_status ? '上次上传：' + qn.last_status : '';
+  if (r2.enabled) loadRemoteList('r2'); else { const w = $('#rb-r2-list'); if (w) w.innerHTML = ''; }
+  if (qn.enabled) loadRemoteList('qiniu'); else { const w = $('#rb-qn-list'); if (w) w.innerHTML = ''; }
+}
+// loadRemoteList 远程备份列表：每行恢复（弹口令框）与下载（原样下 .enc）。
+async function loadRemoteList(kind) {
+  const wrap = $(kind === 'r2' ? '#rb-r2-list' : '#rb-qn-list');
+  if (!wrap) return;
+  try {
+    const r = await api('/api/v1/remote-backup/list/' + kind);
+    const list = r.objects || [];
+    if (!list.length) { wrap.innerHTML = '<div class="empty">远程没有备份。</div>'; return; }
+    wrap.innerHTML = list.map((o) =>
+      '<div class="kv"><span>' + esc(o.key) + '<br><span class="small">' + (o.last_modified ? esc(fmtDate(o.last_modified)) + ' · ' : '') + (o.size != null ? (o.size / 1024).toFixed(1) + ' KB' : '') + '</span></span>' +
+      '<span><button class="btn secondary sm" type="button" data-rb-restore="' + esc(o.key) + '" data-rb-dest="' + kind + '">恢复</button> ' +
+      '<button class="btn secondary sm" type="button" data-rb-download="' + esc(o.key) + '" data-rb-dest="' + kind + '">下载</button></span></div>').join('');
+    $$('[data-rb-restore]', wrap).forEach((btn) => btn.addEventListener('click', async () => {
+      const pass = await promptRemotePassphrase();
+      if (pass == null) return;
+      try {
+        await apiPost('/api/v1/remote-backup/restore/' + btn.dataset.rbDest + '/' + encodeURIComponent(btn.dataset.rbRestore), { passphrase: pass });
+        toast('备份已恢复', 'ok'); loadOverview();
+      } catch (e) { toast('恢复失败：' + e.message, 'err'); }
+    }));
+    $$('[data-rb-download]', wrap).forEach((btn) => btn.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/v1/remote-backup/download/' + btn.dataset.rbDest + '/' + encodeURIComponent(btn.dataset.rbDownload));
+        if (!res.ok) throw new Error('下载失败（HTTP ' + res.status + '）');
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob); a.download = btn.dataset.rbDownload; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        toast('已下载 ' + btn.dataset.rbDownload, 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+    }));
+  } catch (e) { wrap.innerHTML = '<div class="empty">远程列表不可用：' + esc(e.message) + '</div>'; }
+}
+// promptRemotePassphrase 恢复远程备份时弹口令框：确认返回口令，取消返回 null。
+function promptRemotePassphrase() {
+  return new Promise((resolve) => {
+    const m = openModal('<h2>恢复远程备份</h2><div><p>这份备份是加密的，恢复要输口令。如果是换口令之前传的，请输旧口令。</p>' +
+      '<label for="rb-restore-pass">口令</label><input id="rb-restore-pass" type="password" autocomplete="current-password" placeholder="异地备份口令"></div>' +
+      '<div class="btn-row"><button class="btn danger" id="rb-restore-ok" type="button">恢复备份</button>' +
+      '<button class="btn secondary" id="rb-restore-cancel" type="button">取消</button></div>');
+    if (!m) { resolve(null); return; }
+    const input = $('#rb-restore-pass', m);
+    if (input) input.focus();
+    onIn(m, '#rb-restore-ok', 'click', () => { const v = input ? input.value : ''; closeModal(); resolve(v); });
+    onIn(m, '#rb-restore-cancel', 'click', () => { closeModal(); resolve(null); });
+  });
 }
 /* ---------- 通用前端分页（审计/端口表/各列表共用） ---------- */
 const PAGE_SIZE = 20;

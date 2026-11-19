@@ -525,6 +525,55 @@
             </div>
             <div id="import-result" style="margin-top:10px"></div>
           </div>
+          <div class="card">
+            <h2>异地备份</h2>
+            <p class="muted">每天 03:00 定时备份完（点“立即备份”也一样），加密后各传一份到 R2 和七牛云，两个都传、互为备份；本地备份不动。远程只留最近 7 份，传完自动删最旧的。</p>
+            <h3 style="margin-top:12px">口令</h3>
+            <p class="small">口令只存本机（只存派生出的密钥，口令本身不存）；新机器恢复时要你自己输入，忘了就解不开远程备份。换口令后，之前传上去的备份仍用旧口令加密，恢复它们时请输旧口令。</p>
+            <div class="form-grid">
+              <div><label for="rb-passphrase">口令 <span class="hint">至少 8 位</span></label><input id="rb-passphrase" type="password" autocomplete="new-password" placeholder="新口令"></div>
+              <div><label for="rb-old-passphrase">旧口令 <span class="hint">换口令时填</span></label><input id="rb-old-passphrase" type="password" autocomplete="current-password" placeholder="已设过口令时填旧口令"></div>
+            </div>
+            <div class="btn-row"><button class="btn" id="rb-pass-set" type="button">设置口令</button>
+            <button class="btn secondary" id="rb-pass-clear" type="button">清除口令</button></div>
+            <div id="rb-pass-status" class="small muted" style="margin-top:8px">还没设置异地备份口令。</div>
+            <h3 style="margin-top:16px">Cloudflare R2</h3>
+            <label class="small"><input id="rb-r2-enabled" type="checkbox"> 启用 R2 上传</label>
+            <div class="form-grid">
+              <div><label for="rb-r2-account">账号 ID</label><input id="rb-r2-account" type="text" placeholder="Cloudflare 账号 ID"></div>
+              <div><label for="rb-r2-bucket">桶名</label><input id="rb-r2-bucket" type="text" placeholder="如 relay-backups"></div>
+              <div><label for="rb-r2-access">Access Key ID</label><input id="rb-r2-access" type="text" autocomplete="off" placeholder="R2 API 令牌的 Access Key ID"></div>
+              <div><label for="rb-r2-secret">Secret Access Key</label><input id="rb-r2-secret" type="password" autocomplete="new-password" placeholder="已设置时留空 = 不变"></div>
+            </div>
+            <label for="rb-r2-endpoint">端点覆盖 <span class="hint">选填，留空 = https://&lt;账号 ID&gt;.r2.cloudflarestorage.com</span></label>
+            <input id="rb-r2-endpoint" type="text" autocomplete="off" placeholder="留空用默认端点">
+            <div class="btn-row"><button class="btn secondary" id="rb-r2-test" type="button">测试上传</button></div>
+            <div id="rb-r2-status" class="small muted" style="margin-top:8px"></div>
+            <div id="rb-r2-list" style="margin-top:8px"></div>
+            <h3 style="margin-top:16px">七牛云 Kodo</h3>
+            <label class="small"><input id="rb-qn-enabled" type="checkbox"> 启用七牛云上传</label>
+            <div class="form-grid">
+              <div><label for="rb-qn-region">区域</label><select id="rb-qn-region">
+                <option value="cn-east-1">华东-浙江</option>
+                <option value="cn-east-2">华东-浙江2</option>
+                <option value="cn-north-1">华北-河北</option>
+                <option value="cn-south-1">华南-广东</option>
+                <option value="us-north-1">北美-洛杉矶</option>
+                <option value="ap-southeast-1">亚太-新加坡</option>
+                <option value="ap-southeast-2">亚太-河内</option>
+                <option value="ap-southeast-3">亚太-胡志明</option>
+              </select></div>
+              <div><label for="rb-qn-bucket">空间名（S3 空间名）</label><input id="rb-qn-bucket" type="text" placeholder="空间概览里看 S3 空间名"></div>
+              <div><label for="rb-qn-access">AccessKey</label><input id="rb-qn-access" type="text" autocomplete="off" placeholder="七牛密钥管理里的 AccessKey"></div>
+              <div><label for="rb-qn-secret">SecretKey</label><input id="rb-qn-secret" type="password" autocomplete="new-password" placeholder="已设置时留空 = 不变"></div>
+            </div>
+            <label for="rb-qn-endpoint">端点覆盖 <span class="hint">选填，留空 = https://s3.&lt;区域&gt;.qiniucs.com</span></label>
+            <input id="rb-qn-endpoint" type="text" autocomplete="off" placeholder="留空用默认端点">
+            <div class="btn-row"><button class="btn secondary" id="rb-qn-test" type="button">测试上传</button></div>
+            <div id="rb-qn-status" class="small muted" style="margin-top:8px"></div>
+            <div id="rb-qn-list" style="margin-top:8px"></div>
+            <div class="btn-row" style="margin-top:12px"><button class="btn" id="rb-save" type="button">保存异地备份设置</button></div>
+          </div>
         </div>
 
         <h2 style="margin-top:24px">审计日志</h2>

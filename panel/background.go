@@ -327,9 +327,13 @@ func (s *Server) maybeScheduledBackup() {
 	if now.Before(due) {
 		return
 	}
-	if _, err := s.runScheduledBackup("自动定时备份"); err == nil {
-		s.audit("system", "自动定时备份", "", "成功", "")
+	id, err := s.runScheduledBackup("自动定时备份")
+	if err != nil {
+		return
 	}
+	s.audit("system", "自动定时备份", "", "成功", "")
+	// 定时备份写完就异步传异地（goroutine，不阻塞备份循环）。
+	s.uploadBackupToRemoteAsync(id)
 }
 
 // 回收站清理：7 天后真正清除面板记录（realm 配置删除时已生效）。

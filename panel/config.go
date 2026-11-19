@@ -91,7 +91,11 @@ type PanelConfig struct {
 	TOTPEnabled     bool     `json:"totp_enabled"`
 	TOTPSecret      string   `json:"totp_secret"`
 	TOTPBackupCodes []string `json:"totp_backup_codes"`
-	Version         string   `json:"version"`
+	// 异地备份（v1.3.11）：定时备份加密后传到 R2 与七牛。口令本身不存，
+	// 只存派生出的主密钥与固定盐（config.json，600 权限）；云端 SecretKey
+	// 同样只存这里，任何接口都不返回，导出与备份文件也不含它。
+	RemoteBackup RemoteBackupCfg `json:"remote_backup"`
+	Version      string          `json:"version"`
 }
 
 // panelName 面板显示名称：设置里可改，空着（旧配置）默认 CP管理。
@@ -391,33 +395,35 @@ func (rc *RelayConf) fieldKeys(index int) []string {
 // ---------- 服务器 ----------
 
 type Server struct {
-	env            Env
-	cfg            PanelConfig
-	cfgPath        string
-	state          PanelState
-	stateMu        sync.Mutex
-	sessions       *sessionStore
-	opMu           sync.Mutex // 写操作锁（TryLock，占用时返回 409）
-	traffic        *trafficStore
-	auditMu        sync.Mutex
-	healthMu       sync.Mutex // 健康基线锁（lastHealthOK/lastHealthAt：healthTick 与模式切换共用）
-	lastHealthOK   bool
-	lastHealthAt   time.Time
-	monitorMu      sync.Mutex
-	monitorAlerts  map[string]*monitorAlertState
-	latestMonitor  *SystemStats
-	latency        *latencyStore
-	latencyMu      sync.Mutex
-	latencyAlerts  map[string]*latencyAlertState
-	latencyRoundMu sync.Mutex // 一轮探测的锁（后台循环与总览兜底互斥）
-	centralMu      sync.Mutex // 集中管理缓存锁
-	centralCache   map[string]*RemoteStatusSnapshot
-	centralAlert   map[string]*centralAlertState
-	centralPollWG  sync.WaitGroup // 后台轮询计数（代理写成功后异步刷新一次；测试等它跑完再清理，避免轮询撞上 TempDir 删除）
-	subKey         []byte         // 订阅令牌加密密钥（v1.3.7，PANEL_HOME/sub_token.key 的内容，懒加载）
-	subKeyMu       sync.Mutex
-	subFailMu      sync.Mutex // /sub/ 限流锁（v1.3.7）
-	subFails       map[string]*subFailState
+	env             Env
+	cfg             PanelConfig
+	cfgPath         string
+	state           PanelState
+	stateMu         sync.Mutex
+	sessions        *sessionStore
+	opMu            sync.Mutex // 写操作锁（TryLock，占用时返回 409）
+	traffic         *trafficStore
+	auditMu         sync.Mutex
+	healthMu        sync.Mutex // 健康基线锁（lastHealthOK/lastHealthAt：healthTick 与模式切换共用）
+	lastHealthOK    bool
+	lastHealthAt    time.Time
+	monitorMu       sync.Mutex
+	monitorAlerts   map[string]*monitorAlertState
+	latestMonitor   *SystemStats
+	latency         *latencyStore
+	latencyMu       sync.Mutex
+	latencyAlerts   map[string]*latencyAlertState
+	latencyRoundMu  sync.Mutex // 一轮探测的锁（后台循环与总览兜底互斥）
+	centralMu       sync.Mutex // 集中管理缓存锁
+	centralCache    map[string]*RemoteStatusSnapshot
+	centralAlert    map[string]*centralAlertState
+	centralPollWG   sync.WaitGroup // 后台轮询计数（代理写成功后异步刷新一次；测试等它跑完再清理，避免轮询撞上 TempDir 删除）
+	subKey          []byte         // 订阅令牌加密密钥（v1.3.7，PANEL_HOME/sub_token.key 的内容，懒加载）
+	subKeyMu        sync.Mutex
+	subFailMu       sync.Mutex // /sub/ 限流锁（v1.3.7）
+	subFails        map[string]*subFailState
+	remoteUploadMu  sync.Mutex // 异地备份上传去重锁（v1.3.11）
+	remoteUploading map[string]bool
 }
 
 func newServer(env Env) (*Server, error) {

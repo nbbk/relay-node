@@ -91,15 +91,37 @@ func (s *Server) runScheduledBackup(label string) (string, error) {
 		return "", err
 	}
 	now := time.Now()
-	id := "backup-" + now.Format("20060102-150405")
-	path := filepath.Join(dir, id+".json")
-	for i := 2; ; i++ {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			break
+	base := "backup-" + now.Format("20060102-150405")
+	// 同一秒多次备份的 id：plain 被轮转删掉后不能再复用——否则新备份顶掉
+	// 旧 id，远程裁剪会按 id 把它当最旧的删掉（最新备份反而被裁）。
+	// 做法：该秒已有任何带后缀的文件时 plain 不再用，后缀取现存最大 +1。
+	id := base
+	next, maxSuffix, havePlain := 0, 0, false
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			name := e.Name()
+			if name == base+".json" {
+				havePlain = true
+				continue
+			}
+			if strings.HasPrefix(name, base+"-") && strings.HasSuffix(name, ".json") {
+				var n int
+				if _, err := fmt.Sscanf(strings.TrimSuffix(strings.TrimPrefix(name, base+"-"), ".json"), "%d", &n); err == nil && n > maxSuffix {
+					maxSuffix = n
+				}
+			}
 		}
-		id = "backup-" + now.Format("20060102-150405") + "-" + strconv.Itoa(i)
-		path = filepath.Join(dir, id+".json")
 	}
+	if havePlain {
+		next = 2
+	}
+	if maxSuffix >= 2 {
+		next = maxSuffix + 1
+	}
+	if next > 0 {
+		id = base + "-" + strconv.Itoa(next)
+	}
+	path := filepath.Join(dir, id+".json")
 	b, err := json.MarshalIndent(s.buildScheduledBackupData(label), "", "  ")
 	if err != nil {
 		return "", err
@@ -160,6 +182,22 @@ func sanitizeMergedSubs(subs []MergedSub) []mergedSubBackup {
 	return out
 }
 
+// backupIDOrder 解析备份 id/键 backup-YYYYMMDD-HHMMSS[-N]，返回（时间戳，序号）：
+// 没后缀的序号是 0。字典序在同一秒多次备份时会排错（".json" 的 . 比 "-2" 的 -
+// 大、无后缀那份会被当成最新；"-10" 又比 "-9" 小），列表与轮转不能只按字典序。
+func backupIDOrder(id string) (string, int) {
+	rest := strings.TrimPrefix(id, "backup-")
+	if len(rest) < 15 {
+		return rest, 0
+	}
+	ts, suffix := rest[:15], rest[15:]
+	n := 0
+	if strings.HasPrefix(suffix, "-") {
+		fmt.Sscanf(suffix[1:], "%d", &n)
+	}
+	return ts, n
+}
+
 // listScheduledBackups 列出定时备份（新的在前）。文件损坏只丢 label，不丢整条。
 func (s *Server) listScheduledBackups() []ScheduledBackupMeta {
 	entries, err := os.ReadDir(s.scheduledBackupDir())
@@ -188,7 +226,15 @@ func (s *Server) listScheduledBackups() []ScheduledBackupMeta {
 		}
 		out = append(out, m)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	// 新的在前：按（时间戳，序号）倒序，不只按 id 字典序（见 backupIDOrder）。
+	sort.Slice(out, func(i, j int) bool {
+		ti, ni := backupIDOrder(out[i].ID)
+		tj, nj := backupIDOrder(out[j].ID)
+		if ti != tj {
+			return ti > tj
+		}
+		return ni > nj
+	})
 	return out
 }
 
@@ -496,6 +542,8 @@ func (s *Server) handleScheduledBackupNow(w http.ResponseWriter, r *http.Request
 		return
 	}
 	s.audit(s.currentUser(r), "立即备份", id, "成功", "定时备份")
+	// 手动立即备份也一样传异地（异步，不阻塞返回）。
+	s.uploadBackupToRemoteAsync(id)
 	writeJSON(w, 200, okResp(map[string]any{"id": id}))
 }
 
