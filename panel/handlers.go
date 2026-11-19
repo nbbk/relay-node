@@ -2522,9 +2522,19 @@ func (s *Server) handleTwin(w http.ResponseWriter, r *http.Request) {
 		// Name 节点名称（选填）：直连备注“<名称>-直连”、中转备注“<名称>-中转”；
 		// 空着用原始链接自己的备注名。
 		Name string `json:"name"`
+		// Mode 生成方式（v1.3.16）：both=中转+直连（默认）、relay=仅中转、direct=仅直连。
+		Mode string `json:"mode"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	mode := req.Mode
+	if mode == "" {
+		mode = "both"
+	}
+	if mode != "both" && mode != "relay" && mode != "direct" {
+		writeJSON(w, 400, errResp("生成方式不对：只能是 both、relay 或 direct"))
 		return
 	}
 	if _, err := parseNodeLink(req.Link); err != nil {
@@ -2560,16 +2570,26 @@ func (s *Server) handleTwin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	relayLink, twin, relayLabel, manual := s.computeTwinLinks(req.Link, landingIP, sni, landing, rc, req.Name)
+	// v1.3.16：按生成方式过滤输出——生成逻辑本身不动，没选中的那条不返回、不记历史、不出二维码。
+	if mode == "relay" {
+		twin = ""
+	} else if mode == "direct" {
+		relayLink = ""
+	}
 	if manual != "" {
-		writeJSON(w, 200, map[string]any{"ok": true, "relay_link": relayLink, "direct_link": twin, "manual": manual, "relay_label": relayLabel})
+		writeJSON(w, 200, map[string]any{"ok": true, "relay_link": relayLink, "direct_link": twin, "manual": manual, "relay_label": relayLabel, "mode": mode})
 		return
 	}
 	qr := map[string]string{}
-	if q, err := qrDataURI(relayLink); err == nil {
-		qr[relayLabel] = q
+	if relayLink != "" {
+		if q, err := qrDataURI(relayLink); err == nil {
+			qr[relayLabel] = q
+		}
 	}
-	if q, err := qrDataURI(twin); err == nil {
-		qr["直连"] = q
+	if twin != "" {
+		if q, err := qrDataURI(twin); err == nil {
+			qr["直连"] = q
+		}
 	}
 	// 写历史：twin 成功就持久化进 nodes.txt，刷新后历史页还能看到。
 	// 保存失败不拦本次返回，只在响应里带上原因。
@@ -2577,7 +2597,7 @@ func (s *Server) handleTwin(w http.ResponseWriter, r *http.Request) {
 	if err := upsertTwinLinks(s.nodesFilePath(), landingIP, req.LandingIP, relayLabel, relayLink, twin); err != nil {
 		persistErr = fmt.Sprintf("历史记录保存失败：%v", err)
 	}
-	resp := okResp(map[string]any{"relay_link": relayLink, "direct_link": twin, "qr": qr, "relay_label": relayLabel})
+	resp := okResp(map[string]any{"relay_link": relayLink, "direct_link": twin, "qr": qr, "relay_label": relayLabel, "mode": mode})
 	if persistErr != "" {
 		resp["persist_error"] = persistErr
 	}

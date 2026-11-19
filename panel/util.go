@@ -635,7 +635,11 @@ func splitNodesTxt(data []byte) (preamble []string, groups []nodesGroupBlock) {
 
 // twinEntryLines 一条 twin 记录的行：[第 N 条] + 中转/任意门行 + 直连行。
 func twinEntryLines(num int, relayLabel, relayLink, directLink string) []string {
-	lines := []string{fmt.Sprintf("[第 %d 条]", num), relayLabel + "：" + relayLink}
+	lines := []string{fmt.Sprintf("[第 %d 条]", num)}
+	// v1.3.16：只生成一条时，空的那条不写行（直连行本来就只在非空时写，中转行同理）。
+	if relayLink != "" {
+		lines = append(lines, relayLabel+"："+relayLink)
+	}
 	if directLink != "" {
 		lines = append(lines, "直连："+directLink)
 	}

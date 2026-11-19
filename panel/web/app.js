@@ -1267,7 +1267,32 @@ function toggleLinksGroup(ord) {
   const nowHidden = body.classList.toggle('hidden');
   if (btn) btn.textContent = nowHidden ? '展开 ▸' : '收起 ▾';
 }
+// v1.3.16：节点链接生成方式（三选一），上次的选择记在 localStorage，默认全部。
+const TWIN_MODE_KEY = 'relay-panel-twin-mode';
+function twinMode() {
+  const c = document.querySelector('input[name="twin-mode"]:checked');
+  const v = c ? c.value : 'both';
+  return (v === 'relay' || v === 'direct' || v === 'both') ? v : 'both';
+}
 function initTwin() {
+  // 恢复上次的生成方式（非法值回落到全部）
+  try {
+    const saved = localStorage.getItem(TWIN_MODE_KEY);
+    if (saved === 'relay' || saved === 'direct' || saved === 'both') {
+      const input = document.querySelector('input[name="twin-mode"][value="' + saved + '"]');
+      if (input) input.checked = true;
+    }
+  } catch (e) { /* 隐私模式等存不了就每次回默认 */ }
+  const syncTwinModeCards = () => {
+    $$('#twin-mode-group .radio-card').forEach((c) => c.classList.toggle('selected', c.dataset.twinMode === twinMode()));
+  };
+  syncTwinModeCards();
+  // 点卡片直接给它加 selected（label 的 click 先于 radio 切换触发，这里不读 checked，跟分流选择弹窗同一写法）。
+  $$('#twin-mode-group .radio-card').forEach((c) => c.addEventListener('click', () => {
+    $$('#twin-mode-group .radio-card').forEach((x) => x.classList.remove('selected'));
+    c.classList.add('selected');
+    try { localStorage.setItem(TWIN_MODE_KEY, c.dataset.twinMode); } catch (e) {}
+  }));
   on('#twin-form', 'submit', async (e) => {
     e.preventDefault();
     const link = $('#twin-link').value.trim();
@@ -1278,7 +1303,7 @@ function initTwin() {
     if (!/^(vless|trojan|ss|vmess):\/\//.test(link)) { toast('链接格式不正确，需以 vless://、trojan://、ss:// 或 vmess:// 开头', 'err'); return; }
     if (!landingIp) { toast('请填写落地 IP', 'err'); return; }
     try {
-      const r = await apiPost('/api/v1/links/twin', { link, landing_ip: landingIp, sni, name: name || undefined });
+      const r = await apiPost('/api/v1/links/twin', { link, landing_ip: landingIp, sni, name: name || undefined, mode: twinMode() });
       const relayLabel = r.relay_label || '中转';
       const links = [];
       if (r.relay_link) links.push({ label: relayLabel, link: r.relay_link });

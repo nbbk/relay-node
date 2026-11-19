@@ -156,8 +156,8 @@
       <section class="page" id="page-links">
         <div class="page-head"><h1>节点链接</h1></div>
         <div class="card">
-          <h2>粘贴原链接，生成直连 + 中转</h2>
-          <p class="muted">把落地机上生成的节点链接粘贴进来，面板会生成中转版（twin）和直连版链接及二维码。</p>
+          <h2>粘贴原链接，生成节点链接</h2>
+          <p class="muted">把落地机上生成的节点链接粘贴进来，面板按下面选的生成方式算出链接及二维码。</p>
           <form id="twin-form">
             <label for="twin-link">节点链接 <span class="hint">vless:// / trojan:// / ss:// / vmess:// 开头</span></label>
             <input id="twin-link" placeholder="vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443?security=tls&amp;sni=example.com#示例" required>
@@ -165,6 +165,12 @@
               <div><label for="twin-landing">落地 IP <span class="hint">必填</span></label><input id="twin-landing" placeholder="203.0.113.1" required></div>
               <div><label for="twin-sni">SNI / 域名 <span class="hint">可空，自动推断</span></label><input id="twin-sni" placeholder="example.com"></div>
               <div><label for="twin-name">节点名称 <span class="hint">选填；直连备注“&lt;名称&gt;-直连”、中转备注“&lt;名称&gt;-中转”，空着用原链接备注名</span></label><input id="twin-name" placeholder="如 香港-01" maxlength="64"></div>
+            </div>
+            <div id="twin-mode-group" style="margin-top:12px">
+              <div class="small" style="margin-bottom:6px">生成方式</div>
+              <label class="radio-card selected" data-twin-mode="both"><input type="radio" name="twin-mode" value="both" checked> <span class="opt-title">全部</span><div class="opt-desc">中转和直连各生成一条，两个都能用。</div></label>
+              <label class="radio-card" data-twin-mode="relay"><input type="radio" name="twin-mode" value="relay"> <span class="opt-title">仅中转</span><div class="opt-desc">只生成走中转机的那条。</div></label>
+              <label class="radio-card" data-twin-mode="direct"><input type="radio" name="twin-mode" value="direct"> <span class="opt-title">仅直连</span><div class="opt-desc">只生成直连落地机的那条。</div></label>
             </div>
             <div class="btn-row"><button class="btn" type="submit">生成 twin</button></div>
           </form>
