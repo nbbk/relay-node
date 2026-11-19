@@ -330,7 +330,7 @@
           </div>
           <div class="card">
             <h2>远程管理令牌</h2>
-            <p class="muted">允许另一台主面板通过令牌管理本面板（看状态、加/删落地、看链接、重启 realm）。令牌只存哈希，生成时明文只显示一次，记下来，关掉页面就再也看不到了。改密码、改端口等设置接口令牌调不通。轮换后旧令牌立即失效；撤销后任何主面板都连不进来。</p>
+            <p class="muted">允许另一台主面板通过令牌管理本面板（看状态、加/删落地、看链接、取订阅内容、重启 realm）。令牌只存哈希，生成时明文只显示一次，记下来，关掉页面就再也看不到了。改密码、改端口等设置接口令牌调不通。轮换后旧令牌立即失效；撤销后任何主面板都连不进来。</p>
             <div class="small" id="central-token-status">未生成令牌</div>
             <div id="central-token-once" class="hidden" style="margin-top:10px">
               <div class="warn-box">只显示一次，记下来：关掉页面或刷新后就再也看不到了。</div>
@@ -342,6 +342,26 @@
               <button class="btn secondary" id="central-token-rotate" type="button">轮换令牌</button>
               <button class="btn danger" id="central-token-revoke" type="button">撤销令牌</button>
             </div>
+          </div>
+          <div class="card">
+            <h2>订阅链接</h2>
+            <p class="muted">一个链接导入全部节点：客户端粘贴订阅链接后一次拿到本面板所有节点（中转 + 直连）。内容实时生成，面板里增删节点后订阅自动跟着变，不用重新导出。客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表），也可以在链接后面加 ?format=clash / base64 / plain 手动指定。</p>
+            <div class="small" id="sub-status">未生成订阅链接</div>
+            <div id="sub-once" class="hidden" style="margin-top:10px">
+              <div class="warn-box">只显示一次，记下来：关掉页面或刷新后就再也看不到了；丢了就点轮换重新生成。</div>
+              <div class="kv"><span>订阅链接</span><b class="mono" id="sub-url-value" style="word-break:break-all"></b></div>
+              <div class="btn-row">
+                <button class="btn secondary sm" id="sub-copy" type="button">复制订阅链接</button>
+                <button class="btn secondary sm" id="sub-copy-clash" type="button">复制 Clash 链接</button>
+                <button class="btn secondary sm" id="sub-copy-plain" type="button">复制明文链接</button>
+              </div>
+            </div>
+            <div class="btn-row">
+              <button class="btn" id="sub-generate" type="button">生成订阅链接</button>
+              <button class="btn secondary" id="sub-rotate" type="button">轮换订阅链接</button>
+              <button class="btn danger" id="sub-revoke" type="button">撤销订阅链接</button>
+            </div>
+            <p class="small">链接泄露可一键轮换，旧链接立即失效；撤销后订阅立即打不开。</p>
           </div>
           <div class="card">
             <h2>检查更新</h2>
@@ -466,6 +486,13 @@
             </div>
             <div class="btn-row"><button class="btn" type="submit">登记远程面板</button></div>
           </form>
+        </div>
+        <div class="card" style="margin-top:20px">
+          <h2>合并订阅</h2>
+          <p class="muted">按落地勾选，生成一条合并订阅链接：一个链接导入，客户端一次拿到选中落地的全部节点。勾面板即选它下面全部落地，部分选时面板框显示半选；顶上可全选全部面板。每个落地行上还有“复制订阅”，只导这一个落地的节点。内容实时生成，面板里增删节点后自动跟着变；勾选变了就重新生成一条，不同选择各用各的令牌。</p>
+          <div id="central-sub-tree">加载中…</div>
+          <div class="btn-row"><button class="btn" id="central-sub-generate" type="button" disabled>生成合并订阅</button></div>
+          <div id="central-sub-list" style="margin-top:12px"></div>
         </div>
         <h2 style="margin-top:20px">已登记的远程面板</h2>
         <div id="central-list"></div>

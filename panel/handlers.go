@@ -48,6 +48,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/links", s.requireAuth(s.handleLinks))
 	mux.HandleFunc("POST /api/v1/links/twin", s.requireAuth(s.handleTwin))
 	mux.HandleFunc("POST /api/v1/links/delete", s.requireAuth(s.handleDeleteLinksGroups))
+	// 订阅链接（v1.2.7）：/sub/{token} 是公开端点（令牌本身就是鉴权），不走登录会话
+	mux.HandleFunc("GET /sub/{token}", s.handleSub)
+	mux.HandleFunc("GET /api/v1/settings/subscription", s.requireAuth(s.handleSubTokenGet))
+	mux.HandleFunc("POST /api/v1/settings/subscription/generate", s.requireAuth(s.handleSubTokenGenerate))
+	mux.HandleFunc("POST /api/v1/settings/subscription/revoke", s.requireAuth(s.handleSubTokenRevoke))
+	mux.HandleFunc("GET /api/v1/subscriptions/merged", s.requireAuth(s.handleMergedSubsList))
+	mux.HandleFunc("POST /api/v1/subscriptions/merged", s.requireAuth(s.handleMergedSubsCreate))
+	mux.HandleFunc("DELETE /api/v1/subscriptions/merged/{id}", s.requireAuth(s.handleMergedSubsDelete))
 	// 证书
 	mux.HandleFunc("GET /api/v1/certs", s.requireAuth(s.handleCerts))
 	mux.HandleFunc("GET /api/v1/certs/renew-guide", s.requireAuth(s.handleRenewGuide))
@@ -80,6 +88,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/central-token/revoke", s.requireAuth(s.handleCentralTokenRevoke))
 	mux.HandleFunc("GET /api/v1/central/status", s.requireCentralToken(s.handleCentralStatus))
 	mux.HandleFunc("GET /api/v1/central/links", s.requireCentralToken(s.handleLinks))
+	mux.HandleFunc("GET /api/v1/central/subscription", s.requireCentralToken(s.handleCentralSubscription))
 	mux.HandleFunc("POST /api/v1/central/landings", s.requireCentralToken(s.handleAddLanding))
 	mux.HandleFunc("DELETE /api/v1/central/landings/{index}", s.requireCentralToken(s.handleDeleteLanding))
 	mux.HandleFunc("POST /api/v1/central/landings/{index}/add-node", s.requireCentralToken(s.handleAddNode))
@@ -127,8 +136,13 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // ipWhitelistMiddleware IP 白名单：空=不限制；白名单外任何接口都 403。
+// 例外：/sub/ 订阅端点不走白名单（订阅客户端从任意 IP 拉取，令牌本身就是鉴权）。
 func (s *Server) ipWhitelistMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/sub/") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if len(s.cfg.IPWhitelist) > 0 {
 			ip := clientIP(r)
 			allowed := false
@@ -2302,37 +2316,12 @@ func (s *Server) handleRecycleDelete(w http.ResponseWriter, r *http.Request) {
 // ---------- 节点链接 ----------
 
 func (s *Server) handleLinks(w http.ResponseWriter, r *http.Request) {
-	if _, err := os.Stat(s.nodesFilePath()); err != nil {
-		_, _ = s.runScript("install.sh", 120*time.Second, nil, "--nodes")
-	}
-	b, err := os.ReadFile(s.nodesFilePath())
+	groups, err := s.loadLinkGroups()
 	if err != nil {
 		writeJSON(w, 200, okResp(map[string]any{"groups": []any{}, "note": "nodes.txt 不存在：先在落地机上跑安装第 7 步生成链接，或跑 bash install.sh --nodes"}))
 		return
 	}
-	groups := parseNodesTxt(b)
-	if groups == nil {
-		groups = []linkGroup{}
-	}
-	// 每个分组标模式与名称：按 landing_index 查 relay.conf，查不到默认标准模式、
-	// 名称默认落地地址。手动 twin 分组（没登记）没有名称，用落地地址。
-	modeByIndex := map[int]string{}
-	nameByIndex := map[int]string{}
-	if rc, _, err := s.readRelayConf(); err == nil {
-		for _, l := range rc.Landings {
-			modeByIndex[l.Index] = l.Mode
-			nameByIndex[l.Index] = l.displayName()
-		}
-	}
 	for i := range groups {
-		if m, ok := modeByIndex[groups[i].LandingIndex]; ok && m != "" {
-			groups[i].Mode = m
-		}
-		if n, ok := nameByIndex[groups[i].LandingIndex]; ok && n != "" {
-			groups[i].Name = n
-		} else {
-			groups[i].Name = groups[i].Landing
-		}
 		// 没登记过的下标（如手动 twin 分组）保留 parseNodesTxt 按链接行推断的模式
 		groups[i].QR = map[string]string{}
 		for _, l := range groups[i].Links {

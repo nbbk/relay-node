@@ -78,6 +78,18 @@ func (t *trafficStore) get(landing string) *landingTraffic {
 	return lt
 }
 
+// totals 只读累计流量（不建新记录）：返回上行/下行累计字节与有没有数据。
+// 订阅的 subscription-userinfo 头用它，没数据时不编数。
+func (t *trafficStore) totals(landing string) (up, down int64, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	lt, ok := t.data[landing]
+	if !ok || lt == nil {
+		return 0, 0, false
+	}
+	return lt.UpTotal, lt.DownTotal, true
+}
+
 // rename 改地址时把流量计数搬到新键（旧键删除）：
 // 累计流量、月度用量、采样基数一起搬，不丢数；新键已有数据时不覆盖（保留新键的）。
 func (t *trafficStore) rename(old, new string) {

@@ -34,10 +34,35 @@ type PanelConfig struct {
 	// 远程管理令牌（v1.2.0，被管端）：只存 SHA-256 哈希，绝不存明文。
 	RemoteTokenHash      string `json:"remote_token_hash"`
 	RemoteTokenCreatedAt string `json:"remote_token_created_at"`
+	// 订阅令牌（v1.2.7，单面板全量订阅）：只存 SHA-256 哈希，绝不存明文；
+	// 生成/轮换时明文只显示一次。内容是实时生成的（全部落地），
+	// 面板里增删节点后订阅内容自动跟着变，不用重新导出。
+	SubTokenHash      string `json:"sub_token_hash"`
+	SubTokenCreatedAt string `json:"sub_token_created_at"`
+	// 合并订阅（v1.2.7，主面板端）：每份勾选集合一条令牌，只存哈希；
+	// 选择变了就新起一条，不同选择绝不共用一个令牌；同一选择重新生成
+	// 会轮换（旧链接立即失效）。内容按勾选的落地集合实时生成。
+	MergedSubs []MergedSub `json:"merged_subs"`
 	// 登记的远程面板（v1.2.0，主面板端）：Token 是明文（必须拿原文去调远程接口），
 	// 与 Telegram Token、Cloudflare 令牌同等待遇，只存在 600 权限的 config.json 里。
 	Remotes []RemotePanel `json:"remotes"`
 	Version string        `json:"version"`
+}
+
+// SubSelection 合并订阅里的一条勾选：Panel 是 "local"（本面板）或
+// 远程面板 id，Landing 是落地编号（relay.conf 的 Index）。
+type SubSelection struct {
+	Panel   string `json:"panel"`
+	Landing int    `json:"landing"`
+}
+
+// MergedSub 一份合并订阅：TokenHash 是订阅令牌的 SHA-256 哈希（只存哈希，
+// 明文只在生成时显示一次），Selection 是这份订阅绑定的勾选集合。
+type MergedSub struct {
+	ID        string         `json:"id"`
+	TokenHash string         `json:"token_hash"`
+	CreatedAt string         `json:"created_at"`
+	Selection []SubSelection `json:"selection"`
 }
 
 // ---------- 面板扩展状态（PANEL_HOME/state.json） ----------

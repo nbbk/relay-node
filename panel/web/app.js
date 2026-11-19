@@ -491,7 +491,8 @@ function landingMiniCard(l, relayAddr) {
     '<div class="mini-row"><span>流量</span><b>' + esc(trafficMiniText(l)) + '</b></div>' +
     '<div class="mini-row"><span>到期</span><b><span class="badge ' + exp.cls + '">' + esc(exp.text) + '</span></b></div>' +
     '<div class="btn-row"><button class="btn secondary sm" type="button" data-mini-edit="' + l.index + '">编辑</button>' +
-    '<button class="btn secondary sm" type="button" data-mini-open="' + l.index + '">详情</button></div></div>';
+    '<button class="btn secondary sm" type="button" data-mini-open="' + l.index + '">详情</button>' +
+    '<button class="btn secondary sm" type="button" data-mini-sub="' + l.index + '">订阅</button></div></div>';
 }
 // 完整卡片内容（弹窗里用）：全部字段 + 链接/二维码 + 全部操作按钮
 function landingDetailHtml(l, relayAddr) {
@@ -518,6 +519,7 @@ function landingDetailHtml(l, relayAddr) {
   else h += '<p class="muted">还没存原始节点链接，卡片上拼不出中转链接。</p><div class="btn-row"><button class="btn secondary sm" type="button" data-paste-orig="' + l.index + '">粘贴原始链接生成中转链接</button></div>';
   h += '<div class="btn-row">' +
     '<button class="btn secondary sm" type="button" data-addnode="' + l.index + '">＋ 给落地加节点</button>' +
+    '<button class="btn secondary sm" type="button" data-sub-landing="' + l.index + '">订阅</button>' +
     '<button class="btn secondary sm" type="button" data-renew="' + l.index + '">续期</button>' +
     '<button class="btn secondary sm" type="button" data-addtraffic="' + l.index + '">续量</button>' +
     '<button class="btn secondary sm" type="button" data-trafficset="' + l.index + '">流量限制</button>' +
@@ -535,6 +537,7 @@ function showLandingDetail(l) {
   if (!m) return;
   onIn(m, '#detail-close', 'click', closeModal);
   $$('[data-addnode]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); addNodeWizard(Number(b.dataset.addnode)); }));
+  $$('[data-sub-landing]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); const l = landingsCache.find((x) => x.index === Number(b.dataset.subLanding)); showSubForSelection([{ panel: 'local', landing: Number(b.dataset.subLanding) }], (l ? displayNameOf(l) : '落地') + ' 的订阅'); }));
   $$('[data-renew]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); renewLanding(Number(b.dataset.renew)); }));
   $$('[data-addtraffic]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); addTraffic(Number(b.dataset.addtraffic)); }));
   $$('[data-trafficset]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); trafficSettings(Number(b.dataset.trafficset)); }));
@@ -548,7 +551,7 @@ function showLandingDetail(l) {
 function wireMiniCards(wrap) {
   $$('[data-mini]', wrap).forEach((card) => {
     card.addEventListener('click', (e) => {
-      if (e.target.closest('[data-mini-edit]') || e.target.closest('[data-mini-open]')) return;
+      if (e.target.closest('[data-mini-edit]') || e.target.closest('[data-mini-open]') || e.target.closest('[data-mini-sub]')) return;
       const l = landingsCache.find((x) => x.index === Number(card.dataset.mini));
       if (l) showLandingDetail(l);
     });
@@ -564,6 +567,11 @@ function wireMiniCards(wrap) {
     e.stopPropagation();
     const l = landingsCache.find((x) => x.index === Number(b.dataset.miniOpen));
     if (l) showLandingDetail(l);
+  }));
+  $$('[data-mini-sub]', wrap).forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const l = landingsCache.find((x) => x.index === Number(b.dataset.miniSub));
+    showSubForSelection([{ panel: 'local', landing: Number(b.dataset.miniSub) }], (l ? displayNameOf(l) : '落地') + ' 的订阅');
   }));
 }
 let overviewPage = 1;
@@ -1385,6 +1393,8 @@ async function loadSettingsPage() {
     $('#lat-interval').value = lat.interval_min || 5;
     const ct = st.central_token || {};
     $('#central-token-status').textContent = ct.has_token ? '已生成令牌' + (ct.created_at ? '（生成于 ' + fmtDate(ct.created_at) + '）' : '') + '：主面板登记时用它；轮换后旧令牌立即失效，撤销后任何主面板都连不进来。' : '未生成令牌：没生成就等于没开集中管理，别人连不进来。';
+    const sub = st.subscription || {};
+    $('#sub-status').textContent = sub.has_token ? '已生成订阅链接' + (sub.created_at ? '（生成于 ' + fmtDate(sub.created_at) + '）' : '') + '：链接只在生成时显示一次，丢了就点轮换重新生成。' : '未生成订阅链接：点“生成订阅链接”，复制链接粘贴到客户端订阅里即可。';
     $('#update-box').innerHTML = '<div class="kv"><span>当前版本</span><b>' + esc(st.version || '—') + '</b></div>' +
       '<div class="kv"><span>最新版本</span><b>' + esc(st.latest_version || '—') + '</b></div>' +
       '<div class="kv"><span>状态</span><b>' + (st.update_available ? '<span class="badge yellow">有更新</span>' : '<span class="badge green">已是最新</span>') + '</b></div>' +
@@ -1479,6 +1489,21 @@ function initSettings() {
     catch (err) { toast('撤销失败：' + err.message, 'err'); }
   });
   on('#central-token-copy', 'click', (e) => { copyText($('#central-token-value').textContent, e.target); });
+  on('#sub-generate', 'click', async () => { await subTokenGenerate(false); });
+  on('#sub-rotate', 'click', async () => {
+    const ok = await confirmModal('轮换订阅链接', '<p>轮换后旧订阅链接立即失效，客户端里已导入的订阅要换成新链接。确定吗？</p>', '轮换订阅链接', true);
+    if (!ok) return;
+    await subTokenGenerate(true);
+  });
+  on('#sub-revoke', 'click', async () => {
+    const ok = await confirmModal('撤销订阅链接', '<p>撤销后订阅链接立即打不开，客户端里已导入的订阅会失效。确定吗？</p>', '撤销订阅链接', true);
+    if (!ok) return;
+    try { await apiPost('/api/v1/settings/subscription/revoke', {}); toast('订阅链接已撤销', 'ok'); loadSettingsPage(); }
+    catch (err) { toast('撤销失败：' + err.message, 'err'); }
+  });
+  on('#sub-copy', 'click', (e) => { copyText($('#sub-url-value').textContent, e.target); });
+  on('#sub-copy-clash', 'click', (e) => { copyText($('#sub-url-value').textContent + '?format=clash', e.target); });
+  on('#sub-copy-plain', 'click', (e) => { copyText($('#sub-url-value').textContent + '?format=plain', e.target); });
   on('#update-check', 'click', async () => {
     try {
       const r = await api('/api/v1/update/check');
@@ -1936,11 +1961,46 @@ async function centralTokenGenerate(rotated) {
     loadSettingsPage();
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
+// ---------- 订阅链接 ----------
+// 单面板订阅令牌生成/轮换：链接只显示一次，显示在设置页的订阅卡片里。
+async function subTokenGenerate(rotated) {
+  try {
+    const r = await apiPost('/api/v1/settings/subscription/generate', {});
+    $('#sub-url-value').textContent = r.url || '';
+    const box = $('#sub-once');
+    if (box) { box.classList.remove('hidden'); box.hidden = false; }
+    toast(rotated ? '订阅链接已轮换，旧链接已失效' : '订阅链接已生成，记得复制保存', 'ok');
+    loadSettingsPage();
+  } catch (err) { toast('生成失败：' + err.message, 'err'); }
+}
+// 给一份勾选（单个或多个落地）生成订阅链接，弹窗显示链接与复制按钮。
+// selection: [{panel:'local'|远程面板 id, landing:编号}]
+async function showSubForSelection(selection, title) {
+  try {
+    const r = await apiPost('/api/v1/subscriptions/merged', { selection });
+    const url = r.url || '';
+    const m = openModal('<h2>' + esc(title || '订阅链接') + '</h2>' +
+      (r.rotated ? '<div class="warn-box">这份选择之前生成过，已轮换：旧链接立即失效，请用下面这条新链接。</div>' : '<div class="warn-box">只显示一次，记下来：关掉弹窗就再也看不到了；丢了就重新生成。</div>') +
+      '<div class="kv"><span>订阅链接</span><b class="mono" style="word-break:break-all">' + esc(url) + '</b></div>' +
+      '<p class="muted small">客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表）；也可以手动加后缀：?format=clash / base64 / plain。</p>' +
+      '<div class="btn-row"><button class="btn sm" type="button" data-sub-copy-url>复制订阅链接</button>' +
+      '<button class="btn secondary sm" type="button" data-sub-copy-clash>复制 Clash 链接</button>' +
+      '<button class="btn secondary sm" type="button" data-sub-copy-plain>复制明文链接</button>' +
+      '<button class="btn secondary sm" type="button" data-sub-close>关闭</button></div>');
+    if (!m) return;
+    onIn(m, '[data-sub-copy-url]', 'click', (e) => copyText(url, e.target));
+    onIn(m, '[data-sub-copy-clash]', 'click', (e) => copyText(url + '?format=clash', e.target));
+    onIn(m, '[data-sub-copy-plain]', 'click', (e) => copyText(url + '?format=plain', e.target));
+    onIn(m, '[data-sub-close]', 'click', closeModal);
+    loadMergedSubsList();
+  } catch (err) { toast('生成失败：' + err.message, 'err'); }
+}
 async function loadCentral() {
   const wrap = $('#central-list');
   const detail = $('#central-detail');
   if (detail) detail.innerHTML = '';
   centralDetailId = null;
+  loadCentralSubTree();
   try {
     const r = await api('/api/v1/central/remotes');
     centralRemotes = r.remotes || [];
@@ -1987,6 +2047,138 @@ function centralLandingTitle(l) {
   if (name && name !== addr) return name + ' ' + addr;
   return addr;
 }
+// ---------- 合并订阅：按落地分层勾选 ----------
+// 订阅的最小单位是单个落地：面板 → 下面列它的落地，每级都有勾选框；
+// 勾面板即选它下面全部落地，部分选时面板框显示半选；顶上再放一个“全选全部面板”。
+let centralSubTree = null; // [{id,name,online,landings:[{index,title}]}]
+let centralSubChecked = {}; // "面板id:落地编号" -> true
+function subTreeKey(panel, index) { return panel + ':' + index; }
+function subTreeCheckedCount() {
+  if (!centralSubTree) return 0;
+  let n = 0;
+  centralSubTree.forEach((p) => p.landings.forEach((l) => { if (centralSubChecked[subTreeKey(p.id, l.index)]) n++; }));
+  return n;
+}
+async function loadCentralSubTree() {
+  const tree = $('#central-sub-tree');
+  if (!tree) return;
+  try {
+    const r = await api('/api/v1/central/remotes');
+    const remotes = r.remotes || [];
+    if (!landingsCache.length) { try { await loadOverview(); } catch (e) { /* 总览读不到就只显示远程 */ } }
+    const panels = [{ id: 'local', name: '本面板', online: true, landings: (landingsCache || []).map((l) => ({ index: l.index, title: centralLandingTitle(l) })) }];
+    for (const rm of remotes) {
+      let landings = (rm.landings || []).map((l) => ({ index: l.index, title: centralLandingTitle(l) }));
+      if (!landings.length && rm.online) {
+        try {
+          const d = await api('/api/v1/central/remotes/' + encodeURIComponent(rm.id) + '/landings');
+          landings = (d.landings || []).map((l) => ({ index: l.index, title: centralLandingTitle(l) }));
+        } catch (e) { /* 取不到就显示空 */ }
+      }
+      panels.push({ id: rm.id, name: rm.name, online: rm.online, landings });
+    }
+    centralSubTree = panels;
+    renderCentralSubTree();
+    await loadMergedSubsList();
+  } catch (e) {
+    tree.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>';
+  }
+}
+function renderCentralSubTree() {
+  const tree = $('#central-sub-tree');
+  if (!tree || !centralSubTree) return;
+  const total = centralSubTree.reduce((n, p) => n + p.landings.length, 0);
+  let h = '<label class="checkbox-row"><input type="checkbox" id="central-sub-all"><span>全选全部面板（共 ' + total + ' 个落地）</span></label>';
+  centralSubTree.forEach((p) => {
+    h += '<div style="margin-top:10px"><label class="checkbox-row"><input type="checkbox" data-sub-panel="' + esc(p.id) + '"><b>' + esc(p.name) + '</b><span class="muted small">（' + p.landings.length + ' 个落地' + (p.online === false ? '，离线' : '') + '）</span></label>';
+    if (!p.landings.length) {
+      h += '<p class="muted small" style="margin:4px 0 0 28px">没有落地。</p>';
+    } else {
+      p.landings.forEach((l) => {
+        const key = subTreeKey(p.id, l.index);
+        h += '<div style="display:flex;align-items:center;gap:8px;margin:4px 0 0 28px"><label class="checkbox-row" style="margin:0;flex:1"><input type="checkbox" data-sub-landing="' + esc(key) + '"' + (centralSubChecked[key] ? ' checked' : '') + '><span>' + esc(l.title) + ' <span class="small">#' + esc(l.index) + '</span></span></label>' +
+          '<button class="btn secondary sm" type="button" data-sub-copy-landing="' + esc(key) + '">复制订阅</button></div>';
+      });
+    }
+    h += '</div>';
+  });
+  tree.innerHTML = h;
+  on('#central-sub-all', 'change', (e) => {
+    const on = e.target.checked;
+    (centralSubTree || []).forEach((p) => p.landings.forEach((l) => {
+      if (on) centralSubChecked[subTreeKey(p.id, l.index)] = true;
+      else delete centralSubChecked[subTreeKey(p.id, l.index)];
+    }));
+    $$('[data-sub-panel]', tree).forEach((cb) => { cb.checked = on; cb.indeterminate = false; });
+    $$('[data-sub-landing]', tree).forEach((cb) => { cb.checked = on; });
+    refreshCentralSubTreeStates();
+  });
+  $$('[data-sub-panel]', tree).forEach((cb) => cb.addEventListener('change', () => {
+    const pid = cb.dataset.subPanel;
+    const panel = (centralSubTree || []).find((p) => p.id === pid);
+    if (!panel) return;
+    panel.landings.forEach((l) => {
+      if (cb.checked) centralSubChecked[subTreeKey(pid, l.index)] = true;
+      else delete centralSubChecked[subTreeKey(pid, l.index)];
+    });
+    $$('[data-sub-landing]', tree).forEach((lc) => { if (lc.dataset.subLanding.startsWith(pid + ':')) lc.checked = cb.checked; });
+    refreshCentralSubTreeStates();
+  }));
+  $$('[data-sub-landing]', tree).forEach((cb) => cb.addEventListener('change', () => {
+    if (cb.checked) centralSubChecked[cb.dataset.subLanding] = true;
+    else delete centralSubChecked[cb.dataset.subLanding];
+    refreshCentralSubTreeStates();
+  }));
+  $$('[data-sub-copy-landing]', tree).forEach((b) => b.addEventListener('click', () => {
+    const key = b.dataset.subCopyLanding;
+    const idx = key.lastIndexOf(':');
+    const pid = key.slice(0, idx), li = Number(key.slice(idx + 1));
+    const panel = (centralSubTree || []).find((p) => p.id === pid);
+    const l = panel ? panel.landings.find((x) => x.index === li) : null;
+    showSubForSelection([{ panel: pid, landing: li }], (l ? l.title : '落地') + ' 的订阅');
+  }));
+  refreshCentralSubTreeStates();
+}
+// 面板框半选态 + 全选框半选态 + 生成按钮可用状态
+function refreshCentralSubTreeStates() {
+  const tree = $('#central-sub-tree');
+  if (!tree || !centralSubTree) return;
+  $$('[data-sub-panel]', tree).forEach((cb) => {
+    const pid = cb.dataset.subPanel;
+    const panel = centralSubTree.find((p) => p.id === pid);
+    if (!panel || !panel.landings.length) { cb.checked = false; cb.indeterminate = false; return; }
+    const checked = panel.landings.filter((l) => centralSubChecked[subTreeKey(pid, l.index)]).length;
+    cb.checked = checked === panel.landings.length;
+    cb.indeterminate = checked > 0 && checked < panel.landings.length;
+  });
+  const all = $('#central-sub-all');
+  const total = centralSubTree.reduce((n, p) => n + p.landings.length, 0);
+  const checked = subTreeCheckedCount();
+  if (all) {
+    all.checked = total > 0 && checked === total;
+    all.indeterminate = checked > 0 && checked < total;
+  }
+  const gen = $('#central-sub-generate');
+  if (gen) gen.disabled = checked === 0;
+}
+// 已生成的合并订阅列表（只列勾选内容与生成时间，不含链接本身）。
+async function loadMergedSubsList() {
+  const list = $('#central-sub-list');
+  if (!list) return;
+  try {
+    const r = await api('/api/v1/subscriptions/merged');
+    const subs = r.subs || [];
+    if (!subs.length) { list.innerHTML = '<p class="muted small">还没有合并订阅：上面勾选落地后点“生成合并订阅”。</p>'; return; }
+    list.innerHTML = '<h3>已生成的合并订阅</h3>' + subs.map((s) => '<div class="kv"><span>' + esc(s.summary || '') + '<br><span class="small muted">生成于 ' + esc(fmtDate(s.created_at)) + '</span></span><span><button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
+      '<p class="muted small">订阅链接只在生成时显示一次，这里只列勾选内容；丢了就重新勾选生成（同一选择重新生成会轮换，旧链接立即失效）。</p>';
+    $$('[data-sub-revoke-merged]', list).forEach((b) => b.addEventListener('click', async () => {
+      const ok = await confirmModal('撤销合并订阅', '<p>撤销后这条订阅链接立即失效。确定吗？</p>', '撤销', true);
+      if (!ok) return;
+      try { await api('/api/v1/subscriptions/merged/' + encodeURIComponent(b.dataset.subRevokeMerged), { method: 'DELETE' }); toast('已撤销', 'ok'); loadMergedSubsList(); }
+      catch (e) { toast('撤销失败：' + e.message, 'err'); }
+    }));
+  } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
+}
 async function loadCentralLandings(id, page) {
   if (page) centralDetailPage = page;
   centralDetailId = id;
@@ -2018,6 +2210,7 @@ async function loadCentralLandings(id, page) {
           '<div class="kv"><span>监听端口</span><b>' + ports + '</b></div>' +
           '<div class="central-landing-links" data-central-links-box="' + esc(l.index) + '"></div>' +
           '<div class="btn-row"><button class="btn secondary sm" type="button" data-central-addnode="' + esc(l.index) + '">＋ 新增节点</button>' +
+          '<button class="btn secondary sm" type="button" data-central-sub-landing="' + esc(l.index) + '">订阅</button>' +
           '<button class="btn danger sm" type="button" data-central-del-landing="' + esc(l.index) + '">删除该落地</button></div></div></div>';
       }).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'central') + '</div>';
     $$('[data-central-toggle]', detail).forEach((h) => {
@@ -2028,6 +2221,10 @@ async function loadCentralLandings(id, page) {
     $$('[data-central-addnode]', detail).forEach((b) => b.addEventListener('click', () => {
       const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralAddnode));
       centralAddNodeWizard(id, Number(b.dataset.centralAddnode), l ? centralLandingTitle(l) : ('#' + b.dataset.centralAddnode));
+    }));
+    $$('[data-central-sub-landing]', detail).forEach((b) => b.addEventListener('click', () => {
+      const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralSubLanding));
+      showSubForSelection([{ panel: id, landing: Number(b.dataset.centralSubLanding) }], (l ? centralLandingTitle(l) : '落地') + ' 的订阅');
     }));
     $$('[data-central-del-landing]', detail).forEach((b) => b.addEventListener('click', () => centralDeleteLanding(id, Number(b.dataset.centralDelLanding))));
     if (pg.totalPages > 1) wirePager(detail, 'central', pg.cur, pg.totalPages, (p) => loadCentralLandings(id, p));
@@ -2320,6 +2517,14 @@ async function centralRefreshAll() {
 }
 function initCentral() {
   on('#central-refresh', 'click', centralRefreshAll);
+  on('#central-sub-generate', 'click', async () => {
+    const selection = [];
+    (centralSubTree || []).forEach((p) => p.landings.forEach((l) => {
+      if (centralSubChecked[subTreeKey(p.id, l.index)]) selection.push({ panel: p.id, landing: l.index });
+    }));
+    if (!selection.length) { toast('请先勾选至少一个落地', 'err'); return; }
+    await showSubForSelection(selection, '合并订阅');
+  });
   on('#central-add-form', 'submit', async (e) => {
     e.preventDefault();
     const name = $('#central-name').value.trim();
