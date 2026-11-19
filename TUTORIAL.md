@@ -534,6 +534,29 @@ RELAY_MODE=door RELAY_ADDR=203.0.113.9 bash install.sh 203.0.113.1 1
 
 **格式说明**：订阅链接不用手动选格式，客户端拉取时面板按请求头自动识别——Clash、Clash Meta、Clash Verge、Stash、FlClash 这类客户端拿到的是 Clash YAML，其他客户端拿到的是 base64 编码的节点列表（v2rayNG、Shadowrocket 等通用格式）。想手动指定就给链接加后缀：`?format=clash`（Clash YAML）、`?format=base64`（base64 列表）、`?format=plain`（明文列表）。注意 Clash 格式只含 VLESS/Trojan/VMess 三种协议，Shadowsocks 节点不进 Clash，用默认的 base64 订阅就能拿到。
 
+**策略组与分流规则（Clash YAML，面板版本 1.2.9 起）**：Clash 订阅里除了节点列表，还有 6 个策略组和一套分流规则，导入就能直接用，不用自己再配规则。
+
+6 个组的作用：
+
+- **手动选择**：全部节点，自己点一个用，默认入口。
+- **自动选择**：全部节点，每 5 分钟测一次延迟，自动挑延迟最低的用。
+- **中转节点**：只有中转链接；**直连节点**：只有直连链接。只想走中转或只想直连时直接选这两个组；如果订阅里只有中转或只有直连，对应那个组就不出现（不出空组）。
+- **社交**：全部节点，海外社交的流量走这个组；**流媒体**：全部节点，海外流媒体的流量走这个组。
+
+分流规则按顺序命中（先命中先走）：TikTok → 社交 → 流媒体 → MATCH。TikTok 的规则指向手动选择，社交的指向社交组，流媒体的指向流媒体组。
+
+三类域名清单（都是 DOMAIN-SUFFIX 匹配，子域名也算）：
+
+- **TikTok**：tiktok.com、tiktokv.com（App 接口、视频流、日志上报）、tiktokcdn.com、tiktokcdn-us.com（视频 CDN）、musical.ly（老域名）、byteoversea.com、ibytedtos.com（字节海外基础设施）；另有一条 DOMAIN-KEYWORD,tiktok 补网，域名里带 tiktok 的都兜进来。
+- **社交**：facebook.com、fb.com、fbcdn.net、instagram.com、cdninstagram.com、x.com、twitter.com、twimg.com、whatsapp.com、whatsapp.net、telegram.org、t.me、snapchat.com、scdn.co、reddit.com、redditmedia.com、redditstatic.com、pinterest.com、pinimg.com、linkedin.com、licdn.com、discord.com、discordapp.com、discord.gg、threads.net、line.me。
+- **流媒体**：youtube.com、googlevideo.com、ytimg.com、youtu.be、netflix.com、nflxvideo.net、nflxext.com、nflxso.net、disneyplus.com、dssott.com、hulu.com、huluim.com、max.com、hbomax.com、hbo.com、primevideo.com、amazonvideo.com、aiv-cdn.net、tv.apple.com、spotify.com、scdn.co、spotifycdn.com、twitch.tv、twitchcdn.net、jtvnw.net。注意苹果只写 tv.apple.com，不写 apple.com，否则会把全部苹果流量都拖进来。scdn.co 在社交与流媒体清单里都有，规则里只出一次，先命中社交组。
+
+**订阅链接二维码**：设置页订阅卡片和合并订阅、单落地订阅的弹窗里，复制按钮旁边都有“二维码”按钮，点开就是当前这条订阅链接的二维码（带当前选的模式参数，换模式后二维码跟着重新生成）。手机扫码后客户端按 UA 自动识别格式，直接导入。二维码图片也可以复制或下载，按钮和节点链接的二维码是同一套。
+
+**分流 / 全局两种模式**：默认是分流模式，最后一条规则是 MATCH,DIRECT——只有上面三类流量走节点，其他流量直连，适合手机日常用、只想让 TikTok、社交、流媒体吃节点流量。全局模式最后一条是 MATCH,手动选择——全部流量走代理。切换方法有两种：订阅链接后面加 `?mode=split`（分流，默认）或 `?mode=global`（全局），例如 `http://203.0.113.1:11111/sub/sub_…?format=clash&mode=global`；或者在面板里切——设置页订阅卡片和合并订阅、单落地订阅的弹窗里都有“模式”切换，切换后复制的链接会自动带上对应参数。mode 只影响 Clash YAML，base64 和明文订阅不受影响；非法的 mode 返回 400。
+
+**DNS 提醒（客户端侧设置）**：订阅的 Clash YAML 里只有 proxies、策略组、规则三段，不含 dns 段。想防止 TikTok 域名解析泄露真实地区，要在 Clash 客户端自己的配置里开 fake-ip、让 DNS 走代理（Clash 的 `dns` 段里 `enhanced-mode: fake-ip`，nameserver 填代理 DNS），不要用手机本地 DNS 直接解析上面这些域名。
+
 **订阅链接泄露了怎么办**：设置页“订阅链接”卡片点“轮换”，旧链接立即失效，再复制新链接去客户端更新订阅。合并订阅的轮换在集中管理页的合并订阅列表里，同一选择重新生成就是轮换。不用的订阅点“撤销”直接作废。订阅链接只返回节点链接，不泄露面板其他信息；令牌不对的请求返回 404。
 
 ---

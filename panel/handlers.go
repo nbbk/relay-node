@@ -53,6 +53,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/settings/subscription", s.requireAuth(s.handleSubTokenGet))
 	mux.HandleFunc("POST /api/v1/settings/subscription/generate", s.requireAuth(s.handleSubTokenGenerate))
 	mux.HandleFunc("POST /api/v1/settings/subscription/revoke", s.requireAuth(s.handleSubTokenRevoke))
+	mux.HandleFunc("POST /api/v1/subscription/qr", s.requireAuth(s.handleSubQR))
 	mux.HandleFunc("GET /api/v1/subscriptions/merged", s.requireAuth(s.handleMergedSubsList))
 	mux.HandleFunc("POST /api/v1/subscriptions/merged", s.requireAuth(s.handleMergedSubsCreate))
 	mux.HandleFunc("DELETE /api/v1/subscriptions/merged/{id}", s.requireAuth(s.handleMergedSubsDelete))

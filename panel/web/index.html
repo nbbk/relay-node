@@ -354,7 +354,7 @@
           </div>
           <div class="card">
             <h2>订阅链接</h2>
-            <p class="muted">一个链接导入全部节点：客户端粘贴订阅链接后一次拿到本面板所有节点（中转 + 直连）。内容实时生成，面板里增删节点后订阅自动跟着变，不用重新导出。客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表），也可以在链接后面加 ?format=clash / base64 / plain 手动指定。</p>
+            <p class="muted">一个链接导入全部节点：客户端粘贴订阅链接后一次拿到本面板所有节点（中转 + 直连）。内容实时生成，面板里增删节点后订阅自动跟着变，不用重新导出。客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表），也可以在链接后面加 ?format=clash / base64 / plain 手动指定；Clash 订阅的模式用 ?mode=split（分流，默认：TikTok/社交/流媒体走节点，其他直连）/ global（全局：全部走代理）切换。</p>
             <div class="small" id="sub-status">未生成订阅链接</div>
             <div id="sub-once" class="hidden" style="margin-top:10px">
               <div class="warn-box">只显示一次，记下来：关掉页面或刷新后就再也看不到了；丢了就点轮换重新生成。</div>
@@ -363,6 +363,22 @@
                 <button class="btn secondary sm" id="sub-copy" type="button">复制订阅链接</button>
                 <button class="btn secondary sm" id="sub-copy-clash" type="button">复制 Clash 链接</button>
                 <button class="btn secondary sm" id="sub-copy-plain" type="button">复制明文链接</button>
+                <button class="btn secondary sm" id="sub-qr" type="button">二维码</button>
+              </div>
+              <div class="btn-row" style="margin-top:8px">
+                <label class="small">模式：
+                  <select id="sub-mode">
+                    <option value="split" selected>分流（TikTok/社交/流媒体走节点，其他直连）</option>
+                    <option value="global">全局（全部走代理）</option>
+                  </select>
+                </label>
+                <span class="small muted">复制的链接会带上当前选中的模式。</span>
+              </div>
+              <div id="sub-qr-box" class="hidden" style="margin-top:10px">
+                <div class="qr-wrap"><figure id="sub-qr-figure"><img id="sub-qr-img" alt="订阅链接二维码"><figcaption>订阅链接二维码</figcaption>
+                <div class="btn-row"><button class="btn secondary sm" type="button" data-copy-img>复制图片</button>
+                <button class="btn secondary sm" type="button" data-download-img="订阅链接-二维码.png">下载图片</button></div></figure></div>
+                <p class="small muted">二维码里是上面这条订阅链接（带当前选的模式参数）；换模式后二维码跟着重新生成，扫码后客户端按 UA 自动识别格式。</p>
               </div>
             </div>
             <div class="btn-row">

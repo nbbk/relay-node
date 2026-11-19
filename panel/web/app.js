@@ -1558,9 +1558,16 @@ function initSettings() {
     try { await apiPost('/api/v1/settings/subscription/revoke', {}); toast('订阅链接已撤销', 'ok'); loadSettingsPage(); }
     catch (err) { toast('撤销失败：' + err.message, 'err'); }
   });
-  on('#sub-copy', 'click', (e) => { copyText($('#sub-url-value').textContent, e.target); });
-  on('#sub-copy-clash', 'click', (e) => { copyText($('#sub-url-value').textContent + '?format=clash', e.target); });
-  on('#sub-copy-plain', 'click', (e) => { copyText($('#sub-url-value').textContent + '?format=plain', e.target); });
+  on('#sub-copy', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, ''), e.target); });
+  on('#sub-copy-clash', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'clash'), e.target); });
+  on('#sub-copy-plain', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'plain'), e.target); });
+  on('#sub-qr', 'click', async () => {
+    const box = $('#sub-qr-box');
+    if (!box) return;
+    if (!box.classList.contains('hidden')) { box.classList.add('hidden'); box.hidden = true; return; }
+    await loadSubQr();
+  });
+  on('#sub-mode', 'change', async () => { const box = $('#sub-qr-box'); if (box && !box.classList.contains('hidden')) await loadSubQr(); });
   on('#update-check', 'click', async () => {
     try {
       const r = await api('/api/v1/update/check');
@@ -2020,6 +2027,31 @@ async function centralTokenGenerate(rotated) {
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
 // ---------- 订阅链接 ----------
+// 订阅链接的模式参数：分流（默认）或全局；设置页复制的链接都带上当前选中的 mode。
+function subLinkWithMode(url, format) {
+  const sel = $('#sub-mode');
+  const mode = (sel && sel.value) || 'split';
+  const q = [];
+  if (format) q.push('format=' + format);
+  q.push('mode=' + mode);
+  return url + '?' + q.join('&');
+}
+// 订阅链接二维码：点“二维码”按钮按当前链接（带模式参数）向后端要一张图；
+// 模式切换时如果二维码正显示着，跟着重新生成。复用节点链接同一套后端
+// 生成（Go 原生 qrcode），图片的复制/下载走页面已有的 data-copy-img /
+// data-download-img 事件委托，不用另写。
+async function loadSubQr() {
+  const box = $('#sub-qr-box'), img = $('#sub-qr-img'), fig = $('#sub-qr-figure');
+  if (!box || !img) return;
+  const url = subLinkWithMode($('#sub-url-value').textContent, '');
+  try {
+    const r = await apiPost('/api/v1/subscription/qr', { url });
+    if (!r.qr) throw new Error('后端没有返回二维码');
+    img.src = r.qr;
+    if (fig) fig.dataset.qr = r.qr;
+    box.classList.remove('hidden'); box.hidden = false;
+  } catch (err) { toast('二维码生成失败：' + err.message, 'err'); }
+}
 // 单面板订阅令牌生成/轮换：链接只显示一次，显示在设置页的订阅卡片里。
 async function subTokenGenerate(rotated) {
   try {
@@ -2040,15 +2072,42 @@ async function showSubForSelection(selection, title) {
     const m = openModal('<h2>' + esc(title || '订阅链接') + '</h2>' +
       (r.rotated ? '<div class="warn-box">这份选择之前生成过，已轮换：旧链接立即失效，请用下面这条新链接。</div>' : '<div class="warn-box">只显示一次，记下来：关掉弹窗就再也看不到了；丢了就重新生成。</div>') +
       '<div class="kv"><span>订阅链接</span><b class="mono" style="word-break:break-all">' + esc(url) + '</b></div>' +
-      '<p class="muted small">客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表）；也可以手动加后缀：?format=clash / base64 / plain。</p>' +
+      '<p class="muted small">模式：<select data-sub-mode><option value="split" selected>分流（TikTok/社交/流媒体走节点，其他直连）</option><option value="global">全局（全部走代理）</option></select>　客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表）；也可以手动加后缀：?format=clash / base64 / plain，?mode=split / global。复制的链接会带上当前选中的模式。</p>' +
       '<div class="btn-row"><button class="btn sm" type="button" data-sub-copy-url>复制订阅链接</button>' +
       '<button class="btn secondary sm" type="button" data-sub-copy-clash>复制 Clash 链接</button>' +
       '<button class="btn secondary sm" type="button" data-sub-copy-plain>复制明文链接</button>' +
-      '<button class="btn secondary sm" type="button" data-sub-close>关闭</button></div>');
+      '<button class="btn secondary sm" type="button" data-sub-qr>二维码</button>' +
+      '<button class="btn secondary sm" type="button" data-sub-close>关闭</button></div>' +
+      '<div class="qr-wrap hidden" data-sub-qr-box><figure data-sub-qr-figure><img data-sub-qr-img alt="订阅链接二维码"><figcaption>订阅链接二维码</figcaption>' +
+      '<div class="btn-row"><button class="btn secondary sm" type="button" data-copy-img>复制图片</button>' +
+      '<button class="btn secondary sm" type="button" data-download-img="订阅链接-二维码.png">下载图片</button></div></figure></div>');
     if (!m) return;
-    onIn(m, '[data-sub-copy-url]', 'click', (e) => copyText(url, e.target));
-    onIn(m, '[data-sub-copy-clash]', 'click', (e) => copyText(url + '?format=clash', e.target));
-    onIn(m, '[data-sub-copy-plain]', 'click', (e) => copyText(url + '?format=plain', e.target));
+    const modeOf = () => { const s = m.querySelector('[data-sub-mode]'); return (s && s.value) || 'split'; };
+    const withMode = (fmt) => { const q = []; if (fmt) q.push('format=' + fmt); q.push('mode=' + modeOf()); return url + '?' + q.join('&'); };
+    onIn(m, '[data-sub-copy-url]', 'click', (e) => copyText(withMode(''), e.target));
+    onIn(m, '[data-sub-copy-clash]', 'click', (e) => copyText(withMode('clash'), e.target));
+    onIn(m, '[data-sub-copy-plain]', 'click', (e) => copyText(withMode('plain'), e.target));
+    const loadModalQr = async () => {
+      const box = m.querySelector('[data-sub-qr-box]'), img = m.querySelector('[data-sub-qr-img]'), fig = m.querySelector('[data-sub-qr-figure]');
+      if (!box || !img) return;
+      try {
+        const r = await apiPost('/api/v1/subscription/qr', { url: withMode('') });
+        if (!r.qr) throw new Error('后端没有返回二维码');
+        img.src = r.qr;
+        if (fig) fig.dataset.qr = r.qr;
+        box.classList.remove('hidden');
+      } catch (err) { toast('二维码生成失败：' + err.message, 'err'); }
+    };
+    onIn(m, '[data-sub-qr]', 'click', async () => {
+      const box = m.querySelector('[data-sub-qr-box]');
+      if (!box) return;
+      if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
+      await loadModalQr();
+    });
+    onIn(m, '[data-sub-mode]', 'change', async () => {
+      const box = m.querySelector('[data-sub-qr-box]');
+      if (box && !box.classList.contains('hidden')) await loadModalQr();
+    });
     onIn(m, '[data-sub-close]', 'click', closeModal);
     loadMergedSubsList();
   } catch (err) { toast('生成失败：' + err.message, 'err'); }

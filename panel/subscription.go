@@ -10,6 +10,9 @@ package main
 //   - 格式：?format=clash|base64|plain 手动指定优先；不指定时按 User-Agent
 //     自动识别——含 clash/stash/mihomo（不区分大小写）返回 Clash YAML，
 //     其余返回 base64 节点列表。
+//   - 模式（v1.2.9，只影响 Clash YAML）：?mode=split|global，缺省 split；
+//     split 是分流（TikTok/社交/流媒体走节点，其他直连），global 是全局
+//     （全部走代理）；非法 mode 返回 400，与非法 format 的处理一致。
 // 安全要点：
 //   - 订阅令牌只存 SHA-256 哈希，绝不存明文；生成/轮换时明文只显示一次。
 //     令牌泄露可一键轮换，旧链接立即失效；撤销后订阅立即 404。
@@ -155,9 +158,10 @@ func dedupSubLinks(links []subLink) []subLink {
 }
 
 // renderSubContent 把节点链接渲染成订阅内容：plain=明文列表，
-// base64=标准 base64 编码的列表，clash=Clash YAML（proxies + PROXY 组）。
-// 返回内容与 Content-Type；format 不合法返回错误。
-func renderSubContent(links []subLink, format string) (string, string, error) {
+// base64=标准 base64 编码的列表，clash=Clash YAML（proxies + 策略组 +
+// 分流规则）。mode 只影响 clash（split 分流 / global 全局），
+// base64/plain 原样不动；format 不合法返回错误。
+func renderSubContent(links []subLink, format, mode string) (string, string, error) {
 	links = dedupSubLinks(links)
 	switch format {
 	case "plain":
@@ -173,7 +177,7 @@ func renderSubContent(links []subLink, format string) (string, string, error) {
 		}
 		return base64.StdEncoding.EncodeToString([]byte(strings.Join(lines, "\n") + "\n")), "text/plain; charset=utf-8", nil
 	case "clash":
-		return renderClashYAML(links), "text/yaml; charset=utf-8", nil
+		return renderClashYAML(links, mode), "text/yaml; charset=utf-8", nil
 	default:
 		return "", "", fmt.Errorf("format 只支持 clash/base64/plain")
 	}
@@ -316,14 +320,62 @@ func decodeVmessLink(link string) (map[string]string, error) {
 	return out, nil
 }
 
-// renderClashYAML 渲染 Clash 订阅：proxies 列表 + PROXY select 组 + 全走代理规则。
-// 名字去重（Clash 要求 proxy 名唯一），不支持的协议跳过。
-func renderClashYAML(links []subLink) string {
+// ---------- Clash 策略组与分流规则（v1.2.9） ----------
+// Clash YAML 订阅出 6 个策略组：手动选择（select，全部节点，默认入口）、
+// 自动选择（url-test，全部节点，每 5 分钟测一次挑延迟最低）、中转节点
+// （select，只有中转链接）、直连节点（select，只有直连链接）、社交
+// （select，全部节点）、流媒体（select，全部节点）。中转/直连按 twin
+// 名字后缀 -中转/-直连 分组；没有中转或直连链接时对应组不出现（不出空组）。
+// 规则顺序：TikTok → 社交 → 流媒体 → MATCH；TikTok 规则指向手动选择，
+// 社交指向社交组，流媒体指向流媒体组。分流模式 MATCH,DIRECT（只有这三
+// 类走节点，其他直连），全局模式 MATCH,手动选择（全部走代理）。
+
+// tiktokSuffixes TikTok 分流域名：主站、App 接口/视频流/日志上报、
+// 视频 CDN、老域名与字节海外基础设施。
+var tiktokSuffixes = []string{
+	"tiktok.com", "tiktokv.com", "tiktokcdn.com", "tiktokcdn-us.com",
+	"musical.ly", "byteoversea.com", "ibytedtos.com",
+}
+
+// socialSuffixes 海外社交分流域名。只用 DOMAIN-SUFFIX，不用
+// DOMAIN-KEYWORD——x 这类短词做 keyword 会误伤。
+var socialSuffixes = []string{
+	"facebook.com", "fb.com", "fbcdn.net", "instagram.com", "cdninstagram.com",
+	"x.com", "twitter.com", "twimg.com", "whatsapp.com", "whatsapp.net",
+	"telegram.org", "t.me", "snapchat.com", "scdn.co", "reddit.com",
+	"redditmedia.com", "redditstatic.com", "pinterest.com", "pinimg.com",
+	"linkedin.com", "licdn.com", "discord.com", "discordapp.com", "discord.gg",
+	"threads.net", "line.me",
+}
+
+// streamSuffixes 海外流媒体分流域名。只用 DOMAIN-SUFFIX；苹果只写
+// tv.apple.com，不写 apple.com，否则会把全部苹果流量都拖进来。
+var streamSuffixes = []string{
+	"youtube.com", "googlevideo.com", "ytimg.com", "youtu.be", "netflix.com",
+	"nflxvideo.net", "nflxext.com", "nflxso.net", "disneyplus.com", "dssott.com",
+	"hulu.com", "huluim.com", "max.com", "hbomax.com", "hbo.com",
+	"primevideo.com", "amazonvideo.com", "aiv-cdn.net", "tv.apple.com",
+	"spotify.com", "scdn.co", "spotifycdn.com", "twitch.tv", "twitchcdn.net",
+	"jtvnw.net",
+}
+
+// renderClashYAML 渲染 Clash 订阅：proxies 列表 + 6 个策略组 + 分流规则。
+// 名字去重（Clash 要求 proxy 名唯一），不支持的协议跳过；mode 是
+// split（分流，MATCH,DIRECT）或 global（全局，MATCH,手动选择）。
+func renderClashYAML(links []subLink, mode string) string {
 	var b strings.Builder
 	b.WriteString("proxies:\n")
 	used := map[string]int{}
 	var names []string
+	var kinds []string // 与 names 一一对应：relay / direct / ""（无后缀）
 	for _, l := range links {
+		kind := ""
+		switch {
+		case strings.HasSuffix(l.Name, "-中转"):
+			kind = "relay"
+		case strings.HasSuffix(l.Name, "-直连"):
+			kind = "direct"
+		}
 		name := l.Name
 		if n, ok := used[name]; ok {
 			used[name] = n + 1
@@ -336,21 +388,80 @@ func renderClashYAML(links []subLink) string {
 			continue
 		}
 		names = append(names, name)
+		kinds = append(kinds, kind)
 		b.WriteString(proxy)
 	}
 	if len(names) == 0 {
 		b.WriteString("  []\n")
 	}
-	b.WriteString("proxy-groups:\n")
-	b.WriteString("  - name: \"PROXY\"\n")
-	b.WriteString("    type: select\n")
-	b.WriteString("    proxies:\n")
-	for _, n := range names {
-		b.WriteString("      - " + yamlDQ(n) + "\n")
+	var relayNames, directNames []string
+	for i, n := range names {
+		switch kinds[i] {
+		case "relay":
+			relayNames = append(relayNames, n)
+		case "direct":
+			directNames = append(directNames, n)
+		}
 	}
+	writeGroup := func(name, typ string, members []string) {
+		b.WriteString("  - name: " + yamlDQ(name) + "\n")
+		b.WriteString("    type: " + typ + "\n")
+		if typ == "url-test" {
+			b.WriteString("    url: \"http://www.gstatic.com/generate_204\"\n")
+			b.WriteString("    interval: 300\n")
+		}
+		b.WriteString("    proxies:\n")
+		for _, n := range members {
+			b.WriteString("      - " + yamlDQ(n) + "\n")
+		}
+	}
+	b.WriteString("proxy-groups:\n")
+	writeGroup("手动选择", "select", names)
+	writeGroup("自动选择", "url-test", names)
+	if len(relayNames) > 0 {
+		writeGroup("中转节点", "select", relayNames)
+	}
+	if len(directNames) > 0 {
+		writeGroup("直连节点", "select", directNames)
+	}
+	writeGroup("社交", "select", names)
+	writeGroup("流媒体", "select", names)
+	// 分流规则：TikTok → 社交 → 流媒体 → MATCH（先命中先走）。
 	b.WriteString("rules:\n")
-	b.WriteString("  - MATCH,PROXY\n")
+	seenSuffix := map[string]bool{}
+	writeSuffixRules := func(suffixes []string, group string) {
+		for _, d := range suffixes {
+			if seenSuffix[d] {
+				continue // scdn.co 在社交与流媒体清单里都有，只出一次（先命中社交组）
+			}
+			seenSuffix[d] = true
+			b.WriteString("  - DOMAIN-SUFFIX," + d + "," + group + "\n")
+		}
+	}
+	writeSuffixRules(tiktokSuffixes, "手动选择")
+	b.WriteString("  - DOMAIN-KEYWORD,tiktok,手动选择\n")
+	writeSuffixRules(socialSuffixes, "社交")
+	writeSuffixRules(streamSuffixes, "流媒体")
+	if mode == "global" {
+		b.WriteString("  - MATCH,手动选择\n")
+	} else {
+		b.WriteString("  - MATCH,DIRECT\n")
+	}
 	return b.String()
+}
+
+// resolveSubMode 定订阅的分流模式：?mode=split|global，缺省 split；
+// 非法 mode 返回错误（调用方返回 400，与 ?format 的处理一致）。
+func resolveSubMode(r *http.Request) (string, error) {
+	m := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
+	switch m {
+	case "", "split":
+		return "split", nil
+	case "global":
+		return "global", nil
+	default:
+		return "", fmt.Errorf("mode 只支持 split/global")
+	}
 }
 
 // ---------- 格式识别 ----------
@@ -463,6 +574,11 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	mode, err := resolveSubMode(r)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
 	var links []subLink
 	var localIndices map[int]bool
 	if tok != "" && s.cfg.SubTokenHash != "" && verifySubToken(tok, s.cfg.SubTokenHash) {
@@ -473,7 +589,7 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	body, ctype, err := renderSubContent(links, format)
+	body, ctype, err := renderSubContent(links, format, mode)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -535,6 +651,38 @@ func (s *Server) handleSubTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(s.currentUser(r), "撤销订阅链接", "", "成功", "订阅链接已失效")
 	writeJSON(w, 200, okResp(nil))
+}
+
+// handleSubQR 订阅链接二维码（v1.2.9，会话认证）：
+// POST /api/v1/subscription/qr，请求 {"url": "<订阅链接>"}，
+// 返回 {"qr": "data:image/png;base64,..."}。
+// 复用节点链接同一套 qrDataURI（Go 原生 qrcode，Medium 纠错，256px，
+// 不新引库）。只接受本面板的订阅链接（须含 /sub/sub_），不接受任意文本；
+// 订阅链接约 150–160 字，长度上限放宽到 2048 字符。
+// 注意：订阅令牌明文只在生成时显示一次，服务端存的只是哈希、拼不出
+// 订阅链接，所以二维码由前端把当前显示的链接传进来生成；换 mode/format
+// 后前端重新调一次，二维码跟着变。
+func (s *Server) handleSubQR(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL string `json:"url"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	u := strings.TrimSpace(req.URL)
+	if u == "" || len(u) > 2048 || !strings.Contains(u, "/sub/sub_") {
+		writeJSON(w, 400, errResp("只支持本面板的订阅链接"))
+		return
+	}
+	q, err := qrDataURI(u)
+	if err != nil {
+		writeJSON(w, 500, errResp("二维码生成失败："+err.Error()))
+		return
+	}
+	writeJSON(w, 200, okResp(map[string]any{"qr": q}))
 }
 
 // ---------- 合并订阅（会话认证） ----------

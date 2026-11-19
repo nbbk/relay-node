@@ -175,6 +175,13 @@ vless://11111111-2222-3333-4444-555555555555@example.com:443?encryption=none&sec
 - 顺带修了两个小问题：① 本地编辑落地提交时不检查返回的端口冲突复提，冲突时会误报“落地已更新”成功，现在 need_choice 时走分流选择复提；② 管理模式下导航顺序：直接按页表过滤会把“设置”排在“集中管理”前面，现在按“集中管理、设置”的顺序排。③ 代理写操作成功后异步刷新远程状态的轮询以前是 fire-and-forget，测试里偶发撞上 TempDir 清理失败，现在用 WaitGroup 记数，行为不变。
 - 升级注意：管理面板模式要远程面板升到 1.2.8 才能用新代理操作；只升主面板时，旧操作（加落地、删落地、加节点、重启）不受影响，新操作会提示升级远程面板。
 
+### v1.2.9 更新
+
+- 订阅的 Clash YAML 加策略组与分流规则：以前 Clash 订阅只有一个 PROXY 组加一条 MATCH 全走代理，现在出 6 个策略组——手动选择（select，全部节点，默认入口）、自动选择（url-test，全部节点，每 5 分钟测一次延迟自动挑最低，测速地址 `http://www.gstatic.com/generate_204`）、中转节点（select，只有中转链接）、直连节点（select，只有直连链接）、社交（select，全部节点）、流媒体（select，全部节点）；中转/直连按 twin 名字后缀 -中转/-直连 分组，没有中转或直连链接时对应组不出现（不出空组）。规则顺序是 TikTok → 社交 → 流媒体 → MATCH：TikTok 规则指向手动选择（tiktok.com、tiktokv.com、tiktokcdn.com、tiktokcdn-us.com、musical.ly、byteoversea.com、ibytedtos.com 七个后缀加一条 DOMAIN-KEYWORD,tiktok 补网），社交规则指向社交组（facebook.com、fb.com、fbcdn.net、instagram.com、cdninstagram.com、x.com、twitter.com、twimg.com、whatsapp.com、whatsapp.net、telegram.org、t.me、snapchat.com、scdn.co、reddit.com、redditmedia.com、redditstatic.com、pinterest.com、pinimg.com、linkedin.com、licdn.com、discord.com、discordapp.com、discord.gg、threads.net、line.me），流媒体规则指向流媒体组（youtube.com、googlevideo.com、ytimg.com、youtu.be、netflix.com、nflxvideo.net、nflxext.com、nflxso.net、disneyplus.com、dssott.com、hulu.com、huluim.com、max.com、hbomax.com、hbo.com、primevideo.com、amazonvideo.com、aiv-cdn.net、tv.apple.com、spotify.com、scdn.co、spotifycdn.com、twitch.tv、twitchcdn.net、jtvnw.net；苹果只写 tv.apple.com，不写 apple.com）。社交与流媒体只用 DOMAIN-SUFFIX，不用 DOMAIN-KEYWORD（x 这类短词做 keyword 会误伤）；scdn.co 在两份清单里都有，规则里只出一次，先命中社交组。
+- 分流/全局模式切换：订阅链接加 `?mode=split|global`，缺省 split（分流：MATCH,DIRECT，只有 TikTok/社交/流媒体走节点，其他直连）；global 是全局（MATCH,手动选择，全部走代理）；非法 mode 返回 400，与非法 format 的处理一致。设置页订阅卡片与合并订阅、单落地订阅的弹窗里各加一个分流/全局切换，切换后复制的链接自动带上对应 mode 参数。mode 只影响 Clash YAML，base64/plain 订阅原样不动；单面板订阅与合并订阅都按同一套出（合并订阅的组与规则随勾选的落地集合走）。订阅的 Clash YAML 本身不含 dns 段，防 DNS 泄露靠客户端侧开 fake-ip、DNS 走代理，TUTORIAL 里写了提醒。
+- 订阅链接二维码：设置页订阅卡片与合并订阅、单落地订阅的弹窗里，复制按钮旁边各加一个“二维码”按钮，点开显示当前这条订阅链接的二维码（带当前选的模式参数，换模式后跟着重新生成）。复用节点链接同一套生成（Go 原生 qrcode，Medium 纠错，256px，不新引库、不走前端第三方库），新开一个会话认证端点 `POST /api/v1/subscription/qr`（请求 `{"url": "<订阅链接>"}`，只接受本面板的订阅链接、长度上限 2048，非法返回 400，未登录返回 401）；图片的复制/下载复用节点二维码已有的事件委托。订阅链接约 150–160 字，二维码密度没问题。
+- 升级注意：不用升级远程面板也能用——新组与规则都在订阅内容里生成，旧版本远程面板的合并订阅内容同样按新规则出；只有远程面板自己的订阅端点不受影响（它本来就只出节点链接）。
+
 ### 访问与 HTTPS
 
 - 装完直接用 IP 加端口打开面板，默认端口 `11111`，例如 `http://203.0.113.1:11111`。

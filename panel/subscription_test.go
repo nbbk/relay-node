@@ -117,7 +117,7 @@ func TestSubFormats(t *testing.T) {
 		t.Fatalf("clash 应 200，实际 %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"proxies:", "type: vless", "servername: \"example.com\"", "path: \"/example-path\"", "proxy-groups:", "name: \"PROXY\"", "MATCH,PROXY"} {
+	for _, want := range []string{"proxies:", "type: vless", "servername: \"example.com\"", "path: \"/example-path\"", "proxy-groups:", "name: \"手动选择\"", "MATCH,DIRECT"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("clash YAML 缺 %q：\n%s", want, body)
 		}
@@ -232,7 +232,7 @@ func TestClashNameDedup(t *testing.T) {
 		{Name: "测试", Link: "vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443?security=none&type=ws&path=%2Fexample-path#测试"},
 		{Name: "SS节点", Link: "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@203.0.113.1:8388#SS节点"},
 	}
-	body, ctype, err := renderSubContent(links, "clash")
+	body, ctype, err := renderSubContent(links, "clash", "split")
 	if err != nil {
 		t.Fatalf("renderSubContent clash 失败：%v", err)
 	}
@@ -249,7 +249,7 @@ func TestClashNameDedup(t *testing.T) {
 		t.Fatalf("ss 节点在 clash 里应跳过：\n%s", body)
 	}
 	// 同样的链接在 base64 里都在
-	raw, _, err := renderSubContent(links, "base64")
+	raw, _, err := renderSubContent(links, "base64", "split")
 	if err != nil {
 		t.Fatalf("base64 失败：%v", err)
 	}
