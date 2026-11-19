@@ -140,6 +140,7 @@ if [ "$REMOVE" = "1" ]; then
   [ -f /etc/systemd/system/relay-panel.service ] && rm -f /etc/systemd/system/relay-panel.service && systemctl daemon-reload 2>/dev/null || true
   [ -x "$BIN" ] && rm -f "$BIN" && echo "  已删除 $BIN"
   [ -f /usr/local/bin/panel-info ] && rm -f /usr/local/bin/panel-info && echo "  已删除 /usr/local/bin/panel-info"
+  [ -f /usr/local/bin/panel-totp-reset ] && rm -f /usr/local/bin/panel-totp-reset && echo "  已删除 /usr/local/bin/panel-totp-reset"
   # 面板数据（账号、配置、流量累计）默认保留，免得手滑丢了；想连数据一起删就选 y
   PANEL_REMOVE_DATA="${PANEL_REMOVE_DATA:-}"
   if [ -z "$PANEL_REMOVE_DATA" ]; then
@@ -355,6 +356,33 @@ INFOEOF
   chmod +x /usr/local/bin/panel-info
 fi
 
+# 7b. panel-totp-reset（验证器丢了、备用码也没了时，SSH 下关闭二次验证）
+if [ "$DRY_RUN" != "1" ]; then
+  cat > /usr/local/bin/panel-totp-reset <<'RESETEOF'
+#!/usr/bin/env bash
+# 验证器丢了、备用码也没了时，用这条命令关闭二次验证：panel-totp-reset
+# 原理：先停面板（免得内存里的旧配置把改动盖回去），再由 relay-panel totp-disable
+# 改 config.json，最后重启面板。重启后登录只需要账号密码。
+set -uo pipefail
+PANEL_HOME="${PANEL_HOME:-/etc/relay-panel}"
+BIN="/usr/local/bin/relay-panel"
+if [ ! -x "$BIN" ]; then
+  echo "没找到面板程序 $BIN：面板可能没装，先跑 panel-install.sh。"
+  exit 1
+fi
+systemctl stop relay-panel 2>/dev/null || pkill -x relay-panel 2>/dev/null || true
+sleep 1
+"$BIN" totp-disable
+rc=$?
+systemctl start relay-panel 2>/dev/null || true
+if [ "$rc" -eq 0 ]; then
+  echo "面板已重启，二次验证已关闭，重新登录只需要账号密码。"
+fi
+exit "$rc"
+RESETEOF
+  chmod +x /usr/local/bin/panel-totp-reset
+fi
+
 # ---------- 日志上限（防爆盘：docker 日志 + journald） ----------
 # docker 容器日志默认无上限（tm 容器就这么长到 8.9G 撑爆过 20G 盘），
 # journald 默认能用到磁盘 10%（20G 盘就是 2G）。
@@ -488,6 +516,7 @@ if [ "$UPGRADED" = "1" ]; then
   echo "================ 面板已升级 ================"
   echo "账号密码与配置保留，没变过。"
   echo "找回地址和账号：SSH 跑 panel-info"
+  echo "验证器丢了、备用码也没了：SSH 跑 panel-totp-reset 关闭二次验证（面板会重启一次）。"
   echo "面板本身只重启了自己，realm 转发没动过，正在用的节点不断线。"
 else
   _ip="$(public_ip)"
@@ -518,5 +547,6 @@ EOF
     echo "  curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/install.sh | bash"
   fi
   echo "忘了地址或密码：SSH 上服务器跑 panel-info 就能重新看到。"
+  echo "验证器丢了、备用码也没了：SSH 跑 panel-totp-reset 关闭二次验证（面板会重启一次）。"
   echo "HTTPS：先用 http 打开，面板设置里可以一键开 HTTPS（IP 访问是自签证书，浏览器首次提示一次；绑域名可申请真证书）。"
 fi

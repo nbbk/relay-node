@@ -34,9 +34,13 @@
       <input id="login-user" name="username" autocomplete="username" placeholder="admin" required>
       <label for="login-pass">密码</label>
       <input id="login-pass" name="password" type="password" autocomplete="current-password" placeholder="安装时设置的密码" required>
+      <div id="login-totp-row" class="hidden" hidden>
+        <label for="login-totp">验证码 <span class="hint">验证器里的 6 位数字，备用码也能用</span></label>
+        <input id="login-totp" name="totp" type="text" maxlength="10" autocomplete="one-time-code" placeholder="6 位验证码">
+      </div>
       <div class="btn-row"><button class="btn block" type="submit" id="login-btn">登录</button></div>
     </form>
-    <p class="small" style="margin-top:14px">忘记密码？请 SSH 到中转机执行 <span class="mono">panel-info</span> 查看账号信息。</p>
+    <p class="small" style="margin-top:14px">忘记密码？请 SSH 到中转机执行 <span class="mono">panel-info</span> 查看账号信息。验证器丢了？执行 <span class="mono">panel-totp-reset</span> 关闭二次验证。</p>
   </div>
 </div>
 
@@ -234,6 +238,40 @@
               <div class="btn-row"><button class="btn" type="submit">修改密码</button></div>
             </form>
           </div>
+          <div class="card" id="card-security">
+            <h2>登录安全</h2>
+            <p class="muted">登录告警和二次验证都是可选的，不开就和现在一样，只用账号密码登录。</p>
+            <p class="muted">登录告警</p>
+            <div class="checkbox-row"><input type="checkbox" id="login-alert-enabled"><label for="login-alert-enabled" style="margin:0;font-weight:400">登录告警（Telegram）</label></div>
+            <div class="small" id="login-alert-status"></div>
+            <div class="btn-row"><button class="btn" id="login-alert-save" type="button">保存登录告警</button></div>
+            <p class="muted">二次验证（TOTP）</p>
+            <div class="small" id="totp-status"></div>
+            <div id="totp-setup-area" class="hidden" hidden>
+              <p class="small">用验证器 App（如 Google Authenticator、微软 Authenticator）扫码，或手动输入密钥：</p>
+              <div style="text-align:center"><img id="totp-qr" alt="二次验证二维码" style="max-width:220px"></div>
+              <p class="small">密钥：<span class="mono" id="totp-secret"></span> <button class="btn secondary" id="totp-copy-secret" type="button">复制密钥</button></p>
+              <form id="totp-confirm-form">
+                <label for="totp-confirm-code">验证码 <span class="hint">验证器里显示的 6 位数字</span></label>
+                <input id="totp-confirm-code" maxlength="6" inputmode="numeric" placeholder="123456" required>
+                <div class="btn-row"><button class="btn" type="submit">确认开启</button></div>
+              </form>
+            </div>
+            <div id="totp-backup-area" class="hidden" hidden>
+              <p class="small" style="color:var(--red)">备用码只显示一次，请抄下来收好：验证器丢了时，备用码也能登录（每个只能用一次）。刷新页面后不再显示。</p>
+              <div class="small mono" id="totp-backup-codes"></div>
+            </div>
+            <div id="totp-disable-area" class="hidden" hidden>
+              <form id="totp-disable-form">
+                <label for="totp-disable-pass">当前密码</label><input id="totp-disable-pass" type="password" required autocomplete="current-password">
+                <label for="totp-disable-code">验证码 <span class="hint">验证器里的 6 位数字，或一个没用过的备用码</span></label>
+                <input id="totp-disable-code" maxlength="10" required>
+                <div class="btn-row"><button class="btn danger" type="submit">关闭二次验证</button></div>
+              </form>
+            </div>
+            <div class="btn-row"><button class="btn" id="totp-setup-btn" type="button">开启二次验证</button></div>
+            <p class="small muted">验证器丢了、备用码也没了？SSH 到中转机跑 <span class="mono">panel-totp-reset</span> 关闭二次验证，再用账号密码登录。</p>
+          </div>
           <div class="card">
             <h2>面板端口</h2>
             <p class="muted">改端口后面板会重启自身，请用新端口重新打开（原页面会断开）。</p>
@@ -297,7 +335,7 @@
           </div>
           <div class="card">
             <h2>Telegram 提醒</h2>
-            <p class="muted">证书快到期、中转挂了、落地到期或流量用完时自动发消息。需要 Bot Token 和 Chat ID。</p>
+            <p class="muted">证书快到期、中转挂了、落地到期或流量用完、登录异常时自动发消息。需要 Bot Token 和 Chat ID。登录告警的开关在下面的“登录安全”卡片里。</p>
             <form id="tg-form">
               <div class="checkbox-row"><input type="checkbox" id="tg-enabled"><label for="tg-enabled" style="margin:0;font-weight:400">启用 Telegram 提醒</label></div>
               <label for="tg-token">Bot Token <span class="hint">只保存，不回显</span></label>

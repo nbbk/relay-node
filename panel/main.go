@@ -1,11 +1,12 @@
 // relay-panel: relay-node 可视化面板后端（Go 单二进制，只用标准库）。
 // 契约见 ~/workspace/relay-panel-build/api-contract.md。
-// CLI: relay-panel [serve] | relay-panel version | relay-panel hash-password [密码]
+// CLI: relay-panel [serve] | relay-panel version | relay-panel hash-password [密码] | relay-panel totp-disable
 package main
 
 import (
 	"bufio"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -87,6 +88,51 @@ func loadEnv() Env {
 	}
 }
 
+// disableTOTPInConfigFile 关掉磁盘上 config.json 里的二次验证（SSH 恢复用）：
+// totp_enabled 置 false，密钥与备用码哈希一并清除。返回 changed=false 表示
+// 本来就没开；文件不存在或解析失败时返回错误（不静默跳过，免得用户以为
+// 关掉了、其实还开着）。注意：只改磁盘文件，正在跑的面板进程仍用内存里
+// 的旧配置，必须重启面板才生效（panel-totp-reset 会先停面板再调它）。
+func disableTOTPInConfigFile(panelHome string) (bool, error) {
+	p := filepath.Join(panelHome, "config.json")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return false, fmt.Errorf("读不到 %s：%w", p, err)
+	}
+	var cfg PanelConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return false, fmt.Errorf("%s 解析失败：%w", p, err)
+	}
+	if !cfg.TOTPEnabled && cfg.TOTPSecret == "" {
+		return false, nil
+	}
+	cfg.TOTPEnabled = false
+	cfg.TOTPSecret = ""
+	cfg.TOTPBackupCodes = nil
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	if err := writeFileAtomic(p, out, 0o600); err != nil {
+		return false, fmt.Errorf("写回失败：%w", err)
+	}
+	return true, nil
+}
+
+// disableTOTPInConfig CLI 包装：调 disableTOTPInConfigFile，失败直接退出。
+func disableTOTPInConfig(panelHome string) {
+	changed, err := disableTOTPInConfigFile(panelHome)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "totp-disable:", err)
+		os.Exit(1)
+	}
+	if !changed {
+		fmt.Println("二次验证本来就没开，不用处理")
+		return
+	}
+	fmt.Println("已关闭二次验证（密钥与备用码已清除），重启面板后生效")
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	// systemd 服务的环境里经常没有 HOME；子脚本（install.sh 等）在 set -u 下用 $HOME，
@@ -123,8 +169,14 @@ func main() {
 			return
 		case "serve":
 			// 继续走服务器启动
+		case "totp-disable":
+			// SSH 恢复：验证器丢了、备用码也没了时，关掉二次验证。
+			// 只改磁盘上的 config.json；面板正在跑时会用内存里的旧配置覆盖，
+			// 所以必须配合重启（panel-totp-reset 会先停面板再跑这条命令）。
+			disableTOTPInConfig(envOr("PANEL_HOME", "/etc/relay-panel"))
+			return
 		default:
-			fmt.Fprintf(os.Stderr, "用法：relay-panel [serve|version|hash-password]\n")
+			fmt.Fprintf(os.Stderr, "用法：relay-panel [serve|version|hash-password|totp-disable]\n")
 			os.Exit(1)
 		}
 	}

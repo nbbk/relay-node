@@ -32,6 +32,14 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"backup":        s.cfg.Backup,
 		"central_token": map[string]any{"has_token": s.cfg.RemoteTokenHash != "", "created_at": s.cfg.RemoteTokenCreatedAt},
 		"subscription":  map[string]any{"has_token": s.cfg.SubTokenHash != "", "has_link": s.cfg.SubTokenEnc != "", "created_at": s.cfg.SubTokenCreatedAt, "public_domain": s.cfg.SubPublicDomain, "worker_origin": s.cfg.WorkerOrigin},
+		// 登录安全（v1.3.8，可选，默认关）：telegram_configured 指 Telegram 提醒
+		// 真能发（开关开着且 Token 与 Chat ID 都填了），没配好时登录告警开关置灰；
+		// 密钥与备用码明文绝不经这个接口返回。
+		"security": map[string]any{
+			"login_alert": s.cfg.LoginAlert, "telegram_configured": s.telegramReady(),
+			"totp_enabled": s.cfg.TOTPEnabled, "totp_has_secret": s.cfg.TOTPSecret != "",
+			"backup_codes_remaining": len(s.cfg.TOTPBackupCodes),
+		},
 		"remotes_count": len(s.cfg.Remotes),
 		"cloudflare":    map[string]any{"has_token": s.cfg.CloudflareToken != ""},
 		"version":       Version, "latest_version": latest, "update_available": update,

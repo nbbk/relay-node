@@ -85,6 +85,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/relay-addr", s.requireAuth(s.handleRelayAddr))
 	mux.HandleFunc("POST /api/v1/settings/telegram", s.requireAuth(s.handleTelegram))
 	mux.HandleFunc("POST /api/v1/settings/telegram/test", s.requireAuth(s.handleTelegramTest))
+	// 登录安全（v1.3.8，可选，默认关）：登录告警开关 + 二次验证 TOTP
+	mux.HandleFunc("POST /api/v1/settings/login-alert", s.requireAuth(s.handleLoginAlert))
+	mux.HandleFunc("POST /api/v1/settings/totp/setup", s.requireAuth(s.handleTOTPSetup))
+	mux.HandleFunc("POST /api/v1/settings/totp/confirm", s.requireAuth(s.handleTOTPConfirm))
+	mux.HandleFunc("POST /api/v1/settings/totp/disable", s.requireAuth(s.handleTOTPDisable))
 	mux.HandleFunc("GET /api/v1/update/check", s.requireAuth(s.handleUpdateCheck))
 	mux.HandleFunc("POST /api/v1/update/apply", s.requireAuth(s.handleUpdateApply))
 	// 机器状态监控告警（v1.1.10）
@@ -247,22 +252,47 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		// Code 二次验证的验证码（v1.3.8，可选）：验证器里的 6 位数字，或一个
+		// 没用过的备用码；二次验证没开时不用传。
+		Code string `json:"code"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, 400, errResp("请求格式不对"))
 		return
 	}
-	if req.Username == s.cfg.Username && verifyPassword(req.Password, s.cfg.PasswordHash) {
-		s.sessions.loginOK(ip)
-		tok := s.sessions.create(req.Username)
-		http.SetCookie(w, &http.Cookie{Name: "relay_panel_session", Value: tok, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 24 * 3600})
-		s.audit(req.Username, "登录", "", "成功", "")
-		writeJSON(w, 200, okResp(nil))
+	if req.Username != s.cfg.Username || !verifyPassword(req.Password, s.cfg.PasswordHash) {
+		justLocked := s.sessions.loginFailed(ip)
+		s.audit(req.Username, "登录", "", "失败", "密码错误")
+		if justLocked {
+			s.onLoginLock(ip, req.Username)
+		}
+		writeJSON(w, 401, errResp("账号或密码不对"))
 		return
 	}
-	s.sessions.loginFailed(ip)
-	s.audit(req.Username, "登录", "", "失败", "密码错误")
-	writeJSON(w, 401, errResp("账号或密码不对"))
+	// 密码对了，二次验证开着时还要过验证码这一关。验证码错了同样计入
+	// 登录失败锁定（与密码失败共用 5 次锁 5 分钟的逻辑，不另起一套）；
+	// 只走到第二步（没传验证码）不记失败、不发会话，前端弹出验证码输入框。
+	if s.cfg.TOTPEnabled {
+		if strings.TrimSpace(req.Code) == "" {
+			writeJSON(w, 200, okResp(map[string]any{"need_totp": true}))
+			return
+		}
+		if !s.verifySecondFactor(req.Code) {
+			justLocked := s.sessions.loginFailed(ip)
+			s.audit(req.Username, "登录", "", "失败", "验证码错误")
+			if justLocked {
+				s.onLoginLock(ip, req.Username)
+			}
+			writeJSON(w, 401, errResp("验证码不对"))
+			return
+		}
+	}
+	s.sessions.loginOK(ip)
+	tok := s.sessions.create(req.Username)
+	http.SetCookie(w, &http.Cookie{Name: "relay_panel_session", Value: tok, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 24 * 3600})
+	s.audit(req.Username, "登录", "", "成功", "")
+	s.maybeLoginAlert(ip, req.Username)
+	writeJSON(w, 200, okResp(nil))
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

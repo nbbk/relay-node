@@ -282,6 +282,12 @@ function showApp() {
   if (login) { login.classList.add('hidden'); login.hidden = true; }
   if (app) { app.classList.remove('hidden'); app.hidden = false; }
 }
+// 显隐切换：class 与 hidden 属性一起切（只靠 class 的话，style.css 加载失败时会堆在一起）
+function setVisible(el, show) {
+  if (!el) return;
+  el.classList.toggle('hidden', !show);
+  el.hidden = !show;
+}
 // 刷新当前页（弹窗里的续期/续量/编辑等操作完调它：人在哪页就刷哪页，不硬跳管理页）
 function refreshCurrentPage() { return loadPage(currentPage); }
 // 落地显示名：有名称用名称，没有用落地地址（后端 status 的 name 字段已按这个规则给）
@@ -308,18 +314,30 @@ function initLogin() {
     e.preventDefault();
     const username = $('#login-user').value.trim();
     const password = $('#login-pass').value;
+    // 二次验证开着时，第二步才填验证码：第一步服务端返回 need_totp，
+    // 展开验证码输入框，等用户再提交一次（账号密码留在框里，不用重填）。
+    const totpRow = $('#login-totp-row');
+    const code = (totpRow && !totpRow.hidden) ? $('#login-totp').value.trim() : '';
     if (!username || !password) { $('#login-error').textContent = '请输入用户名和密码'; $('#login-error').classList.remove('hidden'); return; }
     const btn = $('#login-btn'); btn.disabled = true; btn.textContent = '登录中…';
     $('#login-error').classList.add('hidden'); $('#login-locked').classList.add('hidden');
     try {
-      await apiPost('/api/v1/login', { username, password }, true);
+      const r = await apiPost('/api/v1/login', { username, password, code: code || undefined }, true);
+      if (r && r.need_totp) {
+        setVisible(totpRow, true);
+        $('#login-totp').focus();
+        return;
+      }
       $('#login-pass').value = '';
+      const t = $('#login-totp'); if (t) t.value = '';
       await checkMe();
     } catch (err) {
       const msg = String(err.message || '');
       if (msg.indexOf('429') >= 0 || msg.indexOf('锁定') >= 0 || msg.indexOf('locked') >= 0) $('#login-locked').classList.remove('hidden');
       const box = $('#login-error');
-      box.textContent = msg.indexOf('401') >= 0 || msg.indexOf('账号或密码') >= 0 || msg.indexOf('用户名或密码') >= 0 ? '用户名或密码错误，请重试' : msg;
+      if (msg.indexOf('验证码') >= 0) box.textContent = '验证码不对，请重试';
+      else if (msg.indexOf('401') >= 0 || msg.indexOf('账号或密码') >= 0 || msg.indexOf('用户名或密码') >= 0) box.textContent = '用户名或密码错误，请重试';
+      else box.textContent = msg;
       box.classList.remove('hidden');
     } finally { btn.disabled = false; btn.textContent = '登录'; }
   });
@@ -1399,6 +1417,27 @@ function initService() {
 }
 
 /* ---------- 设置 ---------- */
+// 登录安全卡片渲染（v1.3.8，顶层函数：不能写进 initSettings 里，
+// 否则 loadSettingsPage 调用时找不到——1.1.8 白页就是这么来的）。
+// 密钥与二维码不经设置接口返回：中途刷新页面后扫码区是空的，
+// 点“重新生成密钥”拿新的；备用码也只在确认开启那一刻显示。
+function renderSecurityCard(sec) {
+  sec = sec || {};
+  const st = $('#totp-status');
+  if (st) {
+    st.textContent = sec.totp_enabled
+      ? '二次验证已开启（剩余备用码 ' + (sec.backup_codes_remaining || 0) + ' 个）。登录时除了密码，还要输验证器里的 6 位验证码。'
+      : (sec.totp_has_secret ? '二次验证还没确认开启：密钥已生成过，刷新后二维码不保留，点“重新生成密钥”拿新的。' : '二次验证未开启：登录只用账号密码。');
+  }
+  setVisible($('#totp-setup-area'), false);
+  setVisible($('#totp-backup-area'), false);
+  setVisible($('#totp-disable-area'), !!sec.totp_enabled);
+  const setupBtn = $('#totp-setup-btn');
+  if (setupBtn) {
+    setupBtn.style.display = sec.totp_enabled ? 'none' : '';
+    setupBtn.textContent = sec.totp_has_secret ? '重新生成密钥' : '开启二次验证';
+  }
+}
 async function loadSettingsPage() {
   try {
     const st = await api('/api/v1/settings');
@@ -1466,6 +1505,20 @@ async function loadSettingsPage() {
     // 面板名称（v1.3.4）：设置接口下发的当前名填进输入框。
     const pn = $('#panel-name');
     if (pn) pn.value = st.panel_name || 'CP管理';
+    // 登录安全（v1.3.8）：登录告警开关（没配 Telegram 时置灰）、二次验证状态。
+    const sec = st.security || {};
+    const laEnabled = $('#login-alert-enabled');
+    if (laEnabled) {
+      laEnabled.checked = !!sec.login_alert;
+      laEnabled.disabled = !sec.telegram_configured;
+    }
+    const laStatus = $('#login-alert-status');
+    if (laStatus) {
+      laStatus.textContent = sec.telegram_configured
+        ? '已配好 Telegram：开启后，连续输错 5 次触发锁定时、或新 IP 第一次成功登录时，都会发一条 Telegram 提醒。'
+        : '未配置 Telegram：先在“Telegram 提醒”卡片里配好 Bot Token 和 Chat ID，再回来开这个开关。';
+    }
+    renderSecurityCard(sec);
     updateWorkerExampleLink(sub.public_domain || '');
     $('#update-box').innerHTML = '<div class="kv"><span>当前版本</span><b>' + esc(st.version || '—') + '</b></div>' +
       '<div class="kv"><span>最新版本</span><b>' + esc(st.latest_version || '—') + '</b></div>' +
@@ -1509,6 +1562,55 @@ function initSettings() {
       await apiPost('/api/v1/settings/password', { old_password: oldPw, new_password: nw });
       toast('密码已修改', 'ok'); e.target.reset();
     } catch (err) { toast('修改失败：' + err.message, 'err'); }
+  });
+  // 登录安全（v1.3.8）
+  on('#login-alert-save', 'click', async () => {
+    try {
+      await apiPost('/api/v1/settings/login-alert', { enabled: $('#login-alert-enabled').checked });
+      toast('登录告警已保存', 'ok');
+    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+  });
+  on('#totp-setup-btn', 'click', async () => {
+    try {
+      const r = await apiPost('/api/v1/settings/totp/setup', {});
+      const qr = $('#totp-qr'); if (qr) qr.src = r.qr || '';
+      const sc = $('#totp-secret'); if (sc) sc.textContent = r.secret || '';
+      setVisible($('#totp-setup-area'), true);
+      setVisible($('#totp-backup-area'), false);
+      const cc = $('#totp-confirm-code'); if (cc) cc.value = '';
+      toast('密钥已生成，扫码后输一次验证码确认', 'ok');
+    } catch (err) { toast('生成失败：' + err.message, 'err'); }
+  });
+  on('#totp-copy-secret', 'click', async () => {
+    const sc = $('#totp-secret');
+    if (sc && sc.textContent) {
+      try { await navigator.clipboard.writeText(sc.textContent); toast('密钥已复制', 'ok'); }
+      catch (e) { toast('复制失败，请手动选中复制', 'err'); }
+    }
+  });
+  on('#totp-confirm-form', 'submit', async (e) => {
+    e.preventDefault();
+    const code = $('#totp-confirm-code').value.trim();
+    if (code.length !== 6) { toast('验证码是 6 位数字', 'err'); return; }
+    try {
+      const r = await apiPost('/api/v1/settings/totp/confirm', { code });
+      const codes = r.backup_codes || [];
+      $('#totp-backup-codes').textContent = codes.join('  ');
+      await loadSettingsPage();
+      setVisible($('#totp-backup-area'), codes.length > 0);
+      toast('二次验证已开启，备用码只显示一次，请抄下来收好', 'ok');
+    } catch (err) { toast('确认失败：' + err.message, 'err'); }
+  });
+  on('#totp-disable-form', 'submit', async (e) => {
+    e.preventDefault();
+    const ok = await confirmModal('关闭二次验证', '<p>关闭后登录只用账号密码。确定吗？</p>', '关闭二次验证', true);
+    if (!ok) return;
+    try {
+      await apiPost('/api/v1/settings/totp/disable', { password: $('#totp-disable-pass').value, code: $('#totp-disable-code').value.trim() });
+      e.target.reset();
+      await loadSettingsPage();
+      toast('二次验证已关闭', 'ok');
+    } catch (err) { toast('关闭失败：' + err.message, 'err'); }
   });
   on('#port-form', 'submit', async (e) => {
     e.preventDefault();

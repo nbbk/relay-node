@@ -730,7 +730,7 @@ func TestLoginErrorMessage(t *testing.T) {
 	for _, want := range []string{
 		"noAuthRedirect",
 		"if (res.status === 401 && !noAuthRedirect)",
-		"apiPost('/api/v1/login', { username, password }, true)",
+		"apiPost('/api/v1/login', { username, password, code: code || undefined }, true)",
 		"msg.indexOf('账号或密码')",
 	} {
 		if !strings.Contains(string(js), want) {

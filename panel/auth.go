@@ -174,7 +174,10 @@ func (st *sessionStore) loginLocked(ip string) bool {
 	return false
 }
 
-func (st *sessionStore) loginFailed(ip string) {
+// loginFailed 记一次失败；返回这次失败是不是刚好触发锁定（第 5 次）。
+// 触发锁定只会发生一次：锁定期内 handleLogin 直接返回 429，不再记失败；
+// 锁定过期后 loginLocked 会先把计数清零，重新从 0 开始数。
+func (st *sessionStore) loginFailed(ip string) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	a, ok := st.attempts[ip]
@@ -184,6 +187,7 @@ func (st *sessionStore) loginFailed(ip string) {
 	}
 	a.failures++
 	a.lockedAt = time.Now()
+	return a.failures == 5
 }
 
 func (st *sessionStore) loginOK(ip string) {

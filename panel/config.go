@@ -80,7 +80,18 @@ type PanelConfig struct {
 	// 登录页标题/品牌、侧边栏品牌、manifest 与订阅导入后的配置名都跟着它变；
 	// 旧 config.json 里没有这个字段时按默认值处理，不用迁移。
 	PanelName string `json:"panel_name"`
-	Version   string `json:"version"`
+	// 登录告警（v1.3.8，可选，默认关）：连续 5 次登录失败触发锁定时、
+	// 以及新 IP 第一次成功登录时，走 Telegram 发提醒。没配 Telegram 时
+	// 开关不可用（前端置灰并提示先配 Telegram）；旧配置没有这个字段时
+	// 按关处理，不用迁移。
+	LoginAlert bool `json:"login_alert"`
+	// 二次验证 TOTP（v1.3.8，可选，默认关）：TOTPSecret 是 base32 明文密钥，
+	// 只存 600 权限的 config.json；TOTPBackupCodes 是备用码的 SHA-256 哈希，
+	// 用一次废一个。旧配置没有这些字段时一律按未开启处理，不用迁移。
+	TOTPEnabled     bool     `json:"totp_enabled"`
+	TOTPSecret      string   `json:"totp_secret"`
+	TOTPBackupCodes []string `json:"totp_backup_codes"`
+	Version         string   `json:"version"`
 }
 
 // panelName 面板显示名称：设置里可改，空着（旧配置）默认 CP管理。
@@ -201,6 +212,9 @@ type RecycleItem struct {
 type PanelState struct {
 	Landings map[string]*LandingExt `json:"landings"`
 	Recycle  []RecycleItem          `json:"recycle"`
+	// LoginSeenIPs 登录告警用：已经成功登录过的 IP（同一 IP 只提醒一次）。
+	// 无论登录告警开关开没开都登记，免得以后开了开关对老 IP 狂发提醒。
+	LoginSeenIPs map[string]bool `json:"login_seen_ips,omitempty"`
 }
 
 func (s *PanelState) ext(landing string) *LandingExt {
