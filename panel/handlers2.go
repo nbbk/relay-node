@@ -45,8 +45,24 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		},
 		"remotes_count": len(s.cfg.Remotes),
 		"cloudflare":    map[string]any{"has_token": s.cfg.CloudflareToken != ""},
+		"panel_cert":    s.panelCertStatus(),
 		"version":       Version, "latest_version": latest, "update_available": update,
 	}))
+}
+
+// panelCertStatus 面板自身证书状态（HTTPS 卡片用）：证书在不在、是不是自签、
+// 剩余天数、到期日、上次签发/续签失败的原因（成功后清掉，常驻显示）。
+func (s *Server) panelCertStatus() map[string]any {
+	info := s.panelCertInfo()
+	expires := ""
+	if info.Exists {
+		expires = info.Expires.Format("2006-01-02")
+	}
+	return map[string]any{
+		"exists": info.Exists, "days_left": info.DaysLeft,
+		"self_signed": info.SelfSigned, "expires": expires,
+		"last_error": s.cfg.PanelCertLastErr,
+	}
 }
 
 // ---------- 面板名称（v1.3.4） ----------
@@ -400,14 +416,19 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Enable {
 		if req.Domain != "" {
-			// 有域名：尝试 ACME DNS-01；失败保留自签并返回错误说明
-			if err := s.obtainACMECert(req.Domain); err != nil {
+			// 有域名：尝试 ACME DNS-01；失败保留自签并返回错误说明，
+			// 失败原因写进 config 常驻显示在 HTTPS 卡片上（不只是 toast 一闪而过）。
+			s.certMu.Lock()
+			certErr := s.obtainACMECert(req.Domain)
+			s.certMu.Unlock()
+			if certErr != nil {
 				_ = ensureSelfSigned(s.env.PanelHome, req.Domain)
 				s.cfg.HTTPSEnabled = true
 				s.cfg.HTTPSDomain = req.Domain
+				s.cfg.PanelCertLastErr = certErr.Error()
 				_ = s.saveConfig()
-				writeJSON(w, 200, map[string]any{"ok": true, "warning": "真证书申请失败（" + err.Error() + "），已先用自签证书开启 HTTPS，稍后可在设置里重试"})
-				go func() { time.Sleep(300 * time.Millisecond); restartSelf(s.env) }()
+				writeJSON(w, 200, map[string]any{"ok": true, "warning": "真证书申请失败（" + certErr.Error() + "），已先用自签证书开启 HTTPS，稍后可在设置里重试"})
+				go func() { time.Sleep(300 * time.Millisecond); restartPanelFunc(s.env) }()
 				return
 			}
 		} else {
@@ -416,10 +437,15 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// 开启成功（无论真证书还是自签）：之前签发/续签失败的原因都过时了，清掉。
+		s.cfg.PanelCertLastErr = ""
+		s.cfg.PanelCertRenewWarned = false
 		s.cfg.HTTPSEnabled = true
 		s.cfg.HTTPSDomain = req.Domain
 	} else {
 		s.cfg.HTTPSEnabled = false
+		s.cfg.PanelCertLastErr = ""
+		s.cfg.PanelCertRenewWarned = false
 	}
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败"))
@@ -427,7 +453,7 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(s.currentUser(r), "HTTPS 开关", fmt.Sprintf("enable=%v domain=%s", req.Enable, req.Domain), "成功", "")
 	writeJSON(w, 200, okResp(map[string]any{"msg": "面板正在重启以切换 HTTPS"}))
-	go func() { time.Sleep(300 * time.Millisecond); restartSelf(s.env) }()
+	go func() { time.Sleep(300 * time.Millisecond); restartPanelFunc(s.env) }()
 }
 
 func (s *Server) handleTelegram(w http.ResponseWriter, r *http.Request) {
@@ -484,6 +510,11 @@ func (s *Server) handleCloudflare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(s.currentUser(r), "设置 Cloudflare Token", "", "成功", "")
+	// 换了令牌，之前签发/续签失败的原因就过时了，清掉（下次签发失败会重新记）。
+	if s.cfg.PanelCertLastErr != "" {
+		s.cfg.PanelCertLastErr = ""
+		_ = s.saveConfig()
+	}
 	if !strings.HasPrefix(token, "cfut_") && len(token) != 40 {
 		writeJSON(w, 200, map[string]any{"ok": true, "warning": "新版令牌以 cfut_ 开头，旧版是 40 位；当前令牌是 " + strconv.Itoa(len(token)) + " 位，请核对是否复制完整"})
 		return

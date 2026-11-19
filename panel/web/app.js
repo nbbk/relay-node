@@ -1534,12 +1534,15 @@ async function loadSettingsPage() {
   try {
     const st = await api('/api/v1/settings');
     settingsCache = st;
-    // 面板模式（v1.2.8）：管理面板模式下隐藏本机专属设置卡
-    //（Cloudflare Token、任意门地址、机器监控、延迟探测都是本机中转的配置）
+    // 面板模式（v1.2.8）：管理面板模式下隐藏本机中转专属设置卡
+    //（任意门地址、延迟探测都是本机中转的配置，管理面板本机没有中转）。
+    // Cloudflare Token 与机器监控在管理面板下也可见：前者是面板自身 HTTPS
+    // 签证书要用的（v1.3.14，管理面板没有它就签不到真证书），后者是面板本机
+    // 的磁盘/内存/CPU 监控，后台循环在管理面板下照常跑。
     const modeOn = !!st.manager_only;
     const modeStatus = $('#mode-status');
     if (modeStatus) modeStatus.textContent = modeOn ? '当前：管理面板（只做集中管理，本地页已隐藏）' : '当前：完整面板';
-    ['card-cloudflare', 'card-door', 'card-monitor', 'card-latency'].forEach((cid) => {
+    ['card-door', 'card-latency'].forEach((cid) => {
       const c = document.getElementById(cid);
       if (c) c.classList.toggle('hidden', modeOn);
     });
@@ -1550,6 +1553,30 @@ async function loadSettingsPage() {
     $('#whitelist-input').value = (st.ip_whitelist || []).join('\n');
     $('#https-domain').value = st.https_domain || '';
     $('#https-status').textContent = st.https_enabled ? 'HTTPS 已开启' + (st.https_domain ? '（域名：' + st.https_domain + '）' : '（自签证书）') : '当前为 HTTP，未开启 HTTPS。';
+    // 面板自身证书状态（v1.3.14）：证书信息、无令牌提示、上次失败原因常驻显示。
+    const pc = st.panel_cert || {};
+    const certInfo = $('#https-cert-info');
+    if (certInfo) {
+      if (!st.https_enabled) certInfo.textContent = '';
+      else if (!pc.exists) certInfo.textContent = '证书：未生成，重启面板后会自动生成。';
+      else if (pc.self_signed) certInfo.textContent = '证书：自签证书（浏览器会报不安全），真证书没签下来。';
+      else certInfo.textContent = '证书：真证书，剩余 ' + (pc.days_left ?? '?') + ' 天（到期 ' + (pc.expires || '?') + '），剩余 ≤30 天自动续签。';
+    }
+    const tokenHint = $('#https-token-hint');
+    if (tokenHint) {
+      const noToken = !(st.cloudflare || {}).has_token;
+      const show = !!(st.https_domain && noToken);
+      tokenHint.textContent = show ? '未填 Cloudflare Token，真证书签不下来：去本页下方的 Cloudflare Token 卡片填写，填好后点“重试签发”。' : '';
+      setVisible(tokenHint, show);
+    }
+    const certErr = $('#https-cert-error');
+    const retryRow = $('#https-retry-row');
+    const lastErr = pc.last_error || '';
+    if (certErr) {
+      certErr.textContent = lastErr ? '上次签发/续签失败：' + lastErr : '';
+      setVisible(certErr, !!lastErr);
+    }
+    if (retryRow) setVisible(retryRow, !!(lastErr && st.https_domain));
     const cf = st.cloudflare || {};
     $('#cf-status').textContent = cf.has_token ? '已保存 Cloudflare Token（绑域名开 HTTPS 可用）' : '未保存 Token（绑域名开 HTTPS 前要先填）';
     $('#door-addr').value = st.relay_addr || '';
@@ -1739,8 +1766,18 @@ function initSettings() {
     if (domain && !/^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(domain)) { toast('域名格式不正确', 'err'); return; }
     try {
       const r = await apiPost('/api/v1/settings/https', { enable: true, domain });
-      toast('HTTPS 已开启' + (r.msg ? '：' + r.msg : ''), 'ok'); loadSettingsPage();
+      // v1.3.14：真证书申请失败时后端回 warning（以前前端只读 r.msg，警告被吞了，
+      // 用户只看到“HTTPS 已开启”，不知道证书是自签的）。警告要当场报出来，
+      // 失败原因还会常驻显示在 HTTPS 卡片上。
+      if (r.warning) toast(r.warning, 'err');
+      else toast('HTTPS 已开启' + (r.msg ? '：' + r.msg : ''), 'ok');
+      loadSettingsPage();
     } catch (err) { toast('开启失败：' + err.message + '（已保留原有方式，面板未中断）', 'err'); }
+  });
+  // v1.3.14：重试签发就是再调一次开启接口（域名取输入框当前值）。
+  on('#https-retry', 'click', async () => {
+    const b = $('#https-enable');
+    if (b) b.click();
   });
   on('#https-disable', 'click', async () => {
     const ok = await confirmModal('关闭 HTTPS', '<p>关闭后回到 HTTP 明文访问。确定吗？</p>', '关闭 HTTPS');

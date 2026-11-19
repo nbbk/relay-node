@@ -7,6 +7,7 @@ import (
 	"bufio"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -208,14 +210,50 @@ func main() {
 		if _, err := os.Stat(cert); err == nil {
 			srv = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 			log.Printf("relay-panel %s 监听 https://%s", Version, addr)
-			log.Fatal(srv.ListenAndServeTLS(cert, key))
+			serveWithRetry(srv, cert, key)
 			return
 		}
 	}
 	srv = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	log.Printf("relay-panel %s 监听 http://%s", Version, addr)
-	log.Fatal(srv.ListenAndServe())
+	serveWithRetry(srv, "", "")
 }
+
+// serveWithRetry 启动 HTTP(S) 服务。重启（restartSelf）时新进程可能在旧进程
+// 退出前抢绑端口——restartSelf 起新进程后只等 500ms 就退出，机器快时新进程
+// 启动不到 500ms，第一次 bind 必撞“address already in use”，直接 log.Fatal
+// 会把面板弄死（1.3.14 的 e2e 实测撞上：新进程 bind 失败退出、旧进程随即退出、
+// 端口上什么都没了）。撞上端口占用时重试 10 次（每 0.5 秒），旧进程退出后就
+// 能绑上；不是端口占用、或 10 次都撞上，才报错退出。
+// http.ErrServerClosed（测试里 srv.Close()）直接返回，不报错。
+func serveWithRetry(srv *http.Server, tlsCert, tlsKey string) {
+	var err error
+	for i := 0; i < 10; i++ {
+		if tlsCert != "" {
+			err = srv.ListenAndServeTLS(tlsCert, tlsKey)
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			return
+		}
+		if !isAddrInUse(err) {
+			log.Fatal(err)
+		}
+		log.Printf("端口被占用（旧进程还没退出），0.5 秒后重试（%d/10）", i+1)
+		time.Sleep(500 * time.Millisecond)
+	}
+	log.Fatal(err)
+}
+
+// isAddrInUse 判断错误是不是端口被占（bind 冲突）。
+func isAddrInUse(err error) bool {
+	return errors.Is(err, syscall.EADDRINUSE) || strings.Contains(err.Error(), "address already in use")
+}
+
+// restartPanelFunc 重启面板自身的入口，包级变量只为测试能 stub 掉重启
+// （真重启会 os.Exit，测试里不能真跑）。
+var restartPanelFunc = restartSelf
 
 // restartSelf 平滑重启面板自身（改端口/HTTPS 开关后用）：起新进程再退出旧进程。
 func restartSelf(env Env) {

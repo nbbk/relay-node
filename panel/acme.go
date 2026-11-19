@@ -92,6 +92,57 @@ func localIPs() ([]net.IP, error) {
 	return out, nil
 }
 
+// ---------- 面板自身证书状态与自动续签（v1.3.14） ----------
+
+// acmeDirectoryURL 是 ACME 目录地址，包级变量只为测试能指向本地假 ACME 服务端。
+var acmeDirectoryURL = "https://acme-v02.api.letsencrypt.org/directory"
+
+// panelCertRenewDays 面板自身真证书剩余天数 ≤ 该值时自动续签（每天检查一次）。
+const panelCertRenewDays = 30
+
+// panelCertInfo 面板自身证书（certs/cert.pem）的状态。
+type panelCertInfo struct {
+	Exists     bool
+	SelfSigned bool      // 自签证书（ensureSelfSigned 生成，Issuer == Subject）
+	DaysLeft   int       // 剩余天数（与 fetchCert 同口径）
+	Expires    time.Time // 到期时间
+}
+
+// panelCertInfo 读面板自身证书：不存在或解析失败返回 Exists=false。
+func (s *Server) panelCertInfo() panelCertInfo {
+	b, err := os.ReadFile(filepath.Join(s.env.PanelHome, "certs", "cert.pem"))
+	if err != nil {
+		return panelCertInfo{}
+	}
+	blk, _ := pem.Decode(b)
+	if blk == nil || blk.Type != "CERTIFICATE" {
+		return panelCertInfo{}
+	}
+	cert, err := x509.ParseCertificate(blk.Bytes)
+	if err != nil {
+		return panelCertInfo{}
+	}
+	return panelCertInfo{
+		Exists:     true,
+		SelfSigned: bytes.Equal(cert.RawSubject, cert.RawIssuer),
+		DaysLeft:   int(time.Until(cert.NotAfter).Hours() / 24),
+		Expires:    cert.NotAfter,
+	}
+}
+
+// shouldRenewPanelCert 面板自身真证书自动续签的纯决策（好测）：HTTPS 开着、
+// 有域名、有 Token、证书存在且是真证书、剩余 ≤30 天才续；自签的不续
+// （自签是签发失败的回落态，留给用户在 HTTPS 卡片点“重试签发”手动处理）。
+func shouldRenewPanelCert(httpsEnabled bool, domain, token string, info panelCertInfo) bool {
+	if !httpsEnabled || domain == "" || token == "" {
+		return false
+	}
+	if !info.Exists || info.SelfSigned {
+		return false
+	}
+	return info.DaysLeft <= panelCertRenewDays
+}
+
 // ---------- ACME v2 + Cloudflare DNS-01（标准库手写最小客户端） ----------
 
 type acmeClient struct {
@@ -281,10 +332,13 @@ func (s *Server) obtainACMECert(domain string) error {
 		}
 		_ = writeFileAtomic(keyPath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0o600)
 	}
-	ac := &acmeClient{http: &http.Client{Timeout: 30 * time.Second}, key: key, dirURL: "https://acme-v02.api.letsencrypt.org/directory"}
+	ac := &acmeClient{http: &http.Client{Timeout: 30 * time.Second}, key: key, dirURL: acmeDirectoryURL}
 	code, b, err := ac.get(ac.dirURL)
-	if err != nil || code != 200 {
+	if err != nil {
 		return fmt.Errorf("ACME 目录拉不到：%v", err)
+	}
+	if code != 200 {
+		return fmt.Errorf("ACME 目录拉不到（HTTP %d）", code)
 	}
 	ac.dir = map[string]string{}
 	_ = json.Unmarshal(b, &ac.dir)

@@ -222,9 +222,52 @@ func (s *Server) certLoop() {
 	t := time.NewTicker(24 * time.Hour)
 	defer t.Stop()
 	s.checkCerts()
+	s.maybeRenewPanelCert()
 	for range t.C {
 		s.checkCerts()
+		s.maybeRenewPanelCert()
 	}
+}
+
+// maybeRenewPanelCert 面板自身真证书自动续签（v1.3.14）：每天检查一次，
+// 真证书剩余 ≤30 天时用已存 Token 走 DNS-01 续签，续好重启面板生效。
+// 完整面板与管理面板都跑（不经过 managesLocalRelay 判断，面板自身证书与
+// 本地中转无关）。续失败发 Telegram 提醒（同一轮只提醒一次，成功后清掉），
+// 失败原因写进 config 常驻显示在 HTTPS 卡片上。
+func (s *Server) maybeRenewPanelCert() {
+	if !shouldRenewPanelCert(s.cfg.HTTPSEnabled, s.cfg.HTTPSDomain, s.cfg.CloudflareToken, s.panelCertInfo()) {
+		return
+	}
+	s.certMu.Lock()
+	defer s.certMu.Unlock()
+	// 锁内再核对一次（手动“重试签发”可能刚续好）。
+	if !shouldRenewPanelCert(s.cfg.HTTPSEnabled, s.cfg.HTTPSDomain, s.cfg.CloudflareToken, s.panelCertInfo()) {
+		return
+	}
+	domain := s.cfg.HTTPSDomain
+	if err := s.obtainACMECert(domain); err != nil {
+		s.cfg.PanelCertLastErr = err.Error()
+		if !s.cfg.PanelCertRenewWarned {
+			s.sendTelegram("面板证书续签失败：域名 " + domain + " 的真证书剩余不足 30 天，自动续签失败（" + err.Error() + "），请到设置页 HTTPS 卡片点“重试签发”，或检查 Cloudflare Token。")
+			s.cfg.PanelCertRenewWarned = true
+		}
+		_ = s.saveConfig()
+		return
+	}
+	s.onPanelCertRenewed(domain)
+}
+
+// onPanelCertRenewed 面板自身真证书续签成功后的收尾：清失败记录与去重标志，
+// 发 Telegram 告知，重启面板让新证书生效（复用 restartSelf 路子）。
+func (s *Server) onPanelCertRenewed(domain string) {
+	s.cfg.PanelCertLastErr = ""
+	s.cfg.PanelCertRenewWarned = false
+	_ = s.saveConfig()
+	s.sendTelegram("面板真证书已自动续签：域名 " + domain + " 的证书已换成新的，面板正在重启生效。")
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		restartPanelFunc(s.env)
+	}()
 }
 
 func (s *Server) checkCerts() {

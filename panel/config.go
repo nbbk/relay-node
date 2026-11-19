@@ -22,16 +22,21 @@ type TelegramCfg struct {
 }
 
 type PanelConfig struct {
-	Username        string      `json:"username"`
-	PasswordHash    string      `json:"password_hash"`
-	Port            int         `json:"port"`
-	HTTPSEnabled    bool        `json:"https_enabled"`
-	HTTPSDomain     string      `json:"https_domain"`
-	CloudflareToken string      `json:"cloudflare_token"`
-	IPWhitelist     []string    `json:"ip_whitelist"`
-	Telegram        TelegramCfg `json:"telegram"`
-	Monitor         MonitorCfg  `json:"monitor"`
-	Latency         LatencyCfg  `json:"latency"`
+	Username        string `json:"username"`
+	PasswordHash    string `json:"password_hash"`
+	Port            int    `json:"port"`
+	HTTPSEnabled    bool   `json:"https_enabled"`
+	HTTPSDomain     string `json:"https_domain"`
+	CloudflareToken string `json:"cloudflare_token"`
+	// 面板自身真证书（v1.3.14）：自动续签的上次失败原因，常驻显示在 HTTPS 卡片上
+	// （成功后清掉）；续签失败的 Telegram 去重标志，成功续签后清掉，下次再越过
+	// 阈值重新提醒。错误文案只含域名与 ACME 报错，不含任何令牌，可安全显示。
+	PanelCertLastErr     string      `json:"panel_cert_last_err,omitempty"`
+	PanelCertRenewWarned bool        `json:"panel_cert_renew_warned,omitempty"`
+	IPWhitelist          []string    `json:"ip_whitelist"`
+	Telegram             TelegramCfg `json:"telegram"`
+	Monitor              MonitorCfg  `json:"monitor"`
+	Latency              LatencyCfg  `json:"latency"`
 	// 自动定时备份（v1.3.6）：默认每天 03:00 备份一次，保留最近 7 份。
 	// 旧 config.json 里没有这一节时按默认补（applyDefaults）。
 	Backup BackupCfg `json:"backup"`
@@ -424,6 +429,7 @@ type Server struct {
 	subFails        map[string]*subFailState
 	remoteUploadMu  sync.Mutex // 异地备份上传去重锁（v1.3.11）
 	remoteUploading map[string]bool
+	certMu          sync.Mutex // 面板自身证书 ACME 操作锁（手动签发与后台续签互斥）
 }
 
 func newServer(env Env) (*Server, error) {
