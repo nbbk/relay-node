@@ -99,6 +99,9 @@ func (s *Server) handleManagerOnly(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
 	}
+	// 切换立即生效：马上刷新健康基线（不发提醒），不用等下一个 5 分钟 tick；
+	// 切到管理面板后健康检查不再提醒，切回完整面板时也不拿旧基线误报。
+	s.refreshHealthBaseline()
 	mode := "完整面板"
 	if req.ManagerOnly {
 		mode = "管理面板"

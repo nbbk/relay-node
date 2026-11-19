@@ -400,6 +400,7 @@ type Server struct {
 	opMu           sync.Mutex // 写操作锁（TryLock，占用时返回 409）
 	traffic        *trafficStore
 	auditMu        sync.Mutex
+	healthMu       sync.Mutex // 健康基线锁（lastHealthOK/lastHealthAt：healthTick 与模式切换共用）
 	lastHealthOK   bool
 	lastHealthAt   time.Time
 	monitorMu      sync.Mutex

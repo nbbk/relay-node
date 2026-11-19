@@ -21,16 +21,23 @@ func (s *Server) startBackground() {
 }
 
 // 流量采样每 60 秒；采样后检查限量（剩余变化大时重建 quota）。
+// 管理面板模式不跑：本地流量、限量停用都依赖本地中转，管理面板不管本地。
 func (s *Server) trafficLoop() {
 	t := time.NewTicker(60 * time.Second)
 	defer t.Stop()
 	for range t.C {
+		if !s.managesLocalRelay() {
+			continue
+		}
 		s.sampleTraffic()
 		s.enforceTrafficLimits()
 	}
 }
 
 func (s *Server) enforceTrafficLimits() {
+	if !s.managesLocalRelay() {
+		return
+	}
 	rc, _, err := s.readRelayConf()
 	if err != nil {
 		return
@@ -113,6 +120,9 @@ func (s *Server) expiryLoop() {
 }
 
 func (s *Server) checkExpiry() {
+	if !s.managesLocalRelay() {
+		return
+	}
 	rc, _, err := s.readRelayConf()
 	if err != nil {
 		return
@@ -148,17 +158,55 @@ func (s *Server) checkExpiry() {
 	}
 }
 
+// managesLocalRelay 本面板是否在管本地中转/本地落地：管理面板模式只管
+// 远程面板，依赖本地中转/本地落地的后台检查一律跳过（健康、证书、到期、
+// 延迟、流量）；机器级监控、面板自身备份、集中管理轮询不受影响。
+func (s *Server) managesLocalRelay() bool {
+	return !s.cfg.ManagerOnly
+}
+
+// watchRealmDecision 纯决策：只在完整面板且本机装了 realm 时监控 realm 健康。
+func watchRealmDecision(managerOnly, installed bool) bool {
+	return !managerOnly && installed
+}
+
+// shouldWatchRealm 只在完整面板且本机装了 realm 时才监控 realm 健康：
+// 管理面板本地没有中转、面板只装没装中转时，都不该发“realm 挂了”提醒。
+func (s *Server) shouldWatchRealm() bool {
+	return watchRealmDecision(s.cfg.ManagerOnly, realmInstalledFunc())
+}
+
+// refreshHealthBaseline 模式切换后立即刷新健康基线：不发提醒，只把
+// 当前 realm 状态记下来，切回完整面板时不拿旧基线误报。
+// （healthTick 每 5 分钟也会刷新基线，这里是让切换立即生效，不用等下一个 tick。）
+func (s *Server) refreshHealthBaseline() {
+	ok := realmRunning()
+	s.healthMu.Lock()
+	s.lastHealthOK = ok
+	s.lastHealthAt = time.Now()
+	s.healthMu.Unlock()
+}
+
 // 健康自检每 5 分钟：realm 挂了发 Telegram（只在状态变化时发，避免刷屏）。
+// 只在监控中转时才看运行→停止的变化；不监控时也刷新基线，
+// 这样切回完整面板时不会拿旧基线误报。
+func (s *Server) healthTick() {
+	ok := realmRunning()
+	s.healthMu.Lock()
+	alert := s.shouldWatchRealm() && !ok && s.lastHealthOK
+	s.lastHealthOK = ok
+	s.lastHealthAt = time.Now()
+	s.healthMu.Unlock()
+	if alert {
+		s.sendTelegram("故障提醒：realm 挂了（中转已停），请到面板服务页重启")
+	}
+}
+
 func (s *Server) healthLoop() {
 	t := time.NewTicker(5 * time.Minute)
 	defer t.Stop()
 	for range t.C {
-		ok := realmRunning()
-		if !ok && s.lastHealthOK {
-			s.sendTelegram("故障提醒：realm 挂了（中转已停），请到面板服务页重启")
-		}
-		s.lastHealthOK = ok
-		s.lastHealthAt = time.Now()
+		s.healthTick()
 	}
 }
 
@@ -180,6 +228,9 @@ func (s *Server) certLoop() {
 }
 
 func (s *Server) checkCerts() {
+	if !s.managesLocalRelay() {
+		return
+	}
 	rc, _, err := s.readRelayConf()
 	if err != nil {
 		return

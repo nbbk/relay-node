@@ -351,7 +351,11 @@ func (s *Server) evaluateLatency(results []*LatencyResult, now time.Time) {
 // probeLatencyRoundLocked 真正跑一轮探测（调用方须持有 latencyRoundMu）：
 // 读 relay.conf → 并发探测 → 存 latency.json → 评估告警。
 // 探测关了或 relay.conf 读不到时直接返回（不报错、不拖垮面板）。
+// 管理面板模式不跑：延迟探测的是本地落地，管理面板只管远程面板。
 func (s *Server) probeLatencyRoundLocked() {
+	if !s.managesLocalRelay() {
+		return
+	}
 	if !s.latencyEnabled() {
 		return
 	}

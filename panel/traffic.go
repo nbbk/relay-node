@@ -362,6 +362,9 @@ func (s *Server) ensureTrafficChains(landings []Landing) error {
 
 // sampleTraffic 一次采样：iptables-save -c 解析增量累加到 traffic.json。
 func (s *Server) sampleTraffic() {
+	if !s.managesLocalRelay() {
+		return
+	}
 	rc, _, err := s.readRelayConf()
 	if err != nil || rc == nil {
 		return

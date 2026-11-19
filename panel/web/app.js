@@ -60,7 +60,12 @@ function fallbackCopy(text, done) {
   const ta = document.createElement('textarea');
   ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
   document.body.appendChild(ta); ta.select();
-  try { document.execCommand('copy'); done(); } catch (e) { toast('复制失败，请手动复制', 'err'); }
+  // execCommand 返回 false 或抛错都算复制失败，要如实提示，不能报“已复制”：
+  // 面板常是 IP＋明文 HTTP 访问，navigator.clipboard 在非安全上下文里不可用，
+  // 兜底这条路就是复制成败的最后一道关。
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  if (ok) done(); else toast('复制失败，请手动复制', 'err');
   ta.remove();
 }
 // 复制二维码图片到剪贴板（需要浏览器支持 ClipboardItem）；不支持就提示改用下载
@@ -1603,6 +1608,14 @@ function initSettings() {
       setVisible($('#totp-backup-area'), codes.length > 0);
       toast('二次验证已开启，备用码只显示一次，请抄下来收好', 'ok');
     } catch (err) { toast('确认失败：' + err.message, 'err'); }
+  });
+  // 一键复制备用码（v1.3.10）：显示区里的 8 个码按两空格分隔，复制时改成
+  // 一行一个，方便粘进备忘录/密码管理器；走 copyText（clipboard 不可用时
+  // 自动走 textarea 兜底，成功/失败都有 toast 反馈）。
+  on('#totp-copy-backup', 'click', (e) => {
+    const txt = ($('#totp-backup-codes').textContent || '').trim();
+    if (!txt) { toast('没有可复制的备用码', 'err'); return; }
+    copyText(txt.split(/\s+/).join('\n'), e.target);
   });
   on('#totp-disable-form', 'submit', async (e) => {
     e.preventDefault();

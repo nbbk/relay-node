@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -187,29 +188,51 @@ func TestValidateRemoteAddLandingBody(t *testing.T) {
 
 const fakeRemoteStatus = `{"ok":true,"panel_version":"1.2.0","realm":{"running":true},"disk_pct":42.5,"disk_total_bytes":100,"disk_used_bytes":42,"disk_free_bytes":58,"landings":[{"index":1,"landing":"203.0.113.1","domain":"example.com","mode":"standard","ports":[{"proto":"tcp","listen":443,"remote":443}],"online":true,"latency_ms":12,"expiry":"2027-01-01T00:00:00Z","days_left":30,"traffic":{"today_up":100,"today_down":200,"month_up":1000,"month_down":2000,"total_up":10000,"total_down":20000,"limit_bytes":300000,"limit_mode":"total","used_bytes":30000,"pct":10},"subnodes":[{"domain":"node1.example.com","created_at":"","note":""}]},{"index":2,"landing":"203.0.113.2","domain":"node2.example.com","mode":"door","ports":[{"proto":"tcp","listen":20443,"remote":443}],"online":false,"latency_ms":null}]}`
 
-func newFakeRemote(t *testing.T) (*httptest.Server, *[]string) {
+// seenCalls 记录 fake 远程收到的调用（带锁：HTTP 处理函数与测试分属不同
+// goroutine，直接共用一个 []string 会在 -race 下报数据竞争；
+// 另外代理写操作会异步触发一次轮询，测试读之前要先等轮询跑完）。
+type seenCalls struct {
+	mu sync.Mutex
+	v  []string
+}
+
+func (s *seenCalls) add(x string) {
+	s.mu.Lock()
+	s.v = append(s.v, x)
+	s.mu.Unlock()
+}
+
+func (s *seenCalls) list() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.v))
+	copy(out, s.v)
+	return out
+}
+
+func newFakeRemote(t *testing.T) (*httptest.Server, *seenCalls) {
 	t.Helper()
-	var seen []string
+	seen := &seenCalls{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/central/status", func(w http.ResponseWriter, r *http.Request) {
-		seen = append(seen, "status:"+r.Header.Get("Authorization"))
+		seen.add("status:" + r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(fakeRemoteStatus))
 	})
 	mux.HandleFunc("/api/v1/central/landings", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := json.Marshal(map[string]any{"ok": true, "landing_index": 3, "links": []any{}, "qr": map[string]any{}, "door_note": ""})
-		seen = append(seen, "add:"+r.Header.Get("Authorization"))
+		seen.add("add:" + r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(b)
 	})
 	mux.HandleFunc("/api/v1/central/service/restart", func(w http.ResponseWriter, r *http.Request) {
-		seen = append(seen, "service:"+r.Header.Get("Authorization"))
+		seen.add("service:" + r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true,"running":true}`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return srv, &seen
+	return srv, seen
 }
 
 func TestFetchRemoteStatusParse(t *testing.T) {
@@ -230,8 +253,8 @@ func TestFetchRemoteStatusParse(t *testing.T) {
 	if snap.Landings[1].Online == nil || *snap.Landings[1].Online {
 		t.Fatalf("第 2 个落地应为离线：%+v", snap.Landings[1])
 	}
-	if len(*seen) != 1 || (*seen)[0] != "status:Bearer "+tok {
-		t.Fatalf("应带 Bearer 令牌调远程，实际：%v", *seen)
+	if got := seen.list(); len(got) != 1 || got[0] != "status:Bearer "+tok {
+		t.Fatalf("应带 Bearer 令牌调远程，实际：%v", seen.list())
 	}
 }
 
@@ -287,17 +310,18 @@ func TestCentralRemotesAddAndProxy(t *testing.T) {
 	if resp4["ok"] != true {
 		t.Fatalf("代理重启应成功：%v", resp4)
 	}
+	// 等两次代理成功后触发的后台轮询跑完再断言，否则轮询可能撞上假服务器关闭
+	// 与 TempDir 清理，也可能在断言读 seen 时还在追加（-race 报数据竞争）。
+	waitCentralPolls(t, s)
 	found := map[string]bool{}
-	for _, s2 := range *seen {
+	for _, s2 := range seen.list() {
 		found[strings.SplitN(s2, ":", 2)[0]] = true
 	}
 	for _, want := range []string{"status", "add", "service"} {
 		if !found[want] {
-			t.Fatalf("远程 %s 没被调到，实际：%v", want, *seen)
+			t.Fatalf("远程 %s 没被调到，实际：%v", want, seen.list())
 		}
 	}
-	// 等两次代理成功后触发的后台轮询跑完再继续，否则轮询可能撞上假服务器关闭与 TempDir 清理
-	waitCentralPolls(t, s)
 	// 取消登记
 	req5 := httptest.NewRequest("DELETE", "/api/v1/central/remotes/"+id, nil)
 	req5.SetPathValue("id", id)

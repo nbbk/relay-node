@@ -148,6 +148,22 @@ func realmRunning() bool {
 	return err == nil
 }
 
+// realmInstalled 本机装没装 realm（二进制或 systemd 单元存在就算装了）：
+// 只装了面板、还没装中转时两个都没有，realm 健康检查没东西可监控。
+func realmInstalled() bool {
+	if _, err := os.Stat("/usr/local/bin/realm"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/etc/systemd/system/realm.service"); err == nil {
+		return true
+	}
+	return false
+}
+
+// realmInstalledFunc 检测本机是否装了 realm（测试可替换为桩；
+// 拨号函数 probeDial 也是同款包级变量做法）。
+var realmInstalledFunc = realmInstalled
+
 func realmVersion() string {
 	if r, err := runCmdOut(nil, 5*time.Second, "/usr/local/bin/realm", "--version"); err == nil {
 		return strings.TrimSpace(strings.Split(r.Stdout, "\n")[0])
