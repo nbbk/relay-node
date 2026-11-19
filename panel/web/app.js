@@ -1438,6 +1438,9 @@ async function loadSettingsPage() {
     $('#central-token-status').textContent = ct.has_token ? '已生成令牌' + (ct.created_at ? '（生成于 ' + fmtDate(ct.created_at) + '）' : '') + '：主面板登记时用它；轮换后旧令牌立即失效，撤销后任何主面板都连不进来。' : '未生成令牌：没生成就等于没开集中管理，别人连不进来。';
     const sub = st.subscription || {};
     $('#sub-status').textContent = sub.has_token ? '已生成订阅链接' + (sub.created_at ? '（生成于 ' + fmtDate(sub.created_at) + '）' : '') + '：链接只在生成时显示一次，丢了就点轮换重新生成。' : '未生成订阅链接：点“生成订阅链接”，复制链接粘贴到客户端订阅里即可。';
+    const subDomain = $('#sub-public-domain');
+    if (subDomain) subDomain.value = sub.public_domain || '';
+    updateWorkerExampleLink(sub.public_domain || '');
     $('#update-box').innerHTML = '<div class="kv"><span>当前版本</span><b>' + esc(st.version || '—') + '</b></div>' +
       '<div class="kv"><span>最新版本</span><b>' + esc(st.latest_version || '—') + '</b></div>' +
       '<div class="kv"><span>状态</span><b>' + (st.update_available ? '<span class="badge yellow">有更新</span>' : '<span class="badge green">已是最新</span>') + '</b></div>' +
@@ -1560,6 +1563,7 @@ function initSettings() {
     try { await apiPost('/api/v1/settings/subscription/revoke', {}); toast('订阅链接已撤销', 'ok'); loadSettingsPage(); }
     catch (err) { toast('撤销失败：' + err.message, 'err'); }
   });
+  on('#sub-public-domain-save', 'click', async () => { await saveSubPublicDomain(); });
   on('#sub-copy', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, ''), e.target); });
   on('#sub-copy-clash', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'clash'), e.target); });
   on('#sub-copy-plain', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'plain'), e.target); });
@@ -2081,6 +2085,46 @@ async function subTokenGenerate(rotated) {
     loadSettingsPage();
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
+// ---------- 订阅对外域名（v1.3.2） ----------
+// 保存订阅对外域名：空 = 清除（恢复成面板自己的地址）；保存后把页面上
+// 正在显示的一次性订阅链接就地换成新域名（只换地址部分，令牌与参数不动），
+// 二维码收起来（里面还是旧链接，重新点一次就好）。
+async function saveSubPublicDomain() {
+  const input = $('#sub-public-domain');
+  if (!input) return;
+  const domain = input.value.trim();
+  try {
+    const r = await apiPost('/api/v1/settings/subscription-domain', { domain });
+    input.value = r.domain || '';
+    rebaseShownSubUrls(r.domain || '');
+    const q1 = $('#sub-qr-box'), q2 = $('#sub-user-qr-box');
+    if (q1) { q1.classList.add('hidden'); q1.hidden = true; }
+    if (q2) { q2.classList.add('hidden'); q2.hidden = true; }
+    updateWorkerExampleLink(r.domain || '');
+    toast(r.domain ? '订阅对外域名已保存，订阅链接改用 https://' + r.domain + '/sub/…' : '订阅对外域名已清除，订阅链接恢复成面板自己的地址', 'ok');
+    loadSettingsPage();
+  } catch (err) { toast('保存失败：' + err.message, 'err'); }
+}
+// 把页面上正在显示的一次性订阅链接换成新域名（只换地址部分）：
+// 有域名 → https://域名 + 原路径；没域名 → 当前打开面板的地址 + 原路径。
+function rebaseShownSubUrls(domain) {
+  const base = domain ? 'https://' + domain : location.origin;
+  ['#sub-url-value', '#sub-user-url-value'].forEach((sel) => {
+    const el = $(sel);
+    if (!el || !el.textContent) return;
+    try {
+      const u = new URL(el.textContent.trim());
+      if (!u.pathname.startsWith('/sub/')) return;
+      el.textContent = base + u.pathname + u.search + u.hash;
+    } catch (e) { /* 不是合法 URL 就不动 */ }
+  });
+}
+// Worker 卡片里的示例订阅链接：填了订阅对外域名就用它，没填时用面板自己的地址。
+function updateWorkerExampleLink(domain) {
+  const el = $('#worker-example-link');
+  if (!el) return;
+  el.textContent = domain ? 'https://' + domain + '/sub/<令牌>' : location.origin + '/sub/<令牌>';
+}
 // ---------- 订阅用户：一人一条（v1.3.0） ----------
 // 列表只含名字与生成时间，不含令牌；链接只在新建/轮换时显示一次。
 async function loadSubUsers() {
@@ -2149,54 +2193,92 @@ async function loadWorkerCode() {
     toast('Worker 代码已生成，复制后去 Cloudflare 部署', 'ok');
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
+// 合并订阅弹窗：显示一条刚生成/轮换的订阅链接（只显示一次），带复制、
+// 二维码、模式选择，以及轮换/撤销按钮。opts: {title, rotated, name, mergedId}
+// mergedId 为空时不显示轮换/撤销（老调用方只传链接时用不到）。
+function openMergedSubModal(url, opts) {
+  opts = opts || {};
+  let curUrl = url;
+  const m = openModal('<h2>' + esc(opts.title || '订阅链接') + '</h2>' +
+    (opts.rotated ? '<div class="warn-box" data-merged-warn>这份选择之前生成过，已轮换：旧链接立即失效，请用下面这条新链接。</div>' : '<div class="warn-box" data-merged-warn>只显示一次，记下来：关掉弹窗就再也看不到了；丢了就重新生成。</div>') +
+    (opts.name ? '<div class="kv"><span>归属到人</span><b>' + esc(opts.name) + '</b></div>' : '') +
+    '<div class="kv"><span>订阅链接</span><b class="mono" style="word-break:break-all" data-merged-url>' + esc(curUrl) + '</b></div>' +
+    '<p class="muted small">模式（可选）：<select data-sub-mode><option value="" selected>默认（不带参数，服务端按分流出）</option><option value="split">分流（TikTok/社交/流媒体走节点，其他直连）</option><option value="global">全局（全部走代理）</option></select>　客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表）；也可以手动加后缀：?format=clash / base64 / plain，?mode=split / global。默认复制的链接不带模式参数；只有规则模式下想全走代理、又保留分类分流时，才选全局。</p>' +
+    '<div class="btn-row"><button class="btn sm" type="button" data-sub-copy-url>复制订阅链接</button>' +
+    '<button class="btn secondary sm" type="button" data-sub-copy-clash>复制 Clash 链接</button>' +
+    '<button class="btn secondary sm" type="button" data-sub-copy-plain>复制明文链接</button>' +
+    '<button class="btn secondary sm" type="button" data-sub-qr>二维码</button>' +
+    '<button class="btn secondary sm" type="button" data-sub-close>关闭</button></div>' +
+    (opts.mergedId ? '<div class="btn-row" style="margin-top:8px"><button class="btn secondary sm" type="button" data-sub-rotate>轮换订阅链接</button>' +
+    '<button class="btn danger sm" type="button" data-sub-revoke>撤销订阅链接</button></div>' : '') +
+    '<div class="qr-wrap hidden" data-sub-qr-box><figure data-sub-qr-figure><img data-sub-qr-img alt="订阅链接二维码"><figcaption>订阅链接二维码</figcaption>' +
+    '<div class="btn-row"><button class="btn secondary sm" type="button" data-copy-img>复制图片</button>' +
+    '<button class="btn secondary sm" type="button" data-download-img="订阅链接-二维码.png">下载图片</button></div></figure></div>');
+  if (!m) return null;
+  const modeOf = () => { const s = m.querySelector('[data-sub-mode]'); return (s && s.value) || ''; };
+  const withMode = (fmt) => { const q = []; if (fmt) q.push('format=' + fmt); const md = modeOf(); if (md) q.push('mode=' + md); return q.length ? curUrl + '?' + q.join('&') : curUrl; };
+  onIn(m, '[data-sub-copy-url]', 'click', (e) => copyText(withMode(''), e.target));
+  onIn(m, '[data-sub-copy-clash]', 'click', (e) => copyText(withMode('clash'), e.target));
+  onIn(m, '[data-sub-copy-plain]', 'click', (e) => copyText(withMode('plain'), e.target));
+  const loadModalQr = async () => {
+    const box = m.querySelector('[data-sub-qr-box]'), img = m.querySelector('[data-sub-qr-img]'), fig = m.querySelector('[data-sub-qr-figure]');
+    if (!box || !img) return;
+    try {
+      const r = await apiPost('/api/v1/subscription/qr', { url: withMode('') });
+      if (!r.qr) throw new Error('后端没有返回二维码');
+      img.src = r.qr;
+      if (fig) fig.dataset.qr = r.qr;
+      box.classList.remove('hidden');
+    } catch (err) { toast('二维码生成失败：' + err.message, 'err'); }
+  };
+  onIn(m, '[data-sub-qr]', 'click', async () => {
+    const box = m.querySelector('[data-sub-qr-box]');
+    if (!box) return;
+    if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
+    await loadModalQr();
+  });
+  onIn(m, '[data-sub-mode]', 'change', async () => {
+    const box = m.querySelector('[data-sub-qr-box]');
+    if (box && !box.classList.contains('hidden')) await loadModalQr();
+  });
+  // 轮换（v1.3.2）：同一勾选集合与同一归属人换一个新令牌，弹窗里直接显示新链接。
+  onIn(m, '[data-sub-rotate]', 'click', async () => {
+    const ok = await confirmModal('轮换订阅链接', '<p>轮换后旧订阅链接立即失效，客户端里已导入的订阅要换成新链接。确定吗？</p>', '轮换订阅链接', true);
+    if (!ok) return;
+    try {
+      const r = await apiPost('/api/v1/subscriptions/merged/' + encodeURIComponent(opts.mergedId) + '/rotate', {});
+      curUrl = r.url || '';
+      const urlEl = m.querySelector('[data-merged-url]');
+      if (urlEl) urlEl.textContent = curUrl;
+      const warn = m.querySelector('[data-merged-warn]');
+      if (warn) warn.textContent = '已轮换：旧链接立即失效，请用下面这条新链接。';
+      const box = m.querySelector('[data-sub-qr-box]');
+      if (box) box.classList.add('hidden');
+      toast('订阅链接已轮换，旧链接已失效', 'ok');
+      loadMergedSubsList();
+    } catch (err) { toast('轮换失败：' + err.message, 'err'); }
+  });
+  // 撤销（v1.3.2）：删掉这个令牌，弹窗关闭。
+  onIn(m, '[data-sub-revoke]', 'click', async () => {
+    const ok = await confirmModal('撤销订阅链接', '<p>撤销后订阅链接立即打不开，客户端里已导入的订阅会失效。确定吗？</p>', '撤销订阅链接', true);
+    if (!ok) return;
+    try {
+      await api('/api/v1/subscriptions/merged/' + encodeURIComponent(opts.mergedId), { method: 'DELETE' });
+      closeModal();
+      toast('订阅链接已撤销', 'ok');
+      loadMergedSubsList();
+    } catch (err) { toast('撤销失败：' + err.message, 'err'); }
+  });
+  onIn(m, '[data-sub-close]', 'click', closeModal);
+  return m;
+}
 // 给一份勾选（单个或多个落地）生成订阅链接，弹窗显示链接与复制按钮。
 // selection: [{panel:'local'|远程面板 id, landing:编号}]；name 选填（归属到人，
 // 只在合并订阅生成时传，填了就新起一条、不走轮换）。
 async function showSubForSelection(selection, title, name) {
   try {
     const r = await apiPost('/api/v1/subscriptions/merged', { selection, name: name || undefined });
-    const url = r.url || '';
-    const m = openModal('<h2>' + esc(title || '订阅链接') + '</h2>' +
-      (r.rotated ? '<div class="warn-box">这份选择之前生成过，已轮换：旧链接立即失效，请用下面这条新链接。</div>' : '<div class="warn-box">只显示一次，记下来：关掉弹窗就再也看不到了；丢了就重新生成。</div>') +
-      (name ? '<div class="kv"><span>归属到人</span><b>' + esc(name) + '</b></div>' : '') +
-      '<div class="kv"><span>订阅链接</span><b class="mono" style="word-break:break-all">' + esc(url) + '</b></div>' +
-      '<p class="muted small">模式（可选）：<select data-sub-mode><option value="" selected>默认（不带参数，服务端按分流出）</option><option value="split">分流（TikTok/社交/流媒体走节点，其他直连）</option><option value="global">全局（全部走代理）</option></select>　客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表）；也可以手动加后缀：?format=clash / base64 / plain，?mode=split / global。默认复制的链接不带模式参数；只有规则模式下想全走代理、又保留分类分流时，才选全局。</p>' +
-      '<div class="btn-row"><button class="btn sm" type="button" data-sub-copy-url>复制订阅链接</button>' +
-      '<button class="btn secondary sm" type="button" data-sub-copy-clash>复制 Clash 链接</button>' +
-      '<button class="btn secondary sm" type="button" data-sub-copy-plain>复制明文链接</button>' +
-      '<button class="btn secondary sm" type="button" data-sub-qr>二维码</button>' +
-      '<button class="btn secondary sm" type="button" data-sub-close>关闭</button></div>' +
-      '<div class="qr-wrap hidden" data-sub-qr-box><figure data-sub-qr-figure><img data-sub-qr-img alt="订阅链接二维码"><figcaption>订阅链接二维码</figcaption>' +
-      '<div class="btn-row"><button class="btn secondary sm" type="button" data-copy-img>复制图片</button>' +
-      '<button class="btn secondary sm" type="button" data-download-img="订阅链接-二维码.png">下载图片</button></div></figure></div>');
-    if (!m) return;
-    const modeOf = () => { const s = m.querySelector('[data-sub-mode]'); return (s && s.value) || ''; };
-    const withMode = (fmt) => { const q = []; if (fmt) q.push('format=' + fmt); const md = modeOf(); if (md) q.push('mode=' + md); return q.length ? url + '?' + q.join('&') : url; };
-    onIn(m, '[data-sub-copy-url]', 'click', (e) => copyText(withMode(''), e.target));
-    onIn(m, '[data-sub-copy-clash]', 'click', (e) => copyText(withMode('clash'), e.target));
-    onIn(m, '[data-sub-copy-plain]', 'click', (e) => copyText(withMode('plain'), e.target));
-    const loadModalQr = async () => {
-      const box = m.querySelector('[data-sub-qr-box]'), img = m.querySelector('[data-sub-qr-img]'), fig = m.querySelector('[data-sub-qr-figure]');
-      if (!box || !img) return;
-      try {
-        const r = await apiPost('/api/v1/subscription/qr', { url: withMode('') });
-        if (!r.qr) throw new Error('后端没有返回二维码');
-        img.src = r.qr;
-        if (fig) fig.dataset.qr = r.qr;
-        box.classList.remove('hidden');
-      } catch (err) { toast('二维码生成失败：' + err.message, 'err'); }
-    };
-    onIn(m, '[data-sub-qr]', 'click', async () => {
-      const box = m.querySelector('[data-sub-qr-box]');
-      if (!box) return;
-      if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
-      await loadModalQr();
-    });
-    onIn(m, '[data-sub-mode]', 'change', async () => {
-      const box = m.querySelector('[data-sub-qr-box]');
-      if (box && !box.classList.contains('hidden')) await loadModalQr();
-    });
-    onIn(m, '[data-sub-close]', 'click', closeModal);
+    openMergedSubModal(r.url || '', { title, rotated: r.rotated, name, mergedId: r.id });
     loadMergedSubsList();
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
@@ -2380,8 +2462,17 @@ async function loadMergedSubsList() {
     const r = await api('/api/v1/subscriptions/merged');
     const subs = r.subs || [];
     if (!subs.length) { list.innerHTML = '<p class="muted small">还没有合并订阅：上面勾选落地后点“生成合并订阅”。</p>'; return; }
-    list.innerHTML = '<h3>已生成的合并订阅</h3>' + subs.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + esc(s.summary || '') + '<br><span class="small muted">生成于 ' + esc(fmtDate(s.created_at)) + '</span></span><span><button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
-      '<p class="muted small">订阅链接只在生成时显示一次，这里只列勾选内容；丢了就重新勾选生成（不填名称时同一选择重新生成会轮换，旧链接立即失效；填了名称是新起一条，各归各人）。</p>';
+    list.innerHTML = '<h3>已生成的合并订阅</h3>' + subs.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + esc(s.summary || '') + '<br><span class="small muted">生成于 ' + esc(fmtDate(s.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
+      '<p class="muted small">订阅链接只在生成时显示一次，这里只列勾选内容；丢了就点轮换重新生成一条（旧链接立即失效，新链接在弹窗里只显示一次），或重新勾选生成（不填名称时同一选择重新生成会轮换；填了名称是新起一条，各归各人）。</p>';
+    $$('[data-sub-rotate-merged]', list).forEach((b) => b.addEventListener('click', async () => {
+      const ok = await confirmModal('轮换订阅链接', '<p>轮换后旧订阅链接立即失效，客户端里已导入的订阅要换成新链接。确定吗？</p>', '轮换订阅链接', true);
+      if (!ok) return;
+      try {
+        const r = await apiPost('/api/v1/subscriptions/merged/' + encodeURIComponent(b.dataset.subRotateMerged) + '/rotate', {});
+        openMergedSubModal(r.url || '', { title: '订阅链接', rotated: true, name: b.dataset.subNameMerged || undefined, mergedId: r.id });
+        loadMergedSubsList();
+      } catch (e) { toast('轮换失败：' + e.message, 'err'); }
+    }));
     $$('[data-sub-revoke-merged]', list).forEach((b) => b.addEventListener('click', async () => {
       const ok = await confirmModal('撤销合并订阅', '<p>撤销后这条订阅链接立即失效。确定吗？</p>', '撤销', true);
       if (!ok) return;

@@ -39,6 +39,13 @@ type PanelConfig struct {
 	// 面板里增删节点后订阅内容自动跟着变，不用重新导出。
 	SubTokenHash      string `json:"sub_token_hash"`
 	SubTokenCreatedAt string `json:"sub_token_created_at"`
+	// 订阅对外域名（v1.3.2）：部署完 Cloudflare Worker 后填 Worker 的域名
+	// （或在触发器里绑的自定义域名）。填了之后，面板里显示与复制的订阅链接
+	// （通用链接、每人链接、合并订阅、二维码）都改用 https://这个域名/sub/…，
+	// 不再用面板自己的地址；留空 = 用面板自己的地址（怎么打开就用什么）。
+	// 只存域名（可带端口），不带 scheme 与路径；Worker 代码里的源站地址
+	// （ORIGIN）不受这个设置影响，仍是面板真实地址。
+	SubPublicDomain string `json:"sub_public_domain"`
 	// 合并订阅（v1.2.7，主面板端）：每份勾选集合一条令牌，只存哈希；
 	// 选择变了就新起一条，不同选择绝不共用一个令牌；同一选择重新生成
 	// 会轮换（旧链接立即失效）。内容按勾选的落地集合实时生成。

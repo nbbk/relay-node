@@ -625,8 +625,13 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 单面板订阅令牌管理（会话认证） ----------
 
-// subURL 按当前请求的协议与 Host 拼订阅链接（面板怎么打开，订阅就用什么地址）。
+// subURL 拼订阅链接：填了订阅对外域名（v1.3.2，Worker 域名或自定义域名）
+// 就用 https://域名/sub/…，不再用面板自己的地址；没填时按当前请求的协议
+// 与 Host 拼（面板怎么打开，订阅就用什么地址）。
 func (s *Server) subURL(r *http.Request, tok string) string {
+	if d := strings.TrimSpace(s.cfg.SubPublicDomain); d != "" {
+		return "https://" + d + "/sub/" + tok
+	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
@@ -673,6 +678,78 @@ func (s *Server) handleSubTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(s.currentUser(r), "撤销订阅链接", "", "成功", "订阅链接已失效")
 	writeJSON(w, 200, okResp(nil))
+}
+
+// ---------- 订阅对外域名（v1.3.2，会话认证） ----------
+// Worker 反代部署后，面板里显示的订阅链接还是面板自己的地址（Worker 只负责
+// 反代，不会改写面板显示的链接），用户就以为“部署了也没用”。填了对外域名
+// 后，面板里所有订阅链接（通用链接、每人链接、合并订阅、二维码）都改成
+// https://域名/sub/…；Worker 代码里的源站地址（ORIGIN）不受影响，
+// 仍是面板真实地址。
+
+// validPublicDomain 校验订阅对外域名：只允许域名（字母数字、点、横杠，
+// 标签不以横杠开头或结尾），可选 :端口；不许带 scheme、路径、斜杠、
+// 查询串与注入字符。空字符串由调用方先处理（= 清除）。
+func validPublicDomain(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	h := host
+	if i := strings.LastIndex(h, ":"); i >= 0 {
+		port := h[i+1:]
+		if port == "" {
+			return false
+		}
+		p, err := strconv.Atoi(port)
+		if err != nil || p < 1 || p > 65535 {
+			return false
+		}
+		h = h[:i]
+	}
+	if h == "" || strings.HasPrefix(h, ".") || strings.HasSuffix(h, ".") {
+		return false
+	}
+	for _, lb := range strings.Split(h, ".") {
+		if lb == "" || len(lb) > 63 || strings.HasPrefix(lb, "-") || strings.HasSuffix(lb, "-") {
+			return false
+		}
+		for _, c := range lb {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// handleSubPublicDomainSet 设置/清除订阅对外域名：空字符串 = 清除（恢复成
+// 面板自己的地址）；非空须通过 validPublicDomain 校验，非法返回 400。
+func (s *Server) handleSubPublicDomainSet(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	domain := strings.TrimSpace(req.Domain)
+	if domain != "" && !validPublicDomain(domain) {
+		writeJSON(w, 400, errResp("对外域名格式不对：只填域名（可带端口），不用写 https://，不用写路径"))
+		return
+	}
+	old := s.cfg.SubPublicDomain
+	s.cfg.SubPublicDomain = domain
+	if err := s.saveConfig(); err != nil {
+		s.cfg.SubPublicDomain = old
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	detail := "已恢复成面板自己的地址"
+	if domain != "" {
+		detail = "订阅链接改用 https://" + domain + "/sub/…"
+	}
+	s.audit(s.currentUser(r), "设置订阅对外域名", domain, "成功", detail)
+	writeJSON(w, 200, okResp(map[string]any{"domain": domain}))
 }
 
 // ---------- 订阅用户：一人一条订阅链接（v1.3.0，会话认证） ----------
@@ -863,12 +940,17 @@ func validWorkerHost(host string) bool {
 // renderWorkerCode 生成 Cloudflare Worker 反代代码：只代理 /sub/ 开头的
 // 订阅请求，原样转发查询参数（?format、?mode）与 User-Agent（格式自适
 // 应靠它），状态码、响应头与响应体原样返回；其他路径一律 404，
-// 不把面板其他接口暴露出去。
-func renderWorkerCode(origin string) string {
+// 不把面板其他接口暴露出去。publicDomain 是订阅对外域名（v1.3.2）：
+// 填了之后代码注释里的示例订阅链接用这个域名，没填时保留 <Worker 域名> 占位。
+func renderWorkerCode(origin, publicDomain string) string {
+	example := "https://<Worker 域名>/sub/<令牌>?format=clash&mode=split"
+	if publicDomain != "" {
+		example = "https://" + publicDomain + "/sub/<令牌>?format=clash&mode=split"
+	}
 	return `// relay-panel 订阅反代（Cloudflare Worker）：
 // 部署：Cloudflare 后台 → Workers → 新建 Worker → 粘贴本代码 → 部署；
 // 可选：在 Workers → 触发器（Triggers）里绑一个自定义域名。
-// 部署后订阅链接 = https://<Worker 域名>/sub/<令牌>?format=clash&mode=split
+// 部署后订阅链接 = ` + example + `
 // （令牌与参数和原来完全一样，只是把面板地址换成 Worker 地址）。
 // 源站地址只出现在这里（你的 Cloudflare 账号内可见），客户端看不到面板真实地址。
 const ORIGIN = "` + origin + `";
@@ -898,7 +980,7 @@ func (s *Server) handleWorkerCode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
 	}
-	writeJSON(w, 200, okResp(map[string]any{"origin": origin, "code": renderWorkerCode(origin)}))
+	writeJSON(w, 200, okResp(map[string]any{"origin": origin, "code": renderWorkerCode(origin, s.cfg.SubPublicDomain)}))
 }
 
 // handleSubQR 订阅链接二维码（v1.2.9，会话认证）：
@@ -1153,6 +1235,34 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 	}
 	s.audit(s.currentUser(r), action, target, "成功", "订阅链接只显示一次，请立即复制保存")
 	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": rotated, "selection": sel, "summary": s.selectionSummary(sel)}))
+}
+
+// handleMergedSubsRotate 轮换一条合并订阅：同一勾选集合与同一归属人换一个
+// 新令牌，旧链接立即失效；新链接只在这一次返回（弹窗里直接显示）。
+func (s *Server) handleMergedSubsRotate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	for i := range s.cfg.MergedSubs {
+		if s.cfg.MergedSubs[i].ID != id {
+			continue
+		}
+		tok := generateSubToken()
+		s.cfg.MergedSubs[i].TokenHash = hashSubToken(tok)
+		s.cfg.MergedSubs[i].CreatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := s.saveConfig(); err != nil {
+			writeJSON(w, 500, errResp("保存失败："+err.Error()))
+			return
+		}
+		sel := s.cfg.MergedSubs[i].Selection
+		summary := s.selectionSummary(sel)
+		target := summary
+		if s.cfg.MergedSubs[i].Name != "" {
+			target = s.cfg.MergedSubs[i].Name + "（" + summary + "）"
+		}
+		s.audit(s.currentUser(r), "轮换合并订阅", target, "成功", "旧订阅链接已失效")
+		writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": true, "selection": sel, "summary": summary}))
+		return
+	}
+	writeJSON(w, 404, errResp("没有这条合并订阅"))
 }
 
 // handleMergedSubsDelete 撤销一条合并订阅（该订阅链接立即失效）。

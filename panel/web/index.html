@@ -388,6 +388,11 @@
               <button class="btn danger" id="sub-revoke" type="button">撤销订阅链接</button>
             </div>
             <p class="small">链接泄露可一键轮换，旧链接立即失效；撤销后订阅立即打不开。</p>
+            <div class="btn-row" style="margin-top:10px">
+              <label class="small">订阅对外域名：<input id="sub-public-domain" type="text" placeholder="例如：relay.example.com" style="width:280px"></label>
+              <button class="btn secondary" id="sub-public-domain-save" type="button">保存</button>
+            </div>
+            <p class="small muted">部署完 Cloudflare Worker 后填 Worker 的域名（或在触发器里绑的自定义域名）：填了之后，面板里所有订阅链接（通用链接、每人链接、合并订阅、二维码）都改成 https://这个域名/sub/…，不再显示面板自己的地址；留空保存就恢复成面板自己的地址。只填域名（可带端口），不用写 https://，不用写路径。Worker 代码里的源站地址不受影响，仍是面板真实地址。</p>
           </div>
           <div class="card">
             <h2>订阅用户（一人一条）</h2>
@@ -428,7 +433,7 @@
               <div class="btn-row">
                 <button class="btn secondary sm" id="worker-copy" type="button">复制代码</button>
               </div>
-              <p class="small">部署步骤：Cloudflare 后台 → Workers → 新建 Worker → 粘贴代码 → 部署；可选在触发器里绑一个自定义域名。部署后订阅链接 = https://&lt;Worker 域名&gt;/sub/&lt;令牌&gt;，其余参数不变。Worker 免费额度够订阅拉取用（每天少量请求）。</p>
+              <p class="small">部署步骤：Cloudflare 后台 → Workers → 新建 Worker → 粘贴代码 → 部署；可选在触发器里绑一个自定义域名。部署后订阅链接 = <b class="mono" id="worker-example-link">https://&lt;Worker 域名&gt;/sub/&lt;令牌&gt;</b>，其余参数不变。Worker 免费额度够订阅拉取用（每天少量请求）。</p>
             </div>
           </div>
           <div class="card">
