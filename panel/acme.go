@@ -97,6 +97,16 @@ func localIPs() ([]net.IP, error) {
 // acmeDirectoryURL 是 ACME 目录地址，包级变量只为测试能指向本地假 ACME 服务端。
 var acmeDirectoryURL = "https://acme-v02.api.letsencrypt.org/directory"
 
+// acmeSleep 是 obtainACMECert 里的等待函数，包级变量只为测试能跳过
+// DNS 传播等待与轮询间隔（默认就是 time.Sleep，流程本身不变）。
+var acmeSleep = time.Sleep
+
+// cfTXTFunc 是 Cloudflare TXT 记录的写/删函数，包级变量只为测试能替身
+// （真机走 s.cloudflareTXT；测试里替换成记录调用的假函数）。
+var cfTXTFunc = func(s *Server, domain, value, deleteID string) (string, error) {
+	return s.cloudflareTXT(domain, value, deleteID)
+}
+
 // panelCertRenewDays 面板自身真证书剩余天数 ≤ 该值时自动续签（每天检查一次）。
 const panelCertRenewDays = 30
 
@@ -180,10 +190,15 @@ func (a *acmeClient) jwkThumbprint() (string, error) {
 	return b64url(h[:]), nil
 }
 
-func (a *acmeClient) post(url string, payload any) (int, []byte, error) {
+// post 发一个带 JWS 签名的 ACME 请求，返回（状态码，响应体，响应头，错误）。
+// 响应头必须返回：newAccount 的 Location 头里是账户 URL（kid），newOrder 的
+// Location 头里是订单 URL；只看响应体拿不到这两样东西。
+// 签名方式按 RFC 8555：kid 已拿到时用 kid 签名（除注册外的所有请求都必须用
+// kid，用 jwk 会被 400 拒绝）；kid 为空时（只有注册请求）才用 jwk 签名。
+func (a *acmeClient) post(url string, payload any) (int, []byte, http.Header, error) {
 	nonce, err := a.getNonce()
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	var payloadB64 string
 	if payload == nil {
@@ -191,7 +206,7 @@ func (a *acmeClient) post(url string, payload any) (int, []byte, error) {
 	} else {
 		b, err := json.Marshal(payload)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 		payloadB64 = b64url(b)
 	}
@@ -207,24 +222,24 @@ func (a *acmeClient) post(url string, payload any) (int, []byte, error) {
 	h := sha256.Sum256([]byte(signing))
 	sig, err := rsa.SignPKCS1v15(rand.Reader, a.key, crypto.SHA256, h[:])
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	body, _ := json.Marshal(map[string]string{"protected": b64url(protB), "payload": payloadB64, "signature": b64url(sig)})
 	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	req.Header.Set("Content-Type", "application/jose+json")
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
 	if n := resp.Header.Get("Replay-Nonce"); n != "" {
 		a.nonce = n
 	}
 	b, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, b, nil
+	return resp.StatusCode, b, resp.Header, nil
 }
 
 func (a *acmeClient) get(url string) (int, []byte, error) {
@@ -342,21 +357,27 @@ func (s *Server) obtainACMECert(domain string) error {
 	}
 	ac.dir = map[string]string{}
 	_ = json.Unmarshal(b, &ac.dir)
-	// newAccount
-	code, b, err = ac.post(ac.dir["newAccount"], map[string]any{"termsOfServiceAgreed": true})
+	// newAccount：注册请求本身用 jwk 签名（此时还没有 kid）；成功后账户 URL
+	// 在 Location 头里，之后除注册外的所有请求都必须用这个 kid 签名。
+	code, b, hdr, err := ac.post(ac.dir["newAccount"], map[string]any{"termsOfServiceAgreed": true})
 	if err != nil {
 		return err
 	}
 	if code != 200 && code != 201 {
 		return fmt.Errorf("ACME 注册失败（HTTP %d）：%s", code, string(b))
 	}
-	// kid 从 Location 头取
-	// post 里没返回头，这里简化：重新用 newAccount 的响应头无法拿到，改为直接用 jwk 方式继续
-	// （Let's Encrypt 允许每请求都用 jwk 只要账户已存在会返回 200；为稳妥，kid 为空时继续用 jwk）
-	// newOrder
-	code, b, err = ac.post(ac.dir["newOrder"], map[string]any{"identifiers": []map[string]string{{"type": "dns", "value": domain}}})
+	ac.kid = hdr.Get("Location")
+	if ac.kid == "" {
+		return fmt.Errorf("ACME 注册成功但没返回账户地址（Location 头为空），无法继续")
+	}
+	// newOrder：订单 URL 在 Location 头里，finalize 后要轮询它等证书。
+	code, b, hdr, err = ac.post(ac.dir["newOrder"], map[string]any{"identifiers": []map[string]string{{"type": "dns", "value": domain}}})
 	if err != nil || code >= 300 {
 		return fmt.Errorf("ACME 下单失败（HTTP %d）：%s", code, string(b))
+	}
+	orderURL := hdr.Get("Location")
+	if orderURL == "" {
+		return fmt.Errorf("ACME 下单成功但没返回订单地址（Location 头为空），无法继续")
 	}
 	var order struct {
 		Authorizations []string `json:"authorizations"`
@@ -376,11 +397,11 @@ func (s *Server) obtainACMECert(domain string) error {
 	var cleanups []cleanup
 	defer func() {
 		for _, c := range cleanups {
-			_, _ = s.cloudflareTXT(domain, "", c.id)
+			_, _ = cfTXTFunc(s, domain, "", c.id)
 		}
 	}()
 	for _, authzURL := range order.Authorizations {
-		code, b, err := ac.post(authzURL, nil)
+		code, b, _, err := ac.post(authzURL, nil)
 		if err != nil || code >= 300 {
 			return fmt.Errorf("ACME 授权查询失败")
 		}
@@ -409,21 +430,21 @@ func (s *Server) obtainACMECert(domain string) error {
 		keyAuth := dnsCh.Token + "." + thumb
 		h := sha256.Sum256([]byte(keyAuth))
 		txtVal := b64url(h[:])
-		recID, err := s.cloudflareTXT(domain, txtVal, "")
+		recID, err := cfTXTFunc(s, domain, txtVal, "")
 		if err != nil {
 			return err
 		}
 		cleanups = append(cleanups, cleanup{domain, recID})
 		// 等 DNS 传播
-		time.Sleep(10 * time.Second)
-		code, b, err = ac.post(dnsCh.URL, map[string]any{})
+		acmeSleep(10 * time.Second)
+		code, b, _, err = ac.post(dnsCh.URL, map[string]any{})
 		if err != nil || code >= 300 {
 			return fmt.Errorf("ACME 挑战提交失败（HTTP %d）", code)
 		}
 		// 轮询 authz 状态
 		for i := 0; i < 30; i++ {
-			time.Sleep(5 * time.Second)
-			code, b, err = ac.post(authzURL, nil)
+			acmeSleep(5 * time.Second)
+			code, b, _, err = ac.post(authzURL, nil)
 			if err != nil {
 				continue
 			}
@@ -450,32 +471,37 @@ func (s *Server) obtainACMECert(domain string) error {
 	if err != nil {
 		return err
 	}
-	code, b, err = ac.post(order.Finalize, map[string]any{"csr": b64url(csrDER)})
+	code, b, _, err = ac.post(order.Finalize, map[string]any{"csr": b64url(csrDER)})
 	if err != nil || code >= 300 {
 		return fmt.Errorf("ACME finalize 失败（HTTP %d）", code)
 	}
-	// 轮询订单，等证书 URL
+	// finalize 响应通常不带证书：轮询订单 URL（带 kid 的空体 POST，每 5 秒
+	// 一次、最多 30 次），直到 status=valid 且 certificate 字段出现再下载。
 	var certURL string
 	for i := 0; i < 30; i++ {
-		time.Sleep(5 * time.Second)
-		// 订单 URL 未保存：用 finalize 响应里的 location 无法直接取；这里用 order 对象重新查
-		// 简化：finalize 响应体里若已有 certificate 字段直接用
+		acmeSleep(5 * time.Second)
+		code, b, _, err = ac.post(orderURL, nil)
+		if err != nil {
+			continue
+		}
 		var o struct {
 			Status      string `json:"status"`
 			Certificate string `json:"certificate"`
 		}
 		_ = json.Unmarshal(b, &o)
-		if o.Certificate != "" {
+		if o.Status == "valid" && o.Certificate != "" {
 			certURL = o.Certificate
 			break
 		}
-		// 否则再 post 一次订单 URL（order URL 在 newOrder 的 Location 头里，未保存则无法轮询）
-		break
+		if o.Status == "invalid" {
+			return fmt.Errorf("ACME 订单无效：证书签发失败")
+		}
+		_ = code
 	}
 	if certURL == "" {
-		return fmt.Errorf("ACME 证书还没签好（finalize 后未拿到证书地址），请稍后重试")
+		return fmt.Errorf("ACME 证书还没签好（finalize 后 150 秒内订单未出证书），请稍后重试")
 	}
-	code, b, err = ac.post(certURL, nil)
+	code, b, _, err = ac.post(certURL, nil)
 	if err != nil || code >= 300 {
 		return fmt.Errorf("ACME 下载证书失败（HTTP %d）", code)
 	}
