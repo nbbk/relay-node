@@ -387,10 +387,10 @@ document.addEventListener('click', (e) => {
   if (g) goto(g.dataset.goto);
   const x = e.target.closest('[data-expand-links]');
   if (x) {
-    const card = x.closest('.card');
-    const box = card ? card.querySelector('.extra-links') : null;
-    if (!box) return;
-    const nowHidden = box.classList.toggle('hidden');
+    const box = x.closest('.card, .central-link-body, .central-landing-body');
+    const extra = box ? box.querySelector('.extra-links') : null;
+    if (!extra) return;
+    const nowHidden = extra.classList.toggle('hidden');
     x.textContent = nowHidden ? '展开其余 ' + x.dataset.expandLinks + ' 条链接' : '收起';
   }
 });
@@ -724,7 +724,9 @@ async function submitAdd(payload, shareChoice) {
     toast('添加失败：' + msg, 'err');
   } finally { btn.disabled = false; btn.textContent = '提交并添加落地'; }
 }
-async function showShareChoice(resp, payload) {
+async function showShareChoice(resp, payload, submitFn) {
+  // submitFn 可选：不传时走本地提交（submitAdd）；集中管理传自己的提交函数
+  // （调主面板代理接口），复用同一个分流选择弹窗。
   const options = resp.options || [];
   const conflicts = (resp.conflicts || []).join('、') || '端口冲突';
   const m = openModal('<h2>端口冲突，请选择处理方式</h2>' +
@@ -753,7 +755,9 @@ async function showShareChoice(resp, payload) {
       if (o443) { const n = Number(o443); if (n < 1 || n > 65535) { toast('10443 这类高位端口请填 1–65535', 'err'); return; } overrides['443'] = n; }
     }
     closeModal();
-    await submitAdd(payload, { mode: sel.value, overrides: Object.keys(overrides).length ? overrides : undefined });
+    const choice = { mode: sel.value, overrides: Object.keys(overrides).length ? overrides : undefined };
+    if (submitFn) { await submitFn(choice); return; }
+    await submitAdd(payload, choice);
   });
 }
 
@@ -1901,6 +1905,9 @@ let centralRemotes = [];
 let centralDetailId = null;
 let centralDetailPage = 1;
 let centralDetailLandings = [];
+let centralOpenLanding = null; // 集中管理落地列表当前展开的落地编号（单开手风琴，null=全收起）
+let centralDetailLinksRemote = null; // 落地链接缓存属于哪台远程
+let centralDetailLinksGroups = null; // 该远程的 /links 分组缓存（展开时才取）
 
 // apiRaw：与 api() 一样走 fetch，但业务失败（ok=false）时不抛错、把整包返回，
 // 调用方才能按 side 写清是主面板的问题还是远程面板的问题。
@@ -1975,6 +1982,8 @@ async function loadCentral() {
 async function loadCentralLandings(id, page) {
   if (page) centralDetailPage = page;
   centralDetailId = id;
+  centralOpenLanding = null; // 默认全收起：翻页/重进都回到折叠态
+  if (centralDetailLinksRemote !== id) { centralDetailLinksGroups = null; centralDetailLinksRemote = null; }
   const rm = centralRemotes.find((x) => x.id === id);
   const detail = $('#central-detail');
   detail.innerHTML = '<div class="card">加载中…</div>';
@@ -1989,19 +1998,72 @@ async function loadCentralLandings(id, page) {
       return;
     }
     detail.innerHTML = '<div class="card"><h2>' + esc(rm ? rm.name : id) + ' 的落地</h2>' + cachedNote +
+      '<p class="muted small">点一行展开看它的链接、二维码与操作；一次只展开一个，再点一次收起。</p>' +
       pg.slice.map((l) => {
         const ports = (l.ports || []).map((p) => esc(p.proto) + ' ' + esc(p.listen) + '→' + esc(p.remote)).join('、') || '—';
         const on = l.online === true ? '<span class="badge green">在线</span>' : l.online === false ? '<span class="badge red">离线</span>' : '<span class="badge">未知</span>';
         const lat = l.latency_ms == null ? '—' : esc(l.latency_ms) + ' ms';
-        return '<div class="kv"><span>' + esc(l.name || l.domain || l.landing) + ' <span class="small">#' + esc(l.index) + '</span></span><span>' + on + ' ' + lat + '</span></div>' +
+        return '<div class="central-landing">' +
+          '<div class="central-landing-head" data-central-toggle="' + esc(l.index) + '" role="button" tabindex="0"><span>' + esc(l.name || l.domain || l.landing) + ' <span class="small">#' + esc(l.index) + '</span></span><span>' + on + ' ' + lat + ' <span class="central-caret">▸</span></span></div>' +
+          '<div class="central-landing-body hidden" data-central-body="' + esc(l.index) + '">' +
           '<div class="kv"><span>落地</span><b>' + esc(l.landing) + '</b></div>' +
           '<div class="kv"><span>监听端口</span><b>' + ports + '</b></div>' +
-          '<div class="btn-row"><button class="btn danger sm" type="button" data-central-del-landing="' + esc(l.index) + '">删除该落地</button></div>';
+          '<div class="central-landing-links" data-central-links-box="' + esc(l.index) + '"></div>' +
+          '<div class="btn-row"><button class="btn secondary sm" type="button" data-central-addnode="' + esc(l.index) + '">＋ 新增节点</button>' +
+          '<button class="btn danger sm" type="button" data-central-del-landing="' + esc(l.index) + '">删除该落地</button></div></div></div>';
       }).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'central') + '</div>';
+    $$('[data-central-toggle]', detail).forEach((h) => {
+      const toggle = () => centralToggleLanding(Number(h.dataset.centralToggle));
+      h.addEventListener('click', toggle);
+      h.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+    });
+    $$('[data-central-addnode]', detail).forEach((b) => b.addEventListener('click', () => {
+      const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralAddnode));
+      centralAddNodeWizard(id, Number(b.dataset.centralAddnode), l ? (l.name || l.domain || l.landing) : ('#' + b.dataset.centralAddnode));
+    }));
     $$('[data-central-del-landing]', detail).forEach((b) => b.addEventListener('click', () => centralDeleteLanding(id, Number(b.dataset.centralDelLanding))));
     if (pg.totalPages > 1) wirePager(detail, 'central', pg.cur, pg.totalPages, (p) => loadCentralLandings(id, p));
   } catch (e) {
     detail.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
+  }
+}
+// 手风琴开关：点开一个、收起其他；再点已开的就收起。链接只在第一次展开时取。
+function centralToggleLanding(index) {
+  const detail = $('#central-detail');
+  if (!detail) return;
+  const wasOpen = centralOpenLanding === index;
+  $$('.central-landing-body', detail).forEach((b) => b.classList.add('hidden'));
+  $$('.central-caret', detail).forEach((c) => { c.textContent = '▸'; });
+  if (wasOpen) { centralOpenLanding = null; return; }
+  centralOpenLanding = index;
+  const body = $('[data-central-body="' + index + '"]', detail);
+  const head = $('[data-central-toggle="' + index + '"]', detail);
+  if (body) body.classList.remove('hidden');
+  if (head) { const c = head.querySelector('.central-caret'); if (c) c.textContent = '▾'; }
+  centralLoadLandingLinks(centralDetailId, index);
+}
+async function centralLoadLandingLinks(remoteId, index) {
+  const detail = $('#central-detail');
+  const box = detail ? $('[data-central-links-box="' + index + '"]', detail) : null;
+  if (!box || box.dataset.loaded) return;
+  box.innerHTML = '<p class="muted">链接加载中…</p>';
+  try {
+    if (centralDetailLinksRemote !== remoteId || !centralDetailLinksGroups) {
+      const r = await api('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/links');
+      centralDetailLinksGroups = r.groups || [];
+      centralDetailLinksRemote = remoteId;
+    }
+    const l = centralDetailLandings.find((x) => x.index === index);
+    const g = (centralDetailLinksGroups || []).find((x) => x.landing_index === index) ||
+      (centralDetailLinksGroups || []).find((x) => l && x.landing === l.landing);
+    const boxNow = detail ? $('[data-central-links-box="' + index + '"]', detail) : null;
+    if (!boxNow) return; // 列表已重渲染（翻页等），不写回旧节点
+    if (!g || !(g.links || []).length) { boxNow.innerHTML = '<p class="muted">暂无链接：先在远程面板的节点链接页生成，或给这个落地粘贴原始链接。</p>'; }
+    else { boxNow.innerHTML = linksHtml(g.links, g.qr || {}); }
+    boxNow.dataset.loaded = '1';
+  } catch (e) {
+    const boxNow = detail ? $('[data-central-links-box="' + index + '"]', detail) : null;
+    if (boxNow) boxNow.innerHTML = '<div class="error-box">链接加载失败：' + esc(e.message) + '</div>';
   }
 }
 async function centralLinks(id) {
@@ -2013,7 +2075,29 @@ async function centralLinks(id) {
     const groups = r.groups || [];
     const body = $('#central-links-body', m);
     if (!groups.length) { body.innerHTML = '<div class="empty">这台远程面板还没有节点链接。</div>'; return; }
-    body.innerHTML = groups.map((g) => '<h3>' + esc(g.name || g.landing || '') + '</h3>' + linksHtml(g.links || [], g.qr || {})).join('');
+    // 默认全收起：只列落地名，点哪行展开哪行的链接与二维码（单开手风琴）
+    let openGroup = null;
+    body.innerHTML = '<p class="muted small">点一行展开看它的链接与二维码；一次只展开一个，再点一次收起。</p>' + groups.map((g, i) =>
+      '<div class="central-link-group">' +
+      '<div class="central-link-head" data-central-group-toggle="' + i + '" role="button" tabindex="0"><span>' + esc(g.name || g.landing || '') + '</span><span>' + groupTagsHtml(g) + ' <span class="central-caret">▸</span></span></div>' +
+      '<div class="central-link-body hidden" data-central-group-body="' + i + '">' + linksHtml(g.links || [], g.qr || {}) + '</div></div>'
+    ).join('');
+    $$('[data-central-group-toggle]', body).forEach((h) => {
+      const toggle = () => {
+        const i = Number(h.dataset.centralGroupToggle);
+        const wasOpen = openGroup === i;
+        $$('.central-link-body', body).forEach((b) => b.classList.add('hidden'));
+        $$('.central-caret', body).forEach((c) => { c.textContent = '▸'; });
+        if (wasOpen) { openGroup = null; return; }
+        openGroup = i;
+        const b = $('[data-central-group-body="' + i + '"]', body);
+        if (b) b.classList.remove('hidden');
+        const c = h.querySelector('.central-caret');
+        if (c) c.textContent = '▾';
+      };
+      h.addEventListener('click', toggle);
+      h.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+    });
   } catch (e) {
     const body = $('#central-links-body', m);
     if (body) body.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>';
@@ -2022,34 +2106,165 @@ async function centralLinks(id) {
 function centralAddLanding(id) {
   const rm = centralRemotes.find((x) => x.id === id);
   const m = openModal('<h2>给 ' + esc(rm ? rm.name : '') + ' 加落地</h2>' +
-    '<p class="muted">提交后主面板会先校验，再用令牌调远程面板加落地；远程面板跑安装脚本要一会儿，请耐心等。</p>' +
-    '<label>落地 IP 或域名</label><input id="central-add-landing" placeholder="203.0.113.1">' +
-    '<label>预设</label><select id="central-add-preset"><option value="1">预设 1：tiktok-node（Xray）</option><option value="2">预设 2：sing-box-node</option><option value="3">预设 3：自定义端口</option></select>' +
-    '<div id="central-add-custom-wrap" class="hidden"><label>自定义端口</label><input id="central-add-custom" placeholder="443,8388"></div>' +
-    '<label>证书域名</label><input id="central-add-cert" placeholder="example.com">' +
-    '<label>证书签发方式</label><select id="central-add-cert-mode"><option value="http01" selected>默认走 80（HTTP-01）</option><option value="dns01">DNS 验证 Cloudflare（DNS-01）</option></select>' +
+    '<p class="muted">提交后主面板会先校验，再用令牌调远程面板加落地；远程面板跑安装脚本要一会儿，请耐心等。字段与本地加落地一致。</p>' +
+    '<label>落地 IP 或域名 <span class="hint">必填，如 203.0.113.1</span></label><input id="central-add-landing" placeholder="203.0.113.1">' +
+    '<label>名称 / 备注 <span class="hint">选填，显示名，如 香港-01；空着显示落地地址</span></label><input id="central-add-name" placeholder="如 香港-01" maxlength="64">' +
+    '<label>原始节点链接 <span class="hint">选填，落地机上生成的节点链接（vless:// 等开头）；填了卡片上直接出中转链接与二维码，不填以后也能在管理里补粘贴</span></label><input id="central-add-orig-link" placeholder="vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443?security=tls&sni=example.com#示例">' +
+    '<label>节点名称 <span class="hint">选填，生成链接时的备注名；空着用原始链接自己的备注名</span></label><input id="central-add-link-name" placeholder="如 香港-01" maxlength="64">' +
+    '<label>预设 <span class="hint">落地机装的节点类型</span></label><select id="central-add-preset"><option value="1">预设 1：tiktok-node（Xray）</option><option value="2">预设 2：sing-box-node</option><option value="3">预设 3：自定义端口</option></select>' +
+    '<div id="central-add-sb-wrap" class="hidden"><label>sing-box 模式</label><select id="central-add-sb-mode"><option value="1">TLS（443）</option><option value="2">明文（8080）</option></select></div>' +
+    '<div id="central-add-custom-wrap" class="hidden"><label>自定义端口 <span class="hint">必填，逗号分隔，如 443,8388；可写 监听:落地，如 10443:443</span></label><input id="central-add-custom" placeholder="443,8388"></div>' +
+    '<label>模式 <span class="hint">任意门：节点域名永远指落地，中转只做端口转发</span></label><select id="central-add-mode"><option value="standard" selected>标准模式</option><option value="door">任意门模式</option></select>' +
+    '<div id="central-add-relay-wrap" class="hidden"><label>中转地址 <span class="hint">任意门链接用这个地址生成</span></label><input id="central-add-relay-addr" placeholder="留空 = 自动用中转机公网 IP"></div>' +
+    '<label>证书域名 <span class="hint">用于签证书，如 example.com</span></label><input id="central-add-cert" placeholder="example.com">' +
+    '<label>证书签发方式 <span class="hint">决定证书怎么签、怎么续签；要和落地机装节点时选的方式一致</span></label><select id="central-add-cert-mode"><option value="http01" selected>默认走 80（HTTP-01）</option><option value="dns01">DNS 验证 Cloudflare（DNS-01）</option></select>' +
+    '<p class="small">默认走 80：落地机装节点时用 80 端口验证域名签证书，最常用、不用多配；代价是 80 必须直通落地，改了监听端口或域名指着中转时，续签要手动把域名改回指向落地。DNS 验证：落地机用 Cloudflare 令牌在 DNS 里加验证记录签证书，续签全自动，域名指哪都行、不用 80；前提是装节点时选了 DNS 验证并配好令牌，没配令牌的落地别选这个。</p>' +
+    '<label>节点时长</label><select id="central-add-duration"><option value="0">永久（默认）</option><option value="30">30 天</option><option value="90">90 天</option><option value="180">180 天</option><option value="365">365 天</option><option value="custom">自定义天数</option></select>' +
+    '<div id="central-add-duration-wrap" class="hidden"><label>自定义天数</label><input id="central-add-duration-custom" type="number" min="1" max="3650" placeholder="如 60"></div>' +
+    '<label>流量上限（GB）<span class="hint">0 = 不限</span></label><input id="central-add-traffic" type="number" min="0" step="1" placeholder="0">' +
+    '<label>流量上限算法</label><select id="central-add-traffic-mode"><option value="total">总量（整个生命周期）</option><option value="monthly">按月（每月重置）</option></select>' +
+    '<label>限速（Mbps）<span class="hint">0 = 不限速</span></label><input id="central-add-speed" type="number" min="0" step="1" placeholder="0">' +
+    '<div class="checkbox-row"><input type="checkbox" id="central-add-want-udp"><label for="central-add-want-udp" style="margin:0;font-weight:400">同时转发 UDP（HY2 / TUIC 需要）</label></div>' +
     '<div class="btn-row"><button class="btn" id="central-add-ok" type="button">提交并添加落地</button><button class="btn secondary" id="central-add-cancel" type="button">取消</button></div>');
   onIn(m, '#central-add-cancel', 'click', closeModal);
   onIn(m, '#central-add-preset', 'change', () => {
-    const w = $('#central-add-custom-wrap', m);
-    if (w) w.classList.toggle('hidden', $('#central-add-preset', m).value !== '3');
+    const v = $('#central-add-preset', m).value;
+    const sb = $('#central-add-sb-wrap', m);
+    const cw = $('#central-add-custom-wrap', m);
+    if (sb) sb.classList.toggle('hidden', v !== '2');
+    if (cw) cw.classList.toggle('hidden', v !== '3');
+  });
+  onIn(m, '#central-add-mode', 'change', () => {
+    const w = $('#central-add-relay-wrap', m);
+    if (w) w.classList.toggle('hidden', $('#central-add-mode', m).value !== 'door');
+  });
+  onIn(m, '#central-add-duration', 'change', () => {
+    const w = $('#central-add-duration-wrap', m);
+    if (w) w.classList.toggle('hidden', $('#central-add-duration', m).value !== 'custom');
   });
   onIn(m, '#central-add-ok', 'click', async () => {
-    const landing = $('#central-add-landing', m).value.trim();
-    const preset = $('#central-add-preset', m).value;
-    const customPorts = $('#central-add-custom', m).value.trim();
-    const certDomain = $('#central-add-cert', m).value.trim();
-    const certMode = $('#central-add-cert-mode', m).value;
-    if (!landing) { toast('请先填落地 IP 或域名', 'err'); return; }
-    if (preset === '3' && !customPorts) { toast('自定义端口必填', 'err'); return; }
+    const payload = buildCentralAddPayload(m);
+    if (!payload) return;
     closeModal();
     toast('正在远程加落地，请稍等…');
     try {
-      const d = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(id) + '/landings', { landing, preset, custom_ports: customPorts, cert_domain: certDomain, cert_mode: certMode });
-      if (d.ok === false) { toast(centralOpError(d), 'err'); return; }
+      const d = await centralSubmitAdd(id, payload, null);
+      if (d.ok === false) {
+        if (d.need_choice) {
+          await showShareChoice(d, payload, async (choice) => {
+            try {
+              const d2 = await centralSubmitAdd(id, payload, choice);
+              if (d2.ok === false) { toast(centralOpError(d2), 'err'); return; }
+              toast('远程加落地成功', 'ok');
+              showCentralAddResult(d2);
+            } catch (err) { toast('远程加落地失败：' + err.message, 'err'); }
+          });
+          return;
+        }
+        toast(centralOpError(d), 'err'); return;
+      }
       toast('远程加落地成功', 'ok');
-      loadCentral();
+      showCentralAddResult(d);
     } catch (err) { toast('远程加落地失败：' + err.message, 'err'); }
+  });
+}
+// 集中管理加落地：字段与本地 buildAddPayload 一致（名称/原始链接/节点名称/
+// 模式+中转地址/sing-box 模式/自定义端口/签发方式/时长/流量/限速/UDP）。
+function buildCentralAddPayload(m) {
+  const landing = $('#central-add-landing', m).value.trim();
+  const certDomain = $('#central-add-cert', m).value.trim();
+  if (!landing) { toast('请填写落地 IP 或域名', 'err'); return null; }
+  if (!/^[A-Za-z0-9.-]+$/.test(landing)) { toast('落地 IP 或域名格式不正确', 'err'); return null; }
+  if (certDomain && !/^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(certDomain)) { toast('证书域名格式不正确，如 example.com', 'err'); return null; }
+  const preset = $('#central-add-preset', m).value;
+  let customPorts = '';
+  if (preset === '3') {
+    customPorts = $('#central-add-custom', m).value.trim();
+    if (!customPorts) { toast('自定义端口必填，如 443,8388', 'err'); return null; }
+    if (!/^[\d,: ]+$/.test(customPorts)) { toast('自定义端口格式不正确，只能是数字、逗号和冒号', 'err'); return null; }
+  }
+  let duration = Number($('#central-add-duration', m).value) || 0;
+  if ($('#central-add-duration', m).value === 'custom') {
+    duration = Number($('#central-add-duration-custom', m).value) || 0;
+    if (duration < 1 || duration > 3650) { toast('自定义天数请填 1–3650', 'err'); return null; }
+  }
+  const trafficGb = Number($('#central-add-traffic', m).value) || 0;
+  if (trafficGb < 0) { toast('流量上限不能为负', 'err'); return null; }
+  const speed = Number($('#central-add-speed', m).value) || 0;
+  if (speed < 0) { toast('限速不能为负', 'err'); return null; }
+  const mode = $('#central-add-mode', m).value;
+  const relayAddr = (mode === 'door' && $('#central-add-relay-addr', m)) ? $('#central-add-relay-addr', m).value.trim() : '';
+  const name = $('#central-add-name', m).value.trim();
+  if (name && name.length > 64) { toast('名称不能超过 64 字', 'err'); return null; }
+  const origLink = $('#central-add-orig-link', m).value.trim();
+  if (origLink && !/^(vless|trojan|ss|vmess):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss:// 或 vmess:// 开头', 'err'); return null; }
+  const linkName = $('#central-add-link-name', m).value.trim();
+  if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return null; }
+  return {
+    landing, preset, mode,
+    name: name || undefined,
+    orig_link: origLink || undefined,
+    link_name: linkName || undefined,
+    relay_addr: relayAddr || undefined,
+    sb_mode: preset === '2' ? $('#central-add-sb-mode', m).value : undefined,
+    custom_ports: customPorts || undefined,
+    want_udp: $('#central-add-want-udp', m).checked,
+    cert_domain: certDomain || undefined,
+    cert_mode: $('#central-add-cert-mode', m).value,
+    duration_days: duration,
+    traffic_limit_bytes: Math.round(trafficGb * 1073741824),
+    traffic_limit_mode: trafficGb > 0 ? $('#central-add-traffic-mode', m).value : undefined,
+    speed_limit_mbps: speed,
+  };
+}
+async function centralSubmitAdd(id, payload, shareChoice) {
+  const body = Object.assign({}, payload);
+  if (shareChoice) { body.share_mode = shareChoice.mode; if (shareChoice.overrides) body.listen_overrides = shareChoice.overrides; }
+  return apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(id) + '/landings', body);
+}
+function showCentralAddResult(d) {
+  openModal('<h2>✅ 远程落地添加成功</h2>' +
+    (d.door_note ? '<div class="warn-box">' + esc(d.door_note) + '</div>' : '') +
+    (d.manual ? '<div class="warn-box">' + esc(d.manual) + '</div>' : '') +
+    ((d.qr && Object.keys(d.qr).length) ? '' : '<p class="muted">二维码生成失败，仅显示链接。</p>') +
+    linksHtml(d.links, d.qr) +
+    '<div class="btn-row"><button class="btn" id="central-add-done" type="button">完成</button></div>');
+  on('#central-add-done', 'click', () => { closeModal(); loadCentral(); });
+}
+/* ---------- 远程给落地加节点：两步向导（与本地 addNodeWizard 同款） ---------- */
+async function centralAddNodeWizard(remoteId, index, label) {
+  const m = openModal('<h2>给远程落地加节点（第 1 步，共 2 步）</h2>' +
+    '<p>面板在中转机上，够不着落地机，所以分两步走：先填新子域名，拿到落地机命令；到落地机跑完命令，再把新链接粘贴回来登记。</p>' +
+    '<p class="small">远程落地：' + esc(label || index) + '</p>' +
+    '<label>新子域名 <span class="hint">如 node2.example.com</span></label><input id="central-wizard-sub" placeholder="node2.example.com">' +
+    '<div class="btn-row"><button class="btn" id="central-wz-next" type="button">生成落地机命令</button><button class="btn secondary" id="central-wz-cancel" type="button">取消</button></div>');
+  onIn(m, '#central-wz-cancel', 'click', closeModal);
+  onIn(m, '#central-wz-next', 'click', async () => {
+    const sub = $('#central-wizard-sub', m).value.trim();
+    if (!sub || !/^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(sub)) { toast('请填写正确的子域名，如 node2.example.com', 'err'); return; }
+    try {
+      const r = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/landings/' + index + '/add-node', { subdomain: sub });
+      if (r.ok === false) { toast(centralOpError(r), 'err'); return; }
+      const cmd = (r.wizard && r.wizard.landing_cmd) || r.landing_cmd || '';
+      const m2 = openModal('<h2>给远程落地加节点（第 2 步，共 2 步）</h2>' +
+        '<p>到落地机上执行下面这条命令，跑完会生成新节点链接：</p>' +
+        (cmd ? '<pre class="cmd">' + esc(cmd) + '</pre><div class="btn-row"><button class="btn secondary sm" type="button" data-copy="' + esc(cmd) + '">复制命令</button></div>' : '<p class="muted">后端未返回命令，请联系管理员确认命令模板。</p>') +
+        '<label>粘贴新节点链接 <span class="hint">落地机跑完命令后生成的那条链接</span></label><input id="central-wz-link" placeholder="vless://…@' + esc(sub) + ':443?…">' +
+        '<div class="btn-row"><button class="btn" id="central-wz-done" type="button">登记并生成 twin</button><button class="btn secondary" id="central-wz-back" type="button">上一步</button></div>');
+      onIn(m2, '#central-wz-back', 'click', () => centralAddNodeWizard(remoteId, index, label));
+      onIn(m2, '#central-wz-done', 'click', async () => {
+        const link = $('#central-wz-link', m2).value.trim();
+        if (!link || !/^(vless|trojan|ss|vmess):\/\//.test(link)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
+        try {
+          const r2 = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/landings/' + index + '/add-node', { subdomain: sub, new_link: link });
+          if (r2.ok === false) { toast(centralOpError(r2), 'err'); return; }
+          closeModal();
+          openModal('<h2>✅ 子节点已登记</h2>' + linksHtml(r2.links, r2.qr) +
+            '<div class="btn-row"><button class="btn" id="central-wz-close" type="button">完成</button></div>');
+          on('#central-wz-close', 'click', () => { closeModal(); if (centralDetailId === remoteId) loadCentralLandings(remoteId); });
+        } catch (e) { toast('登记失败：' + e.message, 'err'); }
+      });
+    } catch (e) { toast('生成命令失败：' + e.message, 'err'); }
   });
 }
 async function centralDeleteLanding(id, index) {

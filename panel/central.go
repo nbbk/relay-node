@@ -12,8 +12,8 @@ package main
 //   - 主面板必须拿着令牌原文去调远程接口，所以主面板 config.json 里
 //     存的是令牌明文（remotes[].token），与 Telegram Token、Cloudflare
 //     令牌同等待遇：文件 600 权限，绝不进审计日志、绝不通过接口返回。
-//   - 令牌只放行白名单里的 5 个 central/* 接口（status / links /
-//     加落地 / 删落地 / 服务操作），改密码、改端口、改设置等接口令牌调不通。
+//   - 令牌只放行白名单里的 6 个 central/* 接口（status / links /
+//     加落地 / 删落地 / 给落地加节点 / 服务操作），改密码、改端口、改设置等接口令牌调不通。
 //   - 代理操作时主面板服务端先按本地同样的规则二次校验参数，
 //     用户输入绝不直接拼进 shell，也不原样转发给远程而不校验。
 
@@ -677,7 +677,7 @@ func validateRemoteAddLandingBody(body []byte) error {
 	if req.TrafficLimitMode != "" && req.TrafficLimitMode != "total" && req.TrafficLimitMode != "monthly" {
 		return fmt.Errorf("流量限制模式只能是 total 或 monthly")
 	}
-	if req.TrafficLimitBytes < 0 || req.SpeedLimitMbps < 0 || req.DurationDays < 0 {
+	if req.TrafficLimitBytes < 0 || req.SpeedLimitMbps < 0 || req.DurationDays < -1 {
 		return fmt.Errorf("数值不能为负")
 	}
 	if req.ShareMode != "" && req.ShareMode != "1" && req.ShareMode != "2" && req.ShareMode != "3" && req.ShareMode != "4" {
@@ -692,7 +692,7 @@ func validateRemoteAddLandingBody(body []byte) error {
 	for k, v := range req.ListenOverrides {
 		p, err := strconv.Atoi(strings.TrimSpace(k))
 		if err != nil || !validPort(p) || !validPort(v) {
-			return fmt.Errorf("监听端口覆盖格式不对：键和值都须是 1-65535 的端口")
+			return fmt.Errorf("监听端口覆盖格式不对：键和值都须是 1-65535 的端口，如 {\"443\": 10443}")
 		}
 	}
 	for k, v := range req.DoorPortOverrides {
@@ -711,6 +711,34 @@ func validateRemoteAddLandingBody(body []byte) error {
 	}
 	if req.LinkName != "" && (len(req.LinkName) > 64 || strings.ContainsAny(req.LinkName, "\n\r")) {
 		return fmt.Errorf("节点名称太长或含有非法字符（不能超过 64 字，不能含换行）")
+	}
+	return nil
+}
+
+// validateRemoteAddNodeBody 主面板端的二次校验（与本地给落地加节点同样的规则）：
+// 子域名必填；只填子域名是第 1 步（返回落地机命令），带 new_link 是第 2 步
+// （链接域名须与子域名一致）。校验通过后才把原始请求体发给远程面板。
+func validateRemoteAddNodeBody(body []byte) error {
+	var req struct {
+		Subdomain string `json:"subdomain"`
+		NewLink   string `json:"new_link"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return fmt.Errorf("请求格式不对")
+	}
+	if req.Subdomain == "" || !validDomain(req.Subdomain) {
+		return fmt.Errorf("子域名格式不对")
+	}
+	if req.NewLink != "" {
+		host, err := linkHostDomain(req.NewLink)
+		if err != nil {
+			return fmt.Errorf("链接校验失败：%v", err)
+		}
+		if !strings.EqualFold(host, req.Subdomain) {
+			return fmt.Errorf("链接里的域名（%s）与填的子域名（%s）不一致", host, req.Subdomain)
+		}
 	}
 	return nil
 }
@@ -765,6 +793,54 @@ func (s *Server) handleCentralRemoteDeleteLanding(w http.ResponseWriter, r *http
 	}
 	s.proxyRemoteWrite(w, r, *rem, "DELETE", "/api/v1/central/landings/"+strconv.Itoa(index), nil, 60*time.Second)
 	s.audit(s.currentUser(r), "代理删除落地", rem.Name+" / 落地 "+strconv.Itoa(index), "已转发到远程面板", "")
+}
+
+func (s *Server) handleCentralRemoteAddNode(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rem := s.remoteByID(id)
+	if rem == nil {
+		writeJSON(w, 404, errResp("没有登记过这台远程面板"))
+		return
+	}
+	index, err := strconv.Atoi(r.PathValue("index"))
+	if err != nil || index < 1 {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "落地编号不对", "side": "local"})
+		return
+	}
+	// 给落地加节点是 1.2.5 才有的远程接口：缓存的远程版本低于 1.2.5
+	// 直接拒绝，不发请求；缓存里没有版本时放行，靠远程的 404 兜底。
+	s.centralMu.Lock()
+	snap := s.centralCache[id]
+	s.centralMu.Unlock()
+	if snap != nil && snap.Version != "" && isNewerVersion("1.2.5", snap.Version) {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": fmt.Sprintf("远程面板版本太旧（%s，需要 1.2.5+），请先升级远程面板", snap.Version), "side": "remote"})
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeJSON(w, 400, errResp("请求读失败"))
+		return
+	}
+	if err := validateRemoteAddNodeBody(body); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error(), "side": "local"})
+		return
+	}
+	// 第 2 步要跑 install.sh --twin（远程 60 秒），超时放宽到 90 秒。
+	status, respBody, err := s.remoteCall(*rem, "POST", "/api/v1/central/landings/"+strconv.Itoa(index)+"/add-node", body, 90*time.Second)
+	if err != nil {
+		side, msg := remoteSideOf(err)
+		if status == 404 {
+			// 老面板没有这个接口：404 是版本问题，不是地址问题
+			msg = "远程面板版本太旧（需要 1.2.5+），请先升级远程面板"
+			side = "remote"
+		}
+		writeJSON(w, 200, map[string]any{"ok": false, "error": msg, "side": side})
+		return
+	}
+	go s.pollOneRemote(*rem)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(respBody)
+	s.audit(s.currentUser(r), "代理给落地加节点", rem.Name+" / 落地 "+strconv.Itoa(index), "已转发到远程面板", "")
 }
 
 func (s *Server) handleCentralRemoteService(w http.ResponseWriter, r *http.Request) {

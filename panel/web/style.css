@@ -170,6 +170,13 @@ html[data-theme="dark"] pre.cmd{background:#020617}
 }
 html[data-theme="dark"] .log-box{background:#020617}
 
+/* ---- 集中管理手风琴（落地列表 / 链接弹窗）：默认全收起，点行展开一个 ---- */
+.central-landing-head,.central-link-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 4px;cursor:pointer;border-bottom:1px solid var(--border)}
+.central-landing-head:hover,.central-link-head:hover{background:var(--surface-muted)}
+.central-landing-head:focus-visible,.central-link-head:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.central-landing-body,.central-link-body{padding:8px 0 12px}
+.central-caret{color:var(--muted);white-space:nowrap}
+
 /* ---- 步骤引导 ---- */
 .steps{list-style:none; margin:0; padding:0}
 .steps li{display:flex; gap:12px; padding:14px 0; border-bottom:1px dashed var(--border)}
