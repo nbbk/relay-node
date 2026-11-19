@@ -1489,6 +1489,47 @@ function initSettingsTabs() {
     if (btn) btn.focus();
   });
 }
+// 异地备份卡片内子选项卡（v1.3.13）：口令设置 / R2 / 七牛云，复用设置页选项卡模式
+//（原生 button＋aria-selected＋方向键，localStorage 记住上次，键与设置页分开）。
+const RB_TABS = ['passphrase', 'r2', 'qiniu'];
+const RB_TAB_KEY = 'relay-panel-remote-backup-tab';
+function rbTabValid(id) { return RB_TABS.indexOf(id) >= 0; }
+function showRemoteBackupTab(id) {
+  if (!rbTabValid(id)) id = 'passphrase';
+  RB_TABS.forEach((t) => {
+    const btn = document.getElementById('rb-tab-' + t);
+    if (btn) btn.setAttribute('aria-selected', t === id ? 'true' : 'false');
+    setVisible(document.getElementById('rb-panel-' + t), t === id);
+  });
+  try { localStorage.setItem(RB_TAB_KEY, id); } catch (e) { /* 隐私模式等存不了就每次回口令 */ }
+}
+function initRemoteBackupTabs() {
+  let saved = null;
+  try { saved = localStorage.getItem(RB_TAB_KEY); } catch (e) { /* 读不到就用默认 */ }
+  showRemoteBackupTab(rbTabValid(saved) ? saved : 'passphrase');
+  // 绑定只做一次：重复调用不能再叠加监听，否则一次按键会连跳多个选项卡。
+  if (initRemoteBackupTabs.bound) return;
+  initRemoteBackupTabs.bound = true;
+  RB_TABS.forEach((t) => {
+    on('#rb-tab-' + t, 'click', () => showRemoteBackupTab(t));
+  });
+  const bar = document.querySelector('.rb-tabs');
+  if (bar) bar.addEventListener('keydown', (e) => {
+    const cur = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.rbTab : null;
+    if (!cur || !rbTabValid(cur)) return;
+    let idx = RB_TABS.indexOf(cur);
+    if (e.key === 'ArrowRight') idx = (idx + 1) % RB_TABS.length;
+    else if (e.key === 'ArrowLeft') idx = (idx - 1 + RB_TABS.length) % RB_TABS.length;
+    else if (e.key === 'Home') idx = 0;
+    else if (e.key === 'End') idx = RB_TABS.length - 1;
+    else return;
+    e.preventDefault();
+    showRemoteBackupTab(RB_TABS[idx]);
+    const btn = document.getElementById('rb-tab-' + RB_TABS[idx]);
+    if (btn) btn.focus();
+  });
+}
 async function loadSettingsPage() {
   try {
     const st = await api('/api/v1/settings');
@@ -1594,6 +1635,7 @@ async function switchPanelMode(toManager) {
 }
 function initSettings() {
   initSettingsTabs(); // v1.3.12：选项卡栏绑定 + 恢复上次选项卡
+  initRemoteBackupTabs(); // v1.3.13：异地备份卡片内子选项卡绑定 + 恢复上次子选项卡
   on('#mode-to-manager', 'click', () => switchPanelMode(true));
   on('#mode-to-full', 'click', () => switchPanelMode(false));
   // 面板名称（v1.3.4）：保存后刷新页面，登录页标题/品牌与订阅配置名跟着变。
@@ -2021,15 +2063,17 @@ function renderRemoteBackupCard(rb) {
   if (qn.enabled) loadRemoteList('qiniu'); else { const w = $('#rb-qn-list'); if (w) w.innerHTML = ''; }
 }
 // loadRemoteList 远程备份列表：每行恢复（弹口令框）与下载（原样下 .enc）。
+// v1.3.13：每行标出来源（R2/七牛云），和本机备份列表区分开。
 async function loadRemoteList(kind) {
   const wrap = $(kind === 'r2' ? '#rb-r2-list' : '#rb-qn-list');
   if (!wrap) return;
+  const srcTag = kind === 'r2' ? 'R2' : '七牛云';
   try {
     const r = await api('/api/v1/remote-backup/list/' + kind);
     const list = r.objects || [];
     if (!list.length) { wrap.innerHTML = '<div class="empty">远程没有备份。</div>'; return; }
     wrap.innerHTML = list.map((o) =>
-      '<div class="kv"><span>' + esc(o.key) + '<br><span class="small">' + (o.last_modified ? esc(fmtDate(o.last_modified)) + ' · ' : '') + (o.size != null ? (o.size / 1024).toFixed(1) + ' KB' : '') + '</span></span>' +
+      '<div class="kv"><span><span class="tag">' + srcTag + '</span> ' + esc(o.key) + '<br><span class="small">' + (o.last_modified ? esc(fmtDate(o.last_modified)) + ' · ' : '') + (o.size != null ? (o.size / 1024).toFixed(1) + ' KB' : '') + '</span></span>' +
       '<span><button class="btn secondary sm" type="button" data-rb-restore="' + esc(o.key) + '" data-rb-dest="' + kind + '">恢复</button> ' +
       '<button class="btn secondary sm" type="button" data-rb-download="' + esc(o.key) + '" data-rb-dest="' + kind + '">下载</button></span></div>').join('');
     $$('[data-rb-restore]', wrap).forEach((btn) => btn.addEventListener('click', async () => {
@@ -2115,7 +2159,7 @@ function wirePager(wrap, ns, cur, totalPages, onPage) {
   onIn(wrap, '#' + ns + '-jump', 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doJump(); } });
 }
 let auditPage = 1;
-const AUDIT_PAGE_SIZE = 20;
+const AUDIT_PAGE_SIZE = 10; // v1.3.13：审计日志每页 10 条
 async function loadAudit(page) {
   if (page) auditPage = page;
   const wrap = $('#audit-list');
@@ -2735,51 +2779,156 @@ function centralExpirySummary(landings) {
 // centralDetailEl 集中管理详情弹窗里的落地容器（详情弹窗打开时才有）。
 function centralDetailEl() { return $('#central-detail-modal'); }
 
+// 集中管理页选项卡（v1.3.13）：三个大选项卡，顺序是已登记的远程面板（默认）、
+// 登记远程面板、合并订阅。已登记的远程面板选项卡内部再按每个面板分子选项卡
+// （一个远程面板一个子选项卡）。三层都复用设置页选项卡模式（原生 button＋
+// aria-selected＋方向键，localStorage 记住上次；大选项卡、子选项卡、设置页
+// 各用各的键）。
+// 数据更新方式：loadCentral() 每次重拉 /api/v1/central/remotes 接口重绘全部
+// 内容（隐藏的大选项卡、隐藏的子选项卡也一样画），切选项卡只是显隐、不额外
+// 拉数据，所以切过去永远是最新数据；2 分钟轮询是后端 centralLoop，详情弹窗
+// 照常工作（读 centralRemotes 缓存）。
+const CENTRAL_TABS = ['list', 'add', 'sub'];
+const CENTRAL_TAB_KEY = 'relay-panel-central-tab';
+const CENTRAL_SUB_TAB_KEY = 'relay-panel-central-sub-tab';
+function centralTabValid(id) { return CENTRAL_TABS.indexOf(id) >= 0; }
+function showCentralTab(id) {
+  if (!centralTabValid(id)) id = 'list';
+  CENTRAL_TABS.forEach((t) => {
+    const btn = document.getElementById('central-tab-' + t);
+    if (btn) btn.setAttribute('aria-selected', t === id ? 'true' : 'false');
+    setVisible(document.getElementById('central-panel-' + t), t === id);
+  });
+  try { localStorage.setItem(CENTRAL_TAB_KEY, id); } catch (e) { /* 隐私模式等存不了就每次回已登记 */ }
+}
+function initCentralTabs() {
+  let saved = null;
+  try { saved = localStorage.getItem(CENTRAL_TAB_KEY); } catch (e) { /* 读不到就用默认 */ }
+  showCentralTab(centralTabValid(saved) ? saved : 'list');
+  // 绑定只做一次：重复调用不能再叠加监听，否则一次按键会连跳多个选项卡。
+  if (initCentralTabs.bound) return;
+  initCentralTabs.bound = true;
+  CENTRAL_TABS.forEach((t) => {
+    on('#central-tab-' + t, 'click', () => showCentralTab(t));
+  });
+  const bar = document.querySelector('.central-tabs');
+  if (bar) bar.addEventListener('keydown', (e) => {
+    const cur = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.centralTab : null;
+    if (!cur || !centralTabValid(cur)) return;
+    let idx = CENTRAL_TABS.indexOf(cur);
+    if (e.key === 'ArrowRight') idx = (idx + 1) % CENTRAL_TABS.length;
+    else if (e.key === 'ArrowLeft') idx = (idx - 1 + CENTRAL_TABS.length) % CENTRAL_TABS.length;
+    else if (e.key === 'Home') idx = 0;
+    else if (e.key === 'End') idx = CENTRAL_TABS.length - 1;
+    else return;
+    e.preventDefault();
+    showCentralTab(CENTRAL_TABS[idx]);
+    const btn = document.getElementById('central-tab-' + CENTRAL_TABS[idx]);
+    if (btn) btn.focus();
+  });
+}
+// 子选项卡：一个远程面板一个，按钮与面板都由 loadCentral() 按当前登记列表重建
+// （面板增删后跟着变）。正显示的面板被删了就回落到第一个子选项卡。
+// 按钮是动态重建的，点按与方向键用事件委托（栏上只绑一次，不会叠加）。
+function centralSubTabIds() { return (centralRemotes || []).map((rm) => rm.id); }
+function showCentralSubTab(id) {
+  const ids = centralSubTabIds();
+  if (!ids.length) return;
+  if (ids.indexOf(id) < 0) id = ids[0];
+  ids.forEach((rid) => {
+    const btn = document.getElementById('central-sub-tab-' + rid);
+    if (btn) btn.setAttribute('aria-selected', rid === id ? 'true' : 'false');
+    setVisible(document.getElementById('central-sub-panel-' + rid), rid === id);
+  });
+  try { localStorage.setItem(CENTRAL_SUB_TAB_KEY, id); } catch (e) { /* 存不了就每次回第一个 */ }
+}
+function initCentralSubTabs() {
+  const bar = $('#central-sub-tabs');
+  if (!bar || initCentralSubTabs.bound) return;
+  initCentralSubTabs.bound = true;
+  bar.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('[data-central-sub-tab]') : null;
+    if (btn) showCentralSubTab(btn.dataset.centralSubTab);
+  });
+  bar.addEventListener('keydown', (e) => {
+    const cur = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.centralSubTab : null;
+    const ids = centralSubTabIds();
+    if (!cur || ids.indexOf(cur) < 0) return;
+    let idx = ids.indexOf(cur);
+    if (e.key === 'ArrowRight') idx = (idx + 1) % ids.length;
+    else if (e.key === 'ArrowLeft') idx = (idx - 1 + ids.length) % ids.length;
+    else if (e.key === 'Home') idx = 0;
+    else if (e.key === 'End') idx = ids.length - 1;
+    else return;
+    e.preventDefault();
+    showCentralSubTab(ids[idx]);
+    const btn = document.getElementById('central-sub-tab-' + ids[idx]);
+    if (btn) btn.focus();
+  });
+}
+function renderCentralSubTabs() {
+  const bar = $('#central-sub-tabs');
+  const holder = $('#central-sub-panels');
+  if (!bar || !holder) return;
+  const remotes = centralRemotes || [];
+  if (!remotes.length) {
+    bar.innerHTML = '';
+    holder.innerHTML = '<div class="empty">还没登记远程面板。<br>到被管面板的设置页生成远程管理令牌，再到“登记远程面板”选项卡填地址和令牌登记。登记后这里会显示每台远程面板的在线状态、版本、落地数、流量汇总与最近到期时间。</div>';
+    return;
+  }
+  bar.innerHTML = remotes.map((rm) =>
+    '<button type="button" class="central-tab" role="tab" id="central-sub-tab-' + esc(rm.id) + '" aria-controls="central-sub-panel-' + esc(rm.id) + '" aria-selected="false" data-central-sub-tab="' + esc(rm.id) + '">' + esc(rm.name || rm.base_url) + '</button>').join('');
+  holder.innerHTML = remotes.map((rm) =>
+    '<div class="central-sub-panel" role="tabpanel" id="central-sub-panel-' + esc(rm.id) + '" aria-labelledby="central-sub-tab-' + esc(rm.id) + '" hidden>' + centralRemoteCardHtml(rm) + '</div>').join('');
+  holder.querySelectorAll('[data-central-open]').forEach((b) => b.addEventListener('click', () => window.open(b.dataset.centralOpen, '_blank', 'noopener')));
+  holder.querySelectorAll('[data-central-detail]').forEach((b) => b.addEventListener('click', () => openCentralDetail(b.dataset.centralDetail)));
+  holder.querySelectorAll('[data-central-del]').forEach((b) => b.addEventListener('click', () => centralDeregister(b.dataset.centralDel)));
+  let saved = null;
+  try { saved = localStorage.getItem(CENTRAL_SUB_TAB_KEY); } catch (e) { /* 读不到就用第一个 */ }
+  showCentralSubTab(saved);
+}
+// 一台远程面板的卡片（v1.3.4 的卡片内容，原样搬出 loadCentral 的 map 循环）。
+function centralRemoteCardHtml(rm) {
+  const landings = rm.landings || [];
+  const onlineCount = landings.filter((l) => l.online === true).length;
+  const offlineCount = landings.filter((l) => l.online === false).length;
+  const unknownCount = landings.length - onlineCount - offlineCount;
+  const exp = centralExpirySummary(landings);
+  const t = centralTrafficAgg(landings);
+  const trafficLine = t.has ? '今日 ' + fmtBytes(t.today) + ' · 本月 ' + fmtBytes(t.month) + ' · 累计 ' + fmtBytes(t.total) : '';
+  const disk = (rm.disk_pct == null) ? '—' : Math.round(rm.disk_pct) + '%';
+  const checked = rm.last_checked_at ? esc(fmtDate(rm.last_checked_at)) : '尚未拉取';
+  const onlineLine = landings.length ? '（在线 ' + onlineCount + ' / 离线 ' + offlineCount + (unknownCount ? ' / 未知 ' + unknownCount : '') + '）' : '';
+  return '<div class="mini-card static">' +
+    '<div class="mini-top"><h3>' + esc(rm.name || rm.base_url) + '</h3><span>' + centralOnlineBadge(rm) +
+    ' <span class="tag" title="这是登记在主面板上的另一台面板，数据由主面板每 2 分钟拉取；点“打开远程面板”跳到它自己的页面">远程面板</span></span></div>' +
+    '<div class="mini-row"><span>地址</span><b class="mono" style="word-break:break-all">' + esc(rm.base_url) + '</b></div>' +
+    '<div class="mini-row"><span>版本</span><b>' + esc(rm.version || '—') + '</b></div>' +
+    '<div class="mini-row"><span>落地</span><b>' + landings.length + ' 个 ' + onlineLine + '</b></div>' +
+    '<div class="mini-row"><span>流量</span><b>' + esc(centralTrafficMiniText(landings)) + '</b></div>' +
+    (trafficLine ? '<div class="mini-row"><span></span><span class="small muted">' + esc(trafficLine) + '</span></div>' : '') +
+    '<div class="mini-row"><span>到期</span><b><span class="badge ' + exp.cls + '">' + esc(exp.text) + '</span></b></div>' +
+    '<div class="mini-row"><span>磁盘使用率</span><b>' + disk + '</b></div>' +
+    '<div class="mini-row"><span>realm</span><b>' + (rm.realm_running ? '在跑' : '没在跑') + '</b></div>' +
+    '<div class="mini-row"><span>上次检查</span><b>' + checked + '</b></div>' +
+    (rm.online ? '' : '<div class="error-box">' + esc(rm.error || '远程面板连不上') + '</div>') +
+    '<div class="btn-row">' +
+    '<button class="btn sm" type="button" data-central-detail="' + esc(rm.id) + '">查看详情</button>' +
+    '<button class="btn secondary sm" type="button" data-central-open="' + esc(rm.base_url) + '">打开远程面板 ↗</button>' +
+    '<button class="btn danger sm" type="button" data-central-del="' + esc(rm.id) + '">取消登记</button></div></div>';
+}
 async function loadCentral() {
-  const wrap = $('#central-list');
   centralDetailId = null;
   loadCentralSubTree();
   try {
     const r = await api('/api/v1/central/remotes');
     centralRemotes = r.remotes || [];
-    if (!centralRemotes.length) {
-      wrap.innerHTML = '<div class="empty">还没登记远程面板。<br>到被管面板的设置页生成远程管理令牌，再在上面填地址和令牌登记。登记后这里会显示每台远程面板的在线状态、版本、落地数、流量汇总与最近到期时间。</div>';
-      return;
-    }
-    wrap.innerHTML = '<div class="grid cols-3">' + centralRemotes.map((rm) => {
-      const landings = rm.landings || [];
-      const onlineCount = landings.filter((l) => l.online === true).length;
-      const offlineCount = landings.filter((l) => l.online === false).length;
-      const unknownCount = landings.length - onlineCount - offlineCount;
-      const exp = centralExpirySummary(landings);
-      const t = centralTrafficAgg(landings);
-      const trafficLine = t.has ? '今日 ' + fmtBytes(t.today) + ' · 本月 ' + fmtBytes(t.month) + ' · 累计 ' + fmtBytes(t.total) : '';
-      const disk = (rm.disk_pct == null) ? '—' : Math.round(rm.disk_pct) + '%';
-      const checked = rm.last_checked_at ? esc(fmtDate(rm.last_checked_at)) : '尚未拉取';
-      const onlineLine = landings.length ? '（在线 ' + onlineCount + ' / 离线 ' + offlineCount + (unknownCount ? ' / 未知 ' + unknownCount : '') + '）' : '';
-      return '<div class="mini-card static">' +
-        '<div class="mini-top"><h3>' + esc(rm.name || rm.base_url) + '</h3><span>' + centralOnlineBadge(rm) +
-        ' <span class="tag" title="这是登记在主面板上的另一台面板，数据由主面板每 2 分钟拉取；点“打开远程面板”跳到它自己的页面">远程面板</span></span></div>' +
-        '<div class="mini-row"><span>地址</span><b class="mono" style="word-break:break-all">' + esc(rm.base_url) + '</b></div>' +
-        '<div class="mini-row"><span>版本</span><b>' + esc(rm.version || '—') + '</b></div>' +
-        '<div class="mini-row"><span>落地</span><b>' + landings.length + ' 个 ' + onlineLine + '</b></div>' +
-        '<div class="mini-row"><span>流量</span><b>' + esc(centralTrafficMiniText(landings)) + '</b></div>' +
-        (trafficLine ? '<div class="mini-row"><span></span><span class="small muted">' + esc(trafficLine) + '</span></div>' : '') +
-        '<div class="mini-row"><span>到期</span><b><span class="badge ' + exp.cls + '">' + esc(exp.text) + '</span></b></div>' +
-        '<div class="mini-row"><span>磁盘使用率</span><b>' + disk + '</b></div>' +
-        '<div class="mini-row"><span>realm</span><b>' + (rm.realm_running ? '在跑' : '没在跑') + '</b></div>' +
-        '<div class="mini-row"><span>上次检查</span><b>' + checked + '</b></div>' +
-        (rm.online ? '' : '<div class="error-box">' + esc(rm.error || '远程面板连不上') + '</div>') +
-        '<div class="btn-row">' +
-        '<button class="btn sm" type="button" data-central-detail="' + esc(rm.id) + '">查看详情</button>' +
-        '<button class="btn secondary sm" type="button" data-central-open="' + esc(rm.base_url) + '">打开远程面板 ↗</button>' +
-        '<button class="btn danger sm" type="button" data-central-del="' + esc(rm.id) + '">取消登记</button></div></div>';
-    }).join('') + '</div>';
-    $$('[data-central-open]', wrap).forEach((b) => b.addEventListener('click', () => window.open(b.dataset.centralOpen, '_blank', 'noopener')));
-    $$('[data-central-detail]', wrap).forEach((b) => b.addEventListener('click', () => openCentralDetail(b.dataset.centralDetail)));
-    $$('[data-central-del]', wrap).forEach((b) => b.addEventListener('click', () => centralDeregister(b.dataset.centralDel)));
+    renderCentralSubTabs();
   } catch (e) {
-    wrap.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
+    const holder = $('#central-sub-panels');
+    if (holder) holder.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
   }
 }
 
@@ -3693,6 +3842,8 @@ async function centralRefreshAll() {
   } catch (e) { toast('刷新失败：' + e.message, 'err'); }
 }
 function initCentral() {
+  initCentralTabs(); // v1.3.13：大选项卡绑定 + 恢复上次大选项卡
+  initCentralSubTabs(); // v1.3.13：子选项卡事件委托（栏只绑一次）+ 恢复上次子选项卡在重绘时做
   on('#central-refresh', 'click', centralRefreshAll);
   on('#central-sub-generate', 'click', async () => {
     const selection = [];

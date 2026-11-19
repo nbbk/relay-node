@@ -905,7 +905,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 			page = n
 		}
 	}
-	pageSize := 20
+	pageSize := 10 // v1.3.13：审计日志每页 10 条（用户反馈 20 条太多了）
 	if v := r.URL.Query().Get("page_size"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			pageSize = n

@@ -522,11 +522,12 @@
           <div class="settings-panel hidden" role="tabpanel" id="settings-panel-backup" aria-labelledby="settings-tab-backup" hidden>
             <div class="grid cols-2">
               <div class="card">
-            <h2>备份</h2>
+            <h2>备份（本机备份）</h2>
+            <p class="muted">备份到面板本机：点“立即备份”在本机生成一份备份文件，存在面板本机；恢复点下面列表里的“恢复”。</p>
             <div class="btn-row" style="margin-top:0"><button class="btn" id="backup-create" type="button">立即备份</button></div>
             <div id="backup-list" style="margin-top:12px"></div>
-            <h2 style="margin-top:20px">自动定时备份</h2>
-            <p class="muted">每天自动备份一次，存在面板本机；备份内容和手动导出一样（落地、设置、订阅用户、流量库），不含密码哈希与 Telegram Token。保留份数到了就删最旧的，不会把盘写满。</p>
+            <h2 style="margin-top:20px">自动定时备份（本机备份）</h2>
+            <p class="muted">每天自动备份一次，存在面板本机；备份内容和手动导出一样（落地、设置、订阅用户、流量库），不含密码哈希与 Telegram Token。保留份数到了就删最旧的，不会把盘写满。备完后自动加密传一份到 R2 和七牛云（见下面“远程备份”）。</p>
             <div class="btn-row" style="margin-top:0;flex-wrap:wrap">
               <label class="small"><input id="bk-enabled" type="checkbox"> 启用自动备份</label>
               <label class="small">时间 <input id="bk-time" type="time" value="03:00" style="width:96px"></label>
@@ -548,8 +549,14 @@
             <div id="import-result" style="margin-top:10px"></div>
           </div>
               <div class="card">
-            <h2>异地备份</h2>
-            <p class="muted">每天 03:00 定时备份完（点“立即备份”也一样），加密后各传一份到 R2 和七牛云，两个都传、互为备份；本地备份不动。远程只留最近 7 份，传完自动删最旧的。</p>
+            <h2>远程备份（异地备份）</h2>
+            <p class="muted">每天 03:00 定时备份完（点“立即备份”也一样），加密后各传一份到 R2 和七牛云，两个都传、互为备份；本地备份不动。下面列出的是远程存储里的备份，恢复要输口令。远程只留最近 7 份，传完自动删最旧的。</p>
+            <div class="rb-tabs" role="tablist">
+              <button type="button" class="rb-tab" role="tab" id="rb-tab-passphrase" aria-controls="rb-panel-passphrase" aria-selected="false" data-rb-tab="passphrase">口令设置</button>
+              <button type="button" class="rb-tab" role="tab" id="rb-tab-r2" aria-controls="rb-panel-r2" aria-selected="false" data-rb-tab="r2">R2</button>
+              <button type="button" class="rb-tab" role="tab" id="rb-tab-qiniu" aria-controls="rb-panel-qiniu" aria-selected="false" data-rb-tab="qiniu">七牛云</button>
+            </div>
+            <div class="rb-panel" role="tabpanel" id="rb-panel-passphrase" aria-labelledby="rb-tab-passphrase">
             <h3 style="margin-top:12px">口令</h3>
             <p class="small">口令只存本机（只存派生出的密钥，口令本身不存）；新机器恢复时要你自己输入，忘了就解不开远程备份。换口令后，之前传上去的备份仍用旧口令加密，恢复它们时请输旧口令。</p>
             <div class="form-grid">
@@ -559,6 +566,8 @@
             <div class="btn-row"><button class="btn" id="rb-pass-set" type="button">设置口令</button>
             <button class="btn secondary" id="rb-pass-clear" type="button">清除口令</button></div>
             <div id="rb-pass-status" class="small muted" style="margin-top:8px">还没设置异地备份口令。</div>
+            </div>
+            <div class="rb-panel hidden" role="tabpanel" id="rb-panel-r2" aria-labelledby="rb-tab-r2" hidden>
             <h3 style="margin-top:16px">Cloudflare R2</h3>
             <label class="small"><input id="rb-r2-enabled" type="checkbox"> 启用 R2 上传</label>
             <div class="form-grid">
@@ -572,6 +581,8 @@
             <div class="btn-row"><button class="btn secondary" id="rb-r2-test" type="button">测试上传</button></div>
             <div id="rb-r2-status" class="small muted" style="margin-top:8px"></div>
             <div id="rb-r2-list" style="margin-top:8px"></div>
+            </div>
+            <div class="rb-panel hidden" role="tabpanel" id="rb-panel-qiniu" aria-labelledby="rb-tab-qiniu" hidden>
             <h3 style="margin-top:16px">七牛云 Kodo</h3>
             <label class="small"><input id="rb-qn-enabled" type="checkbox"> 启用七牛云上传</label>
             <div class="form-grid">
@@ -594,6 +605,7 @@
             <div class="btn-row"><button class="btn secondary" id="rb-qn-test" type="button">测试上传</button></div>
             <div id="rb-qn-status" class="small muted" style="margin-top:8px"></div>
             <div id="rb-qn-list" style="margin-top:8px"></div>
+            </div>
             <div class="btn-row" style="margin-top:12px"><button class="btn" id="rb-save" type="button">保存异地备份设置</button></div>
           </div>
             </div>
@@ -681,27 +693,37 @@
       <section class="page" id="page-central">
         <div class="page-head"><h1>集中管理</h1><div class="actions"><button class="btn secondary" id="central-refresh" type="button">刷新状态</button></div></div>
         <p class="muted">一台主面板管多台远程面板：登记远程面板后，每台面板一张卡片，卡片上能看到在线状态、版本、落地数、流量汇总（各落地已用/上限合计）与最近到期时间；点卡片的“查看详情”弹出该面板的落地与节点详情（状态、证书、每个落地的到期与流量），详情按需加载。卡片上还能直接代理远程面板的全部中转与节点操作：加/编辑/删除落地、加/删节点、续期、流量设置与续量、证书、远程体检与一键修复、重启 realm、看链接、订阅。实时日志不代理，要看日志点“打开远程面板”跳过去。没登记任何远程面板时，本面板的行为与原来完全一致。</p>
-        <div class="card">
-          <h2>登记远程面板</h2>
-          <p class="muted">先到被管面板的设置页“远程管理令牌”卡片里生成令牌，再把地址和令牌填进来。令牌只保存在主面板的配置文件里（600 权限），不会显示出来。登记时会当场连一次，连不上、令牌不对或远程面板版本太旧（低于 1.2.0）都会直接拒绝并写清原因。</p>
-          <form id="central-add-form">
-            <div class="form-grid">
-              <div><label for="central-name">名称 <span class="hint">可空，默认用地址</span></label><input id="central-name" placeholder="如 香港中转 2 号"></div>
-              <div><label for="central-url">远程面板地址 <span class="hint">必填，如 http://203.0.113.1:11111</span></label><input id="central-url" placeholder="http://203.0.113.1:11111" required></div>
-              <div><label for="central-token">远程管理令牌 <span class="hint">必填，以 rpt_ 开头，不回显</span></label><input id="central-token" type="password" placeholder="rpt_…" autocomplete="off" required></div>
-            </div>
-            <div class="btn-row"><button class="btn" type="submit">登记远程面板</button></div>
-          </form>
+        <div class="card central-shell">
+          <div class="central-tabs" role="tablist">
+            <button type="button" class="central-tab" role="tab" id="central-tab-list" aria-controls="central-panel-list" aria-selected="false" data-central-tab="list">已登记的远程面板</button>
+            <button type="button" class="central-tab" role="tab" id="central-tab-add" aria-controls="central-panel-add" aria-selected="false" data-central-tab="add">登记远程面板</button>
+            <button type="button" class="central-tab" role="tab" id="central-tab-sub" aria-controls="central-panel-sub" aria-selected="false" data-central-tab="sub">合并订阅</button>
+          </div>
+          <div class="central-panel" role="tabpanel" id="central-panel-list" aria-labelledby="central-tab-list">
+            <h2>已登记的远程面板</h2>
+            <div class="central-tabs" role="tablist" id="central-sub-tabs" style="margin-top:8px"></div>
+            <div id="central-sub-panels" style="margin-top:12px"></div>
+          </div>
+          <div class="central-panel hidden" role="tabpanel" id="central-panel-add" aria-labelledby="central-tab-add" hidden>
+            <h2>登记远程面板</h2>
+            <p class="muted">先到被管面板的设置页“远程管理令牌”卡片里生成令牌，再把地址和令牌填进来。令牌只保存在主面板的配置文件里（600 权限），不会显示出来。登记时会当场连一次，连不上、令牌不对或远程面板版本太旧（低于 1.2.0）都会直接拒绝并写清原因。</p>
+            <form id="central-add-form">
+              <div class="form-grid">
+                <div><label for="central-name">名称 <span class="hint">可空，默认用地址</span></label><input id="central-name" placeholder="如 香港中转 2 号"></div>
+                <div><label for="central-url">远程面板地址 <span class="hint">必填，如 http://203.0.113.1:11111</span></label><input id="central-url" placeholder="http://203.0.113.1:11111" required></div>
+                <div><label for="central-token">远程管理令牌 <span class="hint">必填，以 rpt_ 开头，不回显</span></label><input id="central-token" type="password" placeholder="rpt_…" autocomplete="off" required></div>
+              </div>
+              <div class="btn-row"><button class="btn" type="submit">登记远程面板</button></div>
+            </form>
+          </div>
+          <div class="central-panel hidden" role="tabpanel" id="central-panel-sub" aria-labelledby="central-tab-sub" hidden>
+            <h2>合并订阅</h2>
+            <p class="muted">按落地勾选，生成一条合并订阅链接：一个链接导入，客户端一次拿到选中落地的全部节点。勾面板即选它下面全部落地，部分选时面板框显示半选；顶上可全选全部面板。每个落地行上还有“复制订阅”，只导这一个落地的节点。内容实时生成，面板里增删节点后自动跟着变；勾选变了就重新生成一条，不同选择各用各的令牌。</p>
+            <div id="central-sub-tree">加载中…</div>
+            <div class="btn-row"><label class="small">归属到人（选填）：<input id="central-sub-name" type="text" placeholder="例如：张三的手机" style="width:160px"></label><button class="btn" id="central-sub-generate" type="button" disabled>生成合并订阅</button></div>
+            <div id="central-sub-list" style="margin-top:12px"></div>
+          </div>
         </div>
-        <div class="card" style="margin-top:20px">
-          <h2>合并订阅</h2>
-          <p class="muted">按落地勾选，生成一条合并订阅链接：一个链接导入，客户端一次拿到选中落地的全部节点。勾面板即选它下面全部落地，部分选时面板框显示半选；顶上可全选全部面板。每个落地行上还有“复制订阅”，只导这一个落地的节点。内容实时生成，面板里增删节点后自动跟着变；勾选变了就重新生成一条，不同选择各用各的令牌。</p>
-          <div id="central-sub-tree">加载中…</div>
-          <div class="btn-row"><label class="small">归属到人（选填）：<input id="central-sub-name" type="text" placeholder="例如：张三的手机" style="width:160px"></label><button class="btn" id="central-sub-generate" type="button" disabled>生成合并订阅</button></div>
-          <div id="central-sub-list" style="margin-top:12px"></div>
-        </div>
-        <h2 style="margin-top:20px">已登记的远程面板</h2>
-        <div id="central-list"></div>
       </section>
     </main>
   </div>

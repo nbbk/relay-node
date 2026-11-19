@@ -1004,18 +1004,22 @@ func TestAuditPagination(t *testing.T) {
 	if code, b := get("page=abc&page_size=20"); code != 200 || b["page"] != float64(1) {
 		t.Fatalf("page=abc：code=%d body=%v", code, b)
 	}
-	// page_size 钳制：0→1，500→100，abc→默认 20
+	// page_size 钳制：0→1，500→100，abc→默认 10（v1.3.13：审计日志每页 10 条）
 	if code, b := get("page=1&page_size=0"); code != 200 || b["page_size"] != float64(1) || len(entries(b)) != 1 {
 		t.Fatalf("page_size=0：code=%d body=%v", code, b)
 	}
 	if code, b := get("page=1&page_size=500"); code != 200 || b["page_size"] != float64(100) || len(entries(b)) != 55 || b["total_pages"] != float64(1) {
 		t.Fatalf("page_size=500：code=%d body=%v", code, b)
 	}
-	if code, b := get("page=1&page_size=abc"); code != 200 || b["page_size"] != float64(20) || len(entries(b)) != 20 {
+	if code, b := get("page=1&page_size=abc"); code != 200 || b["page_size"] != float64(10) || len(entries(b)) != 10 {
 		t.Fatalf("page_size=abc：code=%d body=%v", code, b)
 	}
-	// 不带参数：默认第 1 页、每页 20 条
-	if code, b := get(""); code != 200 || b["page"] != float64(1) || b["page_size"] != float64(20) || len(entries(b)) != 20 {
+	// 不传 page_size：默认 10 条，共 6 页
+	if code, b := get("page=1"); code != 200 || b["page_size"] != float64(10) || len(entries(b)) != 10 || b["total_pages"] != float64(6) {
+		t.Fatalf("默认 page_size：code=%d body=%v", code, b)
+	}
+	// 不带参数：默认第 1 页、每页 10 条
+	if code, b := get(""); code != 200 || b["page"] != float64(1) || b["page_size"] != float64(10) || len(entries(b)) != 10 {
 		t.Fatalf("无参数：code=%d body=%v", code, b)
 	}
 }
