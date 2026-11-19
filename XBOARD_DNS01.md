@@ -78,7 +78,17 @@ TLS certificate synced
 
 顺序无所谓：域名可以一开始就指中转机——因为签证书走的是 Cloudflare API，不需要域名先指落地。签完证书、装完中转（relay-node 预设 1，80+443），客户端用原来的订阅链接就能走中转。
 
-多节点：每个节点域名各走一次上面的流程；或者申请一张泛域名证书 `*.example.com`，一张证书通吃所有子域名节点（证书文件在 `./certs` 里，节点按需引用）。
+多节点：每个节点域名各走一次上面的流程；或者申请一张泛域名证书 `*.example.com`，一张证书通吃所有子域名节点：把证书文件放到 `./certs` 里，`config.yml` 里 `cert:` 改成引用现成文件：
+
+```yaml
+cert:
+  cert_mode: file
+  domain: node.example.com
+  cert_file: ./certs/fullchain.pem
+  key_file: ./certs/privkey.pem
+```
+
+注意：`cert_mode: file` 时证书不自动续签，到期前要自己换新文件并重启 xboard-node；想全自动续签就每个节点域名各走一次上面的 DNS-01 流程。
 
 ## 4. 验证
 
@@ -109,7 +119,7 @@ V2bx（V2bX）同样原生支持 DNS 验证，配置在 `/etc/V2bX/config.json` 
 }
 ```
 
-改完配置 V2bx 会自动重启并申请证书。V2bX 一键安装脚本里选证书模式时也有 dns 选项（第 2 项），按提示填就行。
+改完配置 V2bx 会自动重启并申请证书。V2bX 一键安装脚本里选证书模式时选 DNS 验证模式，按提示填就行。
 
 ## 节点端是 XrayR
 
