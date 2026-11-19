@@ -1445,6 +1445,50 @@ function renderSecurityCard(sec) {
     setupBtn.textContent = sec.totp_has_secret ? '重新生成密钥' : '开启二次验证';
   }
 }
+// 设置页选项卡（v1.3.12）：一个卡片外壳＋顶部选项卡栏，点哪个只显示哪个的内容，
+// 其他面板隐藏；上次点的选项卡记在 localStorage，刷新、重启面板、检查更新回来
+// 后仍停在那里。选项卡是原生 button：Tab 能走到，回车/空格切换；方向键在
+// 选项卡之间移动并切换，Home/End 跳到两端。
+const SETTINGS_TABS = ['basic', 'security', 'subscription', 'alerts', 'backup'];
+const SETTINGS_TAB_KEY = 'relay-panel-settings-tab';
+function settingsTabValid(id) { return SETTINGS_TABS.indexOf(id) >= 0; }
+function showSettingsTab(id) {
+  if (!settingsTabValid(id)) id = 'basic';
+  SETTINGS_TABS.forEach((t) => {
+    const btn = document.getElementById('settings-tab-' + t);
+    if (btn) btn.setAttribute('aria-selected', t === id ? 'true' : 'false');
+    setVisible(document.getElementById('settings-panel-' + t), t === id);
+  });
+  try { localStorage.setItem(SETTINGS_TAB_KEY, id); } catch (e) { /* 隐私模式等存不了就每次回基础 */ }
+}
+function initSettingsTabs() {
+  let saved = null;
+  try { saved = localStorage.getItem(SETTINGS_TAB_KEY); } catch (e) { /* 读不到就用默认 */ }
+  showSettingsTab(settingsTabValid(saved) ? saved : 'basic');
+  // 绑定只做一次：重复调用 initSettingsTabs（例如重跑初始化恢复选项卡）时
+  // 不能再叠加监听，否则一次按键会连跳多个选项卡。
+  if (initSettingsTabs.bound) return;
+  initSettingsTabs.bound = true;
+  SETTINGS_TABS.forEach((t) => {
+    on('#settings-tab-' + t, 'click', () => showSettingsTab(t));
+  });
+  const bar = document.querySelector('.settings-tabs');
+  if (bar) bar.addEventListener('keydown', (e) => {
+    const cur = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.settingsTab : null;
+    if (!cur || !settingsTabValid(cur)) return;
+    let idx = SETTINGS_TABS.indexOf(cur);
+    if (e.key === 'ArrowRight') idx = (idx + 1) % SETTINGS_TABS.length;
+    else if (e.key === 'ArrowLeft') idx = (idx - 1 + SETTINGS_TABS.length) % SETTINGS_TABS.length;
+    else if (e.key === 'Home') idx = 0;
+    else if (e.key === 'End') idx = SETTINGS_TABS.length - 1;
+    else return;
+    e.preventDefault();
+    showSettingsTab(SETTINGS_TABS[idx]);
+    const btn = document.getElementById('settings-tab-' + SETTINGS_TABS[idx]);
+    if (btn) btn.focus();
+  });
+}
 async function loadSettingsPage() {
   try {
     const st = await api('/api/v1/settings');
@@ -1549,6 +1593,7 @@ async function switchPanelMode(toManager) {
   } catch (e) { toast('切换失败：' + e.message, 'err'); }
 }
 function initSettings() {
+  initSettingsTabs(); // v1.3.12：选项卡栏绑定 + 恢复上次选项卡
   on('#mode-to-manager', 'click', () => switchPanelMode(true));
   on('#mode-to-full', 'click', () => switchPanelMode(false));
   // 面板名称（v1.3.4）：保存后刷新页面，登录页标题/品牌与订阅配置名跟着变。

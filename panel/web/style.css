@@ -282,3 +282,25 @@ html[data-theme="dark"] .tag.relay{background:#1e3a5f; color:#93c5fd; border-col
 @media (max-width:640px){
   .landing-grid{grid-template-columns:1fr}
 }
+
+/* ---- 设置页选项卡（v1.3.12）：一个卡片外壳＋顶部选项卡栏 ---- */
+.settings-shell{padding:0}
+.settings-tabs{
+  display:flex; gap:2px; padding:12px 12px 0; overflow-x:auto;
+  border-bottom:1px solid var(--border);
+  scrollbar-width:thin; -webkit-overflow-scrolling:touch;
+}
+.settings-tab{
+  flex:0 0 auto; background:transparent; border:0; border-bottom:2px solid transparent;
+  color:var(--muted); padding:10px 16px; font-size:15px; font-weight:600;
+  border-radius:8px 8px 0 0; white-space:nowrap;
+}
+.settings-tab:hover{background:var(--surface-muted); color:var(--text)}
+.settings-tab[aria-selected="true"]{color:var(--accent); border-bottom-color:var(--accent)}
+.settings-tab:focus-visible{outline:2px solid var(--focus); outline-offset:2px}
+.settings-panel{padding:18px}
+@media (max-width:640px){
+  .settings-tabs{padding:10px 8px 0}
+  .settings-tab{padding:10px 13px}
+  .settings-panel{padding:14px}
+}

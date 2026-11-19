@@ -217,10 +217,19 @@
       </section>
 
       <!-- 设置 -->
-      <section class="page" id="page-settings">
+            <section class="page" id="page-settings">
         <div class="page-head"><h1>设置</h1></div>
-        <div class="grid cols-2">
-          <div class="card" id="card-mode">
+        <div class="card settings-shell">
+          <div class="settings-tabs" role="tablist" aria-label="设置分类">
+            <button type="button" class="settings-tab" role="tab" id="settings-tab-basic" aria-controls="settings-panel-basic" aria-selected="true" data-settings-tab="basic">基础</button>
+            <button type="button" class="settings-tab" role="tab" id="settings-tab-security" aria-controls="settings-panel-security" aria-selected="false" data-settings-tab="security">安全</button>
+            <button type="button" class="settings-tab" role="tab" id="settings-tab-subscription" aria-controls="settings-panel-subscription" aria-selected="false" data-settings-tab="subscription">订阅</button>
+            <button type="button" class="settings-tab" role="tab" id="settings-tab-alerts" aria-controls="settings-panel-alerts" aria-selected="false" data-settings-tab="alerts">提醒</button>
+            <button type="button" class="settings-tab" role="tab" id="settings-tab-backup" aria-controls="settings-panel-backup" aria-selected="false" data-settings-tab="backup">备份</button>
+          </div>
+          <div class="settings-panel" role="tabpanel" id="settings-panel-basic" aria-labelledby="settings-tab-basic">
+            <div class="grid cols-2">
+              <div class="card" id="card-mode">
             <h2>面板模式</h2>
             <p class="muted">完整面板：中转 + 面板都在这台机器上，能管本机落地，也能登记别的面板。管理面板：这台机器不装中转，只用来集中管理别的面板（任意机器都能跑）；切过去后本地落地、服务、端口管理全部隐藏，只留集中管理、合并订阅与设置，数据保留，切回来即恢复。</p>
             <div class="small" id="mode-status">当前：完整面板</div>
@@ -229,7 +238,47 @@
               <button class="btn secondary" id="mode-to-full" type="button">切回完整面板</button>
             </div>
           </div>
-          <div class="card">
+              <div class="card">
+            <h2>面板名称</h2>
+            <p class="muted">登录页标题、品牌和订阅导入客户端后那个配置的名字都用它。改名后页面会刷新一次。</p>
+            <form id="panel-name-form">
+              <label for="panel-name">面板名称 <span class="hint">1–24 个字，默认 CP管理</span></label>
+              <input id="panel-name" maxlength="24" placeholder="CP管理" required>
+              <div class="btn-row"><button class="btn" type="submit">保存名称</button></div>
+            </form>
+            <p class="small muted">订阅导入客户端后，配置就叫这个名（订阅响应带 Content-Disposition 文件名：Clash 订阅是“&lt;面板名称&gt;.yaml”，其他格式是“&lt;面板名称&gt;.txt”）。</p>
+          </div>
+              <div class="card">
+            <h2>面板端口</h2>
+            <p class="muted">改端口后面板会重启自身，请用新端口重新打开（原页面会断开）。</p>
+            <form id="port-form">
+              <label for="panel-port">面板端口 <span class="hint">1–65535，默认 11111</span></label>
+              <input id="panel-port" type="number" min="1" max="65535" placeholder="11111" required>
+              <div class="btn-row"><button class="btn" type="submit">保存并重启面板</button></div>
+            </form>
+          </div>
+              <div class="card" id="card-door">
+            <h2>任意门地址</h2>
+            <p class="muted">任意门链接用这个地址生成；改完历史记录里的任意门链接自动跟着改；留空清除则下次加任意门落地时自动探测。</p>
+            <form id="door-form">
+              <label for="door-addr">中转地址 <span class="hint">IP 或域名，留空 = 清除</span></label>
+              <input id="door-addr" placeholder="如 203.0.113.9 或 relay.example.com">
+              <div class="small" id="door-status"></div>
+              <div class="btn-row"><button class="btn" type="submit">保存任意门地址</button></div>
+            </form>
+          </div>
+              <div class="card">
+            <h2>检查更新</h2>
+            <div id="update-box"></div>
+            <div class="btn-row"><button class="btn secondary" id="update-check" type="button">检查更新</button>
+            <button class="btn" id="update-apply" type="button">更新面板</button></div>
+            <p class="small">更新只重启面板自己，不动 realm，正在用的节点不断线；更新完自动跳到登录页重新登录。</p>
+          </div>
+            </div>
+          </div>
+          <div class="settings-panel hidden" role="tabpanel" id="settings-panel-security" aria-labelledby="settings-tab-security" hidden>
+            <div class="grid cols-2">
+              <div class="card">
             <h2>修改密码</h2>
             <form id="pw-form">
               <label for="pw-old">当前密码</label><input id="pw-old" type="password" required autocomplete="current-password">
@@ -238,7 +287,7 @@
               <div class="btn-row"><button class="btn" type="submit">修改密码</button></div>
             </form>
           </div>
-          <div class="card" id="card-security">
+              <div class="card" id="card-security">
             <h2>登录安全</h2>
             <p class="muted">登录告警和二次验证都是可选的，不开就和现在一样，只用账号密码登录。</p>
             <p class="muted">登录告警</p>
@@ -274,26 +323,7 @@
             <div class="btn-row"><button class="btn" id="totp-setup-btn" type="button">开启二次验证</button></div>
             <p class="small muted">验证器丢了、备用码也没了？SSH 到中转机跑 <span class="mono">panel-totp-reset</span> 关闭二次验证，再用账号密码登录。</p>
           </div>
-          <div class="card">
-            <h2>面板端口</h2>
-            <p class="muted">改端口后面板会重启自身，请用新端口重新打开（原页面会断开）。</p>
-            <form id="port-form">
-              <label for="panel-port">面板端口 <span class="hint">1–65535，默认 11111</span></label>
-              <input id="panel-port" type="number" min="1" max="65535" placeholder="11111" required>
-              <div class="btn-row"><button class="btn" type="submit">保存并重启面板</button></div>
-            </form>
-          </div>
-          <div class="card">
-            <h2>面板名称</h2>
-            <p class="muted">登录页标题、品牌和订阅导入客户端后那个配置的名字都用它。改名后页面会刷新一次。</p>
-            <form id="panel-name-form">
-              <label for="panel-name">面板名称 <span class="hint">1–24 个字，默认 CP管理</span></label>
-              <input id="panel-name" maxlength="24" placeholder="CP管理" required>
-              <div class="btn-row"><button class="btn" type="submit">保存名称</button></div>
-            </form>
-            <p class="small muted">订阅导入客户端后，配置就叫这个名（订阅响应带 Content-Disposition 文件名：Clash 订阅是“&lt;面板名称&gt;.yaml”，其他格式是“&lt;面板名称&gt;.txt”）。</p>
-          </div>
-          <div class="card">
+              <div class="card">
             <h2>IP 白名单</h2>
             <p class="muted">只允许这些 IP 访问面板。留空 = 不限制。白名单外的 IP 访问任何接口都会返回 403。</p>
             <form id="whitelist-form">
@@ -302,7 +332,7 @@
               <div class="btn-row"><button class="btn" type="submit">保存白名单</button></div>
             </form>
           </div>
-          <div class="card">
+              <div class="card">
             <h2>HTTPS</h2>
             <p class="muted">无域名时生成自签证书（浏览器首次会提示一次，点继续访问即可）；绑域名后自动申请真证书（DNS 验证，不占 80 端口）。</p>
             <form id="https-form">
@@ -315,7 +345,7 @@
             </form>
             <div id="https-status" class="small"></div>
           </div>
-          <div class="card" id="card-cloudflare">
+              <div class="card" id="card-cloudflare">
             <h2>Cloudflare Token</h2>
             <p class="muted">绑域名开 HTTPS 时用它签证书（DNS 验证）。只用 IP 访问（自签证书）不用填。令牌怎么开见仓库里的 CLOUDFLARE_TOKEN.md。</p>
             <form id="cf-form">
@@ -325,70 +355,7 @@
               <div class="btn-row"><button class="btn" type="submit">保存 Token</button></div>
             </form>
           </div>
-          <div class="card" id="card-door">
-            <h2>任意门地址</h2>
-            <p class="muted">任意门链接用这个地址生成；改完历史记录里的任意门链接自动跟着改；留空清除则下次加任意门落地时自动探测。</p>
-            <form id="door-form">
-              <label for="door-addr">中转地址 <span class="hint">IP 或域名，留空 = 清除</span></label>
-              <input id="door-addr" placeholder="如 203.0.113.9 或 relay.example.com">
-              <div class="small" id="door-status"></div>
-              <div class="btn-row"><button class="btn" type="submit">保存任意门地址</button></div>
-            </form>
-          </div>
-          <div class="card">
-            <h2>Telegram 提醒</h2>
-            <p class="muted">证书快到期、中转挂了、落地到期或流量用完、登录异常时自动发消息。需要 Bot Token 和 Chat ID。登录告警的开关在下面的“登录安全”卡片里。</p>
-            <form id="tg-form">
-              <div class="checkbox-row"><input type="checkbox" id="tg-enabled"><label for="tg-enabled" style="margin:0;font-weight:400">启用 Telegram 提醒</label></div>
-              <label for="tg-token">Bot Token <span class="hint">只保存，不回显</span></label>
-              <input id="tg-token" type="password" placeholder="留空 = 保持原值" autocomplete="off">
-              <label for="tg-chat">Chat ID</label><input id="tg-chat" placeholder="如 123456789">
-              <div class="btn-row"><button class="btn" type="submit">保存</button><button class="btn secondary" id="tg-test" type="button">发送测试消息</button></div>
-            </form>
-          </div>
-          <div class="card" id="card-monitor">
-            <h2>机器监控告警</h2>
-            <p class="muted">每 5 分钟采样一次磁盘、内存与 CPU，超阈值时总览页标红（严重）/标黄（警告），并走上面配好的 Telegram 提醒；没配 Telegram 就只在面板里标色，不报错。同一指标越过阈值只提醒一次，持续超标每小时最多再提醒一次，回落到阈值以下后恢复，下次再越过重新提醒。</p>
-            <form id="monitor-form">
-              <p class="muted">磁盘阈值（根分区使用率）：</p>
-              <div class="form-grid">
-                <div><label for="mon-disk-warn">警告阈值（%） <span class="hint">默认 85</span></label>
-                  <input id="mon-disk-warn" type="number" min="1" max="99" placeholder="85"></div>
-                <div><label for="mon-disk-crit">严重阈值（%） <span class="hint">默认 95</span></label>
-                  <input id="mon-disk-crit" type="number" min="1" max="99" placeholder="95"></div>
-              </div>
-              <p class="muted">内存阈值（已用 / 总量）：</p>
-              <div class="form-grid">
-                <div><label for="mon-mem-warn">警告阈值（%） <span class="hint">默认 80</span></label>
-                  <input id="mon-mem-warn" type="number" min="1" max="99" placeholder="80"></div>
-                <div><label for="mon-mem-crit">严重阈值（%） <span class="hint">默认 90</span></label>
-                  <input id="mon-mem-crit" type="number" min="1" max="99" placeholder="90"></div>
-              </div>
-              <p class="muted">CPU 阈值（1 分钟平均负载 ÷ 核心数，换算成百分比）：</p>
-              <div class="form-grid">
-                <div><label for="mon-cpu-warn">警告阈值（%） <span class="hint">默认 80</span></label>
-                  <input id="mon-cpu-warn" type="number" min="1" max="99" placeholder="80"></div>
-                <div><label for="mon-cpu-crit">严重阈值（%） <span class="hint">默认 95</span></label>
-                  <input id="mon-cpu-crit" type="number" min="1" max="99" placeholder="95"></div>
-              </div>
-              <p class="muted">采样间隔：</p>
-              <div><label for="mon-interval">采样间隔（分钟） <span class="hint">默认 5，可填 1–60</span></label>
-                <input id="mon-interval" type="number" min="1" max="60" placeholder="5"></div>
-              <div class="btn-row"><button class="btn" type="submit">保存监控设置</button></div>
-            </form>
-          </div>
-          <div class="card" id="card-latency">
-            <h2>延迟探测</h2>
-            <p class="muted">后台定时对每个落地做 TCP 连接测延迟：只做 TCP 握手，不发任何应用层数据，不会干扰 TLS / Xray。探测目标是落地地址:落地端口（中转配置里的转发目标），不是中转机本地监听端口，所以能真实反映落地在线与否；任意门模式的落地同样探测。离线时总览卡片标红，并走上面配好的 Telegram 提醒（同一落地离线只提醒一次，持续离线每小时最多一次，恢复后报恢复）；没配 Telegram 就只在面板里标红。延迟只显示毫秒数，不做高低判定，避免误判。</p>
-            <form id="latency-form">
-              <div class="checkbox-row"><input type="checkbox" id="lat-enabled"><label for="lat-enabled" style="margin:0;font-weight:400">启用延迟探测</label></div>
-              <div><label for="lat-interval">探测间隔（分钟） <span class="hint">默认 5，可填 1–60</span></label>
-                <input id="lat-interval" type="number" min="1" max="60" placeholder="5"></div>
-              <div class="small">超时固定 3 秒，不可改；结果存在面板自己的 latency.json 里，重启面板不丢。</div>
-              <div class="btn-row"><button class="btn" type="submit">保存探测设置</button></div>
-            </form>
-          </div>
-          <div class="card">
+              <div class="card">
             <h2>远程管理令牌</h2>
             <p class="muted">允许另一台主面板通过令牌管理本面板（看状态、加/删落地、看链接、取订阅内容、重启 realm）。令牌只存哈希，生成时明文只显示一次，记下来，关掉页面就再也看不到了。改密码、改端口等设置接口令牌调不通。轮换后旧令牌立即失效；撤销后任何主面板都连不进来。</p>
             <div class="small" id="central-token-status">未生成令牌</div>
@@ -403,7 +370,12 @@
               <button class="btn danger" id="central-token-revoke" type="button">撤销令牌</button>
             </div>
           </div>
-          <div class="card">
+              <div class="card"><div id="audit-list"></div></div>
+            </div>
+          </div>
+          <div class="settings-panel hidden" role="tabpanel" id="settings-panel-subscription" aria-labelledby="settings-tab-subscription" hidden>
+            <div class="grid cols-2">
+              <div class="card">
             <h2>订阅链接</h2>
             <p class="muted">一个链接导入全部节点：客户端粘贴订阅链接后一次拿到本面板所有节点（中转 + 直连）。内容实时生成，面板里增删节点后订阅自动跟着变，不用重新导出。客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表），也可以在链接后面加 ?format=clash / base64 / plain 手动指定；Clash 订阅默认不带模式参数，服务端按分流出（TikTok/社交/流媒体走节点，其他直连），想手动指定可以在链接后面加 ?mode=split（分流）/ global（全局）。?mode=global 只有一种情况才需要：规则模式下想全走代理、又保留 TikTok/社交/流媒体的分类分流——客户端切全局模式会忽略全部规则，分类分流就没了。</p>
             <div class="small" id="sub-status">未生成订阅链接</div>
@@ -445,7 +417,7 @@
             </div>
             <p class="small muted">选填，留空就用面板自己的地址（IP:端口），直接能用，不用配域名。部署完 Cloudflare Worker、想让订阅走 Worker 域名时再填 Worker 的域名（或在触发器里绑的自定义域名）：填了之后，面板里所有订阅链接（通用链接、每人链接、合并订阅、二维码）都改成 https://这个域名/sub/…，不再显示面板自己的地址；留空保存就恢复成面板自己的地址。只填域名（可带端口），不用写 https://，不用写路径。Worker 代码里的源站地址不受影响，仍是面板真实地址。</p>
           </div>
-          <div class="card">
+              <div class="card">
             <h2>订阅用户（一人一条）</h2>
             <p class="muted">通用订阅链接是所有人拉同一条，封一条就全军覆没；每人一个独立令牌，封一条只影响一个人。名字用来认人（例如“张三的手机”），链接加密存在面板里，列表里每人都有“复制”按钮，随时能重新拿；旧链接（1.3.7 之前生成的）没有存密文，点轮换生成一条新的。撤销只影响那个人，其他人的链接照常。</p>
             <div class="btn-row">
@@ -471,7 +443,7 @@
             </div>
             <div id="sub-user-list" style="margin-top:12px">加载中…</div>
           </div>
-          <div class="card">
+              <div class="card">
             <h2>Worker 反代（防封订阅）</h2>
             <p class="muted">订阅链接直接由面板出时，客户端看到的是面板真实地址；套一层 Cloudflare Worker 反代后，客户端只看到 Worker 自己的域名，面板真实地址只出现在 Worker 代码里（你的 Cloudflare 账号内可见）。部署后把订阅链接里的面板地址换成 Worker 地址，令牌和参数都不变。</p>
             <div class="btn-row">
@@ -488,18 +460,68 @@
               <p class="small">部署步骤：Cloudflare 后台 → Workers → 新建 Worker → 粘贴代码 → 部署；可选在触发器里绑一个自定义域名。部署后订阅链接 = <b class="mono" id="worker-example-link">https://&lt;Worker 域名&gt;/sub/&lt;令牌&gt;</b>，其余参数不变。Worker 免费额度够订阅拉取用（每天少量请求）。</p>
             </div>
           </div>
-          <div class="card">
-            <h2>检查更新</h2>
-            <div id="update-box"></div>
-            <div class="btn-row"><button class="btn secondary" id="update-check" type="button">检查更新</button>
-            <button class="btn" id="update-apply" type="button">更新面板</button></div>
-            <p class="small">更新只重启面板自己，不动 realm，正在用的节点不断线；更新完自动跳到登录页重新登录。</p>
+            </div>
           </div>
-        </div>
-
-        <h2 style="margin-top:24px">备份 / 导出 / 导入</h2>
-        <div class="grid cols-2">
-          <div class="card">
+          <div class="settings-panel hidden" role="tabpanel" id="settings-panel-alerts" aria-labelledby="settings-tab-alerts" hidden>
+            <div class="grid cols-2">
+              <div class="card">
+            <h2>Telegram 提醒</h2>
+            <p class="muted">证书快到期、中转挂了、落地到期或流量用完、登录异常时自动发消息。需要 Bot Token 和 Chat ID。登录告警的开关在下面的“登录安全”卡片里。</p>
+            <form id="tg-form">
+              <div class="checkbox-row"><input type="checkbox" id="tg-enabled"><label for="tg-enabled" style="margin:0;font-weight:400">启用 Telegram 提醒</label></div>
+              <label for="tg-token">Bot Token <span class="hint">只保存，不回显</span></label>
+              <input id="tg-token" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+              <label for="tg-chat">Chat ID</label><input id="tg-chat" placeholder="如 123456789">
+              <div class="btn-row"><button class="btn" type="submit">保存</button><button class="btn secondary" id="tg-test" type="button">发送测试消息</button></div>
+            </form>
+          </div>
+              <div class="card" id="card-monitor">
+            <h2>机器监控告警</h2>
+            <p class="muted">每 5 分钟采样一次磁盘、内存与 CPU，超阈值时总览页标红（严重）/标黄（警告），并走上面配好的 Telegram 提醒；没配 Telegram 就只在面板里标色，不报错。同一指标越过阈值只提醒一次，持续超标每小时最多再提醒一次，回落到阈值以下后恢复，下次再越过重新提醒。</p>
+            <form id="monitor-form">
+              <p class="muted">磁盘阈值（根分区使用率）：</p>
+              <div class="form-grid">
+                <div><label for="mon-disk-warn">警告阈值（%） <span class="hint">默认 85</span></label>
+                  <input id="mon-disk-warn" type="number" min="1" max="99" placeholder="85"></div>
+                <div><label for="mon-disk-crit">严重阈值（%） <span class="hint">默认 95</span></label>
+                  <input id="mon-disk-crit" type="number" min="1" max="99" placeholder="95"></div>
+              </div>
+              <p class="muted">内存阈值（已用 / 总量）：</p>
+              <div class="form-grid">
+                <div><label for="mon-mem-warn">警告阈值（%） <span class="hint">默认 80</span></label>
+                  <input id="mon-mem-warn" type="number" min="1" max="99" placeholder="80"></div>
+                <div><label for="mon-mem-crit">严重阈值（%） <span class="hint">默认 90</span></label>
+                  <input id="mon-mem-crit" type="number" min="1" max="99" placeholder="90"></div>
+              </div>
+              <p class="muted">CPU 阈值（1 分钟平均负载 ÷ 核心数，换算成百分比）：</p>
+              <div class="form-grid">
+                <div><label for="mon-cpu-warn">警告阈值（%） <span class="hint">默认 80</span></label>
+                  <input id="mon-cpu-warn" type="number" min="1" max="99" placeholder="80"></div>
+                <div><label for="mon-cpu-crit">严重阈值（%） <span class="hint">默认 95</span></label>
+                  <input id="mon-cpu-crit" type="number" min="1" max="99" placeholder="95"></div>
+              </div>
+              <p class="muted">采样间隔：</p>
+              <div><label for="mon-interval">采样间隔（分钟） <span class="hint">默认 5，可填 1–60</span></label>
+                <input id="mon-interval" type="number" min="1" max="60" placeholder="5"></div>
+              <div class="btn-row"><button class="btn" type="submit">保存监控设置</button></div>
+            </form>
+          </div>
+              <div class="card" id="card-latency">
+            <h2>延迟探测</h2>
+            <p class="muted">后台定时对每个落地做 TCP 连接测延迟：只做 TCP 握手，不发任何应用层数据，不会干扰 TLS / Xray。探测目标是落地地址:落地端口（中转配置里的转发目标），不是中转机本地监听端口，所以能真实反映落地在线与否；任意门模式的落地同样探测。离线时总览卡片标红，并走上面配好的 Telegram 提醒（同一落地离线只提醒一次，持续离线每小时最多一次，恢复后报恢复）；没配 Telegram 就只在面板里标红。延迟只显示毫秒数，不做高低判定，避免误判。</p>
+            <form id="latency-form">
+              <div class="checkbox-row"><input type="checkbox" id="lat-enabled"><label for="lat-enabled" style="margin:0;font-weight:400">启用延迟探测</label></div>
+              <div><label for="lat-interval">探测间隔（分钟） <span class="hint">默认 5，可填 1–60</span></label>
+                <input id="lat-interval" type="number" min="1" max="60" placeholder="5"></div>
+              <div class="small">超时固定 3 秒，不可改；结果存在面板自己的 latency.json 里，重启面板不丢。</div>
+              <div class="btn-row"><button class="btn" type="submit">保存探测设置</button></div>
+            </form>
+          </div>
+            </div>
+          </div>
+          <div class="settings-panel hidden" role="tabpanel" id="settings-panel-backup" aria-labelledby="settings-tab-backup" hidden>
+            <div class="grid cols-2">
+              <div class="card">
             <h2>备份</h2>
             <div class="btn-row" style="margin-top:0"><button class="btn" id="backup-create" type="button">立即备份</button></div>
             <div id="backup-list" style="margin-top:12px"></div>
@@ -515,7 +537,7 @@
             <div class="btn-row"><button class="btn" id="bk-now" type="button">立即备份一次</button></div>
             <div id="sched-backup-list" style="margin-top:12px"></div>
           </div>
-          <div class="card">
+              <div class="card">
             <h2>导出 / 导入整机配置</h2>
             <p class="muted">导出：所有落地、方式、设置打包成一个 JSON 文件（不含密码哈希和 Telegram Token）。换中转机时导入就全回来了。</p>
             <div class="btn-row" style="margin-top:0">
@@ -525,7 +547,7 @@
             </div>
             <div id="import-result" style="margin-top:10px"></div>
           </div>
-          <div class="card">
+              <div class="card">
             <h2>异地备份</h2>
             <p class="muted">每天 03:00 定时备份完（点“立即备份”也一样），加密后各传一份到 R2 和七牛云，两个都传、互为备份；本地备份不动。远程只留最近 7 份，传完自动删最旧的。</p>
             <h3 style="margin-top:12px">口令</h3>
@@ -574,10 +596,9 @@
             <div id="rb-qn-list" style="margin-top:8px"></div>
             <div class="btn-row" style="margin-top:12px"><button class="btn" id="rb-save" type="button">保存异地备份设置</button></div>
           </div>
+            </div>
+          </div>
         </div>
-
-        <h2 style="margin-top:24px">审计日志</h2>
-        <div class="card"><div id="audit-list"></div></div>
       </section>
 
       <!-- 端口管理 -->
