@@ -389,6 +389,48 @@
             <p class="small">链接泄露可一键轮换，旧链接立即失效；撤销后订阅立即打不开。</p>
           </div>
           <div class="card">
+            <h2>订阅用户（一人一条）</h2>
+            <p class="muted">通用订阅链接是所有人拉同一条，封一条就全军覆没；每人一个独立令牌，封一条只影响一个人。名字用来认人（例如“张三的手机”），令牌只显示一次，丢了就点轮换。撤销只影响那个人，其他人的链接照常。</p>
+            <div class="btn-row">
+              <label class="small">名字：<input id="sub-user-name" type="text" placeholder="例如：张三的手机" style="width:160px"></label>
+              <label class="small">备注：<input id="sub-user-note" type="text" placeholder="选填，例如：备用机" style="width:160px"></label>
+              <button class="btn" id="sub-user-create" type="button">新建订阅用户</button>
+            </div>
+            <div id="sub-user-once" class="hidden" style="margin-top:10px">
+              <div class="warn-box">只显示一次，记下来：关掉页面或刷新后就再也看不到了；丢了就点轮换重新生成。</div>
+              <div class="kv"><span>订阅链接</span><b class="mono" id="sub-user-url-value" style="word-break:break-all"></b></div>
+              <div class="btn-row">
+                <button class="btn secondary sm" id="sub-user-copy" type="button">复制订阅链接</button>
+                <button class="btn secondary sm" id="sub-user-copy-clash" type="button">复制 Clash 链接</button>
+                <button class="btn secondary sm" id="sub-user-copy-plain" type="button">复制明文链接</button>
+                <button class="btn secondary sm" id="sub-user-qr" type="button">二维码</button>
+              </div>
+              <div id="sub-user-qr-box" class="hidden" style="margin-top:10px">
+                <div class="qr-wrap"><figure id="sub-user-qr-figure"><img id="sub-user-qr-img" alt="订阅用户链接二维码"><figcaption>订阅链接二维码</figcaption>
+                <div class="btn-row"><button class="btn secondary sm" type="button" data-copy-img>复制图片</button>
+                <button class="btn secondary sm" type="button" data-download-img="订阅链接-二维码.png">下载图片</button></div></figure></div>
+                <p class="small muted">二维码里是上面这条订阅链接（带当前选的模式参数）；换模式后二维码跟着重新生成，扫码后客户端按 UA 自动识别格式。</p>
+              </div>
+            </div>
+            <div id="sub-user-list" style="margin-top:12px">加载中…</div>
+          </div>
+          <div class="card">
+            <h2>Worker 反代（防封订阅）</h2>
+            <p class="muted">订阅链接直接由面板出时，客户端看到的是面板真实地址；套一层 Cloudflare Worker 反代后，客户端只看到 Worker 自己的域名，面板真实地址只出现在 Worker 代码里（你的 Cloudflare 账号内可见）。部署后把订阅链接里的面板地址换成 Worker 地址，令牌和参数都不变。</p>
+            <div class="btn-row">
+              <label class="small">面板源站地址：<input id="worker-origin" type="text" style="width:280px"></label>
+              <button class="btn" id="worker-generate" type="button">生成 Worker 代码</button>
+            </div>
+            <p class="small muted">默认填你现在打开面板的地址；如果面板对外是另一个地址（例如绑了域名、走了反代），改成那个地址再生成。源站须是公网可达地址，否则 Worker 连不上源站；源站最好走 HTTPS，否则 Worker 到面板这段是明文。</p>
+            <div id="worker-code-box" class="hidden" style="margin-top:10px">
+              <pre id="worker-code" class="mono" style="white-space:pre-wrap;word-break:break-all"></pre>
+              <div class="btn-row">
+                <button class="btn secondary sm" id="worker-copy" type="button">复制代码</button>
+              </div>
+              <p class="small">部署步骤：Cloudflare 后台 → Workers → 新建 Worker → 粘贴代码 → 部署；可选在触发器里绑一个自定义域名。部署后订阅链接 = https://&lt;Worker 域名&gt;/sub/&lt;令牌&gt;，其余参数不变。Worker 免费额度够订阅拉取用（每天少量请求）。</p>
+            </div>
+          </div>
+          <div class="card">
             <h2>检查更新</h2>
             <div id="update-box"></div>
             <div class="btn-row"><button class="btn secondary" id="update-check" type="button">检查更新</button>
@@ -516,7 +558,7 @@
           <h2>合并订阅</h2>
           <p class="muted">按落地勾选，生成一条合并订阅链接：一个链接导入，客户端一次拿到选中落地的全部节点。勾面板即选它下面全部落地，部分选时面板框显示半选；顶上可全选全部面板。每个落地行上还有“复制订阅”，只导这一个落地的节点。内容实时生成，面板里增删节点后自动跟着变；勾选变了就重新生成一条，不同选择各用各的令牌。</p>
           <div id="central-sub-tree">加载中…</div>
-          <div class="btn-row"><button class="btn" id="central-sub-generate" type="button" disabled>生成合并订阅</button></div>
+          <div class="btn-row"><label class="small">归属到人（选填）：<input id="central-sub-name" type="text" placeholder="例如：张三的手机" style="width:160px"></label><button class="btn" id="central-sub-generate" type="button" disabled>生成合并订阅</button></div>
           <div id="central-sub-list" style="margin-top:12px"></div>
         </div>
         <h2 style="margin-top:20px">已登记的远程面板</h2>

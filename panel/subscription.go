@@ -555,6 +555,16 @@ func (s *Server) subUserinfoHeader(localIndices map[int]bool) string {
 
 // ---------- 公开订阅端点 ----------
 
+// findSubUser 按令牌找一个订阅用户（常数时间比较）。
+func (s *Server) findSubUser(tok string) (*SubUser, bool) {
+	for i := range s.cfg.SubUsers {
+		if verifySubToken(tok, s.cfg.SubUsers[i].TokenHash) {
+			return &s.cfg.SubUsers[i], true
+		}
+	}
+	return nil, false
+}
+
 // findMergedSub 按令牌找一份合并订阅（常数时间比较）。
 func (s *Server) findMergedSub(tok string) (*MergedSub, bool) {
 	for i := range s.cfg.MergedSubs {
@@ -583,6 +593,13 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 	var localIndices map[int]bool
 	if tok != "" && s.cfg.SubTokenHash != "" && verifySubToken(tok, s.cfg.SubTokenHash) {
 		links = s.collectSubLinks(nil)
+	} else if u, ok := s.findSubUser(tok); ok {
+		// 一人一条（v1.3.0）：没勾选 = 单面板全量订阅，有勾选 = 合并订阅
+		if len(u.Selection) == 0 {
+			links = s.collectSubLinks(nil)
+		} else {
+			links, localIndices = s.collectMergedSubLinks(&MergedSub{Selection: u.Selection})
+		}
 	} else if ms, ok := s.findMergedSub(tok); ok {
 		links, localIndices = s.collectMergedSubLinks(ms)
 	} else {
@@ -651,6 +668,232 @@ func (s *Server) handleSubTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(s.currentUser(r), "撤销订阅链接", "", "成功", "订阅链接已失效")
 	writeJSON(w, 200, okResp(nil))
+}
+
+// ---------- 订阅用户：一人一条订阅链接（v1.3.0，会话认证） ----------
+// 一个面板一个通用令牌时，所有人拉同一条链接，封一条就全军覆没；
+// 每人一个独立令牌，封一条只影响一个人。令牌只存哈希，明文只在
+// 生成/轮换时显示一次；旧的面板级通用令牌保留不动，已发出去的链接继续能用。
+
+// handleSubUsersList 列出订阅用户（不含令牌与链接，链接只在生成/轮换时显示一次）。
+func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
+	type item struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		Note      string `json:"note"`
+		CreatedAt string `json:"created_at"`
+		Kind      string `json:"kind"` // single=单面板全量，merged=合并订阅
+		Summary   string `json:"summary"`
+	}
+	items := []item{}
+	for _, u := range s.cfg.SubUsers {
+		kind := "single"
+		summary := "单面板全量订阅（全部落地）"
+		if len(u.Selection) > 0 {
+			kind = "merged"
+			summary = s.selectionSummary(u.Selection)
+		}
+		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary})
+	}
+	writeJSON(w, 200, okResp(map[string]any{"users": items}))
+}
+
+// handleSubUsersCreate 新建订阅用户：名字必填（用来认人）；selection 为空
+// 就是单面板全量订阅，填了就是合并订阅（走同一套勾选校验，远程版本不够
+// 时同样提示先升级）。链接只在这一次返回，之后再也看不到。
+func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name      string         `json:"name"`
+		Note      string         `json:"note"`
+		Selection []SubSelection `json:"selection"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeJSON(w, 400, errResp("请填名字（用来认人，例如“张三的手机”）"))
+		return
+	}
+	if len(name) > 64 {
+		writeJSON(w, 400, errResp("名字太长，最多 64 个字"))
+		return
+	}
+	note := strings.TrimSpace(req.Note)
+	if len(note) > 200 {
+		writeJSON(w, 400, errResp("备注太长，最多 200 个字"))
+		return
+	}
+	var sel []SubSelection
+	if len(req.Selection) > 0 {
+		var err error
+		sel, _, err = s.validateMergedSelection(req.Selection)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+	}
+	tok := generateSubToken()
+	now := time.Now().UTC().Format(time.RFC3339)
+	id := "su-" + randomTokenHex(6)
+	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: id, Name: name, Note: note, TokenHash: hashSubToken(tok), CreatedAt: now, Selection: sel})
+	if err := s.saveConfig(); err != nil {
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	s.audit(s.currentUser(r), "新建订阅用户", name, "成功", "订阅链接只显示一次，请立即复制保存")
+	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "name": name}))
+}
+
+// handleSubUsersRotate 轮换一个订阅用户的链接：旧链接立即失效，只影响这个人。
+func (s *Server) handleSubUsersRotate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	for i := range s.cfg.SubUsers {
+		if s.cfg.SubUsers[i].ID != id {
+			continue
+		}
+		tok := generateSubToken()
+		s.cfg.SubUsers[i].TokenHash = hashSubToken(tok)
+		s.cfg.SubUsers[i].CreatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := s.saveConfig(); err != nil {
+			writeJSON(w, 500, errResp("保存失败："+err.Error()))
+			return
+		}
+		s.audit(s.currentUser(r), "轮换订阅用户链接", s.cfg.SubUsers[i].Name, "成功", "旧链接已失效")
+		writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "name": s.cfg.SubUsers[i].Name}))
+		return
+	}
+	writeJSON(w, 404, errResp("没有这个订阅用户"))
+}
+
+// handleSubUsersDelete 撤销一个订阅用户：他的订阅链接立即失效，其他人照常。
+func (s *Server) handleSubUsersDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	for i := range s.cfg.SubUsers {
+		if s.cfg.SubUsers[i].ID == id {
+			name := s.cfg.SubUsers[i].Name
+			s.cfg.SubUsers = append(s.cfg.SubUsers[:i], s.cfg.SubUsers[i+1:]...)
+			if err := s.saveConfig(); err != nil {
+				writeJSON(w, 500, errResp("保存失败："+err.Error()))
+				return
+			}
+			s.audit(s.currentUser(r), "撤销订阅用户", name, "成功", "该用户的订阅链接已失效，其他人照常")
+			writeJSON(w, 200, okResp(nil))
+			return
+		}
+	}
+	writeJSON(w, 404, errResp("没有这个订阅用户"))
+}
+
+// ---------- Worker 反代代码生成（v1.3.0，会话认证） ----------
+// 订阅链接直接由面板出时，客户端看到的是面板真实地址；套一层 Cloudflare
+// Worker 反代后，客户端只看到 Worker 自己的域名（或绑定的自定义域名），
+// 面板真实地址只出现在 Worker 代码里（Cloudflare 账号内可见，不经过客户端）。
+// 面板不替用户部署 Worker，只生成代码与部署步骤。
+
+// workerOrigin 定 Worker 回源的面板地址：优先用 origin 参数（用户在面板里填
+// 的对外地址，可带 https:// 完整写法），否则用当前打开面板的地址
+// （怎么打开就用什么）。只接受“域名或 IP（可带端口）”，不接受带路径、
+// 查询串的写法；host 只允许字母数字、点、横杠、下划线与端口冒号，
+// 防止拼进 Worker 代码时注入。
+func workerOrigin(r *http.Request) (string, error) {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	origin := strings.TrimSpace(r.URL.Query().Get("origin"))
+	if origin == "" {
+		return scheme + "://" + r.Host, nil
+	}
+	host := origin
+	if strings.Contains(origin, "://") {
+		u, err := url.Parse(origin)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			return "", fmt.Errorf("源站地址填 https://域名 或 http://IP:端口，不用写路径")
+		}
+		scheme = u.Scheme
+		host = u.Host
+	} else if strings.ContainsAny(origin, "/?#") {
+		return "", fmt.Errorf("源站地址填域名或 IP（可带端口），不用写路径")
+	}
+	if !validWorkerHost(host) {
+		return "", fmt.Errorf("源站地址不对：填域名或 IP（可带端口）")
+	}
+	return scheme + "://" + host, nil
+}
+
+// validWorkerHost 校验 Worker 回源地址的 host 部分：字母数字、点、横杠、
+// 下划线，可带 :端口；不含其他字符（代码拼进 JS 字符串时不会注入）。
+func validWorkerHost(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	h := host
+	if i := strings.LastIndex(h, ":"); i >= 0 && !strings.Contains(h[i+1:], "]") {
+		port := h[i+1:]
+		if port == "" {
+			return false
+		}
+		for _, c := range port {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		h = h[:i]
+	}
+	if h == "" {
+		return false
+	}
+	for _, c := range h {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// renderWorkerCode 生成 Cloudflare Worker 反代代码：只代理 /sub/ 开头的
+// 订阅请求，原样转发查询参数（?format、?mode）与 User-Agent（格式自适
+// 应靠它），状态码、响应头与响应体原样返回；其他路径一律 404，
+// 不把面板其他接口暴露出去。
+func renderWorkerCode(origin string) string {
+	return `// relay-panel 订阅反代（Cloudflare Worker）：
+// 部署：Cloudflare 后台 → Workers → 新建 Worker → 粘贴本代码 → 部署；
+// 可选：在 Workers → 触发器（Triggers）里绑一个自定义域名。
+// 部署后订阅链接 = https://<Worker 域名>/sub/<令牌>?format=clash&mode=split
+// （令牌与参数和原来完全一样，只是把面板地址换成 Worker 地址）。
+// 源站地址只出现在这里（你的 Cloudflare 账号内可见），客户端看不到面板真实地址。
+const ORIGIN = "` + origin + `";
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (!url.pathname.startsWith("/sub/")) {
+      return new Response("Not Found", { status: 404 });
+    }
+    const target = new URL(ORIGIN + url.pathname + url.search);
+    const res = await fetch(target.toString(), {
+      method: "GET",
+      headers: { "User-Agent": request.headers.get("User-Agent") || "" },
+      redirect: "manual",
+    });
+    return new Response(res.body, { status: res.status, headers: res.headers });
+  },
+};
+`
+}
+
+// handleWorkerCode 生成 Worker 反代代码（会话认证）：按当前请求的 origin
+// 参数或打开面板的地址定源站，返回代码与源站地址。
+func (s *Server) handleWorkerCode(w http.ResponseWriter, r *http.Request) {
+	origin, err := workerOrigin(r)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	writeJSON(w, 200, okResp(map[string]any{"origin": origin, "code": renderWorkerCode(origin)}))
 }
 
 // handleSubQR 订阅链接二维码（v1.2.9，会话认证）：
@@ -826,6 +1069,7 @@ func remoteLandingDisplayName(l remoteLandingSummary) string {
 func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 	type item struct {
 		ID        string         `json:"id"`
+		Name      string         `json:"name"`
 		CreatedAt string         `json:"created_at"`
 		Selection []SubSelection `json:"selection"`
 		Summary   string         `json:"summary"`
@@ -835,21 +1079,28 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 		if ms.Selection == nil {
 			ms.Selection = []SubSelection{}
 		}
-		items = append(items, item{ID: ms.ID, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: s.selectionSummary(ms.Selection)})
+		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: s.selectionSummary(ms.Selection)})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"subs": items}))
 }
 
-// handleMergedSubsCreate 生成合并订阅：同一选择重新生成 = 轮换（旧链接立即失效）；
-// 新选择 = 新起一条令牌。链接只在这一次返回，之后再也看不到。
+// handleMergedSubsCreate 生成合并订阅：不填名称时同一选择重新生成 = 轮换
+// （旧链接立即失效）；填了名称（归属到人）就新起一条——同一勾选集合可有
+// 多个不同名称的令牌，各归各人，撤销只影响那一个。链接只在这一次返回，之后再也看不到。
 func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Selection []SubSelection `json:"selection"`
+		Name      string         `json:"name"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if len(name) > 64 {
+		writeJSON(w, 400, errResp("名字太长，最多 64 个字"))
 		return
 	}
 	sel, key, err := s.validateMergedSelection(req.Selection)
@@ -861,18 +1112,27 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 	now := time.Now().UTC().Format(time.RFC3339)
 	rotated := false
 	id := ""
-	for i := range s.cfg.MergedSubs {
-		if _, k := canonicalSelection(s.cfg.MergedSubs[i].Selection); k == key {
-			s.cfg.MergedSubs[i].TokenHash = hashSubToken(tok)
-			s.cfg.MergedSubs[i].CreatedAt = now
-			id = s.cfg.MergedSubs[i].ID
-			rotated = true
-			break
-		}
-	}
-	if id == "" {
+	if name != "" {
 		id = "ms-" + randomTokenHex(6)
-		s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, TokenHash: hashSubToken(tok), CreatedAt: now, Selection: sel})
+		s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, Name: name, TokenHash: hashSubToken(tok), CreatedAt: now, Selection: sel})
+	} else {
+		for i := range s.cfg.MergedSubs {
+			// 只轮换同样没填名称的记录：已归属到人的那条不能被误轮换
+			if s.cfg.MergedSubs[i].Name != "" {
+				continue
+			}
+			if _, k := canonicalSelection(s.cfg.MergedSubs[i].Selection); k == key {
+				s.cfg.MergedSubs[i].TokenHash = hashSubToken(tok)
+				s.cfg.MergedSubs[i].CreatedAt = now
+				id = s.cfg.MergedSubs[i].ID
+				rotated = true
+				break
+			}
+		}
+		if id == "" {
+			id = "ms-" + randomTokenHex(6)
+			s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, TokenHash: hashSubToken(tok), CreatedAt: now, Selection: sel})
+		}
 	}
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
@@ -882,7 +1142,11 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 	if rotated {
 		action = "轮换合并订阅"
 	}
-	s.audit(s.currentUser(r), action, s.selectionSummary(sel), "成功", "订阅链接只显示一次，请立即复制保存")
+	target := s.selectionSummary(sel)
+	if name != "" {
+		target = name + "（" + target + "）"
+	}
+	s.audit(s.currentUser(r), action, target, "成功", "订阅链接只显示一次，请立即复制保存")
 	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": rotated, "selection": sel, "summary": s.selectionSummary(sel)}))
 }
 

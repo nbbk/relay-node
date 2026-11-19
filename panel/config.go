@@ -43,6 +43,11 @@ type PanelConfig struct {
 	// 选择变了就新起一条，不同选择绝不共用一个令牌；同一选择重新生成
 	// 会轮换（旧链接立即失效）。内容按勾选的落地集合实时生成。
 	MergedSubs []MergedSub `json:"merged_subs"`
+	// 订阅用户（v1.3.0，一人一条订阅链接）：每人一个独立令牌，只存哈希；
+	// 名字用来认人，令牌泄露/撤销只影响那个人，其他人照常。
+	// 旧的面板级通用订阅令牌（SubTokenHash）保留不动，向后兼容，
+	// 已发出去的通用链接继续能用。
+	SubUsers []SubUser `json:"sub_users"`
 	// 登记的远程面板（v1.2.0，主面板端）：Token 是明文（必须拿原文去调远程接口），
 	// 与 Telegram Token、Cloudflare 令牌同等待遇，只存在 600 权限的 config.json 里。
 	Remotes []RemotePanel `json:"remotes"`
@@ -62,11 +67,27 @@ type SubSelection struct {
 
 // MergedSub 一份合并订阅：TokenHash 是订阅令牌的 SHA-256 哈希（只存哈希，
 // 明文只在生成时显示一次），Selection 是这份订阅绑定的勾选集合。
+// Name 是归属到人（v1.3.0，选填）：填了就新起一条，同一勾选集合可有
+// 多个不同名称的令牌，各归各人；不填走老逻辑（同一选择重新生成会轮换）。
 type MergedSub struct {
 	ID        string         `json:"id"`
+	Name      string         `json:"name,omitempty"`
 	TokenHash string         `json:"token_hash"`
 	CreatedAt string         `json:"created_at"`
 	Selection []SubSelection `json:"selection"`
+}
+
+// SubUser 一人一条订阅链接（v1.3.0）：TokenHash 是订阅令牌的 SHA-256
+// 哈希（只存哈希，明文只在生成时显示一次），Name 是人名/备注（必填，
+// 用来认人）。Selection 为空 = 单面板全量订阅（全部落地），
+// 非空 = 合并订阅的勾选集合（只导选中的落地）。
+type SubUser struct {
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Note      string         `json:"note,omitempty"`
+	TokenHash string         `json:"token_hash"`
+	CreatedAt string         `json:"created_at"`
+	Selection []SubSelection `json:"selection,omitempty"`
 }
 
 // ---------- 面板扩展状态（PANEL_HOME/state.json） ----------
