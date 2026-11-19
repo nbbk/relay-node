@@ -320,8 +320,9 @@ func decodeVmessLink(link string) (map[string]string, error) {
 	return out, nil
 }
 
-// ---------- Clash 策略组与分流规则（v1.2.9） ----------
-// Clash YAML 订阅出 6 个策略组：手动选择（select，全部节点，默认入口）、
+// ---------- Clash 策略组与分流规则（v1.2.9，v1.3.1 补 GLOBAL 组） ----------
+// Clash YAML 订阅出 7 个策略组：GLOBAL（select，全部节点，排第一，
+// 客户端切全局模式时走它）、手动选择（select，全部节点，默认入口）、
 // 自动选择（url-test，全部节点，每 5 分钟测一次挑延迟最低）、中转节点
 // （select，只有中转链接）、直连节点（select，只有直连链接）、社交
 // （select，全部节点）、流媒体（select，全部节点）。中转/直连按 twin
@@ -359,9 +360,10 @@ var streamSuffixes = []string{
 	"jtvnw.net",
 }
 
-// renderClashYAML 渲染 Clash 订阅：proxies 列表 + 6 个策略组 + 分流规则。
+// renderClashYAML 渲染 Clash 订阅：proxies 列表 + 7 个策略组 + 分流规则。
 // 名字去重（Clash 要求 proxy 名唯一），不支持的协议跳过；mode 是
 // split（分流，MATCH,DIRECT）或 global（全局，MATCH,手动选择）。
+// GLOBAL 组只在客户端切全局模式时生效，规则模式下只看 rules，不走它。
 func renderClashYAML(links []subLink, mode string) string {
 	var b strings.Builder
 	b.WriteString("proxies:\n")
@@ -416,6 +418,9 @@ func renderClashYAML(links []subLink, mode string) string {
 		}
 	}
 	b.WriteString("proxy-groups:\n")
+	// GLOBAL 排第一：客户端切全局模式时 Clash 找名叫 GLOBAL 的组走全部
+	// 流量；成员与手动选择一致（只有节点名，不含自动选择组）。
+	writeGroup("GLOBAL", "select", names)
 	writeGroup("手动选择", "select", names)
 	writeGroup("自动选择", "url-test", names)
 	if len(relayNames) > 0 {

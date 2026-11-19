@@ -2041,16 +2041,20 @@ async function centralTokenGenerate(rotated) {
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
 // ---------- 订阅链接 ----------
-// 订阅链接的模式参数：分流（默认）或全局；设置页复制的链接都带上当前选中的 mode。
+// 订阅链接默认不带 mode 参数（服务端缺省就是分流 MATCH,DIRECT）；只有在
+// 模式选择里显式选了分流/全局，才在复制的链接与二维码里带上 ?mode=。
+// ?mode= 只在一种情况下才需要：规则模式下想全走代理、又保留 TikTok/社交/
+// 流媒体的分类分流（客户端切全局模式会忽略全部 rules，分类分流就没了）。
 function subLinkWithMode(url, format) {
   const sel = $('#sub-mode');
-  const mode = (sel && sel.value) || 'split';
+  const mode = (sel && sel.value) || '';
   const q = [];
   if (format) q.push('format=' + format);
-  q.push('mode=' + mode);
+  if (mode) q.push('mode=' + mode);
+  if (!q.length) return url;
   return url + '?' + q.join('&');
 }
-// 订阅链接二维码：点“二维码”按钮按当前链接（带模式参数）向后端要一张图；
+// 订阅链接二维码：点“二维码”按钮按当前链接（默认不带模式参数）向后端要一张图；
 // 模式切换时如果二维码正显示着，跟着重新生成。复用节点链接同一套后端
 // 生成（Go 原生 qrcode），图片的复制/下载走页面已有的 data-copy-img /
 // data-download-img 事件委托，不用另写。
@@ -2120,7 +2124,7 @@ async function subUserCreate() {
     loadSubUsers();
   } catch (err) { toast('新建失败：' + err.message, 'err'); }
 }
-// 订阅用户链接的二维码：与通用订阅链接同一套后端生成，带当前选的模式参数。
+// 订阅用户链接的二维码：与通用订阅链接同一套后端生成，默认不带模式参数。
 async function loadSubUserQr() {
   const box = $('#sub-user-qr-box'), img = $('#sub-user-qr-img'), fig = $('#sub-user-qr-figure');
   if (!box || !img) return;
@@ -2156,7 +2160,7 @@ async function showSubForSelection(selection, title, name) {
       (r.rotated ? '<div class="warn-box">这份选择之前生成过，已轮换：旧链接立即失效，请用下面这条新链接。</div>' : '<div class="warn-box">只显示一次，记下来：关掉弹窗就再也看不到了；丢了就重新生成。</div>') +
       (name ? '<div class="kv"><span>归属到人</span><b>' + esc(name) + '</b></div>' : '') +
       '<div class="kv"><span>订阅链接</span><b class="mono" style="word-break:break-all">' + esc(url) + '</b></div>' +
-      '<p class="muted small">模式：<select data-sub-mode><option value="split" selected>分流（TikTok/社交/流媒体走节点，其他直连）</option><option value="global">全局（全部走代理）</option></select>　客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表）；也可以手动加后缀：?format=clash / base64 / plain，?mode=split / global。复制的链接会带上当前选中的模式。</p>' +
+      '<p class="muted small">模式（可选）：<select data-sub-mode><option value="" selected>默认（不带参数，服务端按分流出）</option><option value="split">分流（TikTok/社交/流媒体走节点，其他直连）</option><option value="global">全局（全部走代理）</option></select>　客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表）；也可以手动加后缀：?format=clash / base64 / plain，?mode=split / global。默认复制的链接不带模式参数；只有规则模式下想全走代理、又保留分类分流时，才选全局。</p>' +
       '<div class="btn-row"><button class="btn sm" type="button" data-sub-copy-url>复制订阅链接</button>' +
       '<button class="btn secondary sm" type="button" data-sub-copy-clash>复制 Clash 链接</button>' +
       '<button class="btn secondary sm" type="button" data-sub-copy-plain>复制明文链接</button>' +
@@ -2166,8 +2170,8 @@ async function showSubForSelection(selection, title, name) {
       '<div class="btn-row"><button class="btn secondary sm" type="button" data-copy-img>复制图片</button>' +
       '<button class="btn secondary sm" type="button" data-download-img="订阅链接-二维码.png">下载图片</button></div></figure></div>');
     if (!m) return;
-    const modeOf = () => { const s = m.querySelector('[data-sub-mode]'); return (s && s.value) || 'split'; };
-    const withMode = (fmt) => { const q = []; if (fmt) q.push('format=' + fmt); q.push('mode=' + modeOf()); return url + '?' + q.join('&'); };
+    const modeOf = () => { const s = m.querySelector('[data-sub-mode]'); return (s && s.value) || ''; };
+    const withMode = (fmt) => { const q = []; if (fmt) q.push('format=' + fmt); const md = modeOf(); if (md) q.push('mode=' + md); return q.length ? url + '?' + q.join('&') : url; };
     onIn(m, '[data-sub-copy-url]', 'click', (e) => copyText(withMode(''), e.target));
     onIn(m, '[data-sub-copy-clash]', 'click', (e) => copyText(withMode('clash'), e.target));
     onIn(m, '[data-sub-copy-plain]', 'click', (e) => copyText(withMode('plain'), e.target));
