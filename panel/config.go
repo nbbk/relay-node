@@ -47,6 +47,13 @@ type PanelConfig struct {
 	// 只存域名（可带端口），不带 scheme 与路径；Worker 代码里的源站地址
 	// （ORIGIN）不受这个设置影响，仍是面板真实地址。
 	SubPublicDomain string `json:"sub_public_domain"`
+	// Worker 源站地址（v1.3.5）：用户在“Worker 反代”卡片里填的面板源站地址
+	// （Worker 代码里的 ORIGIN）。点“生成 Worker 代码”时填了就记住，下次打开
+	// 设置页自动回填；留空 = 用当前打开面板的地址（默认用法），同时把之前存
+	// 过的清空。只存用户填的原文（可带 http:// 前缀与端口），生成时再按
+	// workerOrigin 校验（明确填 IP 会 400）；旧 config.json 里没有这个字段
+	// 时按空处理，不用迁移。
+	WorkerOrigin string `json:"worker_origin"`
 	// 合并订阅（v1.2.7，主面板端）：每份勾选集合一条令牌，只存哈希；
 	// 选择变了就新起一条，不同选择绝不共用一个令牌；同一选择重新生成
 	// 会轮换（旧链接立即失效）。内容按勾选的落地集合实时生成。

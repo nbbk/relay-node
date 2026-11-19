@@ -437,7 +437,7 @@
               <label class="small">面板源站地址（选填）：<input id="worker-origin" type="text" placeholder="留空 = 现在打开面板的地址" style="width:280px"></label>
               <button class="btn" id="worker-generate" type="button">生成 Worker 代码</button>
             </div>
-            <p class="small muted">选填，留空就用你现在打开面板的地址（IP:端口），直接能用；Worker 反代是可选项，只有想藏面板 IP、走 HTTPS 订阅时才需要配域名。如果面板对外是另一个地址（例如绑了域名、走了反代），填那个地址再生成。源站地址必须是域名、不能是 IP（Worker 的 fetch() 不能直接用 IP 回源，会报 Cloudflare error 1003）；必须是 http:// 开头（面板是明文 HTTP，没有 HTTPS）。源站地址只出现在 Worker 代码里（你的 Cloudflare 账号内可见），客户端看不到面板真实地址。</p>
+            <p class="small muted">选填，留空就用你现在打开面板的地址（IP:端口），直接能用；Worker 反代是可选项，只有想藏面板 IP、走 HTTPS 订阅时才需要配域名。如果面板对外是另一个地址（例如绑了域名、走了反代），填那个地址再生成；填一次就记住，下次打开自动填上。源站地址必须是域名、不能是 IP（Worker 的 fetch() 不能直接用 IP 回源，会报 Cloudflare error 1003）；必须是 http:// 开头（面板是明文 HTTP，没有 HTTPS）。源站地址只出现在 Worker 代码里（你的 Cloudflare 账号内可见），客户端看不到面板真实地址。</p>
             <div id="worker-code-box" class="hidden" style="margin-top:10px">
               <div id="worker-code-warn" class="warn-box hidden"></div>
               <pre id="worker-code" class="mono" style="white-space:pre-wrap;word-break:break-all"></pre>

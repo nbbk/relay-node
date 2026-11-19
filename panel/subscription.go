@@ -1086,15 +1086,34 @@ export default {
 // handleWorkerCode 生成 Worker 反代代码（会话认证）：按当前请求的 origin
 // 参数或打开面板的地址定源站，返回代码与源站地址。源站是 IP 时不拦
 // （默认用法），但返回里带 warning 提示会 1003，前端显示出来。
+// v1.3.5：记住用户填的源站地址——点“生成 Worker 代码”时输入框非空就把
+// 填的值存下来，下次打开设置页自动回填；留空生成时把之前存过的清空
+// （留空就是默认用法）。保存失败不影响本次生成，只在 warning 里提一句。
 func (s *Server) handleWorkerCode(w http.ResponseWriter, r *http.Request) {
 	origin, err := workerOrigin(r)
 	if err != nil {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
 	}
+	saveWarn := ""
+	if raw := strings.TrimSpace(r.URL.Query().Get("origin")); raw != s.cfg.WorkerOrigin {
+		old := s.cfg.WorkerOrigin
+		s.cfg.WorkerOrigin = raw
+		if err := s.saveConfig(); err != nil {
+			s.cfg.WorkerOrigin = old
+			saveWarn = "源站地址没记住（保存失败，下次打开还要重填）。"
+		}
+	}
 	resp := map[string]any{"origin": origin, "code": renderWorkerCode(origin, s.cfg.SubPublicDomain)}
 	if workerOriginIsIP(origin) {
 		resp["warning"] = "源站地址是 IP，Worker 回源会被 Cloudflare 挡（error 1003）：先在 Cloudflare 里给面板建个域名（灰云 A 记录指到面板 IP），再填 http://域名:11111 重新生成代码。"
+	}
+	if saveWarn != "" {
+		if prev, ok := resp["warning"].(string); ok && prev != "" {
+			resp["warning"] = prev + " " + saveWarn
+		} else {
+			resp["warning"] = saveWarn
+		}
 	}
 	writeJSON(w, 200, okResp(resp))
 }

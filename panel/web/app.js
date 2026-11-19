@@ -1440,6 +1440,9 @@ async function loadSettingsPage() {
     $('#sub-status').textContent = sub.has_token ? '已生成订阅链接' + (sub.created_at ? '（生成于 ' + fmtDate(sub.created_at) + '）' : '') + '：链接只在生成时显示一次，丢了就点轮换重新生成。' : '未生成订阅链接：点“生成订阅链接”，复制链接粘贴到客户端订阅里即可。';
     const subDomain = $('#sub-public-domain');
     if (subDomain) subDomain.value = sub.public_domain || '';
+    // Worker 源站地址（v1.3.5）：存过就回填到输入框；留空就是默认用法。
+    const wo = $('#worker-origin');
+    if (wo) { wo.value = sub.worker_origin || ''; wo.placeholder = '留空 = ' + location.origin; }
     // 面板名称（v1.3.4）：设置接口下发的当前名填进输入框。
     const pn = $('#panel-name');
     if (pn) pn.value = st.panel_name || 'CP管理';
@@ -1450,10 +1453,6 @@ async function loadSettingsPage() {
       '<div class="kv"><span>仓库</span><b><a href="https://github.com/nbbk/relay-node" target="_blank" rel="noopener">relay-node</a></b></div>';
   } catch (e) { toast('设置加载失败：' + e.message, 'err'); }
   loadBackups(); loadAudit(); loadSubUsers();
-  // Worker 源站地址（v1.3.4）：留空，不预填——留空就是默认用法（用当前
-  // 面板地址）；placeholder 告诉用户留空等于什么。
-  const wo = $('#worker-origin');
-  if (wo) wo.placeholder = '留空 = ' + location.origin;
 }
 // 切换面板模式（v1.2.8）：只改 manager_only 开关，数据保留；切完刷新页面重建导航。
 async function switchPanelMode(toManager) {
