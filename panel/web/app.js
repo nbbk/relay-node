@@ -1440,7 +1440,19 @@ async function loadSettingsPage() {
     const ct = st.central_token || {};
     $('#central-token-status').textContent = ct.has_token ? '已生成令牌' + (ct.created_at ? '（生成于 ' + fmtDate(ct.created_at) + '）' : '') + '：主面板登记时用它；轮换后旧令牌立即失效，撤销后任何主面板都连不进来。' : '未生成令牌：没生成就等于没开集中管理，别人连不进来。';
     const sub = st.subscription || {};
-    $('#sub-status').textContent = sub.has_token ? '已生成订阅链接' + (sub.created_at ? '（生成于 ' + fmtDate(sub.created_at) + '）' : '') + '：链接只在生成时显示一次，丢了就点轮换重新生成。' : '未生成订阅链接：点“生成订阅链接”，复制链接粘贴到客户端订阅里即可。';
+    if (!sub.has_token) {
+      $('#sub-status').textContent = '未生成订阅链接：点“生成订阅链接”，复制链接粘贴到客户端订阅里即可。';
+      const box0 = $('#sub-once');
+      if (box0) { box0.classList.add('hidden'); box0.hidden = true; }
+    } else if (!sub.has_link) {
+      // 1.3.7 之前的旧链接：没有密文，无法恢复，提示轮换一次。
+      $('#sub-status').textContent = '已生成订阅链接' + (sub.created_at ? '（生成于 ' + fmtDate(sub.created_at) + '）' : '') + '：这条是旧链接，面板里没有存它的密文，无法恢复，点“轮换订阅链接”生成一条新的。';
+      const box0 = $('#sub-once');
+      if (box0) { box0.classList.add('hidden'); box0.hidden = true; }
+    } else {
+      $('#sub-status').textContent = '已生成订阅链接' + (sub.created_at ? '（生成于 ' + fmtDate(sub.created_at) + '）' : '') + '：链接已加密存在面板里，随时能点复制重新拿。';
+      loadGenericSubLink();
+    }
     const subDomain = $('#sub-public-domain');
     if (subDomain) subDomain.value = sub.public_domain || '';
     // Worker 源站地址（v1.3.5）：存过就回填到输入框；留空就是默认用法。
@@ -2136,14 +2148,48 @@ async function loadSubQr() {
     box.classList.remove('hidden'); box.hidden = false;
   } catch (err) { toast('二维码生成失败：' + err.message, 'err'); }
 }
-// 单面板订阅令牌生成/轮换：链接只显示一次，显示在设置页的订阅卡片里。
+// ---------- 重新复制订阅链接（v1.3.7） ----------
+// 取回一条订阅链接：kind=generic|user|merged，id 只在 user/merged 时传。
+// 有密文返回 {url, legacy:false}；旧链接返回 {legacy:true, message}。
+async function fetchSubLink(kind, id) {
+  const q = new URLSearchParams({ kind });
+  if (id) q.set('id', id);
+  return await api('/api/v1/subscriptions/link?' + q.toString());
+}
+// 旧链接提示：没有密文，无法恢复；点轮换就调传入的轮换函数（轮换函数自己
+// 负责把新链接显示出来），新链接随时能复制。
+async function legacySubPrompt(onRotate) {
+  const ok = await confirmModal('旧链接无法恢复',
+    '<p>这条是 1.3.7 之前生成的旧链接，面板里没有存它的密文，无法恢复。点“轮换生成新链接”，旧链接立即失效，新链接随时能复制。</p>',
+    '轮换生成新链接', true);
+  if (!ok) return false;
+  await onRotate();
+  return true;
+}
+// 取回通用订阅链接并显示在设置页：有密文就显示链接与复制按钮，
+// 旧链接显示轮换提示（取不到就留着状态文案，不报错刷屏）。
+async function loadGenericSubLink() {
+  try {
+    const r = await fetchSubLink('generic');
+    if (r.legacy) {
+      $('#sub-status').textContent = '已生成订阅链接：这条是旧链接，面板里没有存它的密文，无法恢复，点“轮换订阅链接”生成一条新的。';
+      const box = $('#sub-once');
+      if (box) { box.classList.add('hidden'); box.hidden = true; }
+      return;
+    }
+    $('#sub-url-value').textContent = r.url || '';
+    const box = $('#sub-once');
+    if (box) { box.classList.remove('hidden'); box.hidden = false; }
+  } catch (e) { /* 取不到就留着状态文案 */ }
+}
+// 单面板订阅令牌生成/轮换：链接显示在设置页的订阅卡片里，之后随时能复制。
 async function subTokenGenerate(rotated) {
   try {
     const r = await apiPost('/api/v1/settings/subscription/generate', {});
     $('#sub-url-value').textContent = r.url || '';
     const box = $('#sub-once');
     if (box) { box.classList.remove('hidden'); box.hidden = false; }
-    toast(rotated ? '订阅链接已轮换，旧链接已失效' : '订阅链接已生成，记得复制保存', 'ok');
+    toast(rotated ? '订阅链接已轮换，旧链接已失效' : '订阅链接已生成，随时能复制', 'ok');
     loadSettingsPage();
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
@@ -2188,7 +2234,7 @@ function updateWorkerExampleLink(domain) {
   el.textContent = domain ? 'https://' + domain + '/sub/<令牌>' : location.origin + '/sub/<令牌>';
 }
 // ---------- 订阅用户：一人一条（v1.3.0） ----------
-// 列表只含名字与生成时间，不含令牌；链接只在新建/轮换时显示一次。
+// 列表只含名字与生成时间，不含令牌；每行都有“复制”按钮，随时能重新拿链接。
 async function loadSubUsers() {
   const list = $('#sub-user-list');
   if (!list) return;
@@ -2196,18 +2242,23 @@ async function loadSubUsers() {
     const r = await api('/api/v1/subscriptions/users');
     const users = r.users || [];
     if (!users.length) { list.innerHTML = '<p class="muted small">还没有订阅用户：上面填名字点“新建订阅用户”，每人一条独立链接。</p>'; return; }
-    list.innerHTML = '<h3>订阅用户</h3>' + users.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
+    list.innerHTML = '<h3>订阅用户</h3>' + users.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-copy="' + esc(u.id) + '">复制</button> <button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
       '<p class="muted small">撤销只影响那个人，其他人的链接照常；轮换后旧链接立即失效。</p>';
-    $$('[data-sub-user-rotate]', list).forEach((b) => b.addEventListener('click', async () => {
-      const ok = await confirmModal('轮换订阅用户链接', '<p>轮换后这个人的旧订阅链接立即失效，客户端里要换成新链接。确定吗？</p>', '轮换', true);
-      if (!ok) return;
+    $$('[data-sub-user-copy]', list).forEach((b) => b.addEventListener('click', async () => {
       try {
-        const r = await apiPost('/api/v1/subscriptions/users/' + encodeURIComponent(b.dataset.subUserRotate) + '/rotate', {});
+        const r = await fetchSubLink('user', b.dataset.subUserCopy);
+        if (r.legacy) { await legacySubPrompt(() => rotateSubUser(b.dataset.subUserCopy)); return; }
         $('#sub-user-url-value').textContent = r.url || '';
         const box = $('#sub-user-once');
         if (box) { box.classList.remove('hidden'); box.hidden = false; }
-        toast('已轮换，旧链接已失效', 'ok'); loadSubUsers();
-      } catch (e) { toast('轮换失败：' + e.message, 'err'); }
+        copyText(subLinkWithMode(r.url || '', ''), b);
+      } catch (e) { toast('复制失败：' + e.message, 'err'); }
+    }));
+    $$('[data-sub-user-rotate]', list).forEach((b) => b.addEventListener('click', async () => {
+      const ok = await confirmModal('轮换订阅用户链接', '<p>轮换后这个人的旧订阅链接立即失效，客户端里要换成新链接。确定吗？</p>', '轮换', true);
+      if (!ok) return;
+      try { await rotateSubUser(b.dataset.subUserRotate); }
+      catch (e) { toast('轮换失败：' + e.message, 'err'); }
     }));
     $$('[data-sub-user-revoke]', list).forEach((b) => b.addEventListener('click', async () => {
       const ok = await confirmModal('撤销订阅用户', '<p>撤销后这个人的订阅链接立即失效，其他人照常。确定吗？</p>', '撤销', true);
@@ -2216,6 +2267,16 @@ async function loadSubUsers() {
       catch (e) { toast('撤销失败：' + e.message, 'err'); }
     }));
   } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
+}
+// 轮换一个订阅用户的链接（不含确认框，确认由调用方做）：旧链接立即失效，
+// 新链接显示在订阅用户卡片里，随时能复制。
+async function rotateSubUser(id) {
+  const r = await apiPost('/api/v1/subscriptions/users/' + encodeURIComponent(id) + '/rotate', {});
+  $('#sub-user-url-value').textContent = r.url || '';
+  const box = $('#sub-user-once');
+  if (box) { box.classList.remove('hidden'); box.hidden = false; }
+  toast('已轮换，旧链接已失效', 'ok'); loadSubUsers();
+  return r;
 }
 async function subUserCreate() {
   const name = $('#sub-user-name').value.trim();
@@ -2226,7 +2287,7 @@ async function subUserCreate() {
     const box = $('#sub-user-once');
     if (box) { box.classList.remove('hidden'); box.hidden = false; }
     $('#sub-user-name').value = ''; $('#sub-user-note').value = '';
-    toast('订阅用户已新建，链接只显示一次，记得复制保存', 'ok');
+    toast('订阅用户已新建，链接显示在下面，随时能复制', 'ok');
     loadSubUsers();
   } catch (err) { toast('新建失败：' + err.message, 'err'); }
 }
@@ -2260,14 +2321,14 @@ async function loadWorkerCode() {
     toast('Worker 代码已生成，复制后去 Cloudflare 部署', 'ok');
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
-// 合并订阅弹窗：显示一条刚生成/轮换的订阅链接（只显示一次），带复制、
+// 合并订阅弹窗：显示一条刚生成/轮换的订阅链接，带复制、
 // 二维码、模式选择，以及轮换/撤销按钮。opts: {title, rotated, name, mergedId}
 // mergedId 为空时不显示轮换/撤销（老调用方只传链接时用不到）。
 function openMergedSubModal(url, opts) {
   opts = opts || {};
   let curUrl = url;
   const m = openModal('<h2>' + esc(opts.title || '订阅链接') + '</h2>' +
-    (opts.rotated ? '<div class="warn-box" data-merged-warn>这份选择之前生成过，已轮换：旧链接立即失效，请用下面这条新链接。</div>' : '<div class="warn-box" data-merged-warn>只显示一次，记下来：关掉弹窗就再也看不到了；丢了就重新生成。</div>') +
+    (opts.rotated ? '<div class="warn-box" data-merged-warn>这份选择之前生成过，已轮换：旧链接立即失效，请用下面这条新链接。</div>' : '<div class="warn-box" data-merged-warn>链接已加密存在面板里，关掉弹窗后在合并订阅列表里点“复制”随时能拿。</div>') +
     (opts.name ? '<div class="kv"><span>归属到人</span><b>' + esc(opts.name) + '</b></div>' : '') +
     '<div class="kv"><span>订阅链接</span><b class="mono" style="word-break:break-all" data-merged-url>' + esc(curUrl) + '</b></div>' +
     '<p class="muted small">模式（可选）：<select data-sub-mode><option value="" selected>默认（不带参数，服务端按分流出）</option><option value="split">分流（TikTok/社交/流媒体走节点，其他直连）</option><option value="global">全局（全部走代理）</option></select>　客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表）；也可以手动加后缀：?format=clash / base64 / plain，?mode=split / global。默认复制的链接不带模式参数；只有规则模式下想全走代理、又保留分类分流时，才选全局。</p>' +
@@ -2639,16 +2700,20 @@ async function loadMergedSubsList() {
     const r = await api('/api/v1/subscriptions/merged');
     const subs = r.subs || [];
     if (!subs.length) { list.innerHTML = '<p class="muted small">还没有合并订阅：上面勾选落地后点“生成合并订阅”。</p>'; return; }
-    list.innerHTML = '<h3>已生成的合并订阅</h3>' + subs.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + esc(s.summary || '') + '<br><span class="small muted">生成于 ' + esc(fmtDate(s.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
-      '<p class="muted small">订阅链接只在生成时显示一次，这里只列勾选内容；丢了就点轮换重新生成一条（旧链接立即失效，新链接在弹窗里只显示一次），或重新勾选生成（不填名称时同一选择重新生成会轮换；填了名称是新起一条，各归各人）。</p>';
+    list.innerHTML = '<h3>已生成的合并订阅</h3>' + subs.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + esc(s.summary || '') + '<br><span class="small muted">生成于 ' + esc(fmtDate(s.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
+      '<p class="muted small">每条订阅都有“复制”按钮，链接加密存在面板里，随时能重新复制；旧链接（1.3.7 之前生成的）没有存密文，点轮换生成一条新的（旧链接立即失效），或重新勾选生成（不填名称时同一选择重新生成会轮换；填了名称是新起一条，各归各人）。</p>';
+    $$('[data-sub-copy-merged]', list).forEach((b) => b.addEventListener('click', async () => {
+      try {
+        const r = await fetchSubLink('merged', b.dataset.subCopyMerged);
+        if (r.legacy) { await legacySubPrompt(() => rotateMergedSub(b.dataset.subCopyMerged, b.dataset.subNameMerged || undefined)); return; }
+        openMergedSubModal(r.url || '', { title: '订阅链接', name: b.dataset.subNameMerged || undefined, mergedId: b.dataset.subCopyMerged });
+      } catch (e) { toast('复制失败：' + e.message, 'err'); }
+    }));
     $$('[data-sub-rotate-merged]', list).forEach((b) => b.addEventListener('click', async () => {
       const ok = await confirmModal('轮换订阅链接', '<p>轮换后旧订阅链接立即失效，客户端里已导入的订阅要换成新链接。确定吗？</p>', '轮换订阅链接', true);
       if (!ok) return;
-      try {
-        const r = await apiPost('/api/v1/subscriptions/merged/' + encodeURIComponent(b.dataset.subRotateMerged) + '/rotate', {});
-        openMergedSubModal(r.url || '', { title: '订阅链接', rotated: true, name: b.dataset.subNameMerged || undefined, mergedId: r.id });
-        loadMergedSubsList();
-      } catch (e) { toast('轮换失败：' + e.message, 'err'); }
+      try { await rotateMergedSub(b.dataset.subRotateMerged, b.dataset.subNameMerged || undefined); }
+      catch (e) { toast('轮换失败：' + e.message, 'err'); }
     }));
     $$('[data-sub-revoke-merged]', list).forEach((b) => b.addEventListener('click', async () => {
       const ok = await confirmModal('撤销合并订阅', '<p>撤销后这条订阅链接立即失效。确定吗？</p>', '撤销', true);
@@ -2657,6 +2722,14 @@ async function loadMergedSubsList() {
       catch (e) { toast('撤销失败：' + e.message, 'err'); }
     }));
   } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
+}
+// 轮换一条合并订阅（不含确认框，确认由调用方做）：旧链接立即失效，
+// 新链接在弹窗里直接显示，之后随时能复制。
+async function rotateMergedSub(id, name) {
+  const r = await apiPost('/api/v1/subscriptions/merged/' + encodeURIComponent(id) + '/rotate', {});
+  openMergedSubModal(r.url || '', { title: '订阅链接', rotated: true, name: name || undefined, mergedId: r.id });
+  loadMergedSubsList();
+  return r;
 }
 async function loadCentralLandings(id, page) {
   if (page) centralDetailPage = page;

@@ -128,7 +128,7 @@ func (s *Server) buildScheduledBackupData(label string) map[string]any {
 	return out
 }
 
-// subUserBackup / mergedSubBackup 备份文件里的订阅用户（脱敏：不含 token_hash）。
+// subUserBackup / mergedSubBackup 备份文件里的订阅用户（脱敏：不含 token 哈希与 token 密文）。
 type subUserBackup struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
@@ -364,15 +364,20 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 			}
 		}
 	}
-	// 订阅用户：快照整体替换；同 ID 的保留本机现有 token 哈希（同面板恢复
-	// 不丢链接），备份里没有的（恢复后新增的）以空哈希插入，须经“轮换”
-	// 重新生成令牌；备份快照里没有的用户会被移除（快照语义）。
+	// 订阅用户：快照整体替换；同 ID 的保留本机现有 token 哈希与 token 密文
+	// （同面板恢复不丢链接、恢复后仍能重新复制），备份里没有的（恢复后
+	// 新增的）以空哈希/空密文插入，须经“轮换”重新生成令牌；备份快照里
+	// 没有的用户会被移除（快照语义）。
 	cfgChanged := false
 	if p.SubUsers != nil {
 		keepHash := map[string]string{}
+		keepEnc := map[string]string{}
 		for _, u := range s.cfg.SubUsers {
 			if u.TokenHash != "" {
 				keepHash[u.ID] = u.TokenHash
+			}
+			if u.TokenEnc != "" {
+				keepEnc[u.ID] = u.TokenEnc
 			}
 		}
 		users := make([]SubUser, 0, len(p.SubUsers))
@@ -381,6 +386,9 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 			if h, ok := keepHash[bu.ID]; ok {
 				u.TokenHash = h
 			}
+			if e, ok := keepEnc[bu.ID]; ok {
+				u.TokenEnc = e
+			}
 			users = append(users, u)
 		}
 		s.cfg.SubUsers = users
@@ -388,9 +396,13 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 	}
 	if p.MergedSubs != nil {
 		keepHash := map[string]string{}
+		keepEnc := map[string]string{}
 		for _, m := range s.cfg.MergedSubs {
 			if m.TokenHash != "" {
 				keepHash[m.ID] = m.TokenHash
+			}
+			if m.TokenEnc != "" {
+				keepEnc[m.ID] = m.TokenEnc
 			}
 		}
 		subs := make([]MergedSub, 0, len(p.MergedSubs))
@@ -398,6 +410,9 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 			m := MergedSub{ID: bm.ID, Name: bm.Name, CreatedAt: bm.CreatedAt, Selection: bm.Selection}
 			if h, ok := keepHash[bm.ID]; ok {
 				m.TokenHash = h
+			}
+			if e, ok := keepEnc[bm.ID]; ok {
+				m.TokenEnc = e
 			}
 			subs = append(subs, m)
 		}

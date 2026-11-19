@@ -368,7 +368,7 @@
             <p class="muted">一个链接导入全部节点：客户端粘贴订阅链接后一次拿到本面板所有节点（中转 + 直连）。内容实时生成，面板里增删节点后订阅自动跟着变，不用重新导出。客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表），也可以在链接后面加 ?format=clash / base64 / plain 手动指定；Clash 订阅默认不带模式参数，服务端按分流出（TikTok/社交/流媒体走节点，其他直连），想手动指定可以在链接后面加 ?mode=split（分流）/ global（全局）。?mode=global 只有一种情况才需要：规则模式下想全走代理、又保留 TikTok/社交/流媒体的分类分流——客户端切全局模式会忽略全部规则，分类分流就没了。</p>
             <div class="small" id="sub-status">未生成订阅链接</div>
             <div id="sub-once" class="hidden" style="margin-top:10px">
-              <div class="warn-box">只显示一次，记下来：关掉页面或刷新后就再也看不到了；丢了就点轮换重新生成。</div>
+              <div class="warn-box">链接已加密存在面板里，随时能点“复制”重新拿；轮换后旧链接立即失效。</div>
               <div class="kv"><span>订阅链接</span><b class="mono" id="sub-url-value" style="word-break:break-all"></b></div>
               <div class="btn-row">
                 <button class="btn secondary sm" id="sub-copy" type="button">复制订阅链接</button>
@@ -407,14 +407,14 @@
           </div>
           <div class="card">
             <h2>订阅用户（一人一条）</h2>
-            <p class="muted">通用订阅链接是所有人拉同一条，封一条就全军覆没；每人一个独立令牌，封一条只影响一个人。名字用来认人（例如“张三的手机”），令牌只显示一次，丢了就点轮换。撤销只影响那个人，其他人的链接照常。</p>
+            <p class="muted">通用订阅链接是所有人拉同一条，封一条就全军覆没；每人一个独立令牌，封一条只影响一个人。名字用来认人（例如“张三的手机”），链接加密存在面板里，列表里每人都有“复制”按钮，随时能重新拿；旧链接（1.3.7 之前生成的）没有存密文，点轮换生成一条新的。撤销只影响那个人，其他人的链接照常。</p>
             <div class="btn-row">
               <label class="small">名字：<input id="sub-user-name" type="text" placeholder="例如：张三的手机" style="width:160px"></label>
               <label class="small">备注：<input id="sub-user-note" type="text" placeholder="选填，例如：备用机" style="width:160px"></label>
               <button class="btn" id="sub-user-create" type="button">新建订阅用户</button>
             </div>
             <div id="sub-user-once" class="hidden" style="margin-top:10px">
-              <div class="warn-box">只显示一次，记下来：关掉页面或刷新后就再也看不到了；丢了就点轮换重新生成。</div>
+              <div class="warn-box">链接已加密存在面板里，随时能点“复制”重新拿；轮换后旧链接立即失效。</div>
               <div class="kv"><span>订阅链接</span><b class="mono" id="sub-user-url-value" style="word-break:break-all"></b></div>
               <div class="btn-row">
                 <button class="btn secondary sm" id="sub-user-copy" type="button">复制订阅链接</button>

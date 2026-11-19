@@ -14,8 +14,12 @@ package main
 //     split 是分流（TikTok/社交/流媒体走节点，其他直连），global 是全局
 //     （全部走代理）；非法 mode 返回 400，与非法 format 的处理一致。
 // 安全要点：
-//   - 订阅令牌只存 SHA-256 哈希，绝不存明文；生成/轮换时明文只显示一次。
-//     令牌泄露可一键轮换，旧链接立即失效；撤销后订阅立即 404。
+//   - 订阅令牌存 SHA-256 哈希（鉴权查表）与 AES-GCM 密文（v1.3.7，
+//     密钥在 PANEL_HOME/sub_token.key，重新拼链接用）；1.3.7 之前生成的
+//     没有密文，复制时提示轮换一次。令牌泄露可一键轮换，旧链接立即失效；
+//     撤销后订阅立即 404。
+//   - /sub/ 限流（v1.3.7）：同一 IP 10 次失败锁 10 分钟，返回 429；
+//     格式不对的令牌直接 404 不查库；对的令牌永远放行，不受锁影响。
 //   - 订阅端点只返回节点链接，不泄露面板其他信息；令牌不对返回 404
 //     （不返回 401，避免暴露端点存在）。
 //   - /sub/ 不走 IP 白名单（订阅客户端从任意 IP 拉取，令牌本身就是鉴权），
@@ -585,8 +589,32 @@ func (s *Server) findMergedSub(tok string) (*MergedSub, bool) {
 
 // handleSub 公开订阅端点：GET /sub/{token}。令牌不对返回 404
 // （不返回 401，避免暴露端点存在）；内容实时生成。
+// 限流（v1.3.7）：先验令牌，对的永远放行（正常客户端不受影响）；
+// 错的才看锁——锁了返回 429，没锁记一次失败（只记 IP 与时间，绝不记令牌）
+// 再返回 404。
 func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 	tok := r.PathValue("token")
+	ip := clientIP(r)
+	if s.subTokenValid(tok) {
+		s.subOK(ip)
+		// 成功拉取记一条轻量记录：IP + 时间 + 令牌哈希前 8 位（认得出是哪条，
+		// 又不把日志打爆）；明文令牌绝不进审计日志。
+		s.audit("订阅客户端", "拉取订阅", ip, "成功", "令牌哈希前 8 位 "+hashSubToken(tok)[:8])
+		s.serveSubContent(w, r, tok)
+		return
+	}
+	if s.subLocked(ip) {
+		w.Header().Set("Retry-After", "600")
+		http.Error(w, "请求太频繁，稍后再试", 429)
+		return
+	}
+	s.subFailed(ip)
+	s.audit("订阅客户端", "拉取订阅", ip, "失败", "令牌不对")
+	http.NotFound(w, r)
+}
+
+// serveSubContent /sub/ 的内容生成（handleSub 验过令牌/限流后调这里）。
+func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok string) {
 	format, err := resolveSubFormat(r)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
@@ -718,16 +746,23 @@ func (s *Server) subURL(r *http.Request, tok string) string {
 func (s *Server) handleSubTokenGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, okResp(map[string]any{
 		"has_token":  s.cfg.SubTokenHash != "",
+		"has_link":   s.cfg.SubTokenEnc != "",
 		"created_at": s.cfg.SubTokenCreatedAt,
 	}))
 }
 
-// handleSubTokenGenerate 生成（或轮换）单面板订阅令牌：订阅链接只在这一次返回，
-// 之后再也看不到；已有令牌时旧链接立即失效。记审计日志（不记令牌本身）。
+// handleSubTokenGenerate 生成（或轮换）单面板订阅令牌：哈希与密文一起存，
+// 链接随时能重新复制；已有令牌时旧链接立即失效。记审计日志（不记令牌本身）。
 func (s *Server) handleSubTokenGenerate(w http.ResponseWriter, r *http.Request) {
 	tok := generateSubToken()
+	enc, err := s.encryptSubTokenNow(tok)
+	if err != nil {
+		writeJSON(w, 500, errResp("令牌加密失败："+err.Error()))
+		return
+	}
 	rotated := s.cfg.SubTokenHash != ""
 	s.cfg.SubTokenHash = hashSubToken(tok)
+	s.cfg.SubTokenEnc = enc
 	s.cfg.SubTokenCreatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
@@ -747,6 +782,7 @@ func (s *Server) handleSubTokenRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfg.SubTokenHash = ""
+	s.cfg.SubTokenEnc = ""
 	s.cfg.SubTokenCreatedAt = ""
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
@@ -754,6 +790,69 @@ func (s *Server) handleSubTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(s.currentUser(r), "撤销订阅链接", "", "成功", "订阅链接已失效")
 	writeJSON(w, 200, okResp(nil))
+}
+
+// ---------- 重新复制订阅链接（v1.3.7，会话认证） ----------
+// GET /api/v1/subscriptions/link?kind=generic|user|merged&id=...
+// 有密文就解密拼链接返回（前端直接复制；二维码也用这条链接生成）。
+// 1.3.7 之前生成的旧链接没有密文，返回 legacy:true 与提示，前端弹轮换确认
+// （轮换一次后就有密文了）；密钥丢了/密文损坏也按旧链接处理，不编链接。
+// 绝不走公开的 /sub/ 路径；复制是只读操作，不记审计日志（明文令牌
+// 绝不进审计日志）。
+
+const legacySubLinkMsg = "这条是旧链接（1.3.7 之前生成的），面板里没有存它的密文，无法恢复。点轮换生成一条新的，旧链接立即失效。"
+
+func (s *Server) handleSubLink(w http.ResponseWriter, r *http.Request) {
+	kind := r.URL.Query().Get("kind")
+	id := r.URL.Query().Get("id")
+	var enc string
+	switch kind {
+	case "generic":
+		if s.cfg.SubTokenHash == "" {
+			writeJSON(w, 404, errResp("还没有订阅链接"))
+			return
+		}
+		enc = s.cfg.SubTokenEnc
+	case "user":
+		found := false
+		for i := range s.cfg.SubUsers {
+			if s.cfg.SubUsers[i].ID == id {
+				enc = s.cfg.SubUsers[i].TokenEnc
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeJSON(w, 404, errResp("没有这个订阅用户"))
+			return
+		}
+	case "merged":
+		found := false
+		for i := range s.cfg.MergedSubs {
+			if s.cfg.MergedSubs[i].ID == id {
+				enc = s.cfg.MergedSubs[i].TokenEnc
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeJSON(w, 404, errResp("没有这条合并订阅"))
+			return
+		}
+	default:
+		writeJSON(w, 400, errResp("kind 只支持 generic/user/merged"))
+		return
+	}
+	if enc == "" {
+		writeJSON(w, 200, okResp(map[string]any{"legacy": true, "message": legacySubLinkMsg}))
+		return
+	}
+	tok, err := s.decryptSubTokenNow(enc)
+	if err != nil {
+		writeJSON(w, 200, okResp(map[string]any{"legacy": true, "message": legacySubLinkMsg}))
+		return
+	}
+	writeJSON(w, 200, okResp(map[string]any{"url": s.subURL(r, tok), "legacy": false}))
 }
 
 // ---------- 订阅对外域名（v1.3.2，会话认证） ----------
@@ -830,10 +929,11 @@ func (s *Server) handleSubPublicDomainSet(w http.ResponseWriter, r *http.Request
 
 // ---------- 订阅用户：一人一条订阅链接（v1.3.0，会话认证） ----------
 // 一个面板一个通用令牌时，所有人拉同一条链接，封一条就全军覆没；
-// 每人一个独立令牌，封一条只影响一个人。令牌只存哈希，明文只在
-// 生成/轮换时显示一次；旧的面板级通用令牌保留不动，已发出去的链接继续能用。
+// 每人一个独立令牌，封一条只影响一个人。令牌存哈希（鉴权）与密文
+// （v1.3.7，重新复制用）；旧的面板级通用令牌保留不动，已发出去的链接继续能用。
 
-// handleSubUsersList 列出订阅用户（不含令牌与链接，链接只在生成/轮换时显示一次）。
+// handleSubUsersList 列出订阅用户（不含令牌与链接；has_link 表示有没有密文，
+// 有就能点复制重新拿链接，没有就是 1.3.7 之前的旧链接，复制时提示轮换）。
 func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 	type item struct {
 		ID        string `json:"id"`
@@ -842,6 +942,7 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 		CreatedAt string `json:"created_at"`
 		Kind      string `json:"kind"` // single=单面板全量，merged=合并订阅
 		Summary   string `json:"summary"`
+		HasLink   bool   `json:"has_link"`
 	}
 	items := []item{}
 	for _, u := range s.cfg.SubUsers {
@@ -851,14 +952,14 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 			kind = "merged"
 			summary = s.selectionSummary(u.Selection)
 		}
-		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary})
+		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != ""})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"users": items}))
 }
 
 // handleSubUsersCreate 新建订阅用户：名字必填（用来认人）；selection 为空
 // 就是单面板全量订阅，填了就是合并订阅（走同一套勾选校验，远程版本不够
-// 时同样提示先升级）。链接只在这一次返回，之后再也看不到。
+// 时同样提示先升级）。链接在这一次返回，之后随时能点复制重新拿。
 func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name      string         `json:"name"`
@@ -895,14 +996,19 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	tok := generateSubToken()
+	enc, err := s.encryptSubTokenNow(tok)
+	if err != nil {
+		writeJSON(w, 500, errResp("令牌加密失败："+err.Error()))
+		return
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	id := "su-" + randomTokenHex(6)
-	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: id, Name: name, Note: note, TokenHash: hashSubToken(tok), CreatedAt: now, Selection: sel})
+	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: id, Name: name, Note: note, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel})
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
 	}
-	s.audit(s.currentUser(r), "新建订阅用户", name, "成功", "订阅链接只显示一次，请立即复制保存")
+	s.audit(s.currentUser(r), "新建订阅用户", name, "成功", "链接已加密存好，随时能复制")
 	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "name": name}))
 }
 
@@ -914,7 +1020,13 @@ func (s *Server) handleSubUsersRotate(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		tok := generateSubToken()
+		enc, err := s.encryptSubTokenNow(tok)
+		if err != nil {
+			writeJSON(w, 500, errResp("令牌加密失败："+err.Error()))
+			return
+		}
 		s.cfg.SubUsers[i].TokenHash = hashSubToken(tok)
+		s.cfg.SubUsers[i].TokenEnc = enc
 		s.cfg.SubUsers[i].CreatedAt = time.Now().UTC().Format(time.RFC3339)
 		if err := s.saveConfig(); err != nil {
 			writeJSON(w, 500, errResp("保存失败："+err.Error()))
@@ -1124,9 +1236,8 @@ func (s *Server) handleWorkerCode(w http.ResponseWriter, r *http.Request) {
 // 复用节点链接同一套 qrDataURI（Go 原生 qrcode，Medium 纠错，256px，
 // 不新引库）。只接受本面板的订阅链接（须含 /sub/sub_），不接受任意文本；
 // 订阅链接约 150–160 字，长度上限放宽到 2048 字符。
-// 注意：订阅令牌明文只在生成时显示一次，服务端存的只是哈希、拼不出
-// 订阅链接，所以二维码由前端把当前显示的链接传进来生成；换 mode/format
-// 后前端重新调一次，二维码跟着变。
+// 注意：订阅链接二维码由前端把当前显示的链接传进来生成（v1.3.7 起也可以
+// 先调取回链接接口再传）；换 mode/format 后前端重新调一次，二维码跟着变。
 func (s *Server) handleSubQR(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		URL string `json:"url"`
@@ -1287,7 +1398,8 @@ func remoteLandingDisplayName(l remoteLandingSummary) string {
 	return l.Domain
 }
 
-// handleMergedSubsList 列出已生成的合并订阅（不含令牌与链接，链接只在生成时显示一次）。
+// handleMergedSubsList 列出已生成的合并订阅（不含令牌与链接；has_link 表示
+// 有没有密文，有就能点复制重新拿链接，没有就是 1.3.7 之前的旧链接）。
 func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 	type item struct {
 		ID        string         `json:"id"`
@@ -1295,20 +1407,22 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 		CreatedAt string         `json:"created_at"`
 		Selection []SubSelection `json:"selection"`
 		Summary   string         `json:"summary"`
+		HasLink   bool           `json:"has_link"`
 	}
 	items := []item{}
 	for _, ms := range s.cfg.MergedSubs {
 		if ms.Selection == nil {
 			ms.Selection = []SubSelection{}
 		}
-		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: s.selectionSummary(ms.Selection)})
+		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: s.selectionSummary(ms.Selection), HasLink: ms.TokenEnc != ""})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"subs": items}))
 }
 
 // handleMergedSubsCreate 生成合并订阅：不填名称时同一选择重新生成 = 轮换
 // （旧链接立即失效）；填了名称（归属到人）就新起一条——同一勾选集合可有
-// 多个不同名称的令牌，各归各人，撤销只影响那一个。链接只在这一次返回，之后再也看不到。
+// 多个不同名称的令牌，各归各人，撤销只影响那一个。链接在这一次返回，
+// 之后随时能点复制重新拿。
 func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Selection []SubSelection `json:"selection"`
@@ -1331,12 +1445,17 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	tok := generateSubToken()
+	enc, err := s.encryptSubTokenNow(tok)
+	if err != nil {
+		writeJSON(w, 500, errResp("令牌加密失败："+err.Error()))
+		return
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	rotated := false
 	id := ""
 	if name != "" {
 		id = "ms-" + randomTokenHex(6)
-		s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, Name: name, TokenHash: hashSubToken(tok), CreatedAt: now, Selection: sel})
+		s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, Name: name, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel})
 	} else {
 		for i := range s.cfg.MergedSubs {
 			// 只轮换同样没填名称的记录：已归属到人的那条不能被误轮换
@@ -1345,6 +1464,7 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 			}
 			if _, k := canonicalSelection(s.cfg.MergedSubs[i].Selection); k == key {
 				s.cfg.MergedSubs[i].TokenHash = hashSubToken(tok)
+				s.cfg.MergedSubs[i].TokenEnc = enc
 				s.cfg.MergedSubs[i].CreatedAt = now
 				id = s.cfg.MergedSubs[i].ID
 				rotated = true
@@ -1353,7 +1473,7 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 		}
 		if id == "" {
 			id = "ms-" + randomTokenHex(6)
-			s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, TokenHash: hashSubToken(tok), CreatedAt: now, Selection: sel})
+			s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel})
 		}
 	}
 	if err := s.saveConfig(); err != nil {
@@ -1368,12 +1488,13 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 	if name != "" {
 		target = name + "（" + target + "）"
 	}
-	s.audit(s.currentUser(r), action, target, "成功", "订阅链接只显示一次，请立即复制保存")
+	s.audit(s.currentUser(r), action, target, "成功", "链接已加密存好，随时能复制")
 	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": rotated, "selection": sel, "summary": s.selectionSummary(sel)}))
 }
 
 // handleMergedSubsRotate 轮换一条合并订阅：同一勾选集合与同一归属人换一个
-// 新令牌，旧链接立即失效；新链接只在这一次返回（弹窗里直接显示）。
+// 新令牌，旧链接立即失效；新链接在这一次返回（弹窗里直接显示），之后
+// 随时能点复制重新拿。
 func (s *Server) handleMergedSubsRotate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	for i := range s.cfg.MergedSubs {
@@ -1381,7 +1502,13 @@ func (s *Server) handleMergedSubsRotate(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		tok := generateSubToken()
+		enc, err := s.encryptSubTokenNow(tok)
+		if err != nil {
+			writeJSON(w, 500, errResp("令牌加密失败："+err.Error()))
+			return
+		}
 		s.cfg.MergedSubs[i].TokenHash = hashSubToken(tok)
+		s.cfg.MergedSubs[i].TokenEnc = enc
 		s.cfg.MergedSubs[i].CreatedAt = time.Now().UTC().Format(time.RFC3339)
 		if err := s.saveConfig(); err != nil {
 			writeJSON(w, 500, errResp("保存失败："+err.Error()))

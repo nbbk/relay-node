@@ -38,10 +38,13 @@ type PanelConfig struct {
 	// 远程管理令牌（v1.2.0，被管端）：只存 SHA-256 哈希，绝不存明文。
 	RemoteTokenHash      string `json:"remote_token_hash"`
 	RemoteTokenCreatedAt string `json:"remote_token_created_at"`
-	// 订阅令牌（v1.2.7，单面板全量订阅）：只存 SHA-256 哈希，绝不存明文；
-	// 生成/轮换时明文只显示一次。内容是实时生成的（全部落地），
-	// 面板里增删节点后订阅内容自动跟着变，不用重新导出。
+	// 订阅令牌（v1.2.7，单面板全量订阅）：哈希做鉴权查表，密文（v1.3.7，
+	// AES-GCM，密钥在 PANEL_HOME/sub_token.key）用来重新拼链接，随时能
+	// 点复制重新拿；1.3.7 之前生成的没有密文，复制时提示轮换一次。
+	// 内容是实时生成的（全部落地），面板里增删节点后订阅内容自动跟着变，
+	// 不用重新导出。
 	SubTokenHash      string `json:"sub_token_hash"`
+	SubTokenEnc       string `json:"sub_token_enc,omitempty"`
 	SubTokenCreatedAt string `json:"sub_token_created_at"`
 	// 订阅对外域名（v1.3.2）：部署完 Cloudflare Worker 后填 Worker 的域名
 	// （或在触发器里绑的自定义域名）。填了之后，面板里显示与复制的订阅链接
@@ -113,27 +116,32 @@ type SubSelection struct {
 	Landing int    `json:"landing"`
 }
 
-// MergedSub 一份合并订阅：TokenHash 是订阅令牌的 SHA-256 哈希（只存哈希，
-// 明文只在生成时显示一次），Selection 是这份订阅绑定的勾选集合。
+// MergedSub 一份合并订阅：TokenHash 是订阅令牌的 SHA-256 哈希（鉴权查表），
+// TokenEnc 是同一令牌的 AES-GCM 密文（v1.3.7，密钥在 PANEL_HOME/sub_token.key），
+// 用来重新拼链接；1.3.7 之前生成的没有密文，复制时提示轮换一次。
+// Selection 是这份订阅绑定的勾选集合。
 // Name 是归属到人（v1.3.0，选填）：填了就新起一条，同一勾选集合可有
 // 多个不同名称的令牌，各归各人；不填走老逻辑（同一选择重新生成会轮换）。
 type MergedSub struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name,omitempty"`
 	TokenHash string         `json:"token_hash"`
+	TokenEnc  string         `json:"token_enc,omitempty"`
 	CreatedAt string         `json:"created_at"`
 	Selection []SubSelection `json:"selection"`
 }
 
 // SubUser 一人一条订阅链接（v1.3.0）：TokenHash 是订阅令牌的 SHA-256
-// 哈希（只存哈希，明文只在生成时显示一次），Name 是人名/备注（必填，
-// 用来认人）。Selection 为空 = 单面板全量订阅（全部落地），
+// 哈希（鉴权查表），TokenEnc 是同一令牌的 AES-GCM 密文（v1.3.7，
+// 用来重新拼链接；旧链接没有密文，复制时提示轮换一次）。Name 是人名/备注
+// （必填，用来认人）。Selection 为空 = 单面板全量订阅（全部落地），
 // 非空 = 合并订阅的勾选集合（只导选中的落地）。
 type SubUser struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
 	Note      string         `json:"note,omitempty"`
 	TokenHash string         `json:"token_hash"`
+	TokenEnc  string         `json:"token_enc,omitempty"`
 	CreatedAt string         `json:"created_at"`
 	Selection []SubSelection `json:"selection,omitempty"`
 }
@@ -391,6 +399,10 @@ type Server struct {
 	centralCache   map[string]*RemoteStatusSnapshot
 	centralAlert   map[string]*centralAlertState
 	centralPollWG  sync.WaitGroup // 后台轮询计数（代理写成功后异步刷新一次；测试等它跑完再清理，避免轮询撞上 TempDir 删除）
+	subKey         []byte         // 订阅令牌加密密钥（v1.3.7，PANEL_HOME/sub_token.key 的内容，懒加载）
+	subKeyMu       sync.Mutex
+	subFailMu      sync.Mutex // /sub/ 限流锁（v1.3.7）
+	subFails       map[string]*subFailState
 }
 
 func newServer(env Env) (*Server, error) {
@@ -407,7 +419,7 @@ func newServer(env Env) (*Server, error) {
 		// 测试环境 REALM_DIR 可能不可写目录已存在则忽略
 		_ = os.MkdirAll(env.RealmDir, 0o755)
 	}
-	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}}
+	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}, subFails: map[string]*subFailState{}}
 	if err := s.loadConfig(); err != nil {
 		return nil, err
 	}

@@ -31,7 +31,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"latency":       s.cfg.Latency,
 		"backup":        s.cfg.Backup,
 		"central_token": map[string]any{"has_token": s.cfg.RemoteTokenHash != "", "created_at": s.cfg.RemoteTokenCreatedAt},
-		"subscription":  map[string]any{"has_token": s.cfg.SubTokenHash != "", "created_at": s.cfg.SubTokenCreatedAt, "public_domain": s.cfg.SubPublicDomain, "worker_origin": s.cfg.WorkerOrigin},
+		"subscription":  map[string]any{"has_token": s.cfg.SubTokenHash != "", "has_link": s.cfg.SubTokenEnc != "", "created_at": s.cfg.SubTokenCreatedAt, "public_domain": s.cfg.SubPublicDomain, "worker_origin": s.cfg.WorkerOrigin},
 		"remotes_count": len(s.cfg.Remotes),
 		"cloudflare":    map[string]any{"has_token": s.cfg.CloudflareToken != ""},
 		"version":       Version, "latest_version": latest, "update_available": update,
