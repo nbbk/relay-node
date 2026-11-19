@@ -534,7 +534,7 @@ func TestServeEmbeddedWeb(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"relay-node 面板",
+		"CP管理",
 		".hidden{display:none!important}",
 		`id="loading-view" class="loading-wrap"`,
 		`id="login-view" class="login-wrap hidden" hidden`,
@@ -586,7 +586,7 @@ func TestServeEmbeddedWeb(t *testing.T) {
 	}
 	// 未知无后缀路径 → SPA 回退 index.html
 	rec = get("/overview", "")
-	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "relay-node 面板") {
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "CP管理") {
 		t.Fatalf("/overview 应回退 index.html：状态=%d", rec.Code)
 	}
 	// 目录穿越：ServeMux 先把路径规范化（301 重定向）；直接调 handler 时含 .. 的路径 404

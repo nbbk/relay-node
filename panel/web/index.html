@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>relay-node 面板</title>
-<meta name="description" content="relay-node 中转面板：落地管理、证书、流量、端口与服务">
+<title>CP管理</title>
+<meta name="description" content="CP管理：设备状态、网络与服务">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="中转面板">
+<meta name="apple-mobile-web-app-title" content="CP管理">
 <meta name="theme-color" content="#2563eb">
 <!-- 内联 manifest：可“存到主屏幕”，无外部依赖 -->
-<link rel="manifest" href='data:application/manifest+json,{"name":"relay-node 面板","short_name":"中转面板","display":"standalone","start_url":".","theme_color":"%232563eb","background_color":"%23f4f6fa","icons":[]}'>
+<link rel="manifest" href='data:application/manifest+json,{"name":"CP管理","short_name":"CP管理","display":"standalone","start_url":".","theme_color":"%232563eb","background_color":"%23f4f6fa","icons":[]}'>
 <link rel="stylesheet" href="style.css">
 <!-- 内联关键样式：即使 style.css 加载失败，登录页与后台也不会堆在一起显示 -->
 <style>.hidden{display:none!important}</style>
@@ -25,8 +25,8 @@
 <!-- 登录页默认隐藏：由 JS 在会话校验失败后才显示；内联兜底脚本在 app.js 失效时也会把它放出来 -->
 <div id="login-view" class="login-wrap hidden" hidden>
   <div class="login-card">
-    <div class="brand">relay<span>-node</span> 面板</div>
-    <p class="sub">中转节点可视化管理 · 请登录</p>
+    <div class="brand">CP管理</div>
+    <p class="sub">CP管理 · 请登录</p>
     <div id="login-error" class="error-box hidden"></div>
     <div id="login-locked" class="warn-box hidden">登录失败次数过多，已临时锁定 5 分钟，请稍后再试。</div>
     <form id="login-form">
@@ -44,7 +44,7 @@
 <div id="app" class="hidden" hidden>
   <div class="scrim hidden" id="scrim" hidden></div>
   <aside class="sidebar" id="sidebar">
-    <div class="brand">relay<span>-node</span><button class="icon-btn sidebar-close" id="sidebar-close" type="button" aria-label="关闭菜单">✕</button></div>
+    <div class="brand">CP管理<button class="icon-btn sidebar-close" id="sidebar-close" type="button" aria-label="关闭菜单">✕</button></div>
     <nav id="side-nav"></nav>
     <div class="foot">
       <div>面板版本：<span id="side-version">—</span></div>
@@ -547,7 +547,7 @@
       <!-- 集中管理 -->
       <section class="page" id="page-central">
         <div class="page-head"><h1>集中管理</h1><div class="actions"><button class="btn secondary" id="central-refresh" type="button">刷新状态</button></div></div>
-        <p class="muted">一台主面板管多台远程面板：登记远程面板后，这里能看到每台的在线状态、版本、落地数与磁盘使用率，还能直接代理中转面板的全部中转与节点操作：加/编辑/删除落地、加/删节点、续期、流量设置与续量、证书、远程体检与一键修复、重启 realm、看链接、订阅。实时日志不代理，要看日志点“打开远程面板”跳过去。没登记任何远程面板时，本面板的行为与原来完全一致。</p>
+        <p class="muted">一台主面板管多台远程面板：登记远程面板后，这里能看到每台的在线状态、版本、落地数与磁盘使用率，还能直接代理远程面板的全部中转与节点操作：加/编辑/删除落地、加/删节点、续期、流量设置与续量、证书、远程体检与一键修复、重启 realm、看链接、订阅。实时日志不代理，要看日志点“打开远程面板”跳过去。没登记任何远程面板时，本面板的行为与原来完全一致。</p>
         <div class="card">
           <h2>登记远程面板</h2>
           <p class="muted">先到被管面板的设置页“远程管理令牌”卡片里生成令牌，再把地址和令牌填进来。令牌只保存在主面板的配置文件里（600 权限），不会显示出来。登记时会当场连一次，连不上、令牌不对或远程面板版本太旧（低于 1.2.0）都会直接拒绝并写清原因。</p>
