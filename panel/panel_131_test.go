@@ -41,10 +41,15 @@ func TestClashGlobalGroup131(t *testing.T) {
 		t.Fatalf("clash 应 200，实际 %d", rec.Code)
 	}
 	body := rec.Body.String()
-	// GLOBAL 存在、是 select、排在所有组第一位
+	// GLOBAL 存在、是 select、排在手动选择之前（v1.3.4 起自动选择排第一，
+	// GLOBAL 排第二；切全局模式时 Clash 按名字找 GLOBAL 组，顺序不影响它）
 	gi := strings.Index(body, "- name: \"GLOBAL\"")
 	if gi < 0 {
 		t.Fatalf("缺 GLOBAL 组：\n%s", body)
+	}
+	ai := strings.Index(body, "- name: \"自动选择\"")
+	if ai < 0 || ai > gi {
+		t.Fatalf("自动选择组应排在 GLOBAL 之前")
 	}
 	mi := strings.Index(body, "- name: \"手动选择\"")
 	if mi < 0 || gi > mi {

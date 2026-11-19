@@ -28,6 +28,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,6 +36,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const subTokenPrefix = "sub_"
@@ -320,12 +322,12 @@ func decodeVmessLink(link string) (map[string]string, error) {
 	return out, nil
 }
 
-// ---------- Clash 策略组与分流规则（v1.2.9，v1.3.1 补 GLOBAL 组） ----------
-// Clash YAML 订阅出 7 个策略组：GLOBAL（select，全部节点，排第一，
+// ---------- Clash 策略组与分流规则（v1.2.9，v1.3.1 补 GLOBAL 组，v1.3.4 改顺序） ----------
+// Clash YAML 订阅出 7 个策略组：自动选择（url-test，全部节点，排第一，
+// 每 5 分钟测一次挑延迟最低）、GLOBAL（select，全部节点，排第二，
 // 客户端切全局模式时走它）、手动选择（select，全部节点，默认入口）、
-// 自动选择（url-test，全部节点，每 5 分钟测一次挑延迟最低）、中转节点
-// （select，只有中转链接）、直连节点（select，只有直连链接）、社交
-// （select，全部节点）、流媒体（select，全部节点）。中转/直连按 twin
+// 中转节点（select，只有中转链接）、直连节点（select，只有直连链接）、
+// 社交（select，全部节点）、流媒体（select，全部节点）。中转/直连按 twin
 // 名字后缀 -中转/-直连 分组；没有中转或直连链接时对应组不出现（不出空组）。
 // 规则顺序：TikTok → 社交 → 流媒体 → MATCH；TikTok 规则指向手动选择，
 // 社交指向社交组，流媒体指向流媒体组。分流模式 MATCH,DIRECT（只有这三
@@ -418,11 +420,12 @@ func renderClashYAML(links []subLink, mode string) string {
 		}
 	}
 	b.WriteString("proxy-groups:\n")
-	// GLOBAL 排第一：客户端切全局模式时 Clash 找名叫 GLOBAL 的组走全部
-	// 流量；成员与手动选择一致（只有节点名，不含自动选择组）。
+	// 自动选择排第一：客户端默认进这个组挑延迟最低；GLOBAL 排第二：
+	// 客户端切全局模式时 Clash 按名字找 GLOBAL 组走全部流量（顺序不影响
+	// 它，只影响默认显示）；成员与手动选择一致（只有节点名，不含自动选择组）。
+	writeGroup("自动选择", "url-test", names)
 	writeGroup("GLOBAL", "select", names)
 	writeGroup("手动选择", "select", names)
-	writeGroup("自动选择", "url-test", names)
 	if len(relayNames) > 0 {
 		writeGroup("中转节点", "select", relayNames)
 	}
@@ -620,7 +623,80 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("subscription-userinfo", h)
 	}
 	w.Header().Set("Content-Type", ctype)
+	// 下载文件名（v1.3.4）：让客户端按文件名给导入的配置起名。
+	w.Header().Set("Content-Disposition", subContentDisposition(s.panelName(), format))
 	_, _ = w.Write([]byte(body))
+}
+
+// ---------- 订阅下载文件名（v1.3.4） ----------
+// 订阅响应带 Content-Disposition 文件名，让客户端按文件名给导入的配置
+// 起名：Clash YAML 用“<面板名称>.yaml”，base64/plain 用“<面板名称>.txt”。
+// 单面板订阅用本面板名，合并订阅用主面板（本地面板）的名——合并订阅
+// 本来就是主面板生成与下发的，所以两边都用本面板的 panelName()。
+// 面板名称可能含中文：filename* 用 RFC 5987 的 UTF-8 百分号编码；
+// filename 放一份 ASCII 兜底（名字纯 ASCII 时用原名，否则用 panel）。
+func subContentDisposition(panelName, format string) string {
+	ext := "txt"
+	if format == "clash" {
+		ext = "yaml"
+	}
+	name := subFileName(panelName)
+	encoded := rfc5987Encode(name + "." + ext)
+	if isASCIISafe(name) {
+		return `attachment; filename="` + name + "." + ext + `"; filename*=UTF-8''` + encoded
+	}
+	return `attachment; filename="panel.` + ext + `"; filename*=UTF-8''` + encoded
+}
+
+// subFileName 文件名清洗（第二道防线：面板名称保存时已校验过）：
+// 去掉换行与文件名非法字符，空了就回退 CP管理，最多 64 个字。
+func subFileName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "CP管理"
+	}
+	var b []rune
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(`/\\:*?"<>|`, r) {
+			b = append(b, '-')
+		} else {
+			b = append(b, r)
+		}
+	}
+	name = strings.Trim(string(b), " .")
+	if utf8.RuneCountInString(name) > 64 {
+		name = string([]rune(name)[:64])
+	}
+	if name == "" {
+		return "CP管理"
+	}
+	return name
+}
+
+// rfc5987Encode 按 RFC 5987 把字符串编成 filename* 用的 UTF-8 百分号编码：
+// attr-char（字母数字与 ! # $ & + - . ^ _ ` | ~）原样保留，其余字节 %XX 大写。
+func rfc5987Encode(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("!#$&+-.^_`|~", c) >= 0 {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
+// isASCIISafe 名字是否只含 ASCII 安全字符（可直接放进 filename="…"）。
+func isASCIISafe(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 0x80 || c == '"' || c == '\\' || c < 0x20 {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // ---------- 单面板订阅令牌管理（会话认证） ----------
@@ -878,9 +954,15 @@ func (s *Server) handleSubUsersDelete(w http.ResponseWriter, r *http.Request) {
 
 // workerOrigin 定 Worker 回源的面板地址：优先用 origin 参数（用户在面板里填
 // 的对外地址，可带 https:// 完整写法），否则用当前打开面板的地址
-// （怎么打开就用什么）。只接受“域名或 IP（可带端口）”，不接受带路径、
+// （怎么打开就用什么）。只接受域名（可带端口），不接受带路径、
 // 查询串的写法；host 只允许字母数字、点、横杠、下划线与端口冒号，
 // 防止拼进 Worker 代码时注入。
+// 注意：源站地址不能是 IP 字面量——Cloudflare Worker 的 fetch() 不能
+// 直接用 IP 回源，会在边缘直接被回 error 1003，订阅拿到的就是 403。
+// 用户在输入框里明确填了 IP 时直接拒绝（400），告诉他先建个域名指过去；
+// 没填（默认用当前面板地址）时不拦——不填域名、直接用面板地址本来就是
+// 默认用法，拦了就没法直接用了——这时由 handleWorkerCode 在返回里带
+// warning 提示，而不是悄悄生成一个注定跑不通的代码。
 func workerOrigin(r *http.Request) (string, error) {
 	scheme := "http"
 	if r.TLS != nil {
@@ -894,17 +976,40 @@ func workerOrigin(r *http.Request) (string, error) {
 	if strings.Contains(origin, "://") {
 		u, err := url.Parse(origin)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-			return "", fmt.Errorf("源站地址填 https://域名 或 http://IP:端口，不用写路径")
+			return "", fmt.Errorf("源站地址填 https://域名 或 http://域名:端口，不用写路径")
 		}
 		scheme = u.Scheme
 		host = u.Host
 	} else if strings.ContainsAny(origin, "/?#") {
-		return "", fmt.Errorf("源站地址填域名或 IP（可带端口），不用写路径")
+		return "", fmt.Errorf("源站地址填域名（可带端口），不用写路径")
 	}
 	if !validWorkerHost(host) {
-		return "", fmt.Errorf("源站地址不对：填域名或 IP（可带端口）")
+		return "", fmt.Errorf("源站地址不对：填域名（可带端口）")
+	}
+	if workerOriginIsIP(host) {
+		return "", fmt.Errorf("源站地址不能填 IP 地址：Cloudflare Worker 的 fetch() 不能直接用 IP 回源，会报 error 1003；先在 Cloudflare 里给面板建个域名（灰云 A 记录指到面板 IP），再填 http://域名:11111 重新生成")
 	}
 	return scheme + "://" + host, nil
+}
+
+// workerOriginIsIP 判断一个源站地址（可带 http(s):// 前缀与端口）的
+// host 是不是 IP 字面量（IPv4 或 IPv6 括号形式都算）。
+func workerOriginIsIP(addr string) bool {
+	h := addr
+	if i := strings.Index(h, "://"); i >= 0 {
+		h = h[i+3:]
+	}
+	if i := strings.Index(h, "/"); i >= 0 {
+		h = h[:i]
+	}
+	if strings.HasPrefix(h, "[") {
+		if i := strings.Index(h, "]"); i >= 0 {
+			h = h[1:i]
+		}
+	} else if i := strings.LastIndex(h, ":"); i >= 0 {
+		h = h[:i]
+	}
+	return net.ParseIP(h) != nil
 }
 
 // validWorkerHost 校验 Worker 回源地址的 host 部分：字母数字、点、横杠、
@@ -947,13 +1052,19 @@ func renderWorkerCode(origin, publicDomain string) string {
 	if publicDomain != "" {
 		example = "https://" + publicDomain + "/sub/<令牌>?format=clash&mode=split"
 	}
+	// 源站是 IP 时代码照常生成（默认用法不能拦），但在代码里写明会 1003，
+	// 免得用户部署完才发现订阅 403。
+	warn := ""
+	if workerOriginIsIP(origin) {
+		warn = "// 注意：下面 ORIGIN 是 IP 地址，Worker 的 fetch() 不能直接用 IP 回源，\n// 部署后订阅会报 Cloudflare error 1003：先在 Cloudflare 里给面板建个\n// 域名（灰云 A 记录指到面板 IP），再填 http://域名:11111 重新生成代码。\n"
+	}
 	return `// relay-panel 订阅反代（Cloudflare Worker）：
 // 部署：Cloudflare 后台 → Workers → 新建 Worker → 粘贴本代码 → 部署；
 // 可选：在 Workers → 触发器（Triggers）里绑一个自定义域名。
 // 部署后订阅链接 = ` + example + `
 // （令牌与参数和原来完全一样，只是把面板地址换成 Worker 地址）。
 // 源站地址只出现在这里（你的 Cloudflare 账号内可见），客户端看不到面板真实地址。
-const ORIGIN = "` + origin + `";
+` + warn + `const ORIGIN = "` + origin + `";
 export default {
   async fetch(request) {
     const url = new URL(request.url);
@@ -973,14 +1084,19 @@ export default {
 }
 
 // handleWorkerCode 生成 Worker 反代代码（会话认证）：按当前请求的 origin
-// 参数或打开面板的地址定源站，返回代码与源站地址。
+// 参数或打开面板的地址定源站，返回代码与源站地址。源站是 IP 时不拦
+// （默认用法），但返回里带 warning 提示会 1003，前端显示出来。
 func (s *Server) handleWorkerCode(w http.ResponseWriter, r *http.Request) {
 	origin, err := workerOrigin(r)
 	if err != nil {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
 	}
-	writeJSON(w, 200, okResp(map[string]any{"origin": origin, "code": renderWorkerCode(origin, s.cfg.SubPublicDomain)}))
+	resp := map[string]any{"origin": origin, "code": renderWorkerCode(origin, s.cfg.SubPublicDomain)}
+	if workerOriginIsIP(origin) {
+		resp["warning"] = "源站地址是 IP，Worker 回源会被 Cloudflare 挡（error 1003）：先在 Cloudflare 里给面板建个域名（灰云 A 记录指到面板 IP），再填 http://域名:11111 重新生成代码。"
+	}
+	writeJSON(w, 200, okResp(resp))
 }
 
 // handleSubQR 订阅链接二维码（v1.2.9，会话认证）：

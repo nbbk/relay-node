@@ -74,6 +74,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/ports", s.requireAuth(s.handlePorts))
 	// 设置
 	mux.HandleFunc("GET /api/v1/settings", s.requireAuth(s.handleSettings))
+	mux.HandleFunc("POST /api/v1/settings/panel-name", s.requireAuth(s.handlePanelNameSet))
 	mux.HandleFunc("POST /api/v1/settings/manager-only", s.requireAuth(s.handleManagerOnly))
 	mux.HandleFunc("POST /api/v1/settings/password", s.requireAuth(s.handleChangePassword))
 	mux.HandleFunc("POST /api/v1/settings/port", s.requireAuth(s.handleChangePort))
@@ -150,7 +151,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	// 前端文件由 embed 提供（panel/web/index.html 等），按路径分发；
 	// API 路由（/api/v1/...）在 ServeMux 里更具体，优先于这里的 catch-all。
 	// 注意：这里不能按路径 404——/style.css、/app.js 也要走 serveEmbeddedWeb。
-	serveEmbeddedWeb(w, r)
+	s.serveEmbeddedWeb(w, r)
 }
 
 // requireAuth 会话校验（登录接口除外）。

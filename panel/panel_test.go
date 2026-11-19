@@ -596,7 +596,7 @@ func TestServeEmbeddedWeb(t *testing.T) {
 	{
 		req := httptest.NewRequest("GET", "/../style.css", nil)
 		rec := httptest.NewRecorder()
-		serveEmbeddedWeb(rec, req)
+		s.serveEmbeddedWeb(rec, req)
 		if rec.Code != 404 {
 			t.Fatalf("serveEmbeddedWeb /../style.css 状态=%d want 404", rec.Code)
 		}

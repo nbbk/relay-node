@@ -185,7 +185,7 @@ func TestValidateRemoteAddLandingBody(t *testing.T) {
 
 // ---------- 远程状态聚合解析 + 登记 + 代理转发 ----------
 
-const fakeRemoteStatus = `{"ok":true,"panel_version":"1.2.0","realm":{"running":true},"disk_pct":42.5,"disk_total_bytes":100,"disk_used_bytes":42,"disk_free_bytes":58,"landings":[{"index":1,"landing":"203.0.113.1","domain":"example.com","mode":"standard","ports":[{"proto":"tcp","listen":443,"remote":443}],"online":true,"latency_ms":12},{"index":2,"landing":"203.0.113.2","domain":"node2.example.com","mode":"door","ports":[{"proto":"tcp","listen":20443,"remote":443}],"online":false,"latency_ms":null}]}`
+const fakeRemoteStatus = `{"ok":true,"panel_version":"1.2.0","realm":{"running":true},"disk_pct":42.5,"disk_total_bytes":100,"disk_used_bytes":42,"disk_free_bytes":58,"landings":[{"index":1,"landing":"203.0.113.1","domain":"example.com","mode":"standard","ports":[{"proto":"tcp","listen":443,"remote":443}],"online":true,"latency_ms":12,"expiry":"2027-01-01T00:00:00Z","days_left":30,"traffic":{"today_up":100,"today_down":200,"month_up":1000,"month_down":2000,"total_up":10000,"total_down":20000,"limit_bytes":300000,"limit_mode":"total","used_bytes":30000,"pct":10},"subnodes":[{"domain":"node1.example.com","created_at":"","note":""}]},{"index":2,"landing":"203.0.113.2","domain":"node2.example.com","mode":"door","ports":[{"proto":"tcp","listen":20443,"remote":443}],"online":false,"latency_ms":null}]}`
 
 func newFakeRemote(t *testing.T) (*httptest.Server, *[]string) {
 	t.Helper()

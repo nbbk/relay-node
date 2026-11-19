@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // ---------- 面板自己的配置（PANEL_HOME/config.json，600） ----------
@@ -61,8 +62,38 @@ type PanelConfig struct {
 	// 管理面板模式（v1.2.8）：true = 这台面板只做集中管理，不装中转；
 	// 本地落地/服务/端口管理全部隐藏，只显示集中管理、合并订阅与设置。
 	// 数据保留，切回 false 就恢复完整面板。安装时选模式写入，设置页可切换。
-	ManagerOnly bool   `json:"manager_only"`
-	Version     string `json:"version"`
+	ManagerOnly bool `json:"manager_only"`
+	// 面板名称（v1.3.4）：设置页可改，默认 CP管理（1.3.3 之前写死的名字）。
+	// 登录页标题/品牌、侧边栏品牌、manifest 与订阅导入后的配置名都跟着它变；
+	// 旧 config.json 里没有这个字段时按默认值处理，不用迁移。
+	PanelName string `json:"panel_name"`
+	Version   string `json:"version"`
+}
+
+// panelName 面板显示名称：设置里可改，空着（旧配置）默认 CP管理。
+func (s *Server) panelName() string {
+	if n := strings.TrimSpace(s.cfg.PanelName); n != "" {
+		return n
+	}
+	return "CP管理"
+}
+
+// validPanelName 校验面板名称：1–24 个字；不能含控制字符与
+// / \ : * ? " < > |（这些字符进文件名、响应头、HTML、manifest
+// JSON 都会出问题）；不能是 . 或 ..，不能以 . 开头（隐藏文件）。
+func validPanelName(name string) bool {
+	if name == "" || utf8.RuneCountInString(name) > 24 {
+		return false
+	}
+	if name == "." || name == ".." || strings.HasPrefix(name, ".") {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(`/\\:*?"<>|`, r) {
+			return false
+		}
+	}
+	return true
 }
 
 // SubSelection 合并订阅里的一条勾选：Panel 是 "local"（本面板）或

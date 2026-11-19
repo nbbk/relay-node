@@ -38,8 +38,8 @@ func TestClashGroups129(t *testing.T) {
 		t.Fatalf("clash 应 200，实际 %d", rec.Code)
 	}
 	body := rec.Body.String()
-	// 7 个组，按顺序出现（GLOBAL 排第一）
-	groups := []string{"GLOBAL", "手动选择", "自动选择", "中转节点", "直连节点", "社交", "流媒体"}
+	// 7 个组，按顺序出现（v1.3.4 起自动选择排第一，GLOBAL 排第二）
+	groups := []string{"自动选择", "GLOBAL", "手动选择", "中转节点", "直连节点", "社交", "流媒体"}
 	prev := -1
 	for _, g := range groups {
 		i := strings.Index(body, "- name: \""+g+"\"")

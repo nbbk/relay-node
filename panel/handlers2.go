@@ -25,6 +25,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"port": s.cfg.Port, "https_enabled": s.cfg.HTTPSEnabled, "https_domain": s.cfg.HTTPSDomain,
 		"ip_whitelist": s.cfg.IPWhitelist, "relay_addr": relayAddr,
 		"manager_only":  s.cfg.ManagerOnly,
+		"panel_name":    s.panelName(),
 		"telegram":      map[string]any{"enabled": s.cfg.Telegram.Enabled, "chat_id": s.cfg.Telegram.ChatID, "has_token": s.cfg.Telegram.BotToken != ""},
 		"monitor":       s.cfg.Monitor,
 		"latency":       s.cfg.Latency,
@@ -34,6 +35,37 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"cloudflare":    map[string]any{"has_token": s.cfg.CloudflareToken != ""},
 		"version":       Version, "latest_version": latest, "update_available": update,
 	}))
+}
+
+// ---------- 面板名称（v1.3.4） ----------
+
+// handlePanelNameSet 改面板名称：存 config.json 的 panel_name。
+// 改名后登录页标题/品牌、侧边栏品牌、manifest 都跟着变（下次打开页面即
+// 生效，本次保存后前端刷新页面）；订阅导入客户端后配置名也用这个名字
+// （订阅响应带 Content-Disposition 文件名）。名字为空、超 24 字或含
+// 文件名/响应头非法字符时返回 400。
+func (s *Server) handlePanelNameSet(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if !validPanelName(name) {
+		writeJSON(w, 400, errResp("面板名称不对：1–24 个字，不能含 / \\ : * ? \" < > |，不能以 . 开头"))
+		return
+	}
+	old := s.cfg.PanelName
+	s.cfg.PanelName = name
+	if err := s.saveConfig(); err != nil {
+		s.cfg.PanelName = old
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	s.audit(s.currentUser(r), "改面板名称", "改成 "+name, "成功", "")
+	writeJSON(w, 200, okResp(map[string]any{"panel_name": s.panelName()}))
 }
 
 // ---------- 管理面板模式切换（v1.2.8） ----------

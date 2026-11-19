@@ -123,10 +123,10 @@ async function api(path, opts, noAuthRedirect) {
 async function apiPost(path, body, noAuthRedirect) { return api(path, { method: 'POST', body: JSON.stringify(body || {}) }, noAuthRedirect); }
 
 /* ---------- 弹窗 ---------- */
-function openModal(html) {
+function openModal(html, wide) {
   const root = $('#modal-root');
   if (!root) return null; // 弹窗容器缺失时直接放弃，绝不抛错
-  root.innerHTML = '<div class="modal-backdrop"><div class="modal" role="dialog" aria-modal="true">' + html + '</div></div>';
+  root.innerHTML = '<div class="modal-backdrop"><div class="modal' + (wide ? ' wide' : '') + '" role="dialog" aria-modal="true">' + html + '</div></div>';
   onIn(root, '.modal-backdrop', 'click', (e) => { if (e.target.classList.contains('modal-backdrop')) closeModal(); });
   return $('.modal', root);
 }
@@ -1440,6 +1440,9 @@ async function loadSettingsPage() {
     $('#sub-status').textContent = sub.has_token ? '已生成订阅链接' + (sub.created_at ? '（生成于 ' + fmtDate(sub.created_at) + '）' : '') + '：链接只在生成时显示一次，丢了就点轮换重新生成。' : '未生成订阅链接：点“生成订阅链接”，复制链接粘贴到客户端订阅里即可。';
     const subDomain = $('#sub-public-domain');
     if (subDomain) subDomain.value = sub.public_domain || '';
+    // 面板名称（v1.3.4）：设置接口下发的当前名填进输入框。
+    const pn = $('#panel-name');
+    if (pn) pn.value = st.panel_name || 'CP管理';
     updateWorkerExampleLink(sub.public_domain || '');
     $('#update-box').innerHTML = '<div class="kv"><span>当前版本</span><b>' + esc(st.version || '—') + '</b></div>' +
       '<div class="kv"><span>最新版本</span><b>' + esc(st.latest_version || '—') + '</b></div>' +
@@ -1447,8 +1450,10 @@ async function loadSettingsPage() {
       '<div class="kv"><span>仓库</span><b><a href="https://github.com/nbbk/relay-node" target="_blank" rel="noopener">relay-node</a></b></div>';
   } catch (e) { toast('设置加载失败：' + e.message, 'err'); }
   loadBackups(); loadAudit(); loadSubUsers();
+  // Worker 源站地址（v1.3.4）：留空，不预填——留空就是默认用法（用当前
+  // 面板地址）；placeholder 告诉用户留空等于什么。
   const wo = $('#worker-origin');
-  if (wo && !wo.value) wo.value = location.origin;
+  if (wo) wo.placeholder = '留空 = ' + location.origin;
 }
 // 切换面板模式（v1.2.8）：只改 manager_only 开关，数据保留；切完刷新页面重建导航。
 async function switchPanelMode(toManager) {
@@ -1465,6 +1470,17 @@ async function switchPanelMode(toManager) {
 function initSettings() {
   on('#mode-to-manager', 'click', () => switchPanelMode(true));
   on('#mode-to-full', 'click', () => switchPanelMode(false));
+  // 面板名称（v1.3.4）：保存后刷新页面，登录页标题/品牌与订阅配置名跟着变。
+  on('#panel-name-form', 'submit', async (e) => {
+    e.preventDefault();
+    const name = $('#panel-name').value.trim();
+    if (!name) { toast('面板名称不能为空', 'err'); return; }
+    try {
+      await apiPost('/api/v1/settings/panel-name', { name });
+      toast('面板名称已保存，页面刷新后登录页标题、品牌和订阅配置名都会跟着变', 'ok');
+      setTimeout(() => location.reload(), 600);
+    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+  });
   on('#pw-form', 'submit', async (e) => {
     e.preventDefault();
     const oldPw = $('#pw-old').value, nw = $('#pw-new').value, nw2 = $('#pw-new2').value;
@@ -2189,6 +2205,11 @@ async function loadWorkerCode() {
   try {
     const r = await api('/api/v1/subscriptions/worker?origin=' + encodeURIComponent(origin));
     pre.textContent = r.code || '';
+    const warn = $('#worker-code-warn');
+    if (warn) {
+      if (r.warning) { warn.textContent = r.warning; warn.classList.remove('hidden'); warn.hidden = false; }
+      else { warn.textContent = ''; warn.classList.add('hidden'); warn.hidden = true; }
+    }
     box.classList.remove('hidden'); box.hidden = false;
     toast('Worker 代码已生成，复制后去 Cloudflare 部署', 'ok');
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
@@ -2282,51 +2303,161 @@ async function showSubForSelection(selection, title, name) {
     loadMergedSubsList();
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
+// ---------- 集中管理卡片汇总（v1.3.4） ----------
+// 远程落地流量与到期都来自集中管理快照（主面板每 2 分钟拉远程状态，
+// 快照里的 traffic/days_left 与远程面板自己的 /api/v1/central/traffic
+// 读的是同一份流量库，不用再为每张卡片单独拉一次；详情弹窗打开后
+// 还会再从远程实时拉一次流量汇总，拉到了就更新成最新数）。
+// 节点级流量做不到：子节点共用落地端口，中转机按端口计分不清节点，
+// 只能显示所属落地的共享流量（见 loadCentralLandings 里的标注）。
+
+// centralOnlineBadge 远程面板在线徽章。
+function centralOnlineBadge(rm) {
+  return '<span class="badge ' + (rm.online ? 'green' : 'red') + '">' + (rm.online ? '在线' : '离线') + '</span>';
+}
+
+// centralTrafficAgg 把一台远程面板全部落地的流量加总：今日/本月/累计
+// 各自相加；已用是各落地 used_bytes 之和，上限是各落地 limit_bytes 之和
+// （有限制的落地才计入上限）；pct = 已用/上限。
+function centralTrafficAgg(landings) {
+  let today = 0, month = 0, total = 0, used = 0, limit = 0, has = false;
+  (landings || []).forEach((l) => {
+    const t = l.traffic || {};
+    if (t.today_up != null || t.today_down != null || t.total_up != null || t.total_down != null) has = true;
+    today += (Number(t.today_up) || 0) + (Number(t.today_down) || 0);
+    month += (Number(t.month_up) || 0) + (Number(t.month_down) || 0);
+    total += (Number(t.total_up) || 0) + (Number(t.total_down) || 0);
+    used += Number(t.used_bytes) || 0;
+    if (t.limit_bytes) limit += Number(t.limit_bytes) || 0;
+  });
+  return { today, month, total, used, limit, pct: limit ? Math.min(100, Math.round(used / limit * 100)) : 0, has };
+}
+
+// centralTrafficMiniText 卡片上的流量汇总行，和本机小卡片的
+// trafficMiniText 同一款式：有限制显示“已用 / 上限（%）”，不限只显示已用。
+function centralTrafficMiniText(landings) {
+  const a = centralTrafficAgg(landings);
+  if (!a.has) return '暂无流量数据';
+  if (!a.limit) return '不限 · 已用 ' + fmtBytes(a.used);
+  return fmtBytes(a.used) + ' / ' + fmtBytes(a.limit) + '（' + a.pct + '%）';
+}
+
+// centralExpirySummary 一台远程面板的到期汇总：取全部落地里最近的到期
+// （已到期的优先报已到期）；全部永久返回“全部永久”；没有落地返回“暂无落地”。
+function centralExpirySummary(landings) {
+  const list = (landings || []).filter((l) => l && l.days_left != null);
+  if (!list.length) {
+    return { text: (landings || []).length ? '全部永久' : '暂无落地', cls: 'grey' };
+  }
+  let nearest = list[0];
+  list.forEach((l) => { if (l.days_left < nearest.days_left) nearest = l; });
+  const name = centralLandingTitle(nearest);
+  const d = nearest.days_left;
+  if (d < 0) return { text: '已到期 ' + Math.abs(d) + ' 天（' + name + '）', cls: 'red' };
+  if (d === 0) return { text: '今天到期（' + name + '）', cls: 'red' };
+  return { text: '最早剩余 ' + d + ' 天（' + name + '）', cls: d <= 7 ? 'red' : d <= 30 ? 'yellow' : 'green' };
+}
+
+// centralDetailEl 集中管理详情弹窗里的落地容器（详情弹窗打开时才有）。
+function centralDetailEl() { return $('#central-detail-modal'); }
+
 async function loadCentral() {
   const wrap = $('#central-list');
-  const detail = $('#central-detail');
-  if (detail) detail.innerHTML = '';
   centralDetailId = null;
   loadCentralSubTree();
   try {
     const r = await api('/api/v1/central/remotes');
     centralRemotes = r.remotes || [];
     if (!centralRemotes.length) {
-      wrap.innerHTML = '<div class="empty">还没登记远程面板。<br>到被管面板的设置页生成远程管理令牌，再在上面填地址和令牌登记。登记后这里会显示每台远程面板的在线状态、版本、落地数与磁盘使用率。</div>';
+      wrap.innerHTML = '<div class="empty">还没登记远程面板。<br>到被管面板的设置页生成远程管理令牌，再在上面填地址和令牌登记。登记后这里会显示每台远程面板的在线状态、版本、落地数、流量汇总与最近到期时间。</div>';
       return;
     }
-    wrap.innerHTML = centralRemotes.map((rm) => {
+    wrap.innerHTML = '<div class="grid cols-3">' + centralRemotes.map((rm) => {
+      const landings = rm.landings || [];
+      const onlineCount = landings.filter((l) => l.online === true).length;
+      const offlineCount = landings.filter((l) => l.online === false).length;
+      const unknownCount = landings.length - onlineCount - offlineCount;
+      const exp = centralExpirySummary(landings);
+      const t = centralTrafficAgg(landings);
+      const trafficLine = t.has ? '今日 ' + fmtBytes(t.today) + ' · 本月 ' + fmtBytes(t.month) + ' · 累计 ' + fmtBytes(t.total) : '';
       const disk = (rm.disk_pct == null) ? '—' : Math.round(rm.disk_pct) + '%';
-      const badge = rm.online ? '<span class="badge green">在线</span>' : '<span class="badge red">离线</span>';
       const checked = rm.last_checked_at ? esc(fmtDate(rm.last_checked_at)) : '尚未拉取';
-      return '<div class="card" style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">' +
-        '<h2>' + esc(rm.name) + '</h2>' + badge + '</div>' +
-        '<div class="kv"><span>地址</span><b class="mono">' + esc(rm.base_url) + '</b></div>' +
-        '<div class="kv"><span>版本</span><b>' + esc(rm.version || '—') + '</b></div>' +
-        '<div class="kv"><span>落地数</span><b>' + esc(rm.landing_count == null ? '—' : rm.landing_count) + '</b></div>' +
-        '<div class="kv"><span>磁盘使用率</span><b>' + disk + '</b></div>' +
-        '<div class="kv"><span>realm</span><b>' + (rm.realm_running ? '在跑' : '没在跑') + '</b></div>' +
-        '<div class="kv"><span>上次检查</span><b>' + checked + '</b></div>' +
+      const onlineLine = landings.length ? '（在线 ' + onlineCount + ' / 离线 ' + offlineCount + (unknownCount ? ' / 未知 ' + unknownCount : '') + '）' : '';
+      return '<div class="mini-card static">' +
+        '<div class="mini-top"><h3>' + esc(rm.name || rm.base_url) + '</h3><span>' + centralOnlineBadge(rm) +
+        ' <span class="tag" title="这是登记在主面板上的另一台面板，数据由主面板每 2 分钟拉取；点“打开远程面板”跳到它自己的页面">远程面板</span></span></div>' +
+        '<div class="mini-row"><span>地址</span><b class="mono" style="word-break:break-all">' + esc(rm.base_url) + '</b></div>' +
+        '<div class="mini-row"><span>版本</span><b>' + esc(rm.version || '—') + '</b></div>' +
+        '<div class="mini-row"><span>落地</span><b>' + landings.length + ' 个 ' + onlineLine + '</b></div>' +
+        '<div class="mini-row"><span>流量</span><b>' + esc(centralTrafficMiniText(landings)) + '</b></div>' +
+        (trafficLine ? '<div class="mini-row"><span></span><span class="small muted">' + esc(trafficLine) + '</span></div>' : '') +
+        '<div class="mini-row"><span>到期</span><b><span class="badge ' + exp.cls + '">' + esc(exp.text) + '</span></b></div>' +
+        '<div class="mini-row"><span>磁盘使用率</span><b>' + disk + '</b></div>' +
+        '<div class="mini-row"><span>realm</span><b>' + (rm.realm_running ? '在跑' : '没在跑') + '</b></div>' +
+        '<div class="mini-row"><span>上次检查</span><b>' + checked + '</b></div>' +
         (rm.online ? '' : '<div class="error-box">' + esc(rm.error || '远程面板连不上') + '</div>') +
         '<div class="btn-row">' +
+        '<button class="btn sm" type="button" data-central-detail="' + esc(rm.id) + '">查看详情</button>' +
         '<button class="btn secondary sm" type="button" data-central-open="' + esc(rm.base_url) + '">打开远程面板 ↗</button>' +
-        '<button class="btn secondary sm" type="button" data-central-landings="' + esc(rm.id) + '">查看落地</button>' +
-        '<button class="btn secondary sm" type="button" data-central-links="' + esc(rm.id) + '">查看链接</button>' +
-        '<button class="btn secondary sm" type="button" data-central-add="' + esc(rm.id) + '">＋ 加落地</button>' +
-        '<button class="btn secondary sm" type="button" data-central-restart="' + esc(rm.id) + '">重启 realm</button>' +
-        '<button class="btn secondary sm" type="button" data-central-check="' + esc(rm.id) + '">远程体检</button>' +
         '<button class="btn danger sm" type="button" data-central-del="' + esc(rm.id) + '">取消登记</button></div></div>';
-    }).join('');
+    }).join('') + '</div>';
     $$('[data-central-open]', wrap).forEach((b) => b.addEventListener('click', () => window.open(b.dataset.centralOpen, '_blank', 'noopener')));
-    $$('[data-central-landings]', wrap).forEach((b) => b.addEventListener('click', () => loadCentralLandings(b.dataset.centralLandings)));
-    $$('[data-central-links]', wrap).forEach((b) => b.addEventListener('click', () => centralLinks(b.dataset.centralLinks)));
-    $$('[data-central-add]', wrap).forEach((b) => b.addEventListener('click', () => centralAddLanding(b.dataset.centralAdd)));
-    $$('[data-central-restart]', wrap).forEach((b) => b.addEventListener('click', () => centralRestart(b.dataset.centralRestart)));
-    $$('[data-central-check]', wrap).forEach((b) => b.addEventListener('click', () => centralCheck(b.dataset.centralCheck)));
+    $$('[data-central-detail]', wrap).forEach((b) => b.addEventListener('click', () => openCentralDetail(b.dataset.centralDetail)));
     $$('[data-central-del]', wrap).forEach((b) => b.addEventListener('click', () => centralDeregister(b.dataset.centralDel)));
   } catch (e) {
     wrap.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
   }
+}
+
+// ---------- 集中管理详情弹窗（v1.3.4） ----------
+// 点卡片弹出该面板的详情：落地列表、每个落地的节点、状态、证书、流量。
+// 落地列表按需加载（1.2.5 的懒加载思路：打开弹窗才拉，链接再点开才取）。
+async function openCentralDetail(id) {
+  const rm = centralRemotes.find((x) => x.id === id);
+  if (!rm) { toast('找不到这台远程面板', 'err'); return; }
+  const landings = rm.landings || [];
+  const exp = centralExpirySummary(landings);
+  const disk = (rm.disk_pct == null) ? '—' : Math.round(rm.disk_pct) + '%';
+  const m = openModal(
+    '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><h2>' + esc(rm.name || rm.base_url) + '</h2><span>' + centralOnlineBadge(rm) +
+    ' <span class="tag" title="这是登记在主面板上的另一台面板，数据由主面板每 2 分钟拉取；点“打开远程面板”跳到它自己的页面">远程面板</span></span></div>' +
+    '<div class="kv"><span>地址</span><b class="mono" style="word-break:break-all">' + esc(rm.base_url) + '</b></div>' +
+    '<div class="kv"><span>版本</span><b>' + esc(rm.version || '—') + ' · 磁盘 ' + disk + ' · ' + (rm.realm_running ? 'realm 在跑' : 'realm 没在跑') + '</b></div>' +
+    '<div class="kv"><span>流量汇总</span><b id="central-detail-traffic">' + esc(centralTrafficMiniText(landings)) + '</b></div>' +
+    '<div class="kv"><span>到期</span><b><span class="badge ' + exp.cls + '">' + esc(exp.text) + '</span></b></div>' +
+    '<div class="btn-row">' +
+    '<button class="btn secondary sm" type="button" data-cd-open="' + esc(rm.base_url) + '">打开远程面板 ↗</button>' +
+    '<button class="btn secondary sm" type="button" data-cd-add="' + esc(id) + '">＋ 加落地</button>' +
+    '<button class="btn secondary sm" type="button" data-cd-check="' + esc(id) + '">远程体检</button>' +
+    '<button class="btn secondary sm" type="button" data-cd-realm="' + esc(id) + '">重启 realm</button>' +
+    '<button class="btn secondary sm" type="button" data-cd-links="' + esc(id) + '">查看链接</button>' +
+    '<button class="btn danger sm" type="button" data-cd-remove="' + esc(id) + '">取消登记</button></div>' +
+    '<h3 style="margin-top:14px">落地（' + landings.length + ' 个）</h3>' +
+    '<div id="central-detail-modal">加载中…</div>' +
+    '<div class="btn-row"><button class="btn secondary" id="central-detail-close" type="button">关闭</button></div>', true);
+  if (!m) return;
+  onIn(m, '#central-detail-close', 'click', () => { centralDetailId = null; closeModal(); });
+  $$('[data-cd-open]', m).forEach((b) => b.addEventListener('click', () => window.open(b.dataset.cdOpen, '_blank', 'noopener')));
+  $$('[data-cd-add]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); centralAddLanding(b.dataset.cdAdd); }));
+  $$('[data-cd-check]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); centralCheck(b.dataset.cdCheck); }));
+  $$('[data-cd-realm]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); centralRestart(b.dataset.cdRealm); }));
+  $$('[data-cd-links]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); centralLinks(b.dataset.cdLinks); }));
+  $$('[data-cd-remove]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); centralDeregister(b.dataset.cdRemove); }));
+  loadCentralLandings(id);
+  // 流量汇总再从远程面板实时拉一次（central/traffic 代理接口，和快照
+  // 读同一份流量库）：拉到了就更新成最新数，拉不到（远程离线/版本太旧）
+  // 就留着快照里的数，不报错。
+  try {
+    const tr = await api('/api/v1/central/remotes/' + encodeURIComponent(id) + '/traffic');
+    const el = $('#central-detail-traffic');
+    if (el && tr && tr.summary) {
+      const s2 = tr.summary;
+      const used = Number(s2.used_bytes) || 0;
+      const lim = Number(s2.limit_bytes) || 0;
+      el.textContent = lim ? fmtBytes(used) + ' / ' + fmtBytes(lim) + '（' + Math.min(100, Number(s2.pct) || 0) + '%）' : '不限 · 已用 ' + fmtBytes(used);
+      if (tr.note) el.title = tr.note;
+    }
+  } catch (e) { /* 快照里的数就是兜底 */ }
 }
 // 集中管理落地标题：有备注名称时“名称 地址”，没有时只显示地址；
 // 名称与地址相同时也只显示一次（被管面板没设名称时 name 会回退成地址）。
@@ -2487,8 +2618,12 @@ async function loadCentralLandings(id, page) {
   centralOpenLanding = null; // 默认全收起：翻页/重进都回到折叠态
   if (centralDetailLinksRemote !== id) { centralDetailLinksGroups = null; centralDetailLinksRemote = null; }
   const rm = centralRemotes.find((x) => x.id === id);
-  const detail = $('#central-detail');
-  detail.innerHTML = '<div class="card">加载中…</div>';
+  const detail = centralDetailEl();
+  if (!detail) { // 详情弹窗没开（直接调了这个函数）：先开弹窗，弹窗里会再调一次拉取
+    openCentralDetail(id);
+    return;
+  }
+  detail.innerHTML = '加载中…';
   try {
     const r = await api('/api/v1/central/remotes/' + encodeURIComponent(id) + '/landings');
     centralDetailLandings = r.landings || [];
@@ -2497,10 +2632,10 @@ async function loadCentralLandings(id, page) {
     centralDetailPage = pg.cur;
     const cachedNote = r.note ? '<div class="warn-box">' + esc(r.note) + '</div>' : '';
     if (!centralDetailLandings.length) {
-      detail.innerHTML = '<div class="card"><h2>' + esc(rm ? rm.name : id) + ' 的落地</h2>' + cachedNote + '<div class="empty">这台远程面板还没有落地。</div></div>';
+      detail.innerHTML = cachedNote + '<div class="empty">这台远程面板还没有落地。</div>';
       return;
     }
-    detail.innerHTML = '<div class="card"><h2>' + esc(rm ? rm.name : id) + ' 的落地</h2>' + cachedNote +
+    detail.innerHTML = cachedNote +
       '<p class="muted small">点一行展开看它的链接、二维码与操作；一次只展开一个，再点一次收起。实时日志不代理，要看日志点上面卡片里的“打开远程面板”跳过去。</p>' +
       pg.slice.map((l) => {
         const ports = (l.ports || []).map((p) => esc(p.proto) + ' ' + esc(p.listen) + '→' + esc(p.remote)).join('、') || '—';
@@ -2513,8 +2648,20 @@ async function loadCentralLandings(id, page) {
         const subs = (l.subnodes || []).map((sn) =>
           '<div class="kv"><span>' + esc(sn.domain) + '</span><span><button class="btn danger sm" type="button" data-central-delsub="' + esc(l.index) + '|' + esc(sn.domain) + '">删除节点</button></span></div>'
         ).join('');
+        // 行头也放到期与流量（和本机卡片同一款式）：不用点开就看得到。
+        const expCls = l.days_left == null ? 'grey' : l.days_left < 0 ? 'red' : l.days_left <= 7 ? 'red' : l.days_left <= 30 ? 'yellow' : 'green';
+        const trafficHead = '今日 ' + esc(fmtBytes((tr.today_up || 0) + (tr.today_down || 0))) + ' · 累计 ' + esc(fmtBytes((tr.total_up || 0) + (tr.total_down || 0)));
+        // 子节点没有独立流量：同一落地的节点共用一份流量（中转机按端口统计，
+        // 分不清节点），下面展开体里的流量就是该落地的共享流量，别当成单个节点的。
+        const subShared = (l.subnodes && l.subnodes.length)
+          ? '<div class="small muted">子节点流量：同一落地的节点共用一份流量（中转机按端口统计，分不清节点），下面是该落地的共享流量。</div>'
+          : '';
         return '<div class="central-landing">' +
-          '<div class="central-landing-head" data-central-toggle="' + esc(l.index) + '" role="button" tabindex="0"><span>' + esc(centralLandingTitle(l)) + ' <span class="small">#' + esc(l.index) + '</span></span><span>' + on + ' ' + lat + ' <span class="central-caret">▸</span></span></div>' +
+          '<div class="central-landing-head" data-central-toggle="' + esc(l.index) + '" role="button" tabindex="0"><span>' + esc(centralLandingTitle(l)) + ' <span class="small">#' + esc(l.index) + '</span></span><span>' + on + ' ' + lat +
+          ' <span class="small">到期 <span class="badge ' + expCls + '">' + exp + '</span></span>' +
+          ' <span class="small muted">' + trafficHead + '</span>' +
+          ' <span class="central-caret">▸</span></span></div>' +
+          subShared +
           '<div class="central-landing-body hidden" data-central-body="' + esc(l.index) + '">' +
           '<div class="kv"><span>落地</span><b>' + esc(centralLandingTitle(l)) + '</b></div>' +
           '<div class="kv"><span>监听端口</span><b>' + ports + '</b></div>' +
@@ -2532,7 +2679,7 @@ async function loadCentralLandings(id, page) {
           '<button class="btn secondary sm" type="button" data-central-certs="' + esc(l.index) + '">证书</button>' +
           '<button class="btn secondary sm" type="button" data-central-sub-landing="' + esc(l.index) + '">订阅</button>' +
           '<button class="btn danger sm" type="button" data-central-del-landing="' + esc(l.index) + '">删除该落地</button></div></div></div>';
-      }).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'central') + '</div>';
+      }).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'central');
     $$('[data-central-toggle]', detail).forEach((h) => {
       const toggle = () => centralToggleLanding(Number(h.dataset.centralToggle));
       h.addEventListener('click', toggle);
@@ -2568,12 +2715,12 @@ async function loadCentralLandings(id, page) {
     $$('[data-central-del-landing]', detail).forEach((b) => b.addEventListener('click', () => centralDeleteLanding(id, Number(b.dataset.centralDelLanding))));
     if (pg.totalPages > 1) wirePager(detail, 'central', pg.cur, pg.totalPages, (p) => loadCentralLandings(id, p));
   } catch (e) {
-    detail.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
+    detail.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>';
   }
 }
 // 手风琴开关：点开一个、收起其他；再点已开的就收起。链接只在第一次展开时取。
 function centralToggleLanding(index) {
-  const detail = $('#central-detail');
+  const detail = centralDetailEl();
   if (!detail) return;
   const wasOpen = centralOpenLanding === index;
   $$('.central-landing-body', detail).forEach((b) => b.classList.add('hidden'));
@@ -2587,7 +2734,7 @@ function centralToggleLanding(index) {
   centralLoadLandingLinks(centralDetailId, index);
 }
 async function centralLoadLandingLinks(remoteId, index) {
-  const detail = $('#central-detail');
+  const detail = centralDetailEl();
   const box = detail ? $('[data-central-links-box="' + index + '"]', detail) : null;
   if (!box || box.dataset.loaded) return;
   box.innerHTML = '<p class="muted">链接加载中…</p>';

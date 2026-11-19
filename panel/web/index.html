@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>CP管理</title>
-<meta name="description" content="CP管理：设备状态、网络与服务">
+<title>__PANEL_NAME__</title>
+<meta name="description" content="__PANEL_NAME__：设备状态、网络与服务">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="CP管理">
+<meta name="apple-mobile-web-app-title" content="__PANEL_NAME__">
 <meta name="theme-color" content="#2563eb">
 <!-- 内联 manifest：可“存到主屏幕”，无外部依赖 -->
-<link rel="manifest" href='data:application/manifest+json,{"name":"CP管理","short_name":"CP管理","display":"standalone","start_url":".","theme_color":"%232563eb","background_color":"%23f4f6fa","icons":[]}'>
+<link rel="manifest" href='data:application/manifest+json,{"name":"__PANEL_NAME_MANIFEST__","short_name":"__PANEL_NAME_MANIFEST__","display":"standalone","start_url":".","theme_color":"%232563eb","background_color":"%23f4f6fa","icons":[]}'>
 <link rel="stylesheet" href="style.css">
 <!-- 内联关键样式：即使 style.css 加载失败，登录页与后台也不会堆在一起显示 -->
 <style>.hidden{display:none!important}</style>
@@ -25,8 +25,8 @@
 <!-- 登录页默认隐藏：由 JS 在会话校验失败后才显示；内联兜底脚本在 app.js 失效时也会把它放出来 -->
 <div id="login-view" class="login-wrap hidden" hidden>
   <div class="login-card">
-    <div class="brand">CP管理</div>
-    <p class="sub">CP管理 · 请登录</p>
+    <div class="brand">__PANEL_NAME__</div>
+    <p class="sub">__PANEL_NAME__ · 请登录</p>
     <div id="login-error" class="error-box hidden"></div>
     <div id="login-locked" class="warn-box hidden">登录失败次数过多，已临时锁定 5 分钟，请稍后再试。</div>
     <form id="login-form">
@@ -44,7 +44,7 @@
 <div id="app" class="hidden" hidden>
   <div class="scrim hidden" id="scrim" hidden></div>
   <aside class="sidebar" id="sidebar">
-    <div class="brand">CP管理<button class="icon-btn sidebar-close" id="sidebar-close" type="button" aria-label="关闭菜单">✕</button></div>
+    <div class="brand">__PANEL_NAME__<button class="icon-btn sidebar-close" id="sidebar-close" type="button" aria-label="关闭菜单">✕</button></div>
     <nav id="side-nav"></nav>
     <div class="foot">
       <div>面板版本：<span id="side-version">—</span></div>
@@ -243,6 +243,16 @@
             </form>
           </div>
           <div class="card">
+            <h2>面板名称</h2>
+            <p class="muted">登录页标题、品牌和订阅导入客户端后那个配置的名字都用它。改名后页面会刷新一次。</p>
+            <form id="panel-name-form">
+              <label for="panel-name">面板名称 <span class="hint">1–24 个字，默认 CP管理</span></label>
+              <input id="panel-name" maxlength="24" placeholder="CP管理" required>
+              <div class="btn-row"><button class="btn" type="submit">保存名称</button></div>
+            </form>
+            <p class="small muted">订阅导入客户端后，配置就叫这个名（订阅响应带 Content-Disposition 文件名：Clash 订阅是“&lt;面板名称&gt;.yaml”，其他格式是“&lt;面板名称&gt;.txt”）。</p>
+          </div>
+          <div class="card">
             <h2>IP 白名单</h2>
             <p class="muted">只允许这些 IP 访问面板。留空 = 不限制。白名单外的 IP 访问任何接口都会返回 403。</p>
             <form id="whitelist-form">
@@ -389,10 +399,10 @@
             </div>
             <p class="small">链接泄露可一键轮换，旧链接立即失效；撤销后订阅立即打不开。</p>
             <div class="btn-row" style="margin-top:10px">
-              <label class="small">订阅对外域名：<input id="sub-public-domain" type="text" placeholder="例如：relay.example.com" style="width:280px"></label>
+              <label class="small">订阅对外域名（选填）：<input id="sub-public-domain" type="text" placeholder="例如：relay.example.com" style="width:280px"></label>
               <button class="btn secondary" id="sub-public-domain-save" type="button">保存</button>
             </div>
-            <p class="small muted">部署完 Cloudflare Worker 后填 Worker 的域名（或在触发器里绑的自定义域名）：填了之后，面板里所有订阅链接（通用链接、每人链接、合并订阅、二维码）都改成 https://这个域名/sub/…，不再显示面板自己的地址；留空保存就恢复成面板自己的地址。只填域名（可带端口），不用写 https://，不用写路径。Worker 代码里的源站地址不受影响，仍是面板真实地址。</p>
+            <p class="small muted">选填，留空就用面板自己的地址（IP:端口），直接能用，不用配域名。部署完 Cloudflare Worker、想让订阅走 Worker 域名时再填 Worker 的域名（或在触发器里绑的自定义域名）：填了之后，面板里所有订阅链接（通用链接、每人链接、合并订阅、二维码）都改成 https://这个域名/sub/…，不再显示面板自己的地址；留空保存就恢复成面板自己的地址。只填域名（可带端口），不用写 https://，不用写路径。Worker 代码里的源站地址不受影响，仍是面板真实地址。</p>
           </div>
           <div class="card">
             <h2>订阅用户（一人一条）</h2>
@@ -424,11 +434,12 @@
             <h2>Worker 反代（防封订阅）</h2>
             <p class="muted">订阅链接直接由面板出时，客户端看到的是面板真实地址；套一层 Cloudflare Worker 反代后，客户端只看到 Worker 自己的域名，面板真实地址只出现在 Worker 代码里（你的 Cloudflare 账号内可见）。部署后把订阅链接里的面板地址换成 Worker 地址，令牌和参数都不变。</p>
             <div class="btn-row">
-              <label class="small">面板源站地址：<input id="worker-origin" type="text" style="width:280px"></label>
+              <label class="small">面板源站地址（选填）：<input id="worker-origin" type="text" placeholder="留空 = 现在打开面板的地址" style="width:280px"></label>
               <button class="btn" id="worker-generate" type="button">生成 Worker 代码</button>
             </div>
-            <p class="small muted">默认填你现在打开面板的地址；如果面板对外是另一个地址（例如绑了域名、走了反代），改成那个地址再生成。源站须是公网可达地址，否则 Worker 连不上源站；源站最好走 HTTPS，否则 Worker 到面板这段是明文。</p>
+            <p class="small muted">选填，留空就用你现在打开面板的地址（IP:端口），直接能用；Worker 反代是可选项，只有想藏面板 IP、走 HTTPS 订阅时才需要配域名。如果面板对外是另一个地址（例如绑了域名、走了反代），填那个地址再生成。源站地址必须是域名、不能是 IP（Worker 的 fetch() 不能直接用 IP 回源，会报 Cloudflare error 1003）；必须是 http:// 开头（面板是明文 HTTP，没有 HTTPS）。源站地址只出现在 Worker 代码里（你的 Cloudflare 账号内可见），客户端看不到面板真实地址。</p>
             <div id="worker-code-box" class="hidden" style="margin-top:10px">
+              <div id="worker-code-warn" class="warn-box hidden"></div>
               <pre id="worker-code" class="mono" style="white-space:pre-wrap;word-break:break-all"></pre>
               <div class="btn-row">
                 <button class="btn secondary sm" id="worker-copy" type="button">复制代码</button>
@@ -547,7 +558,7 @@
       <!-- 集中管理 -->
       <section class="page" id="page-central">
         <div class="page-head"><h1>集中管理</h1><div class="actions"><button class="btn secondary" id="central-refresh" type="button">刷新状态</button></div></div>
-        <p class="muted">一台主面板管多台远程面板：登记远程面板后，这里能看到每台的在线状态、版本、落地数与磁盘使用率，还能直接代理远程面板的全部中转与节点操作：加/编辑/删除落地、加/删节点、续期、流量设置与续量、证书、远程体检与一键修复、重启 realm、看链接、订阅。实时日志不代理，要看日志点“打开远程面板”跳过去。没登记任何远程面板时，本面板的行为与原来完全一致。</p>
+        <p class="muted">一台主面板管多台远程面板：登记远程面板后，每台面板一张卡片，卡片上能看到在线状态、版本、落地数、流量汇总（各落地已用/上限合计）与最近到期时间；点卡片的“查看详情”弹出该面板的落地与节点详情（状态、证书、每个落地的到期与流量），详情按需加载。卡片上还能直接代理远程面板的全部中转与节点操作：加/编辑/删除落地、加/删节点、续期、流量设置与续量、证书、远程体检与一键修复、重启 realm、看链接、订阅。实时日志不代理，要看日志点“打开远程面板”跳过去。没登记任何远程面板时，本面板的行为与原来完全一致。</p>
         <div class="card">
           <h2>登记远程面板</h2>
           <p class="muted">先到被管面板的设置页“远程管理令牌”卡片里生成令牌，再把地址和令牌填进来。令牌只保存在主面板的配置文件里（600 权限），不会显示出来。登记时会当场连一次，连不上、令牌不对或远程面板版本太旧（低于 1.2.0）都会直接拒绝并写清原因。</p>
@@ -569,7 +580,6 @@
         </div>
         <h2 style="margin-top:20px">已登记的远程面板</h2>
         <div id="central-list"></div>
-        <div id="central-detail" style="margin-top:16px"></div>
       </section>
     </main>
   </div>
