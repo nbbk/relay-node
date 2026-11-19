@@ -319,4 +319,6 @@ func TestCentralRemoteAddLandingFullFieldsPassthrough(t *testing.T) {
 			t.Errorf("透传到远程的请求体缺字段 %s，实际 %s", want, gotBody)
 		}
 	}
+	// 等后台轮询跑完再返回，否则轮询可能撞上假服务器关闭与 TempDir 清理
+	waitCentralPolls(t, s)
 }

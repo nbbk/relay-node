@@ -571,13 +571,15 @@ func (s *Server) validateMergedSelection(sel []SubSelection) ([]SubSelection, st
 	if len(sel) == 0 {
 		return nil, "", fmt.Errorf("请先勾选至少一个落地")
 	}
-	rc, _, err := s.readRelayConf()
-	if err != nil {
-		return nil, "", fmt.Errorf("relay.conf 不存在或读不到：中转还没装好")
-	}
+	// 本地 relay.conf 读不到时本地落地集合就是空（管理面板模式本机没有
+	// 中转，本来就没有本地落地；只勾远程落地时不应被挡住）。勾了“本面板”
+	// 的落地时，下面按“本面板没有编号 N 的落地”拒绝，文案仍然准确。
+	rc, _, _ := s.readRelayConf()
 	localIdx := map[int]bool{}
-	for _, l := range rc.Landings {
-		localIdx[l.Index] = true
+	if rc != nil {
+		for _, l := range rc.Landings {
+			localIdx[l.Index] = true
+		}
 	}
 	for _, e := range sel {
 		if e.Panel == "local" {

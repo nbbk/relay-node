@@ -215,6 +215,15 @@
       <section class="page" id="page-settings">
         <div class="page-head"><h1>设置</h1></div>
         <div class="grid cols-2">
+          <div class="card" id="card-mode">
+            <h2>面板模式</h2>
+            <p class="muted">完整面板：中转 + 面板都在这台机器上，能管本机落地，也能登记别的面板。管理面板：这台机器不装中转，只用来集中管理别的面板（任意机器都能跑）；切过去后本地落地、服务、端口管理全部隐藏，只留集中管理、合并订阅与设置，数据保留，切回来即恢复。</p>
+            <div class="small" id="mode-status">当前：完整面板</div>
+            <div class="btn-row">
+              <button class="btn" id="mode-to-manager" type="button">切到管理面板</button>
+              <button class="btn secondary" id="mode-to-full" type="button">切回完整面板</button>
+            </div>
+          </div>
           <div class="card">
             <h2>修改密码</h2>
             <form id="pw-form">
@@ -255,7 +264,7 @@
             </form>
             <div id="https-status" class="small"></div>
           </div>
-          <div class="card">
+          <div class="card" id="card-cloudflare">
             <h2>Cloudflare Token</h2>
             <p class="muted">绑域名开 HTTPS 时用它签证书（DNS 验证）。只用 IP 访问（自签证书）不用填。令牌怎么开见仓库里的 CLOUDFLARE_TOKEN.md。</p>
             <form id="cf-form">
@@ -265,7 +274,7 @@
               <div class="btn-row"><button class="btn" type="submit">保存 Token</button></div>
             </form>
           </div>
-          <div class="card">
+          <div class="card" id="card-door">
             <h2>任意门地址</h2>
             <p class="muted">任意门链接用这个地址生成；改完历史记录里的任意门链接自动跟着改；留空清除则下次加任意门落地时自动探测。</p>
             <form id="door-form">
@@ -286,7 +295,7 @@
               <div class="btn-row"><button class="btn" type="submit">保存</button><button class="btn secondary" id="tg-test" type="button">发送测试消息</button></div>
             </form>
           </div>
-          <div class="card">
+          <div class="card" id="card-monitor">
             <h2>机器监控告警</h2>
             <p class="muted">每 5 分钟采样一次磁盘、内存与 CPU，超阈值时总览页标红（严重）/标黄（警告），并走上面配好的 Telegram 提醒；没配 Telegram 就只在面板里标色，不报错。同一指标越过阈值只提醒一次，持续超标每小时最多再提醒一次，回落到阈值以下后恢复，下次再越过重新提醒。</p>
             <form id="monitor-form">
@@ -317,7 +326,7 @@
               <div class="btn-row"><button class="btn" type="submit">保存监控设置</button></div>
             </form>
           </div>
-          <div class="card">
+          <div class="card" id="card-latency">
             <h2>延迟探测</h2>
             <p class="muted">后台定时对每个落地做 TCP 连接测延迟：只做 TCP 握手，不发任何应用层数据，不会干扰 TLS / Xray。探测目标是落地地址:落地端口（中转配置里的转发目标），不是中转机本地监听端口，所以能真实反映落地在线与否；任意门模式的落地同样探测。离线时总览卡片标红，并走上面配好的 Telegram 提醒（同一落地离线只提醒一次，持续离线每小时最多一次，恢复后报恢复）；没配 Telegram 就只在面板里标红。延迟只显示毫秒数，不做高低判定，避免误判。</p>
             <form id="latency-form">
@@ -474,7 +483,7 @@
       <!-- 集中管理 -->
       <section class="page" id="page-central">
         <div class="page-head"><h1>集中管理</h1><div class="actions"><button class="btn secondary" id="central-refresh" type="button">刷新状态</button></div></div>
-        <p class="muted">一台主面板管多台远程面板：登记远程面板后，这里能看到每台的在线状态、版本、落地数与磁盘使用率，还能直接代理加落地、删落地、看链接、重启 realm。没登记任何远程面板时，本面板的行为与原来完全一致。</p>
+        <p class="muted">一台主面板管多台远程面板：登记远程面板后，这里能看到每台的在线状态、版本、落地数与磁盘使用率，还能直接代理中转面板的全部中转与节点操作：加/编辑/删除落地、加/删节点、续期、流量设置与续量、证书、远程体检与一键修复、重启 realm、看链接、订阅。实时日志不代理，要看日志点“打开远程面板”跳过去。没登记任何远程面板时，本面板的行为与原来完全一致。</p>
         <div class="card">
           <h2>登记远程面板</h2>
           <p class="muted">先到被管面板的设置页“远程管理令牌”卡片里生成令牌，再把地址和令牌填进来。令牌只保存在主面板的配置文件里（600 权限），不会显示出来。登记时会当场连一次，连不上、令牌不对或远程面板版本太旧（低于 1.2.0）都会直接拒绝并写清原因。</p>

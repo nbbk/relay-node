@@ -46,7 +46,11 @@ type PanelConfig struct {
 	// 登记的远程面板（v1.2.0，主面板端）：Token 是明文（必须拿原文去调远程接口），
 	// 与 Telegram Token、Cloudflare 令牌同等待遇，只存在 600 权限的 config.json 里。
 	Remotes []RemotePanel `json:"remotes"`
-	Version string        `json:"version"`
+	// 管理面板模式（v1.2.8）：true = 这台面板只做集中管理，不装中转；
+	// 本地落地/服务/端口管理全部隐藏，只显示集中管理、合并订阅与设置。
+	// 数据保留，切回 false 就恢复完整面板。安装时选模式写入，设置页可切换。
+	ManagerOnly bool   `json:"manager_only"`
+	Version     string `json:"version"`
 }
 
 // SubSelection 合并订阅里的一条勾选：Panel 是 "local"（本面板）或
@@ -312,6 +316,7 @@ type Server struct {
 	centralMu      sync.Mutex // 集中管理缓存锁
 	centralCache   map[string]*RemoteStatusSnapshot
 	centralAlert   map[string]*centralAlertState
+	centralPollWG  sync.WaitGroup // 后台轮询计数（代理写成功后异步刷新一次；测试等它跑完再清理，避免轮询撞上 TempDir 删除）
 }
 
 func newServer(env Env) (*Server, error) {

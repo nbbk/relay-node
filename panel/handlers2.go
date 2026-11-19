@@ -24,6 +24,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, okResp(map[string]any{
 		"port": s.cfg.Port, "https_enabled": s.cfg.HTTPSEnabled, "https_domain": s.cfg.HTTPSDomain,
 		"ip_whitelist": s.cfg.IPWhitelist, "relay_addr": relayAddr,
+		"manager_only":  s.cfg.ManagerOnly,
 		"telegram":      map[string]any{"enabled": s.cfg.Telegram.Enabled, "chat_id": s.cfg.Telegram.ChatID, "has_token": s.cfg.Telegram.BotToken != ""},
 		"monitor":       s.cfg.Monitor,
 		"latency":       s.cfg.Latency,
@@ -33,6 +34,34 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"cloudflare":    map[string]any{"has_token": s.cfg.CloudflareToken != ""},
 		"version":       Version, "latest_version": latest, "update_available": update,
 	}))
+}
+
+// ---------- 管理面板模式切换（v1.2.8） ----------
+
+// handleManagerOnly 在完整面板与管理面板模式之间切换：只改 config.json 的
+// manager_only 开关，本地落地/服务数据全部保留，切回来即恢复；
+// 切到管理面板后前端隐藏本地区，只显示集中管理、合并订阅与设置。
+func (s *Server) handleManagerOnly(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ManagerOnly bool `json:"manager_only"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	old := s.cfg.ManagerOnly
+	s.cfg.ManagerOnly = req.ManagerOnly
+	if err := s.saveConfig(); err != nil {
+		s.cfg.ManagerOnly = old
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	mode := "完整面板"
+	if req.ManagerOnly {
+		mode = "管理面板"
+	}
+	s.audit(s.currentUser(r), "切换面板模式", "切到"+mode, "成功", "本地数据保留，切回来即恢复")
+	writeJSON(w, 200, okResp(map[string]any{"manager_only": s.cfg.ManagerOnly}))
 }
 
 // ---------- 任意门地址 ----------

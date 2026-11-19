@@ -5,6 +5,7 @@
 #   升级：重跑安装命令，账号密码与配置保留，只换二进制并重启面板（不动 realm，转发不断线）
 #   卸载：bash panel-install.sh --remove
 # 安装时问账号密码：直接回车用默认（用户名 admin、随机强密码），输入自己的就用输入的。
+# 还会问装哪种面板：[1] 完整面板（默认，中转 + 面板）[2] 只装管理面板（本机不装中转，只集中管理别的面板）。
 # 装完最后显示一次全部信息（地址、端口、账号、密码）；忘了跑 panel-info 找回。
 set -uo pipefail
 
@@ -284,6 +285,17 @@ else
     echo "密码至少 8 位，请重跑安装再设一个。"
     exit 1
   fi
+  # 安装模式（v1.2.8）：完整面板是现有行为；只装管理面板则本机不装中转，
+  # 只用来集中管理别的面板（任意机器都能跑），以后也能在面板设置里切回完整面板。
+  # 非交互安装可预设 PANEL_MODE=1 或 2（ask 会跳过已预设的值）。
+  echo ""
+  echo "选装哪种面板："
+  echo "  [1] 完整面板（默认）：中转 + 面板都在这台机器上，既能管本机落地，也能登记别的面板。"
+  echo "  [2] 只装管理面板：这台机器不装中转，只用来集中管理别的面板，任意机器都能跑；以后也能在面板设置里切回完整面板。"
+  PANEL_MODE="${PANEL_MODE:-}"
+  ask "装哪种？[1/2]，直接回车选默认 1（完整面板）： " PANEL_MODE "1"
+  MANAGER_ONLY="false"
+  if [ "$PANEL_MODE" = "2" ]; then MANAGER_ONLY="true"; fi
   if [ "$DRY_RUN" = "1" ]; then
     echo "[dry-run] 跳过写 $PANEL_HOME/config.json（密码哈希由 relay-panel hash-password 生成）"
   else
@@ -303,6 +315,7 @@ else
   "username": "$PANEL_USER",
   "password_hash": "$_hash",
   "port": $_port,
+  "manager_only": $MANAGER_ONLY,
   "https_enabled": false,
   "https_domain": "",
   "ip_whitelist": [],
@@ -497,7 +510,10 @@ EOF
   echo "密码：${PANEL_PASS}"
   echo ""
   echo "浏览器打开上面这个地址，登录就能管中转。"
-  if [ ! -f /etc/realm/relay.conf ]; then
+  if [ "${MANAGER_ONLY:-false}" = "true" ]; then
+    echo "这是管理面板模式：本机不装中转。打开面板 → 集中管理，登记远程面板后就能直接操作它们的中转和节点，还能生成合并订阅。"
+    echo "以后想切回完整面板：在面板设置 → 面板模式里切回来。"
+  elif [ ! -f /etc/realm/relay.conf ]; then
     echo "中转还没装：打开面板添加第一个落地时，中转会自动装好；也可以现在先跑 install.sh 装中转："
     echo "  curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/install.sh | bash"
   fi

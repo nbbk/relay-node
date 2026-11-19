@@ -181,12 +181,22 @@ let landingsCache = [];
 let statusCache = null;
 let settingsCache = null;
 let logsTimer = null;
+// 管理面板模式（v1.2.8）：true = 这台面板只做集中管理；本地页全部隐藏，
+// 只留集中管理与设置；由 /api/v1/me 下发，设置页可切换（切完整页刷新）。
+let managerOnly = false;
+const MANAGER_PAGES = ['central', 'settings'];
+function visiblePages() {
+  if (!managerOnly) return PAGES;
+  // 管理面板模式：按 MANAGER_PAGES 的顺序排（集中管理在前，设置在后），
+  // 不能直接 filter PAGES——PAGES 里设置排在集中管理前面，导航会先显示设置。
+  return MANAGER_PAGES.map((id) => PAGES.find((p) => p.id === id)).filter(Boolean);
+}
 
 function buildNav() {
   const side = $('#side-nav');
   if (!side) return; // 导航容器缺失时直接跳过
   side.innerHTML = '';
-  PAGES.forEach((p) => {
+  visiblePages().forEach((p) => {
     const b1 = document.createElement('button');
     b1.type = 'button'; b1.className = 'nav-item'; b1.dataset.page = p.id;
     b1.innerHTML = '<span class="ico">' + p.icon + '</span><span>' + esc(p.title) + '</span>';
@@ -227,6 +237,8 @@ function initDrawer() {
 }
 function goto(page) {
   closeDrawer(); // 手机上选了页面就收起抽屉；桌面端是空操作
+  // 管理面板模式下本地页不存在：直接跳到集中管理
+  if (managerOnly && !MANAGER_PAGES.includes(page)) page = 'central';
   currentPage = page;
   $$('.page').forEach((s) => s.classList.toggle('active', s.id === 'page-' + page));
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
@@ -280,9 +292,11 @@ async function checkMe() {
     const userEl = $('#side-user');
     if (userEl) userEl.textContent = me.username || 'admin';
     if (me.version) { const verEl = $('#side-version'); if (verEl) verEl.textContent = me.version; }
+    managerOnly = !!me.manager_only;
+    buildNav(); // 模式定了才建导航：管理面板只显示集中管理与设置
     showApp();
     const hash = (location.hash || '').replace('#', '');
-    goto(PAGES.some((p) => p.id === hash) ? hash : 'overview');
+    goto(visiblePages().some((p) => p.id === hash) ? hash : (managerOnly ? 'central' : 'overview'));
     return true;
   } catch (e) {
     showLogin();
@@ -914,7 +928,24 @@ function editLanding(index) {
     if (!ok) return;
     const btn = $('#edit-ok', m); if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
     try {
-      await api('/api/v1/landings/' + index, { method: 'PUT', body: JSON.stringify(payload) });
+      const d = await api('/api/v1/landings/' + index, { method: 'PUT', body: JSON.stringify(payload) });
+      if (d && d.ok === false && d.need_choice) {
+        if (btn) { btn.disabled = false; btn.textContent = '保存（重启 realm 生效）'; }
+        await showShareChoice(d, payload, async (choice) => {
+          try {
+            const d2 = await api('/api/v1/landings/' + index, { method: 'PUT', body: JSON.stringify(Object.assign({}, payload, { share_mode: choice.mode, listen_overrides: choice.overrides })) });
+            if (d2 && d2.ok === false) { toast(d2.error || '保存失败', 'err'); return; }
+            closeModal();
+            toast('落地已更新，realm 已重启', 'ok');
+            refreshCurrentPage();
+          } catch (e) { toast('保存失败：' + e.message, 'err'); }
+        });
+        return;
+      }
+      if (d && d.ok === false) {
+        if (btn) { btn.disabled = false; btn.textContent = '保存（重启 realm 生效）'; }
+        toast(d.error || '保存失败', 'err'); return;
+      }
       closeModal();
       toast('落地已更新，realm 已重启', 'ok');
       refreshCurrentPage();
@@ -1369,6 +1400,18 @@ async function loadSettingsPage() {
   try {
     const st = await api('/api/v1/settings');
     settingsCache = st;
+    // 面板模式（v1.2.8）：管理面板模式下隐藏本机专属设置卡
+    //（Cloudflare Token、任意门地址、机器监控、延迟探测都是本机中转的配置）
+    const modeOn = !!st.manager_only;
+    const modeStatus = $('#mode-status');
+    if (modeStatus) modeStatus.textContent = modeOn ? '当前：管理面板（只做集中管理，本地页已隐藏）' : '当前：完整面板';
+    ['card-cloudflare', 'card-door', 'card-monitor', 'card-latency'].forEach((cid) => {
+      const c = document.getElementById(cid);
+      if (c) c.classList.toggle('hidden', modeOn);
+    });
+    const toMgr = $('#mode-to-manager'), toFull = $('#mode-to-full');
+    if (toMgr) toMgr.disabled = modeOn;
+    if (toFull) toFull.disabled = !modeOn;
     $('#panel-port').value = st.port || 11111;
     $('#whitelist-input').value = (st.ip_whitelist || []).join('\n');
     $('#https-domain').value = st.https_domain || '';
@@ -1402,7 +1445,21 @@ async function loadSettingsPage() {
   } catch (e) { toast('设置加载失败：' + e.message, 'err'); }
   loadBackups(); loadAudit();
 }
+// 切换面板模式（v1.2.8）：只改 manager_only 开关，数据保留；切完刷新页面重建导航。
+async function switchPanelMode(toManager) {
+  const ok = await confirmModal(toManager ? '切到管理面板' : '切回完整面板',
+    toManager ? '<p>切过去后本地落地、服务、端口管理全部隐藏，只留集中管理、合并订阅与设置；数据保留，切回来即恢复。确定吗？</p>' : '<p>切回来后本地落地、服务、端口管理全部恢复。确定吗？</p>',
+    toManager ? '切到管理面板' : '切回完整面板');
+  if (!ok) return;
+  try {
+    await apiPost('/api/v1/settings/manager-only', { manager_only: toManager });
+    toast(toManager ? '已切到管理面板，页面刷新后生效' : '已切回完整面板，页面刷新后生效', 'ok');
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast('切换失败：' + e.message, 'err'); }
+}
 function initSettings() {
+  on('#mode-to-manager', 'click', () => switchPanelMode(true));
+  on('#mode-to-full', 'click', () => switchPanelMode(false));
   on('#pw-form', 'submit', async (e) => {
     e.preventDefault();
     const oldPw = $('#pw-old').value, nw = $('#pw-new').value, nw2 = $('#pw-new2').value;
@@ -1930,6 +1987,7 @@ let centralRemotes = [];
 let centralDetailId = null;
 let centralDetailPage = 1;
 let centralDetailLandings = [];
+let centralDetailRelayAddr = ''; // 当前展开的远程面板的任意门地址（编辑任意门落地时预填）
 let centralOpenLanding = null; // 集中管理落地列表当前展开的落地编号（单开手风琴，null=全收起）
 let centralDetailLinksRemote = null; // 落地链接缓存属于哪台远程
 let centralDetailLinksGroups = null; // 该远程的 /links 分组缓存（展开时才取）
@@ -2027,6 +2085,7 @@ async function loadCentral() {
         '<button class="btn secondary sm" type="button" data-central-links="' + esc(rm.id) + '">查看链接</button>' +
         '<button class="btn secondary sm" type="button" data-central-add="' + esc(rm.id) + '">＋ 加落地</button>' +
         '<button class="btn secondary sm" type="button" data-central-restart="' + esc(rm.id) + '">重启 realm</button>' +
+        '<button class="btn secondary sm" type="button" data-central-check="' + esc(rm.id) + '">远程体检</button>' +
         '<button class="btn danger sm" type="button" data-central-del="' + esc(rm.id) + '">取消登记</button></div></div>';
     }).join('');
     $$('[data-central-open]', wrap).forEach((b) => b.addEventListener('click', () => window.open(b.dataset.centralOpen, '_blank', 'noopener')));
@@ -2034,6 +2093,7 @@ async function loadCentral() {
     $$('[data-central-links]', wrap).forEach((b) => b.addEventListener('click', () => centralLinks(b.dataset.centralLinks)));
     $$('[data-central-add]', wrap).forEach((b) => b.addEventListener('click', () => centralAddLanding(b.dataset.centralAdd)));
     $$('[data-central-restart]', wrap).forEach((b) => b.addEventListener('click', () => centralRestart(b.dataset.centralRestart)));
+    $$('[data-central-check]', wrap).forEach((b) => b.addEventListener('click', () => centralCheck(b.dataset.centralCheck)));
     $$('[data-central-del]', wrap).forEach((b) => b.addEventListener('click', () => centralDeregister(b.dataset.centralDel)));
   } catch (e) {
     wrap.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
@@ -2065,8 +2125,12 @@ async function loadCentralSubTree() {
   try {
     const r = await api('/api/v1/central/remotes');
     const remotes = r.remotes || [];
-    if (!landingsCache.length) { try { await loadOverview(); } catch (e) { /* 总览读不到就只显示远程 */ } }
-    const panels = [{ id: 'local', name: '本面板', online: true, landings: (landingsCache || []).map((l) => ({ index: l.index, title: centralLandingTitle(l) })) }];
+    // 管理面板模式没有本机落地：订阅树里不列“本面板”，只列远程面板
+    const panels = [];
+    if (!managerOnly) {
+      if (!landingsCache.length) { try { await loadOverview(); } catch (e) { /* 总览读不到就只显示远程 */ } }
+      panels.push({ id: 'local', name: '本面板', online: true, landings: (landingsCache || []).map((l) => ({ index: l.index, title: centralLandingTitle(l) })) });
+    }
     for (const rm of remotes) {
       let landings = (rm.landings || []).map((l) => ({ index: l.index, title: centralLandingTitle(l) }));
       if (!landings.length && rm.online) {
@@ -2190,6 +2254,7 @@ async function loadCentralLandings(id, page) {
   try {
     const r = await api('/api/v1/central/remotes/' + encodeURIComponent(id) + '/landings');
     centralDetailLandings = r.landings || [];
+    centralDetailRelayAddr = (r.remote && r.remote.relay_addr) || '';
     const pg = paginate(centralDetailLandings, centralDetailPage);
     centralDetailPage = pg.cur;
     const cachedNote = r.note ? '<div class="warn-box">' + esc(r.note) + '</div>' : '';
@@ -2198,18 +2263,35 @@ async function loadCentralLandings(id, page) {
       return;
     }
     detail.innerHTML = '<div class="card"><h2>' + esc(rm ? rm.name : id) + ' 的落地</h2>' + cachedNote +
-      '<p class="muted small">点一行展开看它的链接、二维码与操作；一次只展开一个，再点一次收起。</p>' +
+      '<p class="muted small">点一行展开看它的链接、二维码与操作；一次只展开一个，再点一次收起。实时日志不代理，要看日志点上面卡片里的“打开远程面板”跳过去。</p>' +
       pg.slice.map((l) => {
         const ports = (l.ports || []).map((p) => esc(p.proto) + ' ' + esc(p.listen) + '→' + esc(p.remote)).join('、') || '—';
         const on = l.online === true ? '<span class="badge green">在线</span>' : l.online === false ? '<span class="badge red">离线</span>' : '<span class="badge">未知</span>';
         const lat = l.latency_ms == null ? '—' : esc(l.latency_ms) + ' ms';
+        const cert = l.cert_days_left == null ? '—' : esc(l.cert_days_left) + ' 天' + (l.renew_mode ? '（' + esc(l.renew_mode) + '）' : '');
+        const exp = l.days_left == null ? '永久' : (l.days_left < 0 ? '已到期 ' + esc(-l.days_left) + ' 天' : '剩余 ' + esc(l.days_left) + ' 天');
+        const tr = l.traffic || {};
+        const traffic = '今日 ' + esc(fmtBytes((tr.today_up || 0) + (tr.today_down || 0))) + ' / 本月 ' + esc(fmtBytes((tr.month_up || 0) + (tr.month_down || 0))) + ' / 累计 ' + esc(fmtBytes((tr.total_up || 0) + (tr.total_down || 0))) + (tr.limit_bytes ? '（上限 ' + esc(fmtBytes(tr.limit_bytes)) + '，已用 ' + esc(Math.round(tr.pct || 0)) + '%）' : '（不限）');
+        const subs = (l.subnodes || []).map((sn) =>
+          '<div class="kv"><span>' + esc(sn.domain) + '</span><span><button class="btn danger sm" type="button" data-central-delsub="' + esc(l.index) + '|' + esc(sn.domain) + '">删除节点</button></span></div>'
+        ).join('');
         return '<div class="central-landing">' +
           '<div class="central-landing-head" data-central-toggle="' + esc(l.index) + '" role="button" tabindex="0"><span>' + esc(centralLandingTitle(l)) + ' <span class="small">#' + esc(l.index) + '</span></span><span>' + on + ' ' + lat + ' <span class="central-caret">▸</span></span></div>' +
           '<div class="central-landing-body hidden" data-central-body="' + esc(l.index) + '">' +
           '<div class="kv"><span>落地</span><b>' + esc(centralLandingTitle(l)) + '</b></div>' +
           '<div class="kv"><span>监听端口</span><b>' + ports + '</b></div>' +
+          '<div class="kv"><span>证书</span><b>' + cert + '</b></div>' +
+          '<div class="kv"><span>到期</span><b>' + exp + '</b></div>' +
+          '<div class="kv"><span>流量</span><b>' + traffic + '</b></div>' +
+          (subs ? '<div class="kv"><span>子节点</span><b>' + esc((l.subnodes || []).length) + ' 个</b></div>' + subs : '') +
           '<div class="central-landing-links" data-central-links-box="' + esc(l.index) + '"></div>' +
           '<div class="btn-row"><button class="btn secondary sm" type="button" data-central-addnode="' + esc(l.index) + '">＋ 新增节点</button>' +
+          '<button class="btn secondary sm" type="button" data-central-edit="' + esc(l.index) + '">编辑落地</button>' +
+          '<button class="btn secondary sm" type="button" data-central-renew="' + esc(l.index) + '">续期</button>' +
+          '<button class="btn secondary sm" type="button" data-central-traffic="' + esc(l.index) + '">流量设置</button>' +
+          '<button class="btn secondary sm" type="button" data-central-addtraffic="' + esc(l.index) + '">续量</button>' +
+          '<button class="btn secondary sm" type="button" data-central-origlink="' + esc(l.index) + '">补链接</button>' +
+          '<button class="btn secondary sm" type="button" data-central-certs="' + esc(l.index) + '">证书</button>' +
           '<button class="btn secondary sm" type="button" data-central-sub-landing="' + esc(l.index) + '">订阅</button>' +
           '<button class="btn danger sm" type="button" data-central-del-landing="' + esc(l.index) + '">删除该落地</button></div></div></div>';
       }).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'central') + '</div>';
@@ -2221,6 +2303,25 @@ async function loadCentralLandings(id, page) {
     $$('[data-central-addnode]', detail).forEach((b) => b.addEventListener('click', () => {
       const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralAddnode));
       centralAddNodeWizard(id, Number(b.dataset.centralAddnode), l ? centralLandingTitle(l) : ('#' + b.dataset.centralAddnode));
+    }));
+    $$('[data-central-edit]', detail).forEach((b) => b.addEventListener('click', () => {
+      const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralEdit));
+      centralEditLanding(id, Number(b.dataset.centralEdit), l);
+    }));
+    $$('[data-central-renew]', detail).forEach((b) => b.addEventListener('click', () => centralRenewLanding(id, Number(b.dataset.centralRenew))));
+    $$('[data-central-traffic]', detail).forEach((b) => b.addEventListener('click', () => {
+      const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralTraffic));
+      centralTrafficSettings(id, Number(b.dataset.centralTraffic), l);
+    }));
+    $$('[data-central-addtraffic]', detail).forEach((b) => b.addEventListener('click', () => centralAddTraffic(id, Number(b.dataset.centralAddtraffic))));
+    $$('[data-central-origlink]', detail).forEach((b) => b.addEventListener('click', () => {
+      const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralOriglink));
+      centralPasteOrigLink(id, Number(b.dataset.centralOriglink), l);
+    }));
+    $$('[data-central-certs]', detail).forEach((b) => b.addEventListener('click', () => centralCerts(id)));
+    $$('[data-central-delsub]', detail).forEach((b) => b.addEventListener('click', () => {
+      const parts = String(b.dataset.centralDelsub).split('|');
+      centralDeleteSubnode(id, Number(parts[0]), parts[1]);
     }));
     $$('[data-central-sub-landing]', detail).forEach((b) => b.addEventListener('click', () => {
       const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralSubLanding));
@@ -2482,6 +2583,311 @@ async function centralDeleteLanding(id, index) {
     loadCentral();
     if (centralDetailId === id) loadCentralLandings(id);
   } catch (err) { toast('删除失败：' + err.message, 'err'); }
+}
+// ---------- 远程编辑落地：表单与本地 editLanding 同款，提交走代理接口 ----------
+// 预填值来自集中管理状态里的远程落地摘要（1.2.8 起含全部字段）；保存后重写
+// 远程转发配置并重启远程 realm，正在用的节点会瞬断几秒。
+function centralEditLanding(remoteId, index, l) {
+  if (!l) { toast('找不到这个落地，请刷新页面再试', 'err'); return; }
+  const t = l.traffic || {};
+  const customPorts = l.custom_ports || '';
+  const sbMode = l.sb_mode || '';
+  const relayAddr = centralDetailRelayAddr || '';
+  const m = openModal('<h2>编辑远程落地：' + esc(centralLandingTitle(l)) + '</h2>' +
+    '<p class="muted">改地址、端口、模式后会重写远程转发配置并重启远程 realm，正在用的节点会瞬断几秒；到期与流量状态会跟着新地址走，不会丢。</p>' +
+    '<label>落地 IP 或域名</label><input id="central-edit-landing" value="' + esc(l.landing) + '">' +
+    '<label>名称 / 备注 <span class="hint">显示名，空着显示落地地址；改名只改显示，不动转发配置</span></label><input id="central-edit-name" value="' + esc(l.name && l.name !== l.landing ? l.name : '') + '" placeholder="' + esc(l.landing) + '" maxlength="64">' +
+    '<label>预设</label><select id="central-edit-preset">' +
+    '<option value="1"' + (l.preset === '1' ? ' selected' : '') + '>预设 1：tiktok-node（Xray）</option>' +
+    '<option value="2"' + (l.preset === '2' ? ' selected' : '') + '>预设 2：sing-box-node</option>' +
+    '<option value="3"' + (l.preset === '3' ? ' selected' : '') + '>预设 3：自定义端口</option></select>' +
+    '<label>模式</label><select id="central-edit-mode">' +
+    '<option value="standard"' + (l.mode !== 'door' ? ' selected' : '') + '>标准模式</option>' +
+    '<option value="door"' + (l.mode === 'door' ? ' selected' : '') + '>任意门模式</option></select>' +
+    '<div id="central-edit-relay-addr-wrap"' + (l.mode === 'door' ? '' : ' class="hidden"') + '><label>中转地址 <span class="hint">任意门链接用这个地址生成，空着用当前设置</span></label>' +
+    '<input id="central-edit-relay-addr" value="' + esc(relayAddr) + '" placeholder="留空 = 自动用中转机公网 IP"></div>' +
+    '<div id="central-edit-sb-mode-wrap"' + (l.preset === '2' ? '' : ' class="hidden"') + '><label>sing-box 模式</label><select id="central-edit-sb-mode">' +
+    '<option value="1"' + (sbMode !== '2' ? ' selected' : '') + '>TLS（443）</option>' +
+    '<option value="2"' + (sbMode === '2' ? ' selected' : '') + '>明文（8080）</option></select></div>' +
+    '<div id="central-edit-custom-ports-wrap"' + (l.preset === '3' ? '' : ' class="hidden"') + '><label>自定义端口 <span class="hint">逗号分隔，如 443,8388；可写 监听:落地，如 10443:443</span></label>' +
+    '<input id="central-edit-custom-ports" value="' + esc(customPorts) + '" placeholder="443,8388"></div>' +
+    '<label>证书域名</label><input id="central-edit-cert-domain" value="' + esc(l.cert_domain || '') + '" placeholder="example.com">' +
+    '<label>证书签发方式 <span class="hint">决定续签方式怎么判；DNS 验证的落地续签不走 80，判自动</span></label><select id="central-edit-cert-mode">' +
+    '<option value=""' + (!l.cert_mode ? ' selected' : '') + '>未设置（按旧逻辑判断）</option>' +
+    '<option value="http01"' + (l.cert_mode === 'http01' ? ' selected' : '') + '>默认走 80（HTTP-01）</option>' +
+    '<option value="dns01"' + (l.cert_mode === 'dns01' ? ' selected' : '') + '>DNS 验证 Cloudflare（DNS-01）</option></select>' +
+    '<p class="small">默认走 80：落地机用 80 端口验证域名签证书，80 改了监听端口时续签要手动。DNS 验证：落地机用 Cloudflare 令牌在 DNS 里加验证记录签证书，续签全自动，不用 80；前提是装节点时选了 DNS 验证并配好令牌，没配令牌的落地别选这个。</p>' +
+    '<label>节点时长</label><select id="central-edit-duration">' +
+    '<option value="-1" selected>保持不变</option><option value="0">改为永久</option><option value="30">从现在起 30 天</option>' +
+    '<option value="90">从现在起 90 天</option><option value="180">从现在起 180 天</option>' +
+    '<option value="365">从现在起 365 天</option>' +
+    '<option value="custom">自定义天数</option></select>' +
+    '<div id="central-edit-duration-custom-wrap" class="hidden"><label>自定义天数</label><input id="central-edit-duration-custom" type="number" min="1" max="3650" placeholder="如 60"></div>' +
+    '<label>流量上限（GB，0 = 不限）</label><input id="central-edit-traffic" type="number" min="0" step="1" value="' + Math.round((t.limit_bytes || 0) / 1073741824) + '">' +
+    '<label>流量上限算法</label><select id="central-edit-traffic-mode"><option value="total"' + (t.limit_mode !== 'monthly' ? ' selected' : '') + '>总量（整个生命周期）</option><option value="monthly"' + (t.limit_mode === 'monthly' ? ' selected' : '') + '>按月（每月重置）</option></select>' +
+    '<label>限速（Mbps，0 = 不限速）</label><input id="central-edit-speed" type="number" min="0" step="1" value="' + (l.speed_limit_mbps || 0) + '">' +
+    '<label class="checkbox-row"><input type="checkbox" id="central-edit-want-udp"' + (l.want_udp ? ' checked' : '') + '><span style="font-weight:400">同时转发 UDP（HY2 / TUIC 需要）</span></label>' +
+    '<label>原始节点链接 <span class="hint">选填；有它卡片上才出中转链接，改地址/端口后链接自动跟着重算</span></label><input id="central-edit-orig-link" value="' + esc(l.orig_link || '') + '" placeholder="vless://…">' +
+    '<label>节点名称 <span class="hint">选填；直连备注“&lt;名称&gt;-直连”、中转备注“&lt;名称&gt;-中转”</span></label><input id="central-edit-link-name" value="' + esc(l.orig_link_name || '') + '" placeholder="如 香港-01" maxlength="64">' +
+    '<div class="btn-row"><button class="btn" id="central-edit-ok" type="button">保存（重启远程 realm 生效）</button><button class="btn secondary" id="central-edit-cancel" type="button">取消</button></div>');
+  onIn(m, '#central-edit-cancel', 'click', closeModal);
+  const syncEdit = () => {
+    const pv = $('#central-edit-preset', m).value;
+    const sbw = $('#central-edit-sb-mode-wrap', m); if (sbw) sbw.classList.toggle('hidden', pv !== '2');
+    const cpw = $('#central-edit-custom-ports-wrap', m); if (cpw) cpw.classList.toggle('hidden', pv !== '3');
+    const raw = $('#central-edit-relay-addr-wrap', m); if (raw) raw.classList.toggle('hidden', $('#central-edit-mode', m).value !== 'door');
+  };
+  onIn(m, '#central-edit-preset', 'change', syncEdit);
+  onIn(m, '#central-edit-mode', 'change', syncEdit);
+  onIn(m, '#central-edit-duration', 'change', () => {
+    const w = $('#central-edit-duration-custom-wrap', m);
+    if (w) w.classList.toggle('hidden', $('#central-edit-duration', m).value !== 'custom');
+  });
+  onIn(m, '#central-edit-ok', 'click', async () => {
+    const payload = buildCentralEditPayload(m);
+    if (!payload) return;
+    const ok = await confirmModal('保存编辑', '<p>保存后会重写远程转发配置并<b>重启远程 realm，正在用的节点会瞬断几秒</b>。确定保存吗？</p>', '保存并重启远程 realm');
+    if (!ok) return;
+    const btn = $('#central-edit-ok', m); if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
+    try {
+      const d = await centralSubmitEdit(remoteId, index, payload, null);
+      if (d.ok === false) {
+        if (btn) { btn.disabled = false; btn.textContent = '保存（重启远程 realm 生效）'; }
+        if (d.need_choice) {
+          await showShareChoice(d, payload, async (choice) => {
+            try {
+              const d2 = await centralSubmitEdit(remoteId, index, payload, choice);
+              if (d2.ok === false) { toast(centralOpError(d2), 'err'); return; }
+              closeModal();
+              toast('远程落地已更新，realm 已重启', 'ok');
+              if (centralDetailId === remoteId) loadCentralLandings(remoteId);
+            } catch (err) { toast('保存失败：' + err.message, 'err'); }
+          });
+          return;
+        }
+        toast(centralOpError(d), 'err'); return;
+      }
+      closeModal();
+      toast('远程落地已更新，realm 已重启', 'ok');
+      if (centralDetailId === remoteId) loadCentralLandings(remoteId);
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = '保存（重启远程 realm 生效）'; }
+      toast('保存失败：' + e.message, 'err');
+    }
+  });
+}
+async function centralSubmitEdit(id, index, payload, shareChoice) {
+  const body = Object.assign({}, payload);
+  if (shareChoice) { body.share_mode = shareChoice.mode; if (shareChoice.overrides) body.listen_overrides = shareChoice.overrides; }
+  return apiRaw('/api/v1/central/remotes/' + encodeURIComponent(id) + '/landings/' + index, { method: 'PUT', body: JSON.stringify(body) });
+}
+// 远程编辑表单取值：与本地 buildEditPayload 同一套校验。
+function buildCentralEditPayload(m) {
+  const landing = $('#central-edit-landing', m).value.trim();
+  const certDomain = $('#central-edit-cert-domain', m).value.trim();
+  if (!landing) { toast('请填写落地 IP 或域名', 'err'); return null; }
+  if (!/^[A-Za-z0-9.-]+$/.test(landing)) { toast('落地 IP 或域名格式不正确', 'err'); return null; }
+  if (certDomain && !/^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(certDomain)) { toast('证书域名格式不正确，如 example.com', 'err'); return null; }
+  const preset = $('#central-edit-preset', m).value;
+  let customPorts = '';
+  if (preset === '3') {
+    customPorts = $('#central-edit-custom-ports', m).value.trim();
+    if (!customPorts) { toast('自定义端口必填，如 443,8388', 'err'); return null; }
+    if (!/^[\d,: ]+$/.test(customPorts)) { toast('自定义端口格式不正确，只能是数字、逗号和冒号', 'err'); return null; }
+  }
+  let duration = Number($('#central-edit-duration', m).value);
+  if ($('#central-edit-duration', m).value === 'custom') {
+    duration = Number($('#central-edit-duration-custom', m).value) || 0;
+    if (duration < 1 || duration > 3650) { toast('自定义天数请填 1–3650', 'err'); return null; }
+  }
+  const trafficGb = Number($('#central-edit-traffic', m).value) || 0;
+  if (trafficGb < 0) { toast('流量上限不能为负', 'err'); return null; }
+  const speed = Number($('#central-edit-speed', m).value) || 0;
+  if (speed < 0) { toast('限速不能为负', 'err'); return null; }
+  const mode = $('#central-edit-mode', m).value;
+  const relayAddr = (mode === 'door' && $('#central-edit-relay-addr', m)) ? $('#central-edit-relay-addr', m).value.trim() : '';
+  const name = $('#central-edit-name', m).value.trim();
+  if (name && name.length > 64) { toast('名称不能超过 64 字', 'err'); return null; }
+  const origLink = $('#central-edit-orig-link', m).value.trim();
+  if (origLink && !/^(vless|trojan|ss|vmess):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss:// 或 vmess:// 开头', 'err'); return null; }
+  const linkName = $('#central-edit-link-name', m).value.trim();
+  if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return null; }
+  return {
+    landing, preset, mode,
+    name: name || undefined,
+    orig_link: origLink || undefined,
+    link_name: linkName || undefined,
+    relay_addr: relayAddr || undefined,
+    sb_mode: preset === '2' ? $('#central-edit-sb-mode', m).value : undefined,
+    custom_ports: customPorts || undefined,
+    want_udp: $('#central-edit-want-udp', m).checked,
+    cert_domain: certDomain || undefined,
+    cert_mode: $('#central-edit-cert-mode', m).value || undefined,
+    duration_days: duration,
+    traffic_limit_bytes: Math.round(trafficGb * 1073741824),
+    traffic_limit_mode: trafficGb > 0 ? $('#central-edit-traffic-mode', m).value : undefined,
+    speed_limit_mbps: speed,
+  };
+}
+async function centralRenewLanding(remoteId, index) {
+  const m = openModal('<h2>远程续期</h2><p>续期只延长时限；如果是因为流量用完被停用，请另外「续量」。</p>' +
+    '<label>快捷天数</label><select id="central-renew-days"><option value="30">30 天</option><option value="90" selected>90 天</option><option value="180">180 天</option><option value="365">365 天</option></select>' +
+    '<label>自定义天数 <span class="hint">填了就用自定义（1–3650 天），不填用上面的快捷天数</span></label><input id="central-renew-days-custom" type="number" min="1" max="3650" placeholder="如 45">' +
+    '<div class="btn-row"><button class="btn" id="central-renew-ok" type="button">确认续期</button><button class="btn secondary" id="central-renew-cancel" type="button">取消</button></div>');
+  onIn(m, '#central-renew-cancel', 'click', closeModal);
+  onIn(m, '#central-renew-ok', 'click', async () => {
+    const custom = $('#central-renew-days-custom', m).value.trim();
+    let days;
+    if (custom !== '') {
+      days = Number(custom);
+      if (!days || days < 1 || days > 3650) { toast('自定义天数请填 1–3650', 'err'); return; }
+    } else days = Number($('#central-renew-days', m).value);
+    closeModal();
+    try {
+      const d = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/landings/' + index + '/renew', { days });
+      if (d.ok === false) { toast(centralOpError(d), 'err'); return; }
+      toast('远程续期成功，已延长 ' + days + ' 天', 'ok');
+      if (centralDetailId === remoteId) loadCentralLandings(remoteId);
+    } catch (e) { toast('续期失败：' + e.message, 'err'); }
+  });
+}
+async function centralTrafficSettings(remoteId, index, l) {
+  const t = (l && l.traffic) || {};
+  const m = openModal('<h2>远程流量限制</h2>' +
+    '<label>流量上限（GB，0 = 不限）</label><input id="central-ts-gb" type="number" min="0" step="1" value="' + Math.round((t.limit_bytes || 0) / 1073741824) + '">' +
+    '<label>算法</label><select id="central-ts-mode"><option value="total"' + (t.limit_mode !== 'monthly' ? ' selected' : '') + '>总量</option><option value="monthly"' + (t.limit_mode === 'monthly' ? ' selected' : '') + '>按月</option></select>' +
+    '<label>限速（Mbps，0 = 不限速）</label><input id="central-ts-speed" type="number" min="0" step="1" value="' + (l ? (l.speed_limit_mbps || 0) : 0) + '">' +
+    '<div class="btn-row"><button class="btn" id="central-ts-ok" type="button">保存</button><button class="btn secondary" id="central-ts-cancel" type="button">取消</button></div>');
+  onIn(m, '#central-ts-cancel', 'click', closeModal);
+  onIn(m, '#central-ts-ok', 'click', async () => {
+    const gb = Number($('#central-ts-gb', m).value) || 0;
+    if (gb < 0) { toast('流量上限不能为负', 'err'); return; }
+    closeModal();
+    try {
+      const d = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/landings/' + index + '/traffic', {
+        limit_bytes: Math.round(gb * 1073741824),
+        limit_mode: gb > 0 ? $('#central-ts-mode', m).value : 'total',
+        speed_limit_mbps: Number($('#central-ts-speed', m).value) || 0,
+      });
+      if (d.ok === false) { toast(centralOpError(d), 'err'); return; }
+      toast('远程流量限制已保存', 'ok');
+      if (centralDetailId === remoteId) loadCentralLandings(remoteId);
+    } catch (e) { toast('保存失败：' + e.message, 'err'); }
+  });
+}
+async function centralAddTraffic(remoteId, index) {
+  const m = openModal('<h2>远程续量</h2><p>给流量上限增加额度。续完仍有余额且之前因流量停用的，会自动恢复转发。</p>' +
+    '<label>增加多少 GB</label><input id="central-addtraffic-gb" type="number" min="1" step="1" value="50">' +
+    '<div class="btn-row"><button class="btn" id="central-at-ok" type="button">确认续量</button><button class="btn secondary" id="central-at-cancel" type="button">取消</button></div>');
+  onIn(m, '#central-at-cancel', 'click', closeModal);
+  onIn(m, '#central-at-ok', 'click', async () => {
+    const gb = Number($('#central-addtraffic-gb', m).value);
+    if (!gb || gb < 1) { toast('请填大于 0 的 GB 数', 'err'); return; }
+    closeModal();
+    try {
+      const d = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/landings/' + index + '/add-traffic', { bytes: Math.round(gb * 1073741824) });
+      if (d.ok === false) { toast(centralOpError(d), 'err'); return; }
+      toast('远程续量成功，已增加 ' + gb + ' GB', 'ok');
+      if (centralDetailId === remoteId) loadCentralLandings(remoteId);
+    } catch (e) { toast('续量失败：' + e.message, 'err'); }
+  });
+}
+async function centralDeleteSubnode(remoteId, index, domain) {
+  const ok = await confirmModal('删除远程子节点', '<p>确定删除子节点 <b>' + esc(domain) + '</b> 吗？</p><p>只删远程面板里的登记，不影响该落地的转发和其他节点。落地机上的对应节点请另外到落地机上删除。</p>', '删除该节点', true);
+  if (!ok) return;
+  try {
+    const d = await apiRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/landings/' + index + '/subnodes/' + encodeURIComponent(domain), { method: 'DELETE' });
+    if (d.ok === false) { toast(centralOpError(d), 'err'); return; }
+    toast('远程子节点已删除', 'ok');
+    if (centralDetailId === remoteId) loadCentralLandings(remoteId);
+  } catch (e) { toast('删除失败：' + e.message, 'err'); }
+}
+async function centralPasteOrigLink(remoteId, index, l) {
+  const m = openModal('<h2>给远程落地补粘贴原始链接' + (l ? '：' + esc(centralLandingTitle(l)) : '') + '</h2>' +
+    '<p class="muted">把落地机上生成的节点链接粘贴进来，远程面板会算出中转 + 直连链接，卡片上直接显示，历史记录里也会记一笔。原始链接只存在远程面板自己的状态文件里，不会进日志与审计。</p>' +
+    '<label>原始节点链接 <span class="hint">vless:// / trojan:// / ss:// / vmess:// 开头</span></label><input id="central-paste-orig-link" placeholder="vless://…">' +
+    '<label>节点名称 <span class="hint">选填；直连备注“&lt;名称&gt;-直连”、中转备注“&lt;名称&gt;-中转”，空着用原链接备注名</span></label><input id="central-paste-link-name" placeholder="如 香港-01" maxlength="64">' +
+    '<div class="btn-row"><button class="btn" id="central-paste-ok" type="button">生成中转链接</button><button class="btn secondary" id="central-paste-cancel" type="button">取消</button></div>');
+  onIn(m, '#central-paste-cancel', 'click', closeModal);
+  onIn(m, '#central-paste-ok', 'click', async () => {
+    const origLink = $('#central-paste-orig-link', m).value.trim();
+    const linkName = $('#central-paste-link-name', m).value.trim();
+    if (!origLink || !/^(vless|trojan|ss|vmess):\/\//.test(origLink)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
+    if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return; }
+    closeModal();
+    try {
+      const r = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/landings/' + index + '/orig-link', { orig_link: origLink, link_name: linkName || undefined });
+      if (r.ok === false) { toast(centralOpError(r), 'err'); return; }
+      openModal('<h2>✅ 中转链接已生成</h2>' + linksHtml(r.links, r.qr) +
+        '<div class="btn-row"><button class="btn" id="central-paste-done" type="button">完成</button></div>');
+      on('#central-paste-done', 'click', () => { closeModal(); if (centralDetailId === remoteId) loadCentralLandings(remoteId); });
+    } catch (e) { toast('生成失败：' + e.message, 'err'); }
+  });
+}
+// 远程证书：弹窗列出该远程面板全部落地的证书剩余天数与续签方式；
+// 手动续签仍按本地证书页的六步引导走（点“打开远程面板”跳过去按引导操作）。
+async function centralCerts(remoteId) {
+  const rm = centralRemotes.find((x) => x.id === remoteId);
+  const m = openModal('<h2>' + esc(rm ? rm.name : '') + ' 的证书</h2><div id="central-certs-body">加载中…</div><div class="btn-row"><button class="btn secondary" id="central-certs-close" type="button">关闭</button></div>');
+  onIn(m, '#central-certs-close', 'click', closeModal);
+  try {
+    const r = await api('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/certs');
+    const certs = r.certs || [];
+    const body = $('#central-certs-body', m);
+    if (!certs.length) { body.innerHTML = '<div class="empty">这台远程面板还没有落地证书信息。</div>'; return; }
+    body.innerHTML = certs.map((c) => '<div class="kv"><span>' + esc(c.domain || c.landing || '') + '</span><b>' + (c.days_left == null ? '无证书' : esc(c.days_left) + ' 天') + (c.renew_mode ? '（' + esc(c.renew_mode) + '）' : '') + '</b></div>').join('') +
+      '<p class="muted small">需要手动续签的落地：点“打开远程面板”跳过去，按证书页的六步引导操作；面板不申请、不续签证书，只探测显示。</p>';
+  } catch (e) {
+    const body = $('#central-certs-body', m);
+    if (body) body.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>';
+  }
+}
+// 远程体检：跑远程面板的 check.sh，结果与本地体检同款展示；一键修复同样走代理。
+async function centralCheck(remoteId) {
+  const rm = centralRemotes.find((x) => x.id === remoteId);
+  const m = openModal('<h2>' + esc(rm ? rm.name : '') + ' 的体检结果</h2><div id="central-check-body">体检中，请稍候…</div><div class="btn-row"><button class="btn secondary" id="central-check-close" type="button">关闭</button></div>');
+  onIn(m, '#central-check-close', 'click', closeModal);
+  try {
+    const c = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/check', {});
+    if (c.ok === false) { const b = $('#central-check-body', m); if (b) b.innerHTML = '<div class="error-box">' + esc(centralOpError(c)) + '</div>'; return; }
+    let h = '';
+    (c.sections || []).forEach((sec) => {
+      h += '<h3 style="margin-top:12px">' + esc(sec.name) + ' <span class="badge ' + (sec.status === 'pass' ? 'green' : sec.status === 'warn' ? 'yellow' : 'red') + '">' + esc(sec.status) + '</span></h3>';
+      (sec.items || []).forEach((it) => {
+        h += '<div class="kv"><span>' + (it.level === 'pass' ? '✅' : it.level === 'warn' ? '⚠️' : '❌') + ' ' + esc(it.message) + '</span></div>';
+      });
+    });
+    const issues = c.issues || [];
+    if (issues.length) {
+      h += '<h3 style="margin-top:12px">发现的问题（一键修复）</h3>';
+      issues.forEach((is, i) => {
+        h += '<div class="kv"><span>❌ ' + esc(is.message || is.code) + '</span><span><button class="btn sm" type="button" data-central-fix="' + i + '">一键修复</button></span></div>';
+      });
+      const body = $('#central-check-body', m);
+      body.innerHTML = h;
+      body.dataset.issues = JSON.stringify(issues);
+      $$('[data-central-fix]', body).forEach((b) => b.addEventListener('click', () => centralFixIssue(remoteId, JSON.parse(body.dataset.issues)[Number(b.dataset.centralFix)])));
+    } else {
+      h += '<div class="ok-box" style="margin-top:12px">全部正常，没有发现问题。</div>';
+      const body = $('#central-check-body', m);
+      if (body) body.innerHTML = h;
+    }
+  } catch (e) {
+    const body = $('#central-check-body', m);
+    if (body) body.innerHTML = '<div class="error-box">体检失败：' + esc(e.message) + '</div>';
+  }
+}
+async function centralFixIssue(remoteId, issue) {
+  if (!issue) return;
+  if (issue.fix === 'manual_renew') { toast('该问题需要手动续签：点“打开远程面板”跳过去，按证书页六步引导操作'); return; }
+  if (issue.fix === 'choose_share') { toast('该问题需要选择分流方式：点“打开远程面板”跳过去，到添加落地重新提交'); return; }
+  try {
+    const r = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/fix', { issue_code: issue.code, landing: issue.landing });
+    if (r.ok === false) { toast(centralOpError(r), 'err'); return; }
+    if (r.need_choice) { toast('需要先选择分流方式：点“打开远程面板”跳过去，到添加落地重新提交'); return; }
+    toast('远程修复已执行：' + (r.msg || issue.code), 'ok');
+    loadCentral();
+  } catch (e) { toast('修复失败：' + e.message, 'err'); }
 }
 async function centralRestart(id) {
   const rm = centralRemotes.find((x) => x.id === id);

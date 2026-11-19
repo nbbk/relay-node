@@ -66,6 +66,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/ports", s.requireAuth(s.handlePorts))
 	// 设置
 	mux.HandleFunc("GET /api/v1/settings", s.requireAuth(s.handleSettings))
+	mux.HandleFunc("POST /api/v1/settings/manager-only", s.requireAuth(s.handleManagerOnly))
 	mux.HandleFunc("POST /api/v1/settings/password", s.requireAuth(s.handleChangePassword))
 	mux.HandleFunc("POST /api/v1/settings/port", s.requireAuth(s.handleChangePort))
 	mux.HandleFunc("POST /api/v1/settings/ip-whitelist", s.requireAuth(s.handleIPWhitelist))
@@ -90,8 +91,18 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/central/links", s.requireCentralToken(s.handleLinks))
 	mux.HandleFunc("GET /api/v1/central/subscription", s.requireCentralToken(s.handleCentralSubscription))
 	mux.HandleFunc("POST /api/v1/central/landings", s.requireCentralToken(s.handleAddLanding))
+	mux.HandleFunc("PUT /api/v1/central/landings/{index}", s.requireCentralToken(s.handleUpdateLanding))
+	mux.HandleFunc("POST /api/v1/central/landings/{index}/orig-link", s.requireCentralToken(s.handleSetOrigLink))
 	mux.HandleFunc("DELETE /api/v1/central/landings/{index}", s.requireCentralToken(s.handleDeleteLanding))
 	mux.HandleFunc("POST /api/v1/central/landings/{index}/add-node", s.requireCentralToken(s.handleAddNode))
+	mux.HandleFunc("DELETE /api/v1/central/landings/{index}/subnodes/{domain}", s.requireCentralToken(s.handleDeleteSubnode))
+	mux.HandleFunc("POST /api/v1/central/landings/{index}/renew", s.requireCentralToken(s.handleRenew))
+	mux.HandleFunc("POST /api/v1/central/landings/{index}/add-traffic", s.requireCentralToken(s.handleAddTraffic))
+	mux.HandleFunc("POST /api/v1/central/landings/{index}/traffic", s.requireCentralToken(s.handleSetTraffic))
+	mux.HandleFunc("GET /api/v1/central/certs", s.requireCentralToken(s.handleCerts))
+	mux.HandleFunc("GET /api/v1/central/traffic", s.requireCentralToken(s.handleTrafficGet))
+	mux.HandleFunc("POST /api/v1/central/check", s.requireCentralToken(s.handleCheck))
+	mux.HandleFunc("POST /api/v1/central/fix", s.requireCentralToken(s.handleFix))
 	mux.HandleFunc("POST /api/v1/central/service/{action}", s.requireCentralToken(s.handleService))
 	mux.HandleFunc("GET /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesList))
 	mux.HandleFunc("POST /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesAdd))
@@ -99,10 +110,20 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/central/remotes/{id}/poll", s.requireAuth(s.handleCentralRemotesPoll))
 	mux.HandleFunc("GET /api/v1/central/remotes/{id}/landings", s.requireAuth(s.handleCentralRemoteLandings))
 	mux.HandleFunc("GET /api/v1/central/remotes/{id}/links", s.requireAuth(s.handleCentralRemoteLinks))
+	mux.HandleFunc("GET /api/v1/central/remotes/{id}/certs", s.requireAuth(s.handleCentralRemoteCerts))
+	mux.HandleFunc("GET /api/v1/central/remotes/{id}/traffic", s.requireAuth(s.handleCentralRemoteTraffic))
 	mux.HandleFunc("POST /api/v1/central/remotes/{id}/landings", s.requireAuth(s.handleCentralRemoteAddLanding))
+	mux.HandleFunc("PUT /api/v1/central/remotes/{id}/landings/{index}", s.requireAuth(s.handleCentralRemoteUpdateLanding))
+	mux.HandleFunc("POST /api/v1/central/remotes/{id}/landings/{index}/orig-link", s.requireAuth(s.handleCentralRemoteSetOrigLink))
 	mux.HandleFunc("DELETE /api/v1/central/remotes/{id}/landings/{index}", s.requireAuth(s.handleCentralRemoteDeleteLanding))
 	mux.HandleFunc("POST /api/v1/central/remotes/{id}/landings/{index}/add-node", s.requireAuth(s.handleCentralRemoteAddNode))
+	mux.HandleFunc("DELETE /api/v1/central/remotes/{id}/landings/{index}/subnodes/{domain}", s.requireAuth(s.handleCentralRemoteDeleteSubnode))
+	mux.HandleFunc("POST /api/v1/central/remotes/{id}/landings/{index}/renew", s.requireAuth(s.handleCentralRemoteRenew))
+	mux.HandleFunc("POST /api/v1/central/remotes/{id}/landings/{index}/add-traffic", s.requireAuth(s.handleCentralRemoteAddTraffic))
+	mux.HandleFunc("POST /api/v1/central/remotes/{id}/landings/{index}/traffic", s.requireAuth(s.handleCentralRemoteSetTraffic))
 	mux.HandleFunc("POST /api/v1/central/remotes/{id}/service/{action}", s.requireAuth(s.handleCentralRemoteService))
+	mux.HandleFunc("POST /api/v1/central/remotes/{id}/check", s.requireAuth(s.handleCentralRemoteCheck))
+	mux.HandleFunc("POST /api/v1/central/remotes/{id}/fix", s.requireAuth(s.handleCentralRemoteFix))
 	// 端口管理 / 流量 / 备份导出导入 / 审计
 	mux.HandleFunc("GET /api/v1/firewall", s.requireAuth(s.handleFirewallGet))
 	mux.HandleFunc("POST /api/v1/firewall", s.requireAuth(s.handleFirewallPost))
@@ -235,7 +256,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	u, _ := s.sessions.get(r)
-	writeJSON(w, 200, okResp(map[string]any{"username": u, "version": Version}))
+	writeJSON(w, 200, okResp(map[string]any{"username": u, "version": Version, "manager_only": s.cfg.ManagerOnly}))
 }
 
 // ---------- 总览与体检 ----------

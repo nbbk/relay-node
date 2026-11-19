@@ -296,6 +296,8 @@ func TestCentralRemotesAddAndProxy(t *testing.T) {
 			t.Fatalf("远程 %s 没被调到，实际：%v", want, *seen)
 		}
 	}
+	// 等两次代理成功后触发的后台轮询跑完再继续，否则轮询可能撞上假服务器关闭与 TempDir 清理
+	waitCentralPolls(t, s)
 	// 取消登记
 	req5 := httptest.NewRequest("DELETE", "/api/v1/central/remotes/"+id, nil)
 	req5.SetPathValue("id", id)

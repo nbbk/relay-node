@@ -12,8 +12,10 @@ package main
 //   - 主面板必须拿着令牌原文去调远程接口，所以主面板 config.json 里
 //     存的是令牌明文（remotes[].token），与 Telegram Token、Cloudflare
 //     令牌同等待遇：文件 600 权限，绝不进审计日志、绝不通过接口返回。
-//   - 令牌只放行白名单里的 7 个 central/* 接口（status / links /
-//     订阅内容 / 加落地 / 删落地 / 给落地加节点 / 服务操作），改密码、改端口、改设置等接口令牌调不通。
+//   - 令牌只放行白名单里的 17 个 central/* 接口（status / links /
+//     订阅内容 / 加落地 / 编辑落地 / 补原始链接 / 删落地 / 给落地加节点 /
+//     删子节点 / 续期 / 续量 / 设流量限制 / 证书 / 流量 / 体检 / 一键修复 /
+//     服务操作），改密码、改端口、改设置等接口令牌调不通。
 //   - 代理操作时主面板服务端先按本地同样的规则二次校验参数，
 //     用户输入绝不直接拼进 shell，也不原样转发给远程而不校验。
 
@@ -85,6 +87,7 @@ type RemoteStatusSnapshot struct {
 	LandingCount  int                    `json:"landing_count"`
 	DiskPct       float64                `json:"disk_pct"`
 	RealmRunning  bool                   `json:"realm_running"`
+	RelayAddr     string                 `json:"relay_addr"`
 	Landings      []remoteLandingSummary `json:"landings"`
 	LastCheckedAt string                 `json:"last_checked_at"`
 	LastOKAt      string                 `json:"last_ok_at"`
@@ -93,15 +96,50 @@ type RemoteStatusSnapshot struct {
 	Cached bool `json:"cached"`
 }
 
+// remoteTraffic 远程落地的一份流量快照（字段与本地总览的 traffic 一致）。
+type remoteTraffic struct {
+	TodayUp    int64   `json:"today_up"`
+	TodayDown  int64   `json:"today_down"`
+	MonthUp    int64   `json:"month_up"`
+	MonthDown  int64   `json:"month_down"`
+	TotalUp    int64   `json:"total_up"`
+	TotalDown  int64   `json:"total_down"`
+	LimitBytes int64   `json:"limit_bytes"`
+	LimitMode  string  `json:"limit_mode"`
+	UsedBytes  int64   `json:"used_bytes"`
+	Pct        float64 `json:"pct"`
+}
+
+// remoteLandingSummary 远程落地的一行摘要：字段与本地总览的落地对象一致，
+// 集中管理代理操作（编辑/续期/流量/证书/删子节点）靠它预填表单、展示状态；
+// 链接与二维码不走这里，仍由 central/links 另外取。
 type remoteLandingSummary struct {
-	Index     int        `json:"index"`
-	Name      string     `json:"name"`
-	Landing   string     `json:"landing"`
-	Domain    string     `json:"domain"`
-	Mode      string     `json:"mode"`
-	Ports     []PortSpec `json:"ports"`
-	Online    *bool      `json:"online"`
-	LatencyMs *int       `json:"latency_ms"`
+	Index          int           `json:"index"`
+	Name           string        `json:"name"`
+	Landing        string        `json:"landing"`
+	Domain         string        `json:"domain"`
+	Mode           string        `json:"mode"`
+	Ports          []PortSpec    `json:"ports"`
+	Online         *bool         `json:"online"`
+	LatencyMs      *int          `json:"latency_ms"`
+	CertDomain     string        `json:"cert_domain"`
+	CertMode       string        `json:"cert_mode"`
+	Preset         string        `json:"preset"`
+	SBMode         string        `json:"sb_mode"`
+	CustomPorts    string        `json:"custom_ports"`
+	WantUDP        bool          `json:"want_udp"`
+	CertDaysLeft   *int          `json:"cert_days_left"`
+	CertExpiry     string        `json:"cert_expiry"`
+	RenewMode      string        `json:"renew_mode"`
+	Expiry         string        `json:"expiry"`
+	DaysLeft       *int          `json:"days_left"`
+	OrigLink       string        `json:"orig_link"`
+	OrigLinkName   string        `json:"orig_link_name"`
+	SpeedLimitMbps int           `json:"speed_limit_mbps"`
+	Traffic        remoteTraffic `json:"traffic"`
+	Disabled       bool          `json:"disabled"`
+	DisabledReason string        `json:"disabled_reason"`
+	SubNodes       []SubNode     `json:"subnodes"`
 }
 
 // centralAlertState 远程面板离线提醒的去重状态（复用延迟探测/监控告警的模式：
@@ -274,6 +312,7 @@ func (s *Server) handleCentralStatus(w http.ResponseWriter, r *http.Request) {
 		"panel_version":    Version,
 		"realm":            data["realm"],
 		"landings":         landings,
+		"relay_addr":       data["relay_addr"],
 		"disk_pct":         st.DiskPct,
 		"disk_total_bytes": st.DiskTotalBytes,
 		"disk_used_bytes":  st.DiskUsedBytes,
@@ -352,6 +391,7 @@ func (s *Server) fetchRemoteStatus(rem RemotePanel) (*RemoteStatusSnapshot, erro
 		PanelVersion string                 `json:"panel_version"`
 		Realm        struct{ Running bool } `json:"realm"`
 		DiskPct      float64                `json:"disk_pct"`
+		RelayAddr    string                 `json:"relay_addr"`
 		Landings     []remoteLandingSummary `json:"landings"`
 		Error        string                 `json:"error"`
 	}
@@ -380,7 +420,7 @@ func (s *Server) fetchRemoteStatus(rem RemotePanel) (*RemoteStatusSnapshot, erro
 	snap := &RemoteStatusSnapshot{
 		ID: rem.ID, Name: rem.Name, BaseURL: rem.BaseURL,
 		Online: true, Version: resp.PanelVersion, LandingCount: len(resp.Landings),
-		DiskPct: resp.DiskPct, RealmRunning: resp.Realm.Running,
+		DiskPct: resp.DiskPct, RealmRunning: resp.Realm.Running, RelayAddr: resp.RelayAddr,
 		Landings: resp.Landings, LastCheckedAt: now, LastOKAt: now,
 	}
 	if snap.Landings == nil {
@@ -409,6 +449,16 @@ func (s *Server) pollAllRemotes() {
 // pollOneRemote 拉一台远程面板并更新缓存；在线/离线变化与持续离线
 // 走主面板的 Telegram 提醒（复用去重节流：变离线提醒一次，持续离线
 // 每小时最多再提醒一次，恢复后复位并报恢复；没配 Telegram 就只记审计日志）。
+// pollOneRemoteAsync 代理写操作成功后异步刷新一次远程快照（落地数会变）。
+// 用 WaitGroup 记数：测试能在清理前等它跑完，生产行为不变（不等它）。
+func (s *Server) pollOneRemoteAsync(rem RemotePanel) {
+	s.centralPollWG.Add(1)
+	go func() {
+		defer s.centralPollWG.Done()
+		s.pollOneRemote(rem)
+	}()
+}
+
 func (s *Server) pollOneRemote(rem RemotePanel) *RemoteStatusSnapshot {
 	snap, err := s.fetchRemoteStatus(rem)
 	now := time.Now()
@@ -764,9 +814,73 @@ func (s *Server) proxyRemoteWrite(w http.ResponseWriter, r *http.Request, rem Re
 		return
 	}
 	// 远程面板的写操作成功后，刷新一次缓存的状态（落地数会变）。
-	go s.pollOneRemote(rem)
+	s.pollOneRemoteAsync(rem)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_, _ = w.Write(respBody)
+}
+
+// remoteVersionOK 检查缓存的远程版本是否满足最低版本：
+// 缓存里没有版本时放行（靠远程的 404 兜底）；低于最低版本返回提示文案。
+func (s *Server) remoteVersionOK(id, minVer string) (bool, string) {
+	s.centralMu.Lock()
+	snap := s.centralCache[id]
+	s.centralMu.Unlock()
+	if snap != nil && snap.Version != "" && isNewerVersion(minVer, snap.Version) {
+		return false, fmt.Sprintf("远程面板版本太旧（%s，需要 %s+），请先升级远程面板", snap.Version, minVer)
+	}
+	return true, ""
+}
+
+// proxyRemoteWriteMinVer 代理一个写操作到远程面板（带版本门）：
+// 缓存的远程版本低于 minVer 直接拒绝；远程返回 404 时也按 minVer 提示升级。
+// 其余失败与成功都与 proxyRemoteWrite 一致。
+func (s *Server) proxyRemoteWriteMinVer(w http.ResponseWriter, r *http.Request, rem RemotePanel, method, path string, body []byte, timeout time.Duration, minVer string) {
+	if ok, msg := s.remoteVersionOK(rem.ID, minVer); !ok {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": msg, "side": "remote"})
+		return
+	}
+	status, respBody, err := s.remoteCall(rem, method, path, body, timeout)
+	if err != nil {
+		side, msg := remoteSideOf(err)
+		if status == 404 {
+			// 老面板没有这个接口：404 是版本问题，不是地址问题
+			msg = fmt.Sprintf("远程面板版本太旧（需要 %s+），请先升级远程面板", minVer)
+			side = "remote"
+		}
+		writeJSON(w, 200, map[string]any{"ok": false, "error": msg, "side": side})
+		return
+	}
+	// 远程面板的写操作成功后，刷新一次缓存的状态（落地数会变）。
+	s.pollOneRemoteAsync(rem)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(respBody)
+}
+
+// proxyRemoteRead 代理一个读操作到远程面板：远程的返回原样写回；
+// 缓存的远程版本低于 minVer 直接拒绝，远程 404 同样按 minVer 提示升级。
+func (s *Server) proxyRemoteRead(w http.ResponseWriter, r *http.Request, rem RemotePanel, path string, timeout time.Duration, minVer string) {
+	if ok, msg := s.remoteVersionOK(rem.ID, minVer); !ok {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": msg, "side": "remote"})
+		return
+	}
+	status, respBody, err := s.remoteCall(rem, "GET", path, nil, timeout)
+	if err != nil {
+		side, msg := remoteSideOf(err)
+		if status == 404 {
+			msg = fmt.Sprintf("远程面板版本太旧（需要 %s+），请先升级远程面板", minVer)
+			side = "remote"
+		}
+		writeJSON(w, 200, map[string]any{"ok": false, "error": msg, "side": side})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(respBody)
+}
+
+// remoteLandingIndex 校验代理操作里的落地编号（须是正整数）。
+func remoteLandingIndex(r *http.Request) (int, bool) {
+	index, err := strconv.Atoi(r.PathValue("index"))
+	return index, err == nil && index >= 1
 }
 
 func (s *Server) handleCentralRemoteAddLanding(w http.ResponseWriter, r *http.Request) {
@@ -848,7 +962,7 @@ func (s *Server) handleCentralRemoteAddNode(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, 200, map[string]any{"ok": false, "error": msg, "side": side})
 		return
 	}
-	go s.pollOneRemote(*rem)
+	s.pollOneRemoteAsync(*rem)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_, _ = w.Write(respBody)
 	s.audit(s.currentUser(r), "代理给落地加节点", rem.Name+" / 落地 "+strconv.Itoa(index), "已转发到远程面板", "")
@@ -868,4 +982,265 @@ func (s *Server) handleCentralRemoteService(w http.ResponseWriter, r *http.Reque
 	}
 	s.proxyRemoteWrite(w, r, *rem, "POST", "/api/v1/central/service/"+action, []byte("{}"), 60*time.Second)
 	s.audit(s.currentUser(r), "代理服务操作", rem.Name+" / realm "+action, "已转发到远程面板", "")
+}
+
+// ---------- 主面板端：代理操作（v1.2.8 补齐，与本地操作一一对应） ----------
+// 以下接口都是 1.2.8 才有的远程接口：版本门统一用 proxyRemoteWriteMinVer /
+// proxyRemoteRead（缓存版本低于 1.2.8 拒绝，远程 404 提示升级）。
+// 校验规则与本地 handler 里的同一套（主面板先验一遍，远程再验一遍）。
+
+// validateRemoteOrigLinkBody 补粘贴原始链接的二次校验（与本地 handleSetOrigLink 同规则）。
+func validateRemoteOrigLinkBody(body []byte) error {
+	var req struct {
+		OrigLink string `json:"orig_link"`
+		LinkName string `json:"link_name"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return fmt.Errorf("请求格式不对")
+	}
+	if strings.TrimSpace(req.OrigLink) == "" {
+		return fmt.Errorf("原始节点链接不能为空")
+	}
+	if _, err := parseNodeLink(strings.TrimSpace(req.OrigLink)); err != nil {
+		return fmt.Errorf("原始节点链接不对：%v", err)
+	}
+	if req.LinkName != "" && (len(req.LinkName) > 64 || strings.ContainsAny(req.LinkName, "\n\r")) {
+		return fmt.Errorf("节点名称太长或含有非法字符（不能超过 64 字，不能含换行）")
+	}
+	return nil
+}
+
+// validateRemoteRenewBody 续期的二次校验：天数 1–3650。
+func validateRemoteRenewBody(body []byte) error {
+	var req struct {
+		Days int `json:"days"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil || req.Days < 1 || req.Days > 3650 {
+		return fmt.Errorf("续期天数须在 1–3650 天之间")
+	}
+	return nil
+}
+
+// validateRemoteAddTrafficBody 续量的二次校验：字节数须大于 0。
+func validateRemoteAddTrafficBody(body []byte) error {
+	var req struct {
+		Bytes int64 `json:"bytes"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil || req.Bytes <= 0 {
+		return fmt.Errorf("续量字节数须大于 0")
+	}
+	return nil
+}
+
+// validateRemoteSetTrafficBody 流量限制的二次校验（与本地 handleSetTraffic 同规则）。
+func validateRemoteSetTrafficBody(body []byte) error {
+	var req struct {
+		LimitBytes     int64  `json:"limit_bytes"`
+		LimitMode      string `json:"limit_mode"`
+		SpeedLimitMbps int    `json:"speed_limit_mbps"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return fmt.Errorf("请求格式不对")
+	}
+	if req.LimitBytes < 0 || req.SpeedLimitMbps < 0 {
+		return fmt.Errorf("数值不能为负")
+	}
+	if req.LimitMode != "" && req.LimitMode != "total" && req.LimitMode != "monthly" {
+		return fmt.Errorf("流量限制模式只能是 total 或 monthly")
+	}
+	return nil
+}
+
+// validateRemoteFixBody 一键修复的二次校验：问题码必填。
+func validateRemoteFixBody(body []byte) error {
+	var req struct {
+		IssueCode string `json:"issue_code"`
+		Landing   int    `json:"landing"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return fmt.Errorf("请求格式不对")
+	}
+	if strings.TrimSpace(req.IssueCode) == "" {
+		return fmt.Errorf("问题码不能为空")
+	}
+	return nil
+}
+
+// centralRemoteLandingOp 代理类落地写操作的公共前置：取远程面板 + 落地编号 +
+// 读请求体；失败直接写回，成功返回 (rem, index, body)。
+func (s *Server) centralRemoteLandingOp(w http.ResponseWriter, r *http.Request) (RemotePanel, int, []byte, bool) {
+	id := r.PathValue("id")
+	rem := s.remoteByID(id)
+	if rem == nil {
+		writeJSON(w, 404, errResp("没有登记过这台远程面板"))
+		return RemotePanel{}, 0, nil, false
+	}
+	index, ok := remoteLandingIndex(r)
+	if !ok {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "落地编号不对", "side": "local"})
+		return RemotePanel{}, 0, nil, false
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeJSON(w, 400, errResp("请求读失败"))
+		return RemotePanel{}, 0, nil, false
+	}
+	return *rem, index, body, true
+}
+
+func (s *Server) handleCentralRemoteUpdateLanding(w http.ResponseWriter, r *http.Request) {
+	rem, index, body, ok := s.centralRemoteLandingOp(w, r)
+	if !ok {
+		return
+	}
+	// 编辑落地与加落地同一套请求体，复用加落地的二次校验
+	//（duration_days=-1 表示保持不变，校验里已放行）。
+	if err := validateRemoteAddLandingBody(body); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error(), "side": "local"})
+		return
+	}
+	// 编辑可能重启 realm 并重探测证书，超时放宽到 120 秒。
+	s.proxyRemoteWriteMinVer(w, r, rem, "PUT", "/api/v1/central/landings/"+strconv.Itoa(index), body, 120*time.Second, "1.2.8")
+	s.audit(s.currentUser(r), "代理编辑落地", rem.Name+" / 落地 "+strconv.Itoa(index), "已转发到远程面板", "")
+}
+
+func (s *Server) handleCentralRemoteSetOrigLink(w http.ResponseWriter, r *http.Request) {
+	rem, index, body, ok := s.centralRemoteLandingOp(w, r)
+	if !ok {
+		return
+	}
+	if err := validateRemoteOrigLinkBody(body); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error(), "side": "local"})
+		return
+	}
+	s.proxyRemoteWriteMinVer(w, r, rem, "POST", "/api/v1/central/landings/"+strconv.Itoa(index)+"/orig-link", body, 60*time.Second, "1.2.8")
+	s.audit(s.currentUser(r), "代理补粘贴原始链接", rem.Name+" / 落地 "+strconv.Itoa(index), "已转发到远程面板", "")
+}
+
+func (s *Server) handleCentralRemoteDeleteSubnode(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rem := s.remoteByID(id)
+	if rem == nil {
+		writeJSON(w, 404, errResp("没有登记过这台远程面板"))
+		return
+	}
+	index, ok := remoteLandingIndex(r)
+	if !ok {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "落地编号不对", "side": "local"})
+		return
+	}
+	domain := strings.TrimSpace(r.PathValue("domain"))
+	if domain == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "子节点域名为空", "side": "local"})
+		return
+	}
+	s.proxyRemoteWriteMinVer(w, r, *rem, "DELETE", "/api/v1/central/landings/"+strconv.Itoa(index)+"/subnodes/"+domain, nil, 60*time.Second, "1.2.8")
+	s.audit(s.currentUser(r), "代理删除子节点", rem.Name+" / 落地 "+strconv.Itoa(index)+" / "+domain, "已转发到远程面板", "")
+}
+
+func (s *Server) handleCentralRemoteRenew(w http.ResponseWriter, r *http.Request) {
+	rem, index, body, ok := s.centralRemoteLandingOp(w, r)
+	if !ok {
+		return
+	}
+	if err := validateRemoteRenewBody(body); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error(), "side": "local"})
+		return
+	}
+	s.proxyRemoteWriteMinVer(w, r, rem, "POST", "/api/v1/central/landings/"+strconv.Itoa(index)+"/renew", body, 60*time.Second, "1.2.8")
+	s.audit(s.currentUser(r), "代理续期", rem.Name+" / 落地 "+strconv.Itoa(index), "已转发到远程面板", "")
+}
+
+func (s *Server) handleCentralRemoteAddTraffic(w http.ResponseWriter, r *http.Request) {
+	rem, index, body, ok := s.centralRemoteLandingOp(w, r)
+	if !ok {
+		return
+	}
+	if err := validateRemoteAddTrafficBody(body); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error(), "side": "local"})
+		return
+	}
+	s.proxyRemoteWriteMinVer(w, r, rem, "POST", "/api/v1/central/landings/"+strconv.Itoa(index)+"/add-traffic", body, 60*time.Second, "1.2.8")
+	s.audit(s.currentUser(r), "代理续量", rem.Name+" / 落地 "+strconv.Itoa(index), "已转发到远程面板", "")
+}
+
+func (s *Server) handleCentralRemoteSetTraffic(w http.ResponseWriter, r *http.Request) {
+	rem, index, body, ok := s.centralRemoteLandingOp(w, r)
+	if !ok {
+		return
+	}
+	if err := validateRemoteSetTrafficBody(body); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error(), "side": "local"})
+		return
+	}
+	s.proxyRemoteWriteMinVer(w, r, rem, "POST", "/api/v1/central/landings/"+strconv.Itoa(index)+"/traffic", body, 60*time.Second, "1.2.8")
+	s.audit(s.currentUser(r), "代理设置流量限制", rem.Name+" / 落地 "+strconv.Itoa(index), "已转发到远程面板", "")
+}
+
+func (s *Server) handleCentralRemoteCerts(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rem := s.remoteByID(id)
+	if rem == nil {
+		writeJSON(w, 404, errResp("没有登记过这台远程面板"))
+		return
+	}
+	// 证书探测要跑 check.sh + 逐落地握手，超时放宽到 90 秒。
+	s.proxyRemoteRead(w, r, *rem, "/api/v1/central/certs", 90*time.Second, "1.2.8")
+}
+
+func (s *Server) handleCentralRemoteTraffic(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rem := s.remoteByID(id)
+	if rem == nil {
+		writeJSON(w, 404, errResp("没有登记过这台远程面板"))
+		return
+	}
+	path := "/api/v1/central/traffic"
+	if q := r.URL.RawQuery; q != "" {
+		path += "?" + q
+	}
+	s.proxyRemoteRead(w, r, *rem, path, 30*time.Second, "1.2.8")
+}
+
+func (s *Server) handleCentralRemoteCheck(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rem := s.remoteByID(id)
+	if rem == nil {
+		writeJSON(w, 404, errResp("没有登记过这台远程面板"))
+		return
+	}
+	// 体检跑 check.sh，超时放宽到 90 秒。
+	s.proxyRemoteWriteMinVer(w, r, *rem, "POST", "/api/v1/central/check", []byte("{}"), 90*time.Second, "1.2.8")
+	s.audit(s.currentUser(r), "代理远程体检", rem.Name, "已转发到远程面板", "")
+}
+
+func (s *Server) handleCentralRemoteFix(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rem := s.remoteByID(id)
+	if rem == nil {
+		writeJSON(w, 404, errResp("没有登记过这台远程面板"))
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeJSON(w, 400, errResp("请求读失败"))
+		return
+	}
+	if err := validateRemoteFixBody(body); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error(), "side": "local"})
+		return
+	}
+	// 一键修复可能重启 realm，超时放宽到 120 秒。
+	s.proxyRemoteWriteMinVer(w, r, *rem, "POST", "/api/v1/central/fix", body, 120*time.Second, "1.2.8")
+	s.audit(s.currentUser(r), "代理一键修复", rem.Name, "已转发到远程面板", "")
 }
