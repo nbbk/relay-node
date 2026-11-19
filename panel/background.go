@@ -13,6 +13,7 @@ func (s *Server) startBackground() {
 	go s.expiryLoop()
 	go s.healthLoop()
 	go s.certLoop()
+	go s.backupLoop()
 	go s.recycleCleanupLoop()
 	go s.monitorLoop()
 	go s.latencyLoop()
@@ -161,7 +162,14 @@ func (s *Server) healthLoop() {
 	}
 }
 
-// 证书检查每天：<30 天 / <7 天各每天最多 1 条。
+// 证书检查每天一次。提醒策略（v1.3.6）：
+//   - 检查用 probeCertForLanding，按落地实际的 TCP 监听端口逐个握手
+//     （以前只认 443，自定义端口 TLS 落地根本不检查）；
+//   - 剩余 ≤30 天发一次预警、≤7 天发一次紧急提醒，同一阈值只提醒一次
+//     （标志存 state.json，重启不丢；续签后天数回升越过阈值时自动清掉，
+//     下次再越过重新提醒）；已过期按紧急提醒发，文案写“已过期 N 天”；
+//   - 文案里写明续签方式（renewModeFor：自动还是需手动去落地机操作）；
+//   - 没配 Telegram 时 sendTelegram 直接空操作，不报错。
 func (s *Server) certLoop() {
 	t := time.NewTicker(24 * time.Hour)
 	defer t.Stop()
@@ -176,29 +184,100 @@ func (s *Server) checkCerts() {
 	if err != nil {
 		return
 	}
-	today := time.Now().Format("2006-01-02")
+	changed := false
 	for _, l := range rc.Landings {
-		tlsPort := 0
-		for _, p := range l.Ports {
-			if p.Proto == "tcp" && p.Listen == 443 {
-				tlsPort = p.Listen
-			}
-		}
-		if tlsPort == 0 {
+		ci, ok := probeCertForLanding(l)
+		if !ok || ci.DaysLeft == nil {
 			continue
 		}
-		ci := fetchCert(tlsPort, l.CertDomain)
-		if ci.DaysLeft == nil {
+		days := *ci.DaysLeft
+		ext := s.state.ext(l.Landing)
+		// 续签后天数回升：清掉已发的标志，下次再越过阈值重新提醒。
+		if days > 30 && (ext.CertWarned30 || ext.CertWarned7) {
+			ext.CertWarned30, ext.CertWarned7 = false, false
+			changed = true
+		} else if days > 7 && days <= 30 && ext.CertWarned7 {
+			ext.CertWarned7 = false
+			changed = true
+		}
+		msg, set30, set7 := certAlertFor(l, days, ci.Expiry, ext, rc.Share443)
+		if msg == "" {
 			continue
 		}
-		if *ci.DaysLeft < 30 && s.certAlertDay[l.Landing] != today {
-			if *ci.DaysLeft < 7 {
-				s.sendTelegram("证书提醒：落地 " + l.Landing + " 证书只剩 " + itoa(*ci.DaysLeft) + " 天")
-			} else {
-				s.sendTelegram("证书提醒：落地 " + l.Landing + " 证书剩余 " + itoa(*ci.DaysLeft) + " 天")
-			}
-			s.certAlertDay[l.Landing] = today
+		s.sendTelegram(msg)
+		if set30 {
+			ext.CertWarned30 = true
+			changed = true
 		}
+		if set7 {
+			ext.CertWarned7 = true
+			changed = true
+		}
+	}
+	if changed {
+		_ = s.saveState()
+	}
+}
+
+// certAlertFor 证书提醒的纯决策：该不该发、发什么文案、置哪个去重标志。
+// 返回文案为空 = 不发。days<=0 是已过期（按紧急提醒走 7 天档）。
+func certAlertFor(l Landing, days int, expiry string, ext *LandingExt, share443 bool) (msg string, set30, set7 bool) {
+	mode, _ := renewModeFor(l, share443, true)
+	name := l.Landing
+	if days <= 0 {
+		if ext.CertWarned7 {
+			return "", false, false
+		}
+		if days == 0 {
+			return "证书提醒：落地 " + name + " 证书今天到期（到期 " + expiry + "），续签方式：" + mode + "，请立即续签", false, true
+		}
+		return "证书过期：落地 " + name + " 证书已过期 " + itoa(-days) + " 天（到期 " + expiry + "），续签方式：" + mode + "，请立即处理", false, true
+	}
+	if days <= 7 {
+		if ext.CertWarned7 {
+			return "", false, false
+		}
+		return "证书提醒：落地 " + name + " 证书只剩 " + itoa(days) + " 天（到期 " + expiry + "），续签方式：" + mode + "，请及时续签", false, true
+	}
+	if days <= 30 {
+		if ext.CertWarned30 {
+			return "", false, false
+		}
+		return "证书预警：落地 " + name + " 证书剩余 " + itoa(days) + " 天（到期 " + expiry + "），续签方式：" + mode, true, false
+	}
+	return "", false, false
+}
+
+// 自动定时备份（v1.3.6）：每分钟看一次，到了设定时间且今天还没做过就备份
+// 一次。面板在设定时间没在跑时，启动后补跑一次（当天还没备份过的话）；
+// 当天已有备份就不重复。备份本身是只读快照，不拿写锁。
+func (s *Server) backupLoop() {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	s.maybeScheduledBackup()
+	for range t.C {
+		s.maybeScheduledBackup()
+	}
+}
+
+func (s *Server) maybeScheduledBackup() {
+	if !s.cfg.Backup.Enabled {
+		return
+	}
+	hh, mm, err := parseBackupTime(s.cfg.Backup.Time)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	if s.scheduledBackupDoneToday(now.Format("20060102")) {
+		return
+	}
+	due := time.Date(now.Year(), now.Month(), now.Day(), hh, mm, 0, 0, now.Location())
+	if now.Before(due) {
+		return
+	}
+	if _, err := s.runScheduledBackup("自动定时备份"); err == nil {
+		s.audit("system", "自动定时备份", "", "成功", "")
 	}
 }
 

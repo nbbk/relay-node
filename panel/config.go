@@ -32,6 +32,9 @@ type PanelConfig struct {
 	Telegram        TelegramCfg `json:"telegram"`
 	Monitor         MonitorCfg  `json:"monitor"`
 	Latency         LatencyCfg  `json:"latency"`
+	// 自动定时备份（v1.3.6）：默认每天 03:00 备份一次，保留最近 7 份。
+	// 旧 config.json 里没有这一节时按默认补（applyDefaults）。
+	Backup BackupCfg `json:"backup"`
 	// 远程管理令牌（v1.2.0，被管端）：只存 SHA-256 哈希，绝不存明文。
 	RemoteTokenHash      string `json:"remote_token_hash"`
 	RemoteTokenCreatedAt string `json:"remote_token_created_at"`
@@ -153,9 +156,15 @@ type LandingExt struct {
 	SubNodes          []SubNode `json:"subnodes"`
 	RenewReminded7d   bool      `json:"renew_reminded_7d"`
 	RenewReminded3d   bool      `json:"renew_reminded_3d"`
-	RenewProgress     int       `json:"renew_progress"`
-	TrafficWarned80   bool      `json:"traffic_warned_80"`
-	TrafficWarned100  bool      `json:"traffic_warned_100"`
+	// CertWarned30 / CertWarned7（v1.3.6）：证书到期提醒的去重标志，存
+	// state.json（重启不丢）。证书剩余 ≤30 天发一次预警、≤7 天发一次紧急
+	// 提醒，同一阈值只提醒一次；续签后天数回升越过阈值时自动清掉，下次再
+	// 越过重新提醒。落地改名时整个 ext 随旧键迁移，标志跟着走，不重复提醒。
+	CertWarned30     bool `json:"cert_warned_30"`
+	CertWarned7      bool `json:"cert_warned_7"`
+	RenewProgress    int  `json:"renew_progress"`
+	TrafficWarned80  bool `json:"traffic_warned_80"`
+	TrafficWarned100 bool `json:"traffic_warned_100"`
 	// OrigLink 是加落地时用户粘贴的原始节点链接（选填），只存面板自己的
 	// state.json（600 权限），用来拼中转+直连链接与二维码。
 	// 不传给安装脚本、不进日志与审计、不出现在任何接口的日志字段里。
@@ -371,7 +380,6 @@ type Server struct {
 	auditMu        sync.Mutex
 	lastHealthOK   bool
 	lastHealthAt   time.Time
-	certAlertDay   map[string]string // landing -> 上次提醒日期
 	monitorMu      sync.Mutex
 	monitorAlerts  map[string]*monitorAlertState
 	latestMonitor  *SystemStats
@@ -399,7 +407,7 @@ func newServer(env Env) (*Server, error) {
 		// 测试环境 REALM_DIR 可能不可写目录已存在则忽略
 		_ = os.MkdirAll(env.RealmDir, 0o755)
 	}
-	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), certAlertDay: map[string]string{}, lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}}
+	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}}
 	if err := s.loadConfig(); err != nil {
 		return nil, err
 	}
@@ -427,7 +435,7 @@ func (s *Server) loadConfig() error {
 		if err != nil {
 			return err
 		}
-		s.cfg = PanelConfig{Username: "admin", PasswordHash: h, Port: s.env.Port, Version: Version, Monitor: defaultMonitorCfg(), Latency: defaultLatencyCfg()}
+		s.cfg = PanelConfig{Username: "admin", PasswordHash: h, Port: s.env.Port, Version: Version, Monitor: defaultMonitorCfg(), Latency: defaultLatencyCfg(), Backup: defaultBackupCfg()}
 		if s.env.Port == 0 {
 			s.cfg.Port = 11111
 		}
@@ -446,6 +454,8 @@ func (s *Server) loadConfig() error {
 	s.cfg.Monitor.applyDefaults()
 	// 旧 config.json 里没有 latency 一节时补默认值（1.1.11 之前装的面板）
 	s.cfg.Latency.applyDefaults()
+	// 旧 config.json 里没有 backup 一节时补默认值（1.3.6 之前装的面板）
+	s.cfg.Backup.applyDefaults()
 	return nil
 }
 

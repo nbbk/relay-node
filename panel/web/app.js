@@ -1278,6 +1278,9 @@ async function loadCerts(page) {
   try {
     const r = await api('/api/v1/certs');
     const certs = r.certs || [];
+    // 证书到期提醒需要 Telegram：没配时证书页提示去设置里配（v1.3.6）。
+    const tgHint = $('#cert-tg-hint');
+    if (tgHint) tgHint.innerHTML = r.telegram_configured === false ? '<div class="warn-box">证书到期提醒需要配置 Telegram：到设置页 → Telegram 填好 Bot Token 与 Chat ID，否则证书快到期时只在面板里标红，不会发消息提醒。</div>' : '';
     if (!certs.length) { wrap.innerHTML = '<div class="empty">暂无证书信息。</div>'; }
     else {
       const pg = paginate(certs, certsPage);
@@ -1443,6 +1446,11 @@ async function loadSettingsPage() {
     // Worker 源站地址（v1.3.5）：存过就回填到输入框；留空就是默认用法。
     const wo = $('#worker-origin');
     if (wo) { wo.value = sub.worker_origin || ''; wo.placeholder = '留空 = ' + location.origin; }
+    // 自动定时备份（v1.3.6）：设置接口下发的排程填进表单。
+    const bk = st.backup || {};
+    const bke = $('#bk-enabled'); if (bke) bke.checked = bk.enabled !== false;
+    const bkt = $('#bk-time'); if (bkt) bkt.value = bk.time || '03:00';
+    const bkk = $('#bk-keep'); if (bkk) bkk.value = bk.keep || 7;
     // 面板名称（v1.3.4）：设置接口下发的当前名填进输入框。
     const pn = $('#panel-name');
     if (pn) pn.value = st.panel_name || 'CP管理';
@@ -1452,7 +1460,7 @@ async function loadSettingsPage() {
       '<div class="kv"><span>状态</span><b>' + (st.update_available ? '<span class="badge yellow">有更新</span>' : '<span class="badge green">已是最新</span>') + '</b></div>' +
       '<div class="kv"><span>仓库</span><b><a href="https://github.com/nbbk/relay-node" target="_blank" rel="noopener">relay-node</a></b></div>';
   } catch (e) { toast('设置加载失败：' + e.message, 'err'); }
-  loadBackups(); loadAudit(); loadSubUsers();
+  loadBackups(); loadAudit(); loadSubUsers(); loadSchedBackups();
 }
 // 切换面板模式（v1.2.8）：只改 manager_only 开关，数据保留；切完刷新页面重建导航。
 async function switchPanelMode(toManager) {
@@ -1612,6 +1620,17 @@ function initSettings() {
     try { await apiPost('/api/v1/backups', { label: '手动备份' }); toast('备份已创建', 'ok'); loadBackups(); }
     catch (err) { toast('备份失败：' + err.message, 'err'); }
   });
+  // 自动定时备份设置（v1.3.6）
+  on('#bk-save', 'click', async () => {
+    try {
+      await apiPost('/api/v1/settings/backup', { enabled: $('#bk-enabled').checked, time: $('#bk-time').value, keep: Number($('#bk-keep').value) });
+      toast('自动备份设置已保存', 'ok'); loadSchedBackups();
+    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+  });
+  on('#bk-now', 'click', async () => {
+    try { await apiPost('/api/v1/scheduled-backups/now', {}); toast('备份已创建', 'ok'); loadSchedBackups(); }
+    catch (err) { toast('备份失败：' + err.message, 'err'); }
+  });
   on('#export-btn', 'click', async () => {
     try {
       const res = await fetch('/api/v1/export');
@@ -1740,6 +1759,34 @@ async function loadBackups(page) {
     }));
     if (pg.totalPages > 1) wirePager(wrap, 'backups', pg.cur, pg.totalPages, (p) => loadBackups(p));
   } catch (e) { wrap.innerHTML = '<div class="empty">备份列表不可用：' + esc(e.message) + '</div>'; }
+}
+// 自动定时备份列表（v1.3.6）：恢复/删除，恢复前弹确认（会覆盖当前配置并重启 realm）。
+async function loadSchedBackups() {
+  const wrap = $('#sched-backup-list');
+  if (!wrap) return;
+  try {
+    const r = await api('/api/v1/scheduled-backups');
+    const list = r.backups || [];
+    const last = $('#bk-last');
+    if (last) last.textContent = r.last_backup ? '上次备份：' + fmtDate(r.last_backup.ts) + '（' + (r.last_backup.label || '') + '）' : '还没有定时备份。';
+    if (!list.length) { wrap.innerHTML = '<div class="empty">暂无定时备份。</div>'; return; }
+    wrap.innerHTML = list.map((b) =>
+      '<div class="kv"><span>' + esc(fmtDate(b.ts)) + '<br><span class="small">' + esc(b.label || '') + ' · ' + (b.size != null ? (b.size / 1024).toFixed(1) + ' KB' : '') + '</span></span>' +
+      '<span><button class="btn secondary sm" type="button" data-restore-sbk="' + esc(b.id) + '">恢复</button> ' +
+      '<button class="btn secondary sm" type="button" data-del-sbk="' + esc(b.id) + '">删除</button></span></div>').join('');
+    $$('[data-restore-sbk]', wrap).forEach((btn) => btn.addEventListener('click', async () => {
+      const ok = await confirmModal('恢复定时备份', '<p>恢复会用这份备份覆盖当前配置并重启 realm；恢复后不在备份里的订阅用户会被移除，新用户的订阅令牌要重新生成。确定恢复吗？</p>', '恢复备份', true);
+      if (!ok) return;
+      try { await apiPost('/api/v1/scheduled-backups/' + encodeURIComponent(btn.dataset.restoreSbk) + '/restore', {}); toast('备份已恢复', 'ok'); loadOverview(); }
+      catch (e) { toast('恢复失败：' + e.message, 'err'); }
+    }));
+    $$('[data-del-sbk]', wrap).forEach((btn) => btn.addEventListener('click', async () => {
+      const ok = await confirmModal('删除定时备份', '<p>确定删除这份定时备份吗？删了找不回来。</p>', '删除', true);
+      if (!ok) return;
+      try { await api('/api/v1/scheduled-backups/' + encodeURIComponent(btn.dataset.delSbk), { method: 'DELETE' }); toast('已删除', 'ok'); loadSchedBackups(); }
+      catch (e) { toast('删除失败：' + e.message, 'err'); }
+    }));
+  } catch (e) { wrap.innerHTML = '<div class="empty">定时备份列表不可用：' + esc(e.message) + '</div>'; }
 }
 /* ---------- 通用前端分页（审计/端口表/各列表共用） ---------- */
 const PAGE_SIZE = 20;

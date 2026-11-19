@@ -176,6 +176,7 @@
       <section class="page" id="page-certs">
         <div class="page-head"><h1>证书</h1></div>
         <p class="muted">证书剩余天数：&lt; 30 天变黄，&lt; 7 天变红。请注意：节点到期（你设的时长）和证书到期（90 天有效期）是两回事。</p>
+        <div id="cert-tg-hint"></div>
         <div id="cert-list"></div>
         <div class="card" style="margin-top:16px">
           <h2>手动续签六步引导</h2>
@@ -462,6 +463,17 @@
             <h2>备份</h2>
             <div class="btn-row" style="margin-top:0"><button class="btn" id="backup-create" type="button">立即备份</button></div>
             <div id="backup-list" style="margin-top:12px"></div>
+            <h2 style="margin-top:20px">自动定时备份</h2>
+            <p class="muted">每天自动备份一次，存在面板本机；备份内容和手动导出一样（落地、设置、订阅用户、流量库），不含密码哈希与 Telegram Token。保留份数到了就删最旧的，不会把盘写满。</p>
+            <div class="btn-row" style="margin-top:0;flex-wrap:wrap">
+              <label class="small"><input id="bk-enabled" type="checkbox"> 启用自动备份</label>
+              <label class="small">时间 <input id="bk-time" type="time" value="03:00" style="width:96px"></label>
+              <label class="small">保留份数 <input id="bk-keep" type="number" min="1" max="30" value="7" style="width:64px"></label>
+              <button class="btn" id="bk-save" type="button">保存设置</button>
+            </div>
+            <div id="bk-last" class="small muted" style="margin-top:8px"></div>
+            <div class="btn-row"><button class="btn" id="bk-now" type="button">立即备份一次</button></div>
+            <div id="sched-backup-list" style="margin-top:12px"></div>
           </div>
           <div class="card">
             <h2>导出 / 导入整机配置</h2>

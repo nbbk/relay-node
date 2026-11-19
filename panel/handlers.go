@@ -141,6 +141,13 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/backups", s.requireAuth(s.handleBackupsList))
 	mux.HandleFunc("POST /api/v1/backups", s.requireAuth(s.handleBackupsCreate))
 	mux.HandleFunc("POST /api/v1/backups/{id}/restore", s.requireAuth(s.handleBackupRestore))
+	// 自动定时备份（v1.3.6）
+	mux.HandleFunc("GET /api/v1/settings/backup", s.requireAuth(s.handleBackupSettingsGet))
+	mux.HandleFunc("POST /api/v1/settings/backup", s.requireAuth(s.handleBackupSettingsPost))
+	mux.HandleFunc("GET /api/v1/scheduled-backups", s.requireAuth(s.handleScheduledBackupsList))
+	mux.HandleFunc("POST /api/v1/scheduled-backups/now", s.requireAuth(s.handleScheduledBackupNow))
+	mux.HandleFunc("POST /api/v1/scheduled-backups/{id}/restore", s.requireAuth(s.handleScheduledBackupRestore))
+	mux.HandleFunc("DELETE /api/v1/scheduled-backups/{id}", s.requireAuth(s.handleScheduledBackupDelete))
 	mux.HandleFunc("GET /api/v1/export", s.requireAuth(s.handleExport))
 	mux.HandleFunc("POST /api/v1/import", s.requireAuth(s.handleImport))
 	mux.HandleFunc("GET /api/v1/audit", s.requireAuth(s.handleAudit))
@@ -1349,15 +1356,11 @@ func (s *Server) handleUpdateLanding(w http.ResponseWriter, r *http.Request) {
 		// 流量计数跟着地址走（累计、月度、采样基数一起搬）
 		s.traffic.rename(old.Landing, req.Landing)
 		// 延迟探测结果跟新地址走：旧探测目标的结果删掉，下一轮重探；
-		// 证书提醒日期也跟着新地址走，避免重复提醒
+		// 证书提醒去重标志在 ext 里，改名时已随旧键整体迁移，不重复提醒
 		s.latency.remove(latencyStoreKey(*old))
 		s.latencyMu.Lock()
 		delete(s.latencyAlerts, latencyStoreKey(*old))
 		s.latencyMu.Unlock()
-		if d, ok := s.certAlertDay[old.Landing]; ok {
-			s.certAlertDay[req.Landing] = d
-			delete(s.certAlertDay, old.Landing)
-		}
 	}
 	if req.DurationDays > 0 {
 		ext.Expiry = time.Now().Add(time.Duration(req.DurationDays) * 24 * time.Hour).UTC().Format(time.RFC3339)
@@ -2620,7 +2623,8 @@ func (s *Server) handleCerts(w http.ResponseWriter, r *http.Request) {
 	if certs == nil {
 		certs = []any{}
 	}
-	writeJSON(w, 200, okResp(map[string]any{"certs": certs}))
+	// telegram_configured（v1.3.6）：没配时证书页提示去设置里配 Telegram。
+	writeJSON(w, 200, okResp(map[string]any{"certs": certs, "telegram_configured": s.telegramConfigured()}))
 }
 
 func renewGuideSteps(l Landing) []map[string]string {

@@ -441,8 +441,14 @@ func renewModeFor(l Landing, share443 bool, hasCert bool) (string, bool) {
 
 // ---------- Telegram ----------
 
+// telegramConfigured（v1.3.6）：Telegram 提醒通道是否配好（证书页没配时
+// 提示去设置里配；没配时 sendTelegram 直接空操作，不报错）。
+func (s *Server) telegramConfigured() bool {
+	return s.cfg.Telegram.Enabled && s.cfg.Telegram.BotToken != "" && s.cfg.Telegram.ChatID != ""
+}
+
 func (s *Server) sendTelegram(msg string) {
-	if !s.cfg.Telegram.Enabled || s.cfg.Telegram.BotToken == "" || s.cfg.Telegram.ChatID == "" {
+	if !s.telegramConfigured() {
 		return
 	}
 	body, _ := json.Marshal(map[string]any{"chat_id": s.cfg.Telegram.ChatID, "text": msg})

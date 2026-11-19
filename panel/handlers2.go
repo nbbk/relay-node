@@ -29,6 +29,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"telegram":      map[string]any{"enabled": s.cfg.Telegram.Enabled, "chat_id": s.cfg.Telegram.ChatID, "has_token": s.cfg.Telegram.BotToken != ""},
 		"monitor":       s.cfg.Monitor,
 		"latency":       s.cfg.Latency,
+		"backup":        s.cfg.Backup,
 		"central_token": map[string]any{"has_token": s.cfg.RemoteTokenHash != "", "created_at": s.cfg.RemoteTokenCreatedAt},
 		"subscription":  map[string]any{"has_token": s.cfg.SubTokenHash != "", "created_at": s.cfg.SubTokenCreatedAt, "public_domain": s.cfg.SubPublicDomain, "worker_origin": s.cfg.WorkerOrigin},
 		"remotes_count": len(s.cfg.Remotes),
@@ -834,28 +835,10 @@ func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
-	relayConf, _ := os.ReadFile(filepath.Join(s.env.RealmDir, "relay.conf"))
-	toml, _ := os.ReadFile(filepath.Join(s.env.RealmDir, "config.toml"))
-	state, _ := os.ReadFile(filepath.Join(s.env.PanelHome, "state.json"))
-	var stateJSON any
-	_ = json.Unmarshal(state, &stateJSON)
-	// 脱敏：不含密码哈希和 telegram token
-	panelCfg := map[string]any{
-		"username": s.cfg.Username, "port": s.cfg.Port,
-		"https_enabled": s.cfg.HTTPSEnabled, "https_domain": s.cfg.HTTPSDomain,
-		"ip_whitelist": s.cfg.IPWhitelist,
-		"telegram":     map[string]any{"enabled": s.cfg.Telegram.Enabled, "chat_id": s.cfg.Telegram.ChatID},
-		"monitor":      s.cfg.Monitor,
-		"version":      Version,
-	}
-	out := map[string]any{
-		"version": Version, "exported_at": time.Now().UTC().Format(time.RFC3339),
-		"relay_conf": string(relayConf), "config_toml": string(toml),
-		"state": stateJSON, "panel_config": panelCfg,
-	}
+	// 数据口径见 exportData（与定时备份共用；不含密码哈希和 Telegram Token）。
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", `attachment; filename="relay-panel-export.json"`)
-	_ = json.NewEncoder(w).Encode(out)
+	_ = json.NewEncoder(w).Encode(s.exportData())
 }
 
 func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
@@ -864,11 +847,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errResp("读取导入文件失败"))
 		return
 	}
-	var imp struct {
-		RelayConf  string          `json:"relay_conf"`
-		ConfigToml string          `json:"config_toml"`
-		State      json.RawMessage `json:"state"`
-	}
+	var imp importPayload
 	if err := json.Unmarshal(body, &imp); err != nil {
 		writeJSON(w, 400, errResp("导入文件格式不对"))
 		return
@@ -877,46 +856,30 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errResp("导入文件缺 relay_conf 或 config_toml"))
 		return
 	}
-	// 校验
-	if rc := parseRelayConf([]byte(imp.RelayConf)); len(rc.Landings) == 0 && !strings.Contains(imp.RelayConf, "LANDING=") {
-		writeJSON(w, 400, errResp("relay_conf 里没有落地"))
-		return
-	}
-	if err := validateConfigToml([]byte(imp.ConfigToml)); err != nil {
-		writeJSON(w, 400, errResp("config_toml 校验失败："+err.Error()))
+	if ferr := s.validateImportPayload(imp); ferr != nil {
+		writeJSON(w, ferr.status, errResp(ferr.msg))
 		return
 	}
 	if !s.tryOpLock(w) {
 		return
 	}
 	defer s.opMu.Unlock()
-	_, _ = s.backupNow("导入前自动备份", "realm")
-	if err := s.writeRelayConfAtomic([]byte(imp.RelayConf)); err != nil {
-		writeJSON(w, 500, errResp("写入 relay.conf 失败："+err.Error()))
+	// 落地逻辑见 applyImportPayload（与定时备份恢复共用；不做端口校验，
+	// 与旧版 handleImport 一致）。
+	warn, ferr := s.applyImportPayload(imp, importApplyOpts{
+		preBackupLabel: "导入前自动备份", auditAction: "导入配置",
+		auditDetail:       "密码哈希与 Telegram token 保持本机原值",
+		restartWarnPrefix: "导入已写入，但重启 realm 失败：",
+		verifyWarnPrefix:  "", user: s.currentUser(r),
+	})
+	if ferr != nil {
+		writeJSON(w, ferr.status, errResp(ferr.msg))
 		return
 	}
-	if err := s.writeConfigTomlAtomic([]byte(imp.ConfigToml)); err != nil {
-		writeJSON(w, 500, errResp("写入 config.toml 失败："+err.Error()))
+	if warn != "" {
+		writeJSON(w, 200, errResp(warn))
 		return
 	}
-	if len(imp.State) > 0 {
-		var st PanelState
-		if json.Unmarshal(imp.State, &st) == nil {
-			s.stateMu.Lock()
-			s.state = st
-			if s.state.Landings == nil {
-				s.state.Landings = map[string]*LandingExt{}
-			}
-			s.stateMu.Unlock()
-			_ = s.saveState()
-		}
-	}
-	_ = s.regenProxies()
-	if err := s.restartRealm(); err != nil {
-		writeJSON(w, 200, errResp("导入已写入，但重启 realm 失败："+err.Error()))
-		return
-	}
-	s.audit(s.currentUser(r), "导入配置", "", "成功", "密码哈希与 Telegram token 保持本机原值")
 	writeJSON(w, 200, okResp(nil))
 }
 
