@@ -95,6 +95,7 @@ type RemoteStatusSnapshot struct {
 
 type remoteLandingSummary struct {
 	Index     int        `json:"index"`
+	Name      string     `json:"name"`
 	Landing   string     `json:"landing"`
 	Domain    string     `json:"domain"`
 	Mode      string     `json:"mode"`
@@ -359,6 +360,16 @@ func (s *Server) fetchRemoteStatus(rem RemotePanel) (*RemoteStatusSnapshot, erro
 	}
 	if !resp.OK {
 		return nil, fmt.Errorf("remote：远程面板：%s", resp.Error)
+	}
+	// 名字是被管面板 displayName() 的结果：没设备注名称时回退成落地地址；
+	// 这里把回退值清掉，主面板只保留真正设过的备注名，前端据此决定
+	// 行标题是“名称 地址 #编号”还是只有“地址 #编号”。远程面板版本再旧
+	// 也一样（displayName 进 central/status 很久了），不用设版本门。
+	for i := range resp.Landings {
+		resp.Landings[i].Name = strings.TrimSpace(resp.Landings[i].Name)
+		if resp.Landings[i].Name == "" || resp.Landings[i].Name == resp.Landings[i].Landing {
+			resp.Landings[i].Name = ""
+		}
 	}
 	// 版本太旧（低于 1.2.0）直接拒掉：老面板没有 central 接口，
 	// 这里能调通只可能是新面板，但版本号仍要验，防代理/缓存冒充。

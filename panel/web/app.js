@@ -1979,6 +1979,14 @@ async function loadCentral() {
     wrap.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
   }
 }
+// 集中管理落地标题：有备注名称时“名称 地址”，没有时只显示地址；
+// 名称与地址相同时也只显示一次（被管面板没设名称时 name 会回退成地址）。
+function centralLandingTitle(l) {
+  const addr = l.landing || l.domain || '';
+  const name = (l.name || '').trim();
+  if (name && name !== addr) return name + ' ' + addr;
+  return addr;
+}
 async function loadCentralLandings(id, page) {
   if (page) centralDetailPage = page;
   centralDetailId = id;
@@ -2004,9 +2012,9 @@ async function loadCentralLandings(id, page) {
         const on = l.online === true ? '<span class="badge green">在线</span>' : l.online === false ? '<span class="badge red">离线</span>' : '<span class="badge">未知</span>';
         const lat = l.latency_ms == null ? '—' : esc(l.latency_ms) + ' ms';
         return '<div class="central-landing">' +
-          '<div class="central-landing-head" data-central-toggle="' + esc(l.index) + '" role="button" tabindex="0"><span>' + esc(l.name || l.domain || l.landing) + ' <span class="small">#' + esc(l.index) + '</span></span><span>' + on + ' ' + lat + ' <span class="central-caret">▸</span></span></div>' +
+          '<div class="central-landing-head" data-central-toggle="' + esc(l.index) + '" role="button" tabindex="0"><span>' + esc(centralLandingTitle(l)) + ' <span class="small">#' + esc(l.index) + '</span></span><span>' + on + ' ' + lat + ' <span class="central-caret">▸</span></span></div>' +
           '<div class="central-landing-body hidden" data-central-body="' + esc(l.index) + '">' +
-          '<div class="kv"><span>落地</span><b>' + esc(l.landing) + '</b></div>' +
+          '<div class="kv"><span>落地</span><b>' + esc(centralLandingTitle(l)) + '</b></div>' +
           '<div class="kv"><span>监听端口</span><b>' + ports + '</b></div>' +
           '<div class="central-landing-links" data-central-links-box="' + esc(l.index) + '"></div>' +
           '<div class="btn-row"><button class="btn secondary sm" type="button" data-central-addnode="' + esc(l.index) + '">＋ 新增节点</button>' +
@@ -2019,7 +2027,7 @@ async function loadCentralLandings(id, page) {
     });
     $$('[data-central-addnode]', detail).forEach((b) => b.addEventListener('click', () => {
       const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralAddnode));
-      centralAddNodeWizard(id, Number(b.dataset.centralAddnode), l ? (l.name || l.domain || l.landing) : ('#' + b.dataset.centralAddnode));
+      centralAddNodeWizard(id, Number(b.dataset.centralAddnode), l ? centralLandingTitle(l) : ('#' + b.dataset.centralAddnode));
     }));
     $$('[data-central-del-landing]', detail).forEach((b) => b.addEventListener('click', () => centralDeleteLanding(id, Number(b.dataset.centralDelLanding))));
     if (pg.totalPages > 1) wirePager(detail, 'central', pg.cur, pg.totalPages, (p) => loadCentralLandings(id, p));
@@ -2079,7 +2087,7 @@ async function centralLinks(id) {
     let openGroup = null;
     body.innerHTML = '<p class="muted small">点一行展开看它的链接与二维码；一次只展开一个，再点一次收起。</p>' + groups.map((g, i) =>
       '<div class="central-link-group">' +
-      '<div class="central-link-head" data-central-group-toggle="' + i + '" role="button" tabindex="0"><span>' + esc(g.name || g.landing || '') + '</span><span>' + groupTagsHtml(g) + ' <span class="central-caret">▸</span></span></div>' +
+      '<div class="central-link-head" data-central-group-toggle="' + i + '" role="button" tabindex="0"><span>' + esc(centralLandingTitle(g)) + '</span><span>' + groupTagsHtml(g) + ' <span class="central-caret">▸</span></span></div>' +
       '<div class="central-link-body hidden" data-central-group-body="' + i + '">' + linksHtml(g.links || [], g.qr || {}) + '</div></div>'
     ).join('');
     $$('[data-central-group-toggle]', body).forEach((h) => {
