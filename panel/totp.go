@@ -22,12 +22,22 @@ import (
 )
 
 const (
-	totpDigits      = 6  // 验证码位数
-	totpStepSec     = 30 // 时间步（秒）
-	totpSkew        = 1  // 容差：前后各一个时间步（时钟偏差）
+	totpDigits  = 6  // 验证码位数
+	totpStepSec = 30 // 时间步（秒）
+	totpSkew    = 2  // 容差：前后各两个时间步。手机与服务器时钟差是验证码对不上的最常见原因，
+	// ±2 步（150 秒窗口）仍在可接受范围；确认/关闭都要已登录会话，登录验证码错
+	// 5 次又会触发锁定，猜码空间没有实质放大（5 次/5 分钟对 6 位码）。
 	totpBackupCount = 8  // 备用码个数
 	totpBackupLen   = 10 // 备用码长度
 )
+
+// serverTimeDisplay 服务器当前时间（带时区）：本地时间 + 数字时区偏移 + UTC 时间。
+// 面板时间跟服务器本地时区走；只显示不带时区的时间会让人误以为是手机本地时间，
+// 手机与服务器时钟差一眼看不出来。格式如：2026-11-19 17:52:03 +0800（UTC 09:52:03）。
+func serverTimeDisplay() string {
+	now := time.Now()
+	return now.Format("2006-01-02 15:04:05 -0700") + "（UTC " + now.UTC().Format("15:04:05") + "）"
+}
 
 func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
@@ -64,7 +74,7 @@ func totpCodeAt(secret string, t time.Time) (string, error) {
 	return fmt.Sprintf("%06d", code%1000000), nil
 }
 
-// verifyTOTP 校验验证码：6 位数字，允许前后一个时间步的容差。
+// verifyTOTP 校验验证码：6 位数字，允许前后两个时间步的容差。
 func verifyTOTP(secret, code string, now time.Time) bool {
 	code = strings.Join(strings.Fields(code), "") // 验证器常显示成 123 456，空格去掉
 	if len(code) != totpDigits {
@@ -75,7 +85,7 @@ func verifyTOTP(secret, code string, now time.Time) bool {
 			return false
 		}
 	}
-	for _, skew := range []int64{-1, 0, 1} {
+	for skew := int64(-totpSkew); skew <= totpSkew; skew++ {
 		want, err := totpCodeAt(secret, now.Add(time.Duration(skew*totpStepSec)*time.Second))
 		if err != nil {
 			return false
@@ -119,7 +129,7 @@ func verifyBackupCode(code string, hashes []string) (int, bool) {
 	return -1, false
 }
 
-// verifySecondFactor 校验第二因素：先试 6 位 TOTP 验证码（前后一个时间步容差），
+// verifySecondFactor 校验第二因素：先试 6 位 TOTP 验证码（前后两个时间步容差），
 // 再试备用码；备用码对上就从列表里删掉（用一次废一个）并保存配置。
 // 密码已经验过的登录/关闭流程才能调它。
 func (s *Server) verifySecondFactor(code string) bool {
@@ -215,6 +225,8 @@ func (s *Server) handleLoginAlert(w http.ResponseWriter, r *http.Request) {
 // handleTOTPSetup 生成二次验证密钥（v1.3.8）：
 // 密钥存进 config.json（此时还不算开启），返回密钥、otpauth 链接与二维码，
 // 前端展示后让用户输一次验证码确认。已开启时先关掉再重新设置。
+// 返回里带 server_time（服务器当前时间）：扫码前让用户核对手机时间，
+// 手机与服务器时钟差是验证码对不上的最常见原因。
 func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.TOTPEnabled {
 		writeJSON(w, 400, errResp("二次验证已开启，先关闭再重新设置"))
@@ -239,7 +251,7 @@ func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(s.currentUser(r), "二次验证", "生成密钥", "成功", "还未确认开启")
-	writeJSON(w, 200, okResp(map[string]any{"secret": secret, "otpauth_url": u, "qr": qr}))
+	writeJSON(w, 200, okResp(map[string]any{"secret": secret, "otpauth_url": u, "qr": qr, "server_time": serverTimeDisplay()}))
 }
 
 // handleTOTPConfirm 确认开启二次验证：输一次验证器里的 6 位验证码，
@@ -261,7 +273,10 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !verifyTOTP(s.cfg.TOTPSecret, req.Code, time.Now()) {
-		writeJSON(w, 401, errResp("验证码不对，请核对验证器时间后重试"))
+		// 业务失败用 400：验证码不对不是会话过期，前端不应踢回登录页。
+		// 文案里带服务器当前时间（带时区），让手机与服务器时钟偏差一眼看得出来；
+		// 再加两句最常见的对不上原因：验证器时间没校准、密钥被重复生成覆盖了。
+		writeJSON(w, 400, errResp("验证码不对，请核对验证器时间后重试（服务器时间 "+serverTimeDisplay()+"，请核对手机时间）。Google Authenticator 可进“设置 → 时间校正 → 立即同步”校准手机时间；密钥只认最新一次生成的，重复点“开启”会作废之前扫的。"))
 		return
 	}
 	codes, hashes := generateBackupCodes()
@@ -294,11 +309,13 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !verifyPassword(req.Password, s.cfg.PasswordHash) {
-		writeJSON(w, 401, errResp("密码不对"))
+		// 业务失败用 400：密码不对不是会话过期，前端不应踢回登录页。
+		writeJSON(w, 400, errResp("密码不对"))
 		return
 	}
 	if !s.verifySecondFactor(req.Code) {
-		writeJSON(w, 401, errResp("验证码不对"))
+		// 业务失败用 400：验证码不对不是会话过期，前端不应踢回登录页。
+		writeJSON(w, 400, errResp("验证码不对"))
 		return
 	}
 	oldEnabled, oldSecret, oldCodes := s.cfg.TOTPEnabled, s.cfg.TOTPSecret, s.cfg.TOTPBackupCodes

@@ -251,6 +251,7 @@
               <p class="small">用验证器 App（如 Google Authenticator、微软 Authenticator）扫码，或手动输入密钥：</p>
               <div style="text-align:center"><img id="totp-qr" alt="二次验证二维码" style="max-width:220px"></div>
               <p class="small">密钥：<span class="mono" id="totp-secret"></span> <button class="btn secondary" id="totp-copy-secret" type="button">复制密钥</button></p>
+              <p class="small muted">服务器当前时间：<span id="totp-server-time"></span>，请核对手机时间是否一致（差太多验证码会对不上）。Google Authenticator 可进“设置 → 时间校正 → 立即同步”校准手机时间；密钥只认最新一次生成的，重复点“开启”会作废之前扫的。</p>
               <form id="totp-confirm-form">
                 <label for="totp-confirm-code">验证码 <span class="hint">验证器里显示的 6 位数字</span></label>
                 <input id="totp-confirm-code" maxlength="6" inputmode="numeric" placeholder="123456" required>

@@ -1428,6 +1428,8 @@ function renderSecurityCard(sec) {
     st.textContent = sec.totp_enabled
       ? '二次验证已开启（剩余备用码 ' + (sec.backup_codes_remaining || 0) + ' 个）。登录时除了密码，还要输验证器里的 6 位验证码。'
       : (sec.totp_has_secret ? '二次验证还没确认开启：密钥已生成过，刷新后二维码不保留，点“重新生成密钥”拿新的。' : '二次验证未开启：登录只用账号密码。');
+    // 服务器当前时间（v1.3.9）：扫码/输验证码前核对手机时间，时钟差是验证码对不上的最常见原因。
+    if (sec.server_time) st.textContent += ' 服务器当前时间：' + sec.server_time + '。';
   }
   setVisible($('#totp-setup-area'), false);
   setVisible($('#totp-backup-area'), false);
@@ -1575,6 +1577,7 @@ function initSettings() {
       const r = await apiPost('/api/v1/settings/totp/setup', {});
       const qr = $('#totp-qr'); if (qr) qr.src = r.qr || '';
       const sc = $('#totp-secret'); if (sc) sc.textContent = r.secret || '';
+      const st2 = $('#totp-server-time'); if (st2) st2.textContent = r.server_time || '';
       setVisible($('#totp-setup-area'), true);
       setVisible($('#totp-backup-area'), false);
       const cc = $('#totp-confirm-code'); if (cc) cc.value = '';

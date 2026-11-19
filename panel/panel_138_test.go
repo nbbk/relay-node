@@ -21,9 +21,12 @@ func TestTOTPCodeRFCVector(t *testing.T) {
 		unix int64
 		want string
 	}{
-		{59, "287082"},         // 94287082
-		{1111111109, "081804"}, // 07081804
-		{1234567890, "005924"}, // 89005924
+		{59, "287082"},          // 94287082
+		{1111111109, "081804"},  // 07081804
+		{1111111111, "050471"},  // 14050471
+		{1234567890, "005924"},  // 89005924
+		{2000000000, "279037"},  // 69279037
+		{20000000000, "353130"}, // 65353130
 	} {
 		got, err := totpCodeAt(secret, time.Unix(tc.unix, 0))
 		if err != nil {
@@ -33,7 +36,7 @@ func TestTOTPCodeRFCVector(t *testing.T) {
 			t.Fatalf("totpCodeAt(%d)=%q want %q", tc.unix, got, tc.want)
 		}
 	}
-	// 容差：当前时间步前后一个时间步的码都认，前后两个时间步的不认。
+	// 容差：当前时间步前后两个时间步的码都认，前后三个时间步的不认。
 	now := time.Unix(1234567890, 0)
 	code, _ := totpCodeAt(secret, now)
 	if !verifyTOTP(secret, code, now) {
@@ -47,9 +50,21 @@ func TestTOTPCodeRFCVector(t *testing.T) {
 	if !verifyTOTP(secret, next, now) {
 		t.Fatal("下一个时间步的验证码应通过（容差）")
 	}
-	old, _ := totpCodeAt(secret, now.Add(-60*time.Second))
+	prev2, _ := totpCodeAt(secret, now.Add(-60*time.Second))
+	if !verifyTOTP(secret, prev2, now) {
+		t.Fatal("两个时间步之前的验证码应通过（容差放宽到 ±2 步，见 v1.3.9）")
+	}
+	next2, _ := totpCodeAt(secret, now.Add(60*time.Second))
+	if !verifyTOTP(secret, next2, now) {
+		t.Fatal("两个时间步之后的验证码应通过（容差放宽到 ±2 步，见 v1.3.9）")
+	}
+	old, _ := totpCodeAt(secret, now.Add(-90*time.Second))
 	if verifyTOTP(secret, old, now) {
-		t.Fatal("两个时间步之前的验证码不应通过")
+		t.Fatal("三个时间步之前的验证码不应通过")
+	}
+	future, _ := totpCodeAt(secret, now.Add(90*time.Second))
+	if verifyTOTP(secret, future, now) {
+		t.Fatal("三个时间步之后的验证码不应通过")
 	}
 	// 非 6 位、非数字、空密钥都不认。
 	for _, bad := range []string{"12345", "1234567", "abcdef", "12345a", ""} {
@@ -272,9 +287,9 @@ func TestTOTPSetupConfirmDisable(t *testing.T) {
 	if s.cfg.TOTPEnabled {
 		t.Fatal("只生成密钥时还不算开启")
 	}
-	// 错码确认：401，仍未开启。
-	if code, _ := call(s.handleTOTPConfirm, `{"code":"000000"}`); code != 401 || s.cfg.TOTPEnabled {
-		t.Fatalf("错码确认应 401 且仍未开启，实际 %d", code)
+	// 错码确认：400（业务失败，不是会话过期），仍未开启。
+	if code, _ := call(s.handleTOTPConfirm, `{"code":"000000"}`); code != 400 || s.cfg.TOTPEnabled {
+		t.Fatalf("错码确认应 400 且仍未开启，实际 %d", code)
 	}
 	// 对码确认：200，返回 8 个备用码（只显示一次），开启成功。
 	good, err := totpCodeAt(secret, time.Now())
@@ -303,12 +318,12 @@ func TestTOTPSetupConfirmDisable(t *testing.T) {
 	if code, _ := call(s.handleTOTPSetup, `{}`); code != 400 {
 		t.Fatalf("已开启时重复生成应 400，实际 %d", code)
 	}
-	// 关闭：密码错了 401；密码对了验证码错了 401；都对了 200，密钥与备用码清掉。
-	if code, _ := call(s.handleTOTPDisable, `{"password":"wrong","code":"`+good+`"}`); code != 401 {
-		t.Fatalf("关二次验证密码错了应 401，实际 %d", code)
+	// 关闭：密码错了 400；密码对了验证码错了 400；都对了 200，密钥与备用码清掉。
+	if code, _ := call(s.handleTOTPDisable, `{"password":"wrong","code":"`+good+`"}`); code != 400 {
+		t.Fatalf("关二次验证密码错了应 400，实际 %d", code)
 	}
-	if code, _ := call(s.handleTOTPDisable, `{"password":"test-password-123","code":"000000"}`); code != 401 {
-		t.Fatalf("关二次验证验证码错了应 401，实际 %d", code)
+	if code, _ := call(s.handleTOTPDisable, `{"password":"test-password-123","code":"000000"}`); code != 400 {
+		t.Fatalf("关二次验证验证码错了应 400，实际 %d", code)
 	}
 	if code, _ := call(s.handleTOTPDisable, `{"password":"test-password-123","code":"`+good+`"}`); code != 200 {
 		t.Fatalf("关二次验证都对了应 200，实际 %d", code)

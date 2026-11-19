@@ -39,6 +39,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"login_alert": s.cfg.LoginAlert, "telegram_configured": s.telegramReady(),
 			"totp_enabled": s.cfg.TOTPEnabled, "totp_has_secret": s.cfg.TOTPSecret != "",
 			"backup_codes_remaining": len(s.cfg.TOTPBackupCodes),
+			// server_time 供二次验证卡片显示：扫码/输验证码前核对手机时间（带时区）。
+			"server_time": serverTimeDisplay(),
 		},
 		"remotes_count": len(s.cfg.Remotes),
 		"cloudflare":    map[string]any{"has_token": s.cfg.CloudflareToken != ""},
@@ -307,7 +309,8 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !verifyPassword(req.OldPassword, s.cfg.PasswordHash) {
-		writeJSON(w, 401, errResp("旧密码不对"))
+		// 业务失败用 400：旧密码不对不是会话过期，前端不应踢回登录页。
+		writeJSON(w, 400, errResp("旧密码不对"))
 		return
 	}
 	h, err := hashPassword(req.NewPassword)
