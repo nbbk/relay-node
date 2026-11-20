@@ -1514,7 +1514,7 @@ function renderSecurityCard(sec) {
 // 其他面板隐藏；上次点的选项卡记在 localStorage，刷新、重启面板、检查更新回来
 // 后仍停在那里。选项卡是原生 button：Tab 能走到，回车/空格切换；方向键在
 // 选项卡之间移动并切换，Home/End 跳到两端。
-const SETTINGS_TABS = ['basic', 'security', 'audit', 'subscription', 'domain', 'alerts', 'backup'];
+const SETTINGS_TABS = ['basic', 'security', 'audit', 'subscription', 'domain', 'alerts', 'backup', 'system'];
 const SETTINGS_TAB_KEY = 'relay-panel-settings-tab';
 function settingsTabValid(id) { return SETTINGS_TABS.indexOf(id) >= 0; }
 function showSettingsTab(id) {
@@ -1680,6 +1680,9 @@ async function loadSettingsPage() {
     if (sub.has_token && sub.mode) syncSubModeSelect($('#sub-token-mode'), sub.mode);
     const subDomain = $('#sub-public-domain');
     if (subDomain) subDomain.value = sub.public_domain || '';
+    // 订阅文件名称（v1.3.22）：存过就回填；留空就是回落面板名。
+    const sfn = $('#sub-file-name');
+    if (sfn) sfn.value = sub.file_name || '';
     // Worker 源站地址（v1.3.5）：存过就回填到输入框；留空就是默认用法。
     const wo = $('#worker-origin');
     if (wo) { wo.value = sub.worker_origin || ''; wo.placeholder = '留空 = ' + location.origin; }
@@ -1930,6 +1933,7 @@ function initSettings() {
     catch (err) { toast('撤销失败：' + err.message, 'err'); }
   });
   on('#sub-public-domain-save', 'click', async () => { await saveSubPublicDomain(); });
+  on('#sub-file-name-save', 'click', async () => { await saveSubFileName(); });
   // 订阅到期时间与订阅路径（v1.3.20）
   on('#sub-expiry-permanent', 'change', () => { const d = $('#sub-expiry-date'); if (d) d.disabled = $('#sub-expiry-permanent').checked; });
   on('#sub-expiry-save', 'click', async () => { await saveSubExpiry(); });
@@ -2856,6 +2860,18 @@ async function saveSubPublicDomain() {
     loadSettingsPage();
   } catch (err) { toast('保存失败：' + err.message, 'err'); }
 }
+// 保存订阅文件名称（v1.3.22）：空 = 清除（回落面板名）；非法字符服务端
+// 返回 400，这里如实提示服务端的原话。
+async function saveSubFileName() {
+  const input = $('#sub-file-name');
+  if (!input) return;
+  const name = input.value.trim();
+  try {
+    const r = await apiPost('/api/v1/settings/subscription-filename', { name });
+    input.value = r.file_name || '';
+    toast(r.file_name ? '订阅文件名称已保存：' + r.file_name + '.yaml/.txt' : '订阅文件名称已清除，改回用面板名', 'ok');
+  } catch (err) { toast('保存失败：' + err.message, 'err'); }
+}
 // 把页面上正在显示的一次性订阅链接换成新域名（只换地址部分）：
 // 有域名 → https://域名 + 原路径；没域名 → 当前打开面板的地址 + 原路径。
 // 路径段走当前订阅路径（v1.3.20 可自定义），不是写死的 /sub/。
@@ -3630,7 +3646,7 @@ async function loadMergedSubsList() {
     mergedSubPage = pg.cur;
     list.innerHTML = '<h3>已生成的合并订阅</h3>' + pg.slice.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-edit-merged="' + esc(s.id) + '">编辑</button> <button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-mode-merged="' + esc(s.mode || '') + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'mergedsub') +
-      '<p class="muted small">编辑只改勾选与内容，链接不变；每条订阅都有“复制”按钮，链接加密存在面板里，随时能重新复制；旧链接（1.3.7 之前生成的）没有存密文，点轮换生成一条新的（旧链接立即失效），或重新勾选生成（不填名称时同一选择重新生成会轮换；填了名称是新起一条，各归各人）。</p>';
+      '<p class="muted small">编辑只改勾选与内容，链接不变；每条订阅都有“复制”按钮，链接加密存在面板里，随时能重新复制；重新勾选生成（不填名称时同一选择重新生成会轮换；填了名称是新起一条，各归各人）。</p>';
     if (pg.totalPages > 1) wirePager(list, 'mergedsub', pg.cur, pg.totalPages, (p) => { mergedSubPage = p; loadMergedSubsList(); });
     $$('[data-sub-edit-merged]', list).forEach((b) => b.addEventListener('click', () => {
       const s = subs.find((x) => x.id === b.dataset.subEditMerged);

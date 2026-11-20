@@ -234,51 +234,9 @@
             <button type="button" class="settings-tab" role="tab" id="settings-tab-audit" aria-controls="settings-panel-audit" aria-selected="false" data-settings-tab="audit">审计日志</button>
             <button type="button" class="settings-tab" role="tab" id="settings-tab-subscription" aria-controls="settings-panel-subscription" aria-selected="false" data-settings-tab="subscription">订阅</button>
             <button type="button" class="settings-tab" role="tab" id="settings-tab-domain" aria-controls="settings-panel-domain" aria-selected="false" data-settings-tab="domain">域名与反代</button>
-          <div class="settings-panel hidden" role="tabpanel" id="settings-panel-domain" aria-labelledby="settings-tab-domain" hidden>
-            <div class="grid cols-2">
-              <div class="card">
-            <h2>订阅对外域名</h2>
-            <p class="muted">填了之后，面板里所有订阅链接都改成 https://这个域名/…，不再显示面板自己的地址。</p>
-            <div class="setting-row">
-              <label class="small" for="sub-public-domain">订阅对外域名（选填）：</label>
-              <input id="sub-public-domain" type="text" placeholder="例如：relay.example.com" style="width:280px">
-              <button class="btn secondary" id="sub-public-domain-save" type="button">保存</button>
-            </div>
-            <p class="small muted">选填，留空就用面板自己的地址（IP:端口）。部署完 Cloudflare Worker、想让订阅走 Worker 域名时再填 Worker 的域名。</p>
-            <details class="small muted"><summary>对外域名详细说明</summary>填了之后，面板里所有订阅链接（通用链接、每人链接、合并订阅、二维码）都改成 https://这个域名/<span id="sub-path-example">sub</span>/…，不再显示面板自己的地址；留空保存就恢复成面板自己的地址。只填域名（可带端口），不用写 https://，不用写路径。Worker 代码里的源站地址不受影响，仍是面板真实地址。</details>
-          </div>
-              <div class="card">
-            <h2>订阅路径</h2>
-            <p class="muted">默认是 /sub/，想让订阅链接更不像机场就改成别的单段路径。</p>
-            <div class="setting-row">
-              <label class="small" for="sub-path">订阅路径（选填）：</label>
-              <span class="mono">/</span><input id="sub-path" type="text" placeholder="sub" style="width:140px">
-              <button class="btn secondary" id="sub-path-save" type="button">保存路径</button>
-            </div>
-            <p class="small muted">默认是 /sub/。改路径后面板重启、要重新登录，旧订阅链接全部失效、客户端须重新导入。</p>
-            <details class="small muted"><summary>订阅路径详细说明</summary>想让订阅链接更不像机场，就改成别的单段路径（例如 x9f2，链接变成 https://域名/x9f2/&lt;令牌&gt;）。Worker 反代代码也要按新路径重新生成、重新部署。路径只允许字母开头、字母数字与 - _、1–32 个字符；api 与 logo 是保留段，不能用。留空保存 = 恢复默认 sub。</details>
-          </div>
-              <div class="card">
-            <h2>Worker 反代（防封订阅）</h2>
-            <p class="muted">订阅链接直接由面板出时，客户端看到的是面板真实地址；套一层 Cloudflare Worker 反代后，客户端只看到 Worker 自己的域名，面板真实地址只出现在 Worker 代码里（你的 Cloudflare 账号内可见）。部署后把订阅链接里的面板地址换成 Worker 地址，令牌和参数都不变。</p>
-            <div class="btn-row">
-              <label class="small">面板源站地址（选填）：<input id="worker-origin" type="text" placeholder="留空 = 现在打开面板的地址" style="width:280px"></label>
-              <button class="btn" id="worker-generate" type="button">生成 Worker 代码</button>
-            </div>
-            <p class="small muted">选填，留空就用你现在打开面板的地址（IP:端口），直接能用；Worker 反代是可选项，只有想藏面板 IP、走 HTTPS 订阅时才需要配域名。如果面板对外是另一个地址（例如绑了域名、走了反代），填那个地址再生成；填一次就记住，下次打开自动填上。源站地址必须是域名、不能是 IP（Worker 的 fetch() 不能直接用 IP 回源，会报 Cloudflare error 1003）；必须是 http:// 开头（面板是明文 HTTP，没有 HTTPS）。源站地址只出现在 Worker 代码里（你的 Cloudflare 账号内可见），客户端看不到面板真实地址。</p>
-            <div id="worker-code-box" class="hidden" style="margin-top:10px">
-              <div id="worker-code-warn" class="warn-box hidden"></div>
-              <pre id="worker-code" class="mono" style="white-space:pre-wrap;word-break:break-all"></pre>
-              <div class="btn-row">
-                <button class="btn secondary sm" id="worker-copy" type="button">复制代码</button>
-              </div>
-              <p class="small">部署步骤：Cloudflare 后台 → Workers → 新建 Worker → 粘贴代码 → 部署；可选在触发器里绑一个自定义域名。部署后订阅链接 = <b class="mono" id="worker-example-link">https://&lt;Worker 域名&gt;/sub/&lt;令牌&gt;</b>，其余参数不变。Worker 免费额度够订阅拉取用（每天少量请求）。</p>
-            </div>
-          </div>
-            </div>
-          </div>
             <button type="button" class="settings-tab" role="tab" id="settings-tab-alerts" aria-controls="settings-panel-alerts" aria-selected="false" data-settings-tab="alerts">提醒</button>
             <button type="button" class="settings-tab" role="tab" id="settings-tab-backup" aria-controls="settings-panel-backup" aria-selected="false" data-settings-tab="backup">备份</button>
+            <button type="button" class="settings-tab" role="tab" id="settings-tab-system" aria-controls="settings-panel-system" aria-selected="false" data-settings-tab="system">系统</button>
           </div>
           <div class="settings-panel" role="tabpanel" id="settings-panel-basic" aria-labelledby="settings-tab-basic">
             <div class="grid cols-2">
@@ -313,7 +271,7 @@
             <h2>面板 Logo</h2>
             <p class="muted">传一张图片，圆形显示在面板左上角和登录页面板名称上方；没传显示默认样式。文件存在面板数据目录里，更新面板不会丢；换图直接重新上传，删掉就恢复默认。只支持 PNG、JPG、GIF、WebP，大小不超过 2MB。</p>
             <div class="logo-preview-wrap"><img id="logo-preview" class="login-logo hidden" src="/logo" alt="Logo 预览"><span id="logo-preview-default" class="logo-default login-logo">管</span></div>
-            <div class="row"><input type="file" id="logo-input" accept="image/png,image/jpeg,image/gif,image/webp"><button class="btn" id="btn-logo-upload" type="button">上传 Logo</button><button class="btn btn-danger" id="btn-logo-delete" type="button">删除 Logo</button></div>
+            <div class="btn-row"><input type="file" id="logo-input" accept="image/png,image/jpeg,image/gif,image/webp"><button class="btn" id="btn-logo-upload" type="button">上传 Logo</button><button class="btn btn-danger" id="btn-logo-delete" type="button">删除 Logo</button></div>
             <div id="logo-msg" class="hint"></div>
           </div>
               <div class="card">
@@ -342,13 +300,6 @@
               <div class="small" id="door-status"></div>
               <div class="btn-row"><button class="btn" type="submit">保存任意门地址</button></div>
             </form>
-          </div>
-              <div class="card">
-            <h2>检查更新</h2>
-            <div id="update-box"></div>
-            <div class="btn-row"><button class="btn secondary" id="update-check" type="button">检查更新</button>
-            <button class="btn" id="update-apply" type="button">更新面板</button></div>
-            <p class="small">更新只重启面板自己，不动 realm，正在用的节点不断线；更新完自动跳到登录页重新登录。</p>
           </div>
             </div>
           </div>
@@ -498,6 +449,12 @@
               <button class="btn secondary" id="sub-expiry-save" type="button">保存到期时间</button>
               <span class="small muted" id="sub-expiry-status"></span>
             </div>
+            <div class="setting-row">
+              <label class="small" for="sub-file-name">订阅文件名称：</label>
+              <input id="sub-file-name" type="text" placeholder="留空 = 面板名" style="width:200px">
+              <button class="btn secondary" id="sub-file-name-save" type="button">保存文件名</button>
+              <span class="small muted">客户端导入订阅时看到的文件名（例如“CP管理面板.yaml”）；改了面板名不会跟着变；留空就用面板名。</span>
+            </div>
             <p class="small muted">到期时间到了，订阅链接就打不开（客户端更新拉不到节点）；轮换不改到期时间。留空勾永久 = 永不过期；填日期 = 当天 23:59:59 到期。</p>
             <div class="btn-row">
               <button class="btn" id="sub-generate" type="button">生成订阅链接</button>
@@ -508,7 +465,7 @@
           </div>
               <div class="card">
             <h2>订阅用户（一人一条）</h2>
-            <p class="muted">通用订阅链接是所有人拉同一条，封一条就全军覆没；每人一个独立令牌，封一条只影响一个人。名字用来认人（例如“张三的手机”），链接加密存在面板里，列表里每人都有“复制”按钮，随时能重新拿；旧链接（1.3.7 之前生成的）没有存密文，点轮换生成一条新的。撤销只影响那个人，其他人的链接照常。</p>
+            <p class="muted">通用订阅链接是所有人拉同一条，封一条就全军覆没；每人一个独立令牌，封一条只影响一个人。名字用来认人（例如“张三的手机”），链接加密存在面板里，列表里每人都有“复制”按钮，随时能重新拿；撤销只影响那个人，其他人的链接照常。</p>
             <div class="setting-row">
               <label class="small" for="sub-user-name">名字：</label>
               <input id="sub-user-name" type="text" placeholder="例如：张三的手机" style="width:160px">
@@ -545,6 +502,49 @@
             </div>
             <div class="list-toolbar"><input id="sub-user-search" class="list-search" type="search" placeholder="搜索订阅用户：名字、备注…" aria-label="搜索订阅用户"></div>
             <div id="sub-user-list" style="margin-top:12px">加载中…</div>
+          </div>
+            </div>
+          </div>
+          <div class="settings-panel hidden" role="tabpanel" id="settings-panel-domain" aria-labelledby="settings-tab-domain" hidden>
+            <div class="grid cols-2">
+              <div class="card">
+            <h2>订阅对外域名</h2>
+            <p class="muted">填了之后，面板里所有订阅链接都改成 https://这个域名/…，不再显示面板自己的地址。</p>
+            <div class="setting-row">
+              <label class="small" for="sub-public-domain">订阅对外域名（选填）：</label>
+              <input id="sub-public-domain" type="text" placeholder="例如：relay.example.com" style="width:280px">
+              <button class="btn secondary" id="sub-public-domain-save" type="button">保存</button>
+            </div>
+            <p class="small muted">选填，留空就用面板自己的地址（IP:端口）。部署完 Cloudflare Worker、想让订阅走 Worker 域名时再填 Worker 的域名。</p>
+            <details class="small muted"><summary>对外域名详细说明</summary>填了之后，面板里所有订阅链接（通用链接、每人链接、合并订阅、二维码）都改成 https://这个域名/<span id="sub-path-example">sub</span>/…，不再显示面板自己的地址；留空保存就恢复成面板自己的地址。只填域名（可带端口），不用写 https://，不用写路径。Worker 代码里的源站地址不受影响，仍是面板真实地址。</details>
+          </div>
+              <div class="card">
+            <h2>订阅路径</h2>
+            <p class="muted">默认是 /sub/，想让订阅链接更不像机场就改成别的单段路径。</p>
+            <div class="setting-row">
+              <label class="small" for="sub-path">订阅路径（选填）：</label>
+              <span class="mono">/</span><input id="sub-path" type="text" placeholder="sub" style="width:140px">
+              <button class="btn secondary" id="sub-path-save" type="button">保存路径</button>
+            </div>
+            <p class="small muted">默认是 /sub/。改路径后面板重启、要重新登录，旧订阅链接全部失效、客户端须重新导入。</p>
+            <details class="small muted"><summary>订阅路径详细说明</summary>想让订阅链接更不像机场，就改成别的单段路径（例如 x9f2，链接变成 https://域名/x9f2/&lt;令牌&gt;）。Worker 反代代码也要按新路径重新生成、重新部署。路径只允许字母开头、字母数字与 - _、1–32 个字符；api 与 logo 是保留段，不能用。留空保存 = 恢复默认 sub。</details>
+          </div>
+              <div class="card">
+            <h2>Worker 反代（防封订阅）</h2>
+            <p class="muted">订阅链接直接由面板出时，客户端看到的是面板真实地址；套一层 Cloudflare Worker 反代后，客户端只看到 Worker 自己的域名，面板真实地址只出现在 Worker 代码里（你的 Cloudflare 账号内可见）。部署后把订阅链接里的面板地址换成 Worker 地址，令牌和参数都不变。</p>
+            <div class="btn-row">
+              <label class="small">面板源站地址（选填）：<input id="worker-origin" type="text" placeholder="留空 = 现在打开面板的地址" style="width:280px"></label>
+              <button class="btn" id="worker-generate" type="button">生成 Worker 代码</button>
+            </div>
+            <p class="small muted">选填，留空就用你现在打开面板的地址（IP:端口），直接能用；Worker 反代是可选项，只有想藏面板 IP、走 HTTPS 订阅时才需要配域名。如果面板对外是另一个地址（例如绑了域名、走了反代），填那个地址再生成；填一次就记住，下次打开自动填上。源站地址必须是域名、不能是 IP（Worker 的 fetch() 不能直接用 IP 回源，会报 Cloudflare error 1003）；必须是 http:// 开头（面板是明文 HTTP，没有 HTTPS）。源站地址只出现在 Worker 代码里（你的 Cloudflare 账号内可见），客户端看不到面板真实地址。</p>
+            <div id="worker-code-box" class="hidden" style="margin-top:10px">
+              <div id="worker-code-warn" class="warn-box hidden"></div>
+              <pre id="worker-code" class="mono" style="white-space:pre-wrap;word-break:break-all"></pre>
+              <div class="btn-row">
+                <button class="btn secondary sm" id="worker-copy" type="button">复制代码</button>
+              </div>
+              <p class="small">部署步骤：Cloudflare 后台 → Workers → 新建 Worker → 粘贴代码 → 部署；可选在触发器里绑一个自定义域名。部署后订阅链接 = <b class="mono" id="worker-example-link">https://&lt;Worker 域名&gt;/sub/&lt;令牌&gt;</b>，其余参数不变。Worker 免费额度够订阅拉取用（每天少量请求）。</p>
+            </div>
           </div>
             </div>
           </div>
@@ -623,16 +623,6 @@
             <div id="sched-backup-list" style="margin-top:12px"></div>
           </div>
               <div class="card">
-            <h2>导出 / 导入整机配置</h2>
-            <p class="muted">导出：所有落地、方式、设置打包成一个 JSON 文件（不含密码哈希和 Telegram Token）。换中转机时导入就全回来了。</p>
-            <div class="btn-row" style="margin-top:0">
-              <button class="btn" id="export-btn" type="button">导出配置</button>
-              <label class="btn secondary" for="import-file" style="cursor:pointer">选择文件导入</label>
-              <input type="file" id="import-file" accept="application/json,.json" class="hidden">
-            </div>
-            <div id="import-result" style="margin-top:10px"></div>
-          </div>
-              <div class="card">
             <h2>远程备份（异地备份）</h2>
             <p class="muted">每天 03:00 定时备份完（点“立即备份”也一样），加密后各传一份到 R2 和七牛云，两个都传、互为备份；本地备份不动。下面列出的是远程存储里的备份，恢复要输口令。远程只留最近 7 份，传完自动删最旧的。</p>
             <div class="rb-tabs" role="tablist">
@@ -691,6 +681,27 @@
             <div id="rb-qn-list" style="margin-top:8px"></div>
             </div>
             <div class="btn-row" style="margin-top:12px"><button class="btn" id="rb-save" type="button">保存异地备份设置</button></div>
+          </div>
+            </div>
+          </div>
+          <div class="settings-panel hidden" role="tabpanel" id="settings-panel-system" aria-labelledby="settings-tab-system" hidden>
+            <div class="grid cols-2">
+              <div class="card">
+            <h2>检查更新</h2>
+            <div id="update-box"></div>
+            <div class="btn-row"><button class="btn secondary" id="update-check" type="button">检查更新</button>
+            <button class="btn" id="update-apply" type="button">更新面板</button></div>
+            <p class="small">更新只重启面板自己，不动 realm，正在用的节点不断线；更新完自动跳到登录页重新登录。</p>
+          </div>
+              <div class="card">
+            <h2>导出 / 导入整机配置</h2>
+            <p class="muted">导出：所有落地、方式、设置打包成一个 JSON 文件（不含密码哈希和 Telegram Token）。换中转机时导入就全回来了。</p>
+            <div class="btn-row" style="margin-top:0">
+              <button class="btn" id="export-btn" type="button">导出配置</button>
+              <label class="btn secondary" for="import-file" style="cursor:pointer">选择文件导入</label>
+              <input type="file" id="import-file" accept="application/json,.json" class="hidden">
+            </div>
+            <div id="import-result" style="margin-top:10px"></div>
           </div>
             </div>
           </div>

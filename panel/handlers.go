@@ -57,6 +57,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/subscription/expiry", s.requireAuth(s.handleSubTokenSetExpiry))
 	mux.HandleFunc("POST /api/v1/settings/subscription/revoke", s.requireAuth(s.handleSubTokenRevoke))
 	mux.HandleFunc("POST /api/v1/settings/subscription-domain", s.requireAuth(s.handleSubPublicDomainSet))
+	mux.HandleFunc("POST /api/v1/settings/subscription-filename", s.requireAuth(s.handleSubFileNameSet))
 	mux.HandleFunc("POST /api/v1/settings/sub-path", s.requireAuth(s.handleSubPathSet))
 	mux.HandleFunc("POST /api/v1/subscription/qr", s.requireAuth(s.handleSubQR))
 	mux.HandleFunc("GET /api/v1/subscriptions/link", s.requireAuth(s.handleSubLink))

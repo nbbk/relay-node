@@ -72,6 +72,12 @@ type PanelConfig struct {
 	// 只存域名（可带端口），不带 scheme 与路径；Worker 代码里的源站地址
 	// （ORIGIN）不受这个设置影响，仍是面板真实地址。
 	SubPublicDomain string `json:"sub_public_domain"`
+	// 订阅文件名称（v1.3.22）：订阅响应 Content-Disposition 里的文件名
+	// （不含后缀，.yaml/.txt 按格式自动加）。填了就用填的，留空回落面板名；
+	// 改面板名不影响已设的文件名。校验：去首尾空格，1–64 字，禁
+	// / \ : * ? " < > | 与控制字符；旧 config.json 里没有这个字段时按空
+	// 处理（回落面板名），不用迁移。
+	SubFileName string `json:"sub_file_name,omitempty"`
 	// Worker 源站地址（v1.3.5）：用户在“Worker 反代”卡片里填的面板源站地址
 	// （Worker 代码里的 ORIGIN）。点“生成 Worker 代码”时填了就记住，下次打开
 	// 设置页自动回填；留空 = 用当前打开面板的地址（默认用法），同时把之前存

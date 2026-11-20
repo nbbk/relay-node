@@ -47,13 +47,6 @@ func loginSignaturePOST(t *testing.T, s *Server, body string) (int, map[string]a
 	return rec.Code, resp
 }
 
-// TestVersion1321 VERSION 文件是 1.3.21。
-func TestVersion1321(t *testing.T) {
-	if Version != "1.3.21" {
-		t.Fatalf("VERSION 应是 1.3.21，实际 %q", Version)
-	}
-}
-
 // TestLoginNoticePublic 登录页公告：默认空、公开接口未登录也能读；
 // 保存后公开接口读到同一份；清空后公开接口回到空。
 func TestLoginNoticePublic(t *testing.T) {

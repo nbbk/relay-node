@@ -253,30 +253,31 @@ func TestSubCustomPathRouting(t *testing.T) {
 	}
 }
 
-// TestSubContentDispositionGenericName 下载文件名通用：Clash 用
-// subscription.yaml，其他用 subscription.txt，不含面板名。
-func TestSubContentDispositionGenericName(t *testing.T) {
+// TestSubContentDispositionFileName1322 下载文件名（v1.3.22 起）：订阅文件
+// 名称留空时回落面板名；面板名非 ASCII 时走 RFC 5987 filename*，
+// ASCII 的 filename= 兜底仍是通用名 subscription.yaml/.txt。
+func TestSubContentDispositionFileName1322(t *testing.T) {
 	s := newTestSubServer(t)
 	s.cfg.PanelName = "CP管理"
 	tok := generateSubToken()
 	s.cfg.SubTokenHash = hashSubToken(tok)
-	// Clash UA → YAML 文件名
+	// Clash UA → YAML 文件名：filename* 里是编码后的面板名
 	rec := callSub(t, s, tok, "/sub/"+tok+"?format=clash", "Clash")
 	cd := rec.Header().Get("Content-Disposition")
-	if !strings.Contains(cd, `filename="subscription.yaml"`) {
-		t.Fatalf("Clash 下载文件名应是 subscription.yaml，实际 %s", cd)
+	if !strings.Contains(cd, `filename*=UTF-8''CP%E7%AE%A1%E7%90%86.yaml`) || !strings.Contains(cd, `filename="subscription.yaml"`) {
+		t.Fatalf("Clash 下载文件名应回落面板名（RFC 5987 + 通用名兜底），实际 %s", cd)
 	}
 	if strings.Contains(cd, "CP管理") {
-		t.Fatalf("下载文件名不应含面板名：%s", cd)
+		t.Fatalf("下载文件名里不应出现未编码的中文面板名：%s", cd)
 	}
 	// 其他格式 → txt 文件名
 	rec = callSub(t, s, tok, "/sub/"+tok+"?format=plain", "")
 	cd = rec.Header().Get("Content-Disposition")
-	if !strings.Contains(cd, `filename="subscription.txt"`) {
-		t.Fatalf("明文下载文件名应是 subscription.txt，实际 %s", cd)
+	if !strings.Contains(cd, `filename*=UTF-8''CP%E7%AE%A1%E7%90%86.txt`) || !strings.Contains(cd, `filename="subscription.txt"`) {
+		t.Fatalf("明文下载文件名应回落面板名、后缀 .txt，实际 %s", cd)
 	}
 	if strings.Contains(cd, "CP管理") {
-		t.Fatalf("下载文件名不应含面板名：%s", cd)
+		t.Fatalf("下载文件名里不应出现未编码的中文面板名：%s", cd)
 	}
 }
 

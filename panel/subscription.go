@@ -42,6 +42,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const subTokenPrefix = "sub_"
@@ -427,6 +428,12 @@ var streamSuffixes = []string{
 // 名字去重（Clash 要求 proxy 名唯一），不支持的协议跳过；mode 是
 // split（分流，MATCH,DIRECT）或 global（全局，MATCH,手动选择）。
 // GLOBAL 组只在客户端切全局模式时生效，规则模式下只看 rules，不走它。
+// 节点为空时（v1.3.22 修）：订阅里没有任何能进 Clash 的节点（节点为空，
+// 或全是 Clash 不支持的类型如 SS/Hysteria2/TUIC）时，不出任何策略组——
+// Clash 要求每个组必须有非空 proxies 或 use，空组会让导入直接报错
+// “proxy group[0]: 'use' or 'proxies' missing”。此时只出一个合法的
+// 空配置（proxies: []、proxy-groups: []、规则只留 MATCH,DIRECT，不引用
+// 不存在的组），客户端能正常导入、节点数为 0，而不是报一串看不懂的错。
 func renderClashYAML(links []subLink, mode string) string {
 	var b strings.Builder
 	b.WriteString("proxies:\n")
@@ -457,7 +464,7 @@ func renderClashYAML(links []subLink, mode string) string {
 		b.WriteString(proxy)
 	}
 	if len(names) == 0 {
-		b.WriteString("  []\n")
+		return "proxies: []\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n"
 	}
 	var relayNames, directNames []string
 	for i, n := range names {
@@ -738,24 +745,98 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 		w.Header().Set("subscription-userinfo", h)
 	}
 	w.Header().Set("Content-Type", ctype)
-	// 下载文件名（v1.3.20，反特征）：固定通用名，不再用面板名——
-	// 面板名会暴露面板身份。Clash YAML 用 subscription.yaml，
-	// base64/plain 用 subscription.txt。
-	w.Header().Set("Content-Disposition", subContentDisposition(format))
+	// 下载文件名（v1.3.22）：基本名 = 订阅文件名称设置，留空回落面板名；
+	// 后缀按格式加（Clash 是 .yaml，base64/plain 是 .txt）。客户端按
+	// 文件名给导入的配置起名。注意：文件名会露出面板名或自定义名，
+	// 1.3.20 的通用文件名 subscription.yaml 的反特征作用就没了，这是
+	// 用户主动要求改回的（见 CHANGELOG 1.3.22）。
+	w.Header().Set("Content-Disposition", s.subContentDisposition(format))
 	_, _ = w.Write([]byte(body))
 }
 
-// ---------- 订阅下载文件名（v1.3.20，反特征） ----------
-// 固定通用名：Clash YAML 用 subscription.yaml，base64/plain 用
-// subscription.txt。v1.3.4 之前用的是“<面板名称>.yaml/.txt”，面板名会
-// 暴露面板身份，1.3.20 起改掉；客户端按文件名给导入的配置起名，
-// 改成通用名后导入的配置就叫 subscription，不再是面板名。
-func subContentDisposition(format string) string {
+// ---------- 订阅下载文件名（v1.3.22，设置项） ----------
+// 文件名 = 基本名 + 后缀（Clash 是 .yaml，base64/plain 是 .txt）。
+// 基本名：订阅文件名称设置（SubFileName）填了就用它，留空回落面板名；
+// 改面板名不影响已设的文件名。1.3.20 起曾固定用通用名 subscription.yaml，
+// 1.3.22 起改成可设置（用户主动要求：导入的配置名要能看出是自家面板）。
+// 非 ASCII 文件名按 RFC 5987 编码（filename*=UTF-8''...），同时保留
+// ASCII 的 filename= 兜底（老客户端不认 filename* 时用通用名）。
+func (s *Server) subFileBaseName() string {
+	if n := strings.TrimSpace(s.cfg.SubFileName); n != "" {
+		return n
+	}
+	return s.panelName()
+}
+
+func (s *Server) subContentDisposition(format string) string {
 	ext := "txt"
 	if format == "clash" {
 		ext = "yaml"
 	}
-	return `attachment; filename="subscription.` + ext + `"`
+	name := s.subFileBaseName() + "." + ext
+	if isASCIIString(name) {
+		return `attachment; filename="` + name + `"`
+	}
+	return `attachment; filename="subscription.` + ext + `"; filename*=UTF-8''` + rfc3986Escape(name)
+}
+
+// isASCIIString 字符串是否全是 ASCII（写 Content-Disposition 前用）。
+func isASCIIString(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] > 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// validSubFileName 校验订阅文件名称：去首尾空格后 1–64 字，禁
+// / \ : * ? " < > | 与控制字符（这些在 Windows 文件名里也不合法）。
+func validSubFileName(name string) bool {
+	n := utf8.RuneCountInString(name)
+	if n < 1 || n > 64 {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|':
+			return false
+		}
+	}
+	return true
+}
+
+// handleSubFileNameSet 改订阅文件名称（v1.3.22，会话认证）：
+// 空 = 清除（回落面板名）；非空须通过 validSubFileName 校验。
+func (s *Server) handleSubFileNameSet(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name != "" && !validSubFileName(name) {
+		writeJSON(w, 400, errResp("订阅文件名称不对：1–64 字，不能含 / \\ : * ? \" < > | 与控制字符"))
+		return
+	}
+	old := s.cfg.SubFileName
+	s.cfg.SubFileName = name
+	if err := s.saveConfig(); err != nil {
+		s.cfg.SubFileName = old
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	detail := "已清除，改回用面板名"
+	if name != "" {
+		detail = "订阅文件名改成“" + name + ".yaml/.txt”"
+	}
+	s.audit(s.currentUser(r), "设置订阅文件名称", name, "成功", detail)
+	writeJSON(w, 200, okResp(map[string]any{"file_name": name}))
 }
 
 // ---------- 单面板订阅令牌管理（会话认证） ----------
