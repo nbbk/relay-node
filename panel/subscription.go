@@ -1024,10 +1024,11 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 		Name      string `json:"name"`
 		Note      string `json:"note"`
 		CreatedAt string `json:"created_at"`
-		Kind      string `json:"kind"` // single=单面板全量，merged=合并订阅
-		Summary   string `json:"summary"`
-		HasLink   bool   `json:"has_link"`
-		Mode      string `json:"mode"` // both|relay|direct，老记录空 = 全部
+		Kind      string         `json:"kind"` // single=单面板全量，merged=合并订阅
+		Summary   string         `json:"summary"`
+		HasLink   bool           `json:"has_link"`
+		Mode      string         `json:"mode"` // both|relay|direct，老记录空 = 全部
+		Selection []SubSelection `json:"selection,omitempty"` // 编辑弹窗预选用；空 = 全部落地
 	}
 	items := []item{}
 	for _, u := range s.cfg.SubUsers {
@@ -1037,7 +1038,7 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 			kind = "merged"
 			summary = s.selectionSummary(u.Selection)
 		}
-		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode})
+		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode, Selection: u.Selection})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"users": items}))
 }
@@ -1150,6 +1151,81 @@ func (s *Server) handleSubUsersDelete(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, okResp(nil))
 			return
 		}
+	}
+	writeJSON(w, 404, errResp("没有这个订阅用户"))
+}
+
+// handleSubUsersUpdate 编辑一个订阅用户：改名字/备注/勾选集合/内容模式，
+// 令牌不动（TokenHash/TokenEnc 原样保留），链接不变，下次取订阅即按新
+// 勾选与新模式出内容。空勾选 = 全部落地（与创建时语义一致）。
+// v1.3.19：与轮换互不干扰——轮换换令牌、编辑不换令牌。
+func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Name      string         `json:"name"`
+		Note      string         `json:"note"`
+		Selection []SubSelection `json:"selection"`
+		Mode      string         `json:"mode"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeJSON(w, 400, errResp("请填名字（用来认人，例如“张三的手机”）"))
+		return
+	}
+	if len(name) > 64 {
+		writeJSON(w, 400, errResp("名字太长，最多 64 个字"))
+		return
+	}
+	note := strings.TrimSpace(req.Note)
+	if len(note) > 200 {
+		writeJSON(w, 400, errResp("备注太长，最多 200 个字"))
+		return
+	}
+	var sel []SubSelection
+	if len(req.Selection) > 0 {
+		var err error
+		sel, _, err = s.validateMergedSelection(req.Selection)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+	}
+	subMode, err := normalizeSubMode(req.Mode)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	for i := range s.cfg.SubUsers {
+		if s.cfg.SubUsers[i].ID != id {
+			continue
+		}
+		s.cfg.SubUsers[i].Name = name
+		s.cfg.SubUsers[i].Note = note
+		s.cfg.SubUsers[i].Selection = sel
+		s.cfg.SubUsers[i].Mode = subMode
+		if err := s.saveConfig(); err != nil {
+			writeJSON(w, 500, errResp("保存失败："+err.Error()))
+			return
+		}
+		kind := "single"
+		summary := "单面板全量订阅（全部落地）"
+		if len(sel) > 0 {
+			kind = "merged"
+			summary = s.selectionSummary(sel)
+		}
+		selOut := sel
+		if selOut == nil {
+			selOut = []SubSelection{}
+		}
+		s.audit(s.currentUser(r), "编辑订阅用户", name+"（"+summary+"）", "成功", "链接不变，下次更新订阅即按新勾选同步")
+		writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name, "kind": kind, "summary": summary, "mode": subMode, "selection": selOut}))
+		return
 	}
 	writeJSON(w, 404, errResp("没有这个订阅用户"))
 }
@@ -1661,6 +1737,61 @@ func (s *Server) handleMergedSubsDelete(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, 200, okResp(nil))
 			return
 		}
+	}
+	writeJSON(w, 404, errResp("没有这条合并订阅"))
+}
+
+// handleMergedSubsUpdate 编辑一条合并订阅：改勾选集合/内容模式/归属人名，
+// 令牌不动（TokenHash/TokenEnc 原样保留），链接不变，下次取订阅即按新
+// 勾选与新模式出内容。勾选不能为空（合并订阅至少要一个落地）；与轮换
+// 互不干扰——轮换换令牌、编辑不换令牌。
+func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Selection []SubSelection `json:"selection"`
+		Name      string         `json:"name"`
+		Mode      string         `json:"mode"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if len(name) > 64 {
+		writeJSON(w, 400, errResp("名字太长，最多 64 个字"))
+		return
+	}
+	sel, _, err := s.validateMergedSelection(req.Selection)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	subMode, err := normalizeSubMode(req.Mode)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	for i := range s.cfg.MergedSubs {
+		if s.cfg.MergedSubs[i].ID != id {
+			continue
+		}
+		s.cfg.MergedSubs[i].Selection = sel
+		s.cfg.MergedSubs[i].Mode = subMode
+		s.cfg.MergedSubs[i].Name = name
+		if err := s.saveConfig(); err != nil {
+			writeJSON(w, 500, errResp("保存失败："+err.Error()))
+			return
+		}
+		summary := s.selectionSummary(sel)
+		target := summary
+		if name != "" {
+			target = name + "（" + summary + "）"
+		}
+		s.audit(s.currentUser(r), "编辑合并订阅", target, "成功", "链接不变，下次更新订阅即按新勾选同步")
+		writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name, "summary": summary, "mode": subMode, "selection": sel}))
+		return
 	}
 	writeJSON(w, 404, errResp("没有这条合并订阅"))
 }
