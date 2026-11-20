@@ -239,10 +239,10 @@ func TestWorkerCodePublicDomain132(t *testing.T) {
 		t.Fatalf("ORIGIN 不受对外域名影响，仍是面板地址：\n%s", code)
 	}
 	// 直接调 renderWorkerCode 也一样
-	if c := renderWorkerCode("http://203.0.113.1:11111", "relay.example.com"); !strings.Contains(c, "https://relay.example.com/sub/<令牌>") {
+	if c := renderWorkerCode("http://203.0.113.1:11111", "relay.example.com", "sub"); !strings.Contains(c, "https://relay.example.com/sub/<令牌>") {
 		t.Fatalf("renderWorkerCode 有域名时示例链接应用域名：\n%s", c)
 	}
-	if c := renderWorkerCode("http://203.0.113.1:11111", ""); !strings.Contains(c, "https://<Worker 域名>/sub/<令牌>") {
+	if c := renderWorkerCode("http://203.0.113.1:11111", "", "sub"); !strings.Contains(c, "https://<Worker 域名>/sub/<令牌>") {
 		t.Fatalf("renderWorkerCode 无域名时示例链接应是占位：\n%s", c)
 	}
 }

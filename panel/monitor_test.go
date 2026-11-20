@@ -108,7 +108,7 @@ func TestMonitorCfgValidate(t *testing.T) {
 
 func countAudit(t *testing.T, s *Server) int {
 	t.Helper()
-	_, total := s.readAuditPage(1, 1000)
+	_, total := s.readAuditPage(1, 1000, "")
 	return total
 }
 
@@ -156,7 +156,7 @@ func TestEvaluateMonitorDedupThrottleRecover(t *testing.T) {
 		t.Fatalf("再次越过后审计=%d want 4", n)
 	}
 	// 审计内容应包含触发/升级/恢复三种事件
-	entries, _ := s.readAuditPage(1, 1000)
+	entries, _ := s.readAuditPage(1, 1000, "")
 	var sawWarn, sawCrit, sawRecover bool
 	for _, e := range entries {
 		if e.Action != "监控告警" || e.Target != "磁盘" {

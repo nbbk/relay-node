@@ -42,7 +42,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 const subTokenPrefix = "sub_"
@@ -654,6 +653,14 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 	tok := r.PathValue("token")
 	ip := clientIP(r)
 	if s.subTokenValid(tok) {
+		// 到期检查（v1.3.20）：令牌本身对，但到期时间已过 → 410（不是 404，
+		// 让客户端分得清“令牌错了”还是“订阅到期了”），审计记“已过期”。
+		if exp, ok := s.subExpiryForToken(tok); ok && subExpired(exp, time.Now()) {
+			s.subFailed(ip)
+			s.audit("订阅客户端", "拉取订阅", ip, "失败", "订阅已过期")
+			http.Error(w, "订阅已过期", http.StatusGone)
+			return
+		}
 		s.subOK(ip)
 		// 成功拉取记一条轻量记录：IP + 时间 + 令牌哈希前 8 位（认得出是哪条，
 		// 又不把日志打爆）；明文令牌绝不进审计日志。
@@ -669,6 +676,21 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 	s.subFailed(ip)
 	s.audit("订阅客户端", "拉取订阅", ip, "失败", "令牌不对")
 	http.NotFound(w, r)
+}
+
+// subExpiryForToken 取一条令牌的到期时间（RFC3339，空 = 永久）：
+// 通用订阅、每人链接、合并订阅三处都查；令牌不存在返回 false。
+func (s *Server) subExpiryForToken(tok string) (string, bool) {
+	if tok != "" && s.cfg.SubTokenHash != "" && verifySubToken(tok, s.cfg.SubTokenHash) {
+		return s.cfg.SubTokenExpiresAt, true
+	}
+	if u, ok := s.findSubUser(tok); ok {
+		return u.ExpiresAt, true
+	}
+	if ms, ok := s.findMergedSub(tok); ok {
+		return ms.ExpiresAt, true
+	}
+	return "", false
 }
 
 // serveSubContent /sub/ 的内容生成（handleSub 验过令牌/限流后调这里）。
@@ -716,96 +738,41 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 		w.Header().Set("subscription-userinfo", h)
 	}
 	w.Header().Set("Content-Type", ctype)
-	// 下载文件名（v1.3.4）：让客户端按文件名给导入的配置起名。
-	w.Header().Set("Content-Disposition", subContentDisposition(s.panelName(), format))
+	// 下载文件名（v1.3.20，反特征）：固定通用名，不再用面板名——
+	// 面板名会暴露面板身份。Clash YAML 用 subscription.yaml，
+	// base64/plain 用 subscription.txt。
+	w.Header().Set("Content-Disposition", subContentDisposition(format))
 	_, _ = w.Write([]byte(body))
 }
 
-// ---------- 订阅下载文件名（v1.3.4） ----------
-// 订阅响应带 Content-Disposition 文件名，让客户端按文件名给导入的配置
-// 起名：Clash YAML 用“<面板名称>.yaml”，base64/plain 用“<面板名称>.txt”。
-// 单面板订阅用本面板名，合并订阅用主面板（本地面板）的名——合并订阅
-// 本来就是主面板生成与下发的，所以两边都用本面板的 panelName()。
-// 面板名称可能含中文：filename* 用 RFC 5987 的 UTF-8 百分号编码；
-// filename 放一份 ASCII 兜底（名字纯 ASCII 时用原名，否则用 panel）。
-func subContentDisposition(panelName, format string) string {
+// ---------- 订阅下载文件名（v1.3.20，反特征） ----------
+// 固定通用名：Clash YAML 用 subscription.yaml，base64/plain 用
+// subscription.txt。v1.3.4 之前用的是“<面板名称>.yaml/.txt”，面板名会
+// 暴露面板身份，1.3.20 起改掉；客户端按文件名给导入的配置起名，
+// 改成通用名后导入的配置就叫 subscription，不再是面板名。
+func subContentDisposition(format string) string {
 	ext := "txt"
 	if format == "clash" {
 		ext = "yaml"
 	}
-	name := subFileName(panelName)
-	encoded := rfc5987Encode(name + "." + ext)
-	if isASCIISafe(name) {
-		return `attachment; filename="` + name + "." + ext + `"; filename*=UTF-8''` + encoded
-	}
-	return `attachment; filename="panel.` + ext + `"; filename*=UTF-8''` + encoded
-}
-
-// subFileName 文件名清洗（第二道防线：面板名称保存时已校验过）：
-// 去掉换行与文件名非法字符，空了就回退 CP管理，最多 64 个字。
-func subFileName(name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "CP管理"
-	}
-	var b []rune
-	for _, r := range name {
-		if r < 0x20 || r == 0x7f || strings.ContainsRune(`/\\:*?"<>|`, r) {
-			b = append(b, '-')
-		} else {
-			b = append(b, r)
-		}
-	}
-	name = strings.Trim(string(b), " .")
-	if utf8.RuneCountInString(name) > 64 {
-		name = string([]rune(name)[:64])
-	}
-	if name == "" {
-		return "CP管理"
-	}
-	return name
-}
-
-// rfc5987Encode 按 RFC 5987 把字符串编成 filename* 用的 UTF-8 百分号编码：
-// attr-char（字母数字与 ! # $ & + - . ^ _ ` | ~）原样保留，其余字节 %XX 大写。
-func rfc5987Encode(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("!#$&+-.^_`|~", c) >= 0 {
-			b.WriteByte(c)
-		} else {
-			fmt.Fprintf(&b, "%%%02X", c)
-		}
-	}
-	return b.String()
-}
-
-// isASCIISafe 名字是否只含 ASCII 安全字符（可直接放进 filename="…"）。
-func isASCIISafe(s string) bool {
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 0x80 || c == '"' || c == '\\' || c < 0x20 {
-			return false
-		}
-	}
-	return s != ""
+	return `attachment; filename="subscription.` + ext + `"`
 }
 
 // ---------- 单面板订阅令牌管理（会话认证） ----------
 
 // subURL 拼订阅链接：填了订阅对外域名（v1.3.2，Worker 域名或自定义域名）
-// 就用 https://域名/sub/…，不再用面板自己的地址；没填时按当前请求的协议
-// 与 Host 拼（面板怎么打开，订阅就用什么地址）。
+// 就用 https://域名/<订阅路径>/…，不再用面板自己的地址；没填时按当前请求的协议
+// 与 Host 拼（面板怎么打开，订阅就用什么地址）。路径段走 s.subPath()
+// （v1.3.20 可自定义，默认 sub）。
 func (s *Server) subURL(r *http.Request, tok string) string {
 	if d := strings.TrimSpace(s.cfg.SubPublicDomain); d != "" {
-		return "https://" + d + "/sub/" + tok
+		return "https://" + d + "/" + s.subPath() + "/" + tok
 	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	return scheme + "://" + r.Host + "/sub/" + tok
+	return scheme + "://" + r.Host + "/" + s.subPath() + "/" + tok
 }
 
 func (s *Server) handleSubTokenGet(w http.ResponseWriter, r *http.Request) {
@@ -814,6 +781,7 @@ func (s *Server) handleSubTokenGet(w http.ResponseWriter, r *http.Request) {
 		"has_link":   s.cfg.SubTokenEnc != "",
 		"created_at": s.cfg.SubTokenCreatedAt,
 		"mode":       s.cfg.SubTokenMode,
+		"expires_at": s.cfg.SubTokenExpiresAt,
 	}))
 }
 
@@ -821,9 +789,12 @@ func (s *Server) handleSubTokenGet(w http.ResponseWriter, r *http.Request) {
 // 链接随时能重新复制；已有令牌时旧链接立即失效。记审计日志（不记令牌本身）。
 // v1.3.17：请求可带 mode（both|relay|direct，不带默认 both），存进
 // SubTokenMode，轮换时同样按表单当前选择存（生成表单的显式选择）。
+// v1.3.20：请求可带 expires_at（日期或 RFC3339，空串 = 永久）；不带
+// expires_at 字段时保持原到期时间（轮换不改到期时间）。
 func (s *Server) handleSubTokenGenerate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Mode string `json:"mode"`
+		Mode      string  `json:"mode"`
+		ExpiresAt *string `json:"expires_at"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -836,6 +807,14 @@ func (s *Server) handleSubTokenGenerate(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 400, errResp(err.Error()))
 		return
 	}
+	expiresAt := s.cfg.SubTokenExpiresAt
+	if req.ExpiresAt != nil {
+		expiresAt, err = parseSubExpiry(*req.ExpiresAt)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+	}
 	tok := generateSubToken()
 	enc, err := s.encryptSubTokenNow(tok)
 	if err != nil {
@@ -847,6 +826,7 @@ func (s *Server) handleSubTokenGenerate(w http.ResponseWriter, r *http.Request) 
 	s.cfg.SubTokenEnc = enc
 	s.cfg.SubTokenCreatedAt = time.Now().UTC().Format(time.RFC3339)
 	s.cfg.SubTokenMode = subMode
+	s.cfg.SubTokenExpiresAt = expiresAt
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
@@ -856,7 +836,44 @@ func (s *Server) handleSubTokenGenerate(w http.ResponseWriter, r *http.Request) 
 		action = "轮换订阅链接"
 	}
 	s.audit(s.currentUser(r), action, "", "成功", "旧订阅链接已失效")
-	writeJSON(w, 200, okResp(map[string]any{"url": s.subURL(r, tok), "rotated": rotated, "mode": subMode}))
+	writeJSON(w, 200, okResp(map[string]any{"url": s.subURL(r, tok), "rotated": rotated, "mode": subMode, "expires_at": expiresAt}))
+}
+
+// handleSubTokenSetExpiry 只改通用订阅的到期时间，不换令牌、不换链接
+// （v1.3.20，设置页用）：expires_at 空 = 永久；填日期（如 2026-12-31）
+// 或 RFC3339。没有通用订阅令牌时 400。
+func (s *Server) handleSubTokenSetExpiry(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ExpiresAt string `json:"expires_at"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	if s.cfg.SubTokenHash == "" {
+		writeJSON(w, 400, errResp("还没有通用订阅链接，先点“生成订阅链接”"))
+		return
+	}
+	expiresAt, err := parseSubExpiry(req.ExpiresAt)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	old := s.cfg.SubTokenExpiresAt
+	s.cfg.SubTokenExpiresAt = expiresAt
+	if err := s.saveConfig(); err != nil {
+		s.cfg.SubTokenExpiresAt = old
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	detail := "改成永久"
+	if expiresAt != "" {
+		detail = "改成 " + expiresAt[:10]
+	}
+	s.audit(s.currentUser(r), "设置通用订阅到期时间", "", "成功", detail)
+	writeJSON(w, 200, okResp(map[string]any{"expires_at": expiresAt}))
 }
 
 func (s *Server) handleSubTokenRevoke(w http.ResponseWriter, r *http.Request) {
@@ -868,6 +885,7 @@ func (s *Server) handleSubTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	s.cfg.SubTokenEnc = ""
 	s.cfg.SubTokenCreatedAt = ""
 	s.cfg.SubTokenMode = ""
+	s.cfg.SubTokenExpiresAt = ""
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
@@ -890,6 +908,7 @@ func (s *Server) handleSubLink(w http.ResponseWriter, r *http.Request) {
 	kind := r.URL.Query().Get("kind")
 	id := r.URL.Query().Get("id")
 	var enc string
+	expiresAt := ""
 	switch kind {
 	case "generic":
 		if s.cfg.SubTokenHash == "" {
@@ -897,11 +916,13 @@ func (s *Server) handleSubLink(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		enc = s.cfg.SubTokenEnc
+		expiresAt = s.cfg.SubTokenExpiresAt
 	case "user":
 		found := false
 		for i := range s.cfg.SubUsers {
 			if s.cfg.SubUsers[i].ID == id {
 				enc = s.cfg.SubUsers[i].TokenEnc
+				expiresAt = s.cfg.SubUsers[i].ExpiresAt
 				found = true
 				break
 			}
@@ -915,6 +936,7 @@ func (s *Server) handleSubLink(w http.ResponseWriter, r *http.Request) {
 		for i := range s.cfg.MergedSubs {
 			if s.cfg.MergedSubs[i].ID == id {
 				enc = s.cfg.MergedSubs[i].TokenEnc
+				expiresAt = s.cfg.MergedSubs[i].ExpiresAt
 				found = true
 				break
 			}
@@ -936,7 +958,7 @@ func (s *Server) handleSubLink(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, okResp(map[string]any{"legacy": true, "message": legacySubLinkMsg}))
 		return
 	}
-	writeJSON(w, 200, okResp(map[string]any{"url": s.subURL(r, tok), "legacy": false}))
+	writeJSON(w, 200, okResp(map[string]any{"url": s.subURL(r, tok), "legacy": false, "expires_at": expiresAt}))
 }
 
 // ---------- 订阅对外域名（v1.3.2，会话认证） ----------
@@ -1005,10 +1027,57 @@ func (s *Server) handleSubPublicDomainSet(w http.ResponseWriter, r *http.Request
 	}
 	detail := "已恢复成面板自己的地址"
 	if domain != "" {
-		detail = "订阅链接改用 https://" + domain + "/sub/…"
+		detail = "订阅链接改用 https://" + domain + "/" + s.subPath() + "/…"
 	}
 	s.audit(s.currentUser(r), "设置订阅对外域名", domain, "成功", detail)
 	writeJSON(w, 200, okResp(map[string]any{"domain": domain}))
+}
+
+// ---------- 订阅路径（v1.3.20，反特征，会话认证） ----------
+// handleSubPathSet 改订阅路径段：空 = 恢复默认 sub；非空须通过 validSubPath
+// 校验。路径是路由的一部分（启动时注册），改了要重启面板才生效，重启后
+// 旧订阅链接全部失效（旧路径不再有路由）、会话失效须重新登录、客户端
+// 须重新导入新链接；前端在保存前已弹过确认框，这里直接执行。
+// 改成和当前一样的值时不重启（只返回当前值）。
+func (s *Server) handleSubPathSet(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	path := strings.TrimSpace(req.Path)
+	if path == "" {
+		path = "sub"
+	}
+	if path != "sub" && !validSubPath(path) {
+		writeJSON(w, 400, errResp("订阅路径不对：单段、字母开头、只含字母数字与 - _、1–32 个字符；api 与 logo 是保留段，不能用"))
+		return
+	}
+	old := s.subPath()
+	if path == old {
+		writeJSON(w, 200, okResp(map[string]any{"sub_path": path, "restart": false}))
+		return
+	}
+	oldRaw := s.cfg.SubPath
+	if path == "sub" {
+		s.cfg.SubPath = ""
+	} else {
+		s.cfg.SubPath = path
+	}
+	if err := s.saveConfig(); err != nil {
+		s.cfg.SubPath = oldRaw
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	s.audit(s.currentUser(r), "改订阅路径", "/"+old+"/ -> /"+path+"/", "成功", "面板正在重启，旧订阅链接全部失效，客户端须重新导入")
+	writeJSON(w, 200, okResp(map[string]any{"sub_path": path, "restart": true, "msg": "订阅路径已改成 /" + path + "/，面板正在重启，旧订阅链接全部失效，重新登录后在订阅卡片里复制新链接"}))
+	// 异步重启自身（先回包再重启，和改端口同一套做法）
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		restartSelf(s.env)
+	}()
 }
 
 // ---------- 订阅用户：一人一条订阅链接（v1.3.0，会话认证） ----------
@@ -1029,6 +1098,7 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 		HasLink   bool           `json:"has_link"`
 		Mode      string         `json:"mode"` // both|relay|direct，老记录空 = 全部
 		Selection []SubSelection `json:"selection,omitempty"` // 编辑弹窗预选用；空 = 全部落地
+		ExpiresAt string         `json:"expires_at,omitempty"` // v1.3.20：RFC3339，空 = 永久
 	}
 	items := []item{}
 	for _, u := range s.cfg.SubUsers {
@@ -1038,7 +1108,7 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 			kind = "merged"
 			summary = s.selectionSummary(u.Selection)
 		}
-		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode, Selection: u.Selection})
+		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode, Selection: u.Selection, ExpiresAt: u.ExpiresAt})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"users": items}))
 }
@@ -1047,12 +1117,14 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 // 就是单面板全量订阅，填了就是合并订阅（走同一套勾选校验，远程版本不够
 // 时同样提示先升级）。链接在这一次返回，之后随时能点复制重新拿。
 // v1.3.17：请求可带 mode（both|relay|direct，不带默认 both），存进记录。
+// v1.3.20：请求可带 expires_at（日期或 RFC3339，空串 = 永久；不带 = 永久）。
 func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name      string         `json:"name"`
 		Note      string         `json:"note"`
 		Selection []SubSelection `json:"selection"`
 		Mode      string         `json:"mode"`
+		ExpiresAt *string        `json:"expires_at"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -1088,6 +1160,14 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
 	}
+	expiresAt := ""
+	if req.ExpiresAt != nil {
+		expiresAt, err = parseSubExpiry(*req.ExpiresAt)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+	}
 	tok := generateSubToken()
 	enc, err := s.encryptSubTokenNow(tok)
 	if err != nil {
@@ -1096,13 +1176,13 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	id := "su-" + randomTokenHex(6)
-	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: id, Name: name, Note: note, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode})
+	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: id, Name: name, Note: note, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt})
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
 	}
 	s.audit(s.currentUser(r), "新建订阅用户", name, "成功", "链接已加密存好，随时能复制")
-	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "name": name, "mode": subMode}))
+	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "name": name, "mode": subMode, "expires_at": expiresAt}))
 }
 
 // handleSubUsersRotate 轮换一个订阅用户的链接：旧链接立即失效，只影响这个人。
@@ -1159,6 +1239,8 @@ func (s *Server) handleSubUsersDelete(w http.ResponseWriter, r *http.Request) {
 // 令牌不动（TokenHash/TokenEnc 原样保留），链接不变，下次取订阅即按新
 // 勾选与新模式出内容。空勾选 = 全部落地（与创建时语义一致）。
 // v1.3.19：与轮换互不干扰——轮换换令牌、编辑不换令牌。
+// v1.3.20：请求可带 expires_at（日期或 RFC3339，空串 = 永久）；不带
+// expires_at 字段时保持原到期时间。
 func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
@@ -1166,6 +1248,7 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		Note      string         `json:"note"`
 		Selection []SubSelection `json:"selection"`
 		Mode      string         `json:"mode"`
+		ExpiresAt *string        `json:"expires_at"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -1201,6 +1284,16 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
 	}
+	expiresAt := ""
+	expiresGiven := false
+	if req.ExpiresAt != nil {
+		expiresGiven = true
+		expiresAt, err = parseSubExpiry(*req.ExpiresAt)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+	}
 	for i := range s.cfg.SubUsers {
 		if s.cfg.SubUsers[i].ID != id {
 			continue
@@ -1209,6 +1302,9 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		s.cfg.SubUsers[i].Note = note
 		s.cfg.SubUsers[i].Selection = sel
 		s.cfg.SubUsers[i].Mode = subMode
+		if expiresGiven {
+			s.cfg.SubUsers[i].ExpiresAt = expiresAt
+		}
 		if err := s.saveConfig(); err != nil {
 			writeJSON(w, 500, errResp("保存失败："+err.Error()))
 			return
@@ -1224,7 +1320,7 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 			selOut = []SubSelection{}
 		}
 		s.audit(s.currentUser(r), "编辑订阅用户", name+"（"+summary+"）", "成功", "链接不变，下次更新订阅即按新勾选同步")
-		writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name, "kind": kind, "summary": summary, "mode": subMode, "selection": selOut}))
+		writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name, "kind": kind, "summary": summary, "mode": subMode, "selection": selOut, "expires_at": s.cfg.SubUsers[i].ExpiresAt}))
 		return
 	}
 	writeJSON(w, 404, errResp("没有这个订阅用户"))
@@ -1331,10 +1427,10 @@ func validWorkerHost(host string) bool {
 // 应靠它），状态码、响应头与响应体原样返回；其他路径一律 404，
 // 不把面板其他接口暴露出去。publicDomain 是订阅对外域名（v1.3.2）：
 // 填了之后代码注释里的示例订阅链接用这个域名，没填时保留 <Worker 域名> 占位。
-func renderWorkerCode(origin, publicDomain string) string {
-	example := "https://<Worker 域名>/sub/<令牌>?format=clash&mode=split"
+func renderWorkerCode(origin, publicDomain, subPath string) string {
+	example := "https://<Worker 域名>/" + subPath + "/<令牌>?format=clash&mode=split"
 	if publicDomain != "" {
-		example = "https://" + publicDomain + "/sub/<令牌>?format=clash&mode=split"
+		example = "https://" + publicDomain + "/" + subPath + "/<令牌>?format=clash&mode=split"
 	}
 	// 源站是 IP 时代码照常生成（默认用法不能拦），但在代码里写明会 1003，
 	// 免得用户部署完才发现订阅 403。
@@ -1352,7 +1448,7 @@ func renderWorkerCode(origin, publicDomain string) string {
 export default {
   async fetch(request) {
     const url = new URL(request.url);
-    if (!url.pathname.startsWith("/sub/")) {
+    if (!url.pathname.startsWith("/` + subPath + `/")) {
       return new Response("Not Found", { status: 404 });
     }
     const target = new URL(ORIGIN + url.pathname + url.search);
@@ -1388,7 +1484,7 @@ func (s *Server) handleWorkerCode(w http.ResponseWriter, r *http.Request) {
 			saveWarn = "源站地址没记住（保存失败，下次打开还要重填）。"
 		}
 	}
-	resp := map[string]any{"origin": origin, "code": renderWorkerCode(origin, s.cfg.SubPublicDomain)}
+	resp := map[string]any{"origin": origin, "code": renderWorkerCode(origin, s.cfg.SubPublicDomain, s.subPath())}
 	if workerOriginIsIP(origin) {
 		resp["warning"] = "源站地址是 IP，Worker 回源会被 Cloudflare 挡（error 1003）：先在 Cloudflare 里给面板建个域名（灰云 A 记录指到面板 IP），再填 http://域名:11111 重新生成代码。"
 	}
@@ -1421,7 +1517,7 @@ func (s *Server) handleSubQR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := strings.TrimSpace(req.URL)
-	if u == "" || len(u) > 2048 || !strings.Contains(u, "/sub/sub_") {
+	if u == "" || len(u) > 2048 || !strings.Contains(u, "/"+s.subPath()+"/sub_") {
 		writeJSON(w, 400, errResp("只支持本面板的订阅链接"))
 		return
 	}
@@ -1581,13 +1677,14 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 		Summary   string         `json:"summary"`
 		HasLink   bool           `json:"has_link"`
 		Mode      string         `json:"mode"` // both|relay|direct，老记录空 = 全部
+		ExpiresAt string         `json:"expires_at,omitempty"` // v1.3.20：RFC3339，空 = 永久
 	}
 	items := []item{}
 	for _, ms := range s.cfg.MergedSubs {
 		if ms.Selection == nil {
 			ms.Selection = []SubSelection{}
 		}
-		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: s.selectionSummary(ms.Selection), HasLink: ms.TokenEnc != "", Mode: ms.Mode})
+		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: s.selectionSummary(ms.Selection), HasLink: ms.TokenEnc != "", Mode: ms.Mode, ExpiresAt: ms.ExpiresAt})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"subs": items}))
 }
@@ -1599,11 +1696,14 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 // v1.3.17：请求可带 mode（both|relay|direct，不带默认 both），存进记录；
 // 同一选择重新生成时按表单当前选择存（生成表单的显式选择）；专用轮换接口
 // （handleMergedSubsRotate）不带 mode，轮换时保持原模式不变。
+// v1.3.20：请求可带 expires_at（日期或 RFC3339，空串 = 永久；不带 = 永久；
+// 同一选择重新生成时不带 expires_at 字段 = 保持原到期时间）。
 func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Selection []SubSelection `json:"selection"`
 		Name      string         `json:"name"`
 		Mode      string         `json:"mode"`
+		ExpiresAt *string        `json:"expires_at"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -1626,6 +1726,14 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 400, errResp(err.Error()))
 		return
 	}
+	expiresAt := ""
+	if req.ExpiresAt != nil {
+		expiresAt, err = parseSubExpiry(*req.ExpiresAt)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+	}
 	tok := generateSubToken()
 	enc, err := s.encryptSubTokenNow(tok)
 	if err != nil {
@@ -1637,7 +1745,7 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 	id := ""
 	if name != "" {
 		id = "ms-" + randomTokenHex(6)
-		s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, Name: name, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode})
+		s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, Name: name, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt})
 	} else {
 		for i := range s.cfg.MergedSubs {
 			// 只轮换同样没填名称的记录：已归属到人的那条不能被误轮换
@@ -1657,6 +1765,12 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 						subMode = "both"
 					}
 				}
+				// 同一选择重新生成：表单传了 expires_at 才改到期时间，没传保持原到期时间
+				if req.ExpiresAt != nil {
+					s.cfg.MergedSubs[i].ExpiresAt = expiresAt
+				} else {
+					expiresAt = s.cfg.MergedSubs[i].ExpiresAt
+				}
 				id = s.cfg.MergedSubs[i].ID
 				rotated = true
 				break
@@ -1664,7 +1778,7 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 		}
 		if id == "" {
 			id = "ms-" + randomTokenHex(6)
-			s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode})
+			s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt})
 		}
 	}
 	if err := s.saveConfig(); err != nil {
@@ -1680,7 +1794,7 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 		target = name + "（" + target + "）"
 	}
 	s.audit(s.currentUser(r), action, target, "成功", "链接已加密存好，随时能复制")
-	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": rotated, "selection": sel, "summary": s.selectionSummary(sel), "mode": subMode}))
+	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": rotated, "selection": sel, "summary": s.selectionSummary(sel), "mode": subMode, "expires_at": expiresAt}))
 }
 
 // handleMergedSubsRotate 轮换一条合并订阅：同一勾选集合与同一归属人换一个
@@ -1745,12 +1859,15 @@ func (s *Server) handleMergedSubsDelete(w http.ResponseWriter, r *http.Request) 
 // 令牌不动（TokenHash/TokenEnc 原样保留），链接不变，下次取订阅即按新
 // 勾选与新模式出内容。勾选不能为空（合并订阅至少要一个落地）；与轮换
 // 互不干扰——轮换换令牌、编辑不换令牌。
+// v1.3.20：请求可带 expires_at（日期或 RFC3339，空串 = 永久）；不带
+// expires_at 字段时保持原到期时间。
 func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
 		Selection []SubSelection `json:"selection"`
 		Name      string         `json:"name"`
 		Mode      string         `json:"mode"`
+		ExpiresAt *string        `json:"expires_at"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -1773,6 +1890,16 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 400, errResp(err.Error()))
 		return
 	}
+	expiresAt := ""
+	expiresGiven := false
+	if req.ExpiresAt != nil {
+		expiresGiven = true
+		expiresAt, err = parseSubExpiry(*req.ExpiresAt)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+	}
 	for i := range s.cfg.MergedSubs {
 		if s.cfg.MergedSubs[i].ID != id {
 			continue
@@ -1780,6 +1907,9 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 		s.cfg.MergedSubs[i].Selection = sel
 		s.cfg.MergedSubs[i].Mode = subMode
 		s.cfg.MergedSubs[i].Name = name
+		if expiresGiven {
+			s.cfg.MergedSubs[i].ExpiresAt = expiresAt
+		}
 		if err := s.saveConfig(); err != nil {
 			writeJSON(w, 500, errResp("保存失败："+err.Error()))
 			return
@@ -1790,7 +1920,7 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 			target = name + "（" + summary + "）"
 		}
 		s.audit(s.currentUser(r), "编辑合并订阅", target, "成功", "链接不变，下次更新订阅即按新勾选同步")
-		writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name, "summary": summary, "mode": subMode, "selection": sel}))
+		writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name, "summary": summary, "mode": subMode, "selection": sel, "expires_at": s.cfg.MergedSubs[i].ExpiresAt}))
 		return
 	}
 	writeJSON(w, 404, errResp("没有这条合并订阅"))

@@ -307,3 +307,49 @@ html[data-theme="dark"] .tag.relay{background:#1e3a5f; color:#93c5fd; border-col
   .settings-tab, .central-tab, .rb-tab{padding:10px 13px}
   .settings-panel, .central-panel{padding:14px}
 }
+
+/* ---- v1.3.20：列表工具条 / 搜索框 ---- */
+.list-toolbar{display:flex; gap:8px; margin:10px 0}
+.list-search{
+  flex:1; max-width:420px; padding:9px 12px; border:1px solid var(--border);
+  border-radius:999px; background:var(--surface); color:var(--text); font-size:14px;
+  transition:border-color .15s ease, box-shadow .15s ease;
+}
+.list-search::placeholder{color:var(--muted)}
+.list-search:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent)}
+
+/* ---- v1.3.20：面板 Logo（圆形） ---- */
+.login-logo-wrap{display:flex; justify-content:center; margin-bottom:10px}
+.login-logo{width:64px; height:64px; border-radius:50%; object-fit:cover; border:2px solid var(--border); background:var(--surface-muted)}
+.logo-default{
+  display:inline-flex; align-items:center; justify-content:center; border-radius:50%;
+  background:var(--accent); color:#fff; font-weight:700; flex:0 0 auto;
+}
+.login-logo.logo-default{width:64px; height:64px; font-size:28px}
+.sidebar .brand{display:flex; align-items:center; gap:8px}
+@media (max-width:640px){ .sidebar .brand{justify-content:space-between} }
+.brand-logo{width:28px; height:28px; border-radius:50%; object-fit:cover; border:1px solid var(--border); background:var(--surface-muted)}
+.brand-logo.logo-default{font-size:14px}
+.logo-preview-wrap{display:flex; justify-content:flex-start; margin:8px 0 12px}
+
+/* ---- v1.3.20：二维码弹窗现代化 ---- */
+.qr-wrap figure{
+  background:var(--surface); border:1px solid var(--border); border-radius:16px;
+  padding:18px 18px 14px; box-shadow:var(--shadow); max-width:260px;
+}
+.qr-wrap figcaption{color:var(--muted); font-size:13px; margin-top:10px}
+.qr-wrap img{border:0; border-radius:8px}
+.modal .qr-wrap{justify-content:center}
+.modal .qr-wrap figure{margin:0 auto}
+
+/* ---- v1.3.20：三选一 radio-card 过渡与选中态 ---- */
+.radio-card{transition:border-color .15s ease, box-shadow .15s ease, background .15s ease}
+.radio-card.selected{background:color-mix(in srgb, var(--accent) 7%, transparent)}
+.radio-card:active{transform:scale(.995)}
+
+/* ---- v1.3.20：勾选树行 hover ---- */
+[data-edit-tree] .checkbox-row, #central-sub-tree .checkbox-row{
+  border-radius:8px; padding:6px 8px; transition:background .15s ease;
+}
+[data-edit-tree] .checkbox-row:hover, #central-sub-tree .checkbox-row:hover{background:var(--surface-muted)}
+[data-edit-tree] .checkbox-row input, #central-sub-tree .checkbox-row input{accent-color:var(--accent)}

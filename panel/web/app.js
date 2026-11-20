@@ -126,6 +126,17 @@ async function api(path, opts, noAuthRedirect) {
   return data || {};
 }
 async function apiPost(path, body, noAuthRedirect) { return api(path, { method: 'POST', body: JSON.stringify(body || {}) }, noAuthRedirect); }
+// apiPostForm: multipart 上传（不设 Content-Type，让浏览器自己带 boundary，
+// 否则后端收不到文件）。401 照样当会话过期处理。
+async function apiPostForm(path, formData) {
+  const res = await fetch(path, { method: 'POST', body: formData });
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* 非 JSON 响应 */ }
+  if (res.status === 401) { showLogin(); throw new Error('登录已过期，请重新登录'); }
+  if (!res.ok) throw new Error((data && data.error) || ('请求失败（HTTP ' + res.status + '）'));
+  if (data && data.ok === false) throw new Error(data.error || '操作失败');
+  return data || {};
+}
 
 /* ---------- 弹窗 ---------- */
 function openModal(html, wide) {
@@ -446,6 +457,8 @@ async function loadOverview() {
       statCard('落地数量', String(landingsCache.length) + ' 个', '分流：80 ' + (s.share80 ? '分流中' : '直通') + ' / 443 ' + (s.share443 ? '分流中' : '直通')) +
       statCard('面板版本', esc(s.panel_version || '—'), '端口默认 11111，可在设置里改');
     renderLandingCards();
+    // v1.3.20：落地列表搜索（输入即过滤，回到第 1 页）。
+    wireListSearch('#landing-search', (q) => { landingSearch = q; overviewPage = 1; renderLandingCards(); });
     // 空状态文案：中转还没装（status 带 note）时提示加第一个落地会自动装中转；
     // 中转已装但一个落地都没有时只提示去添加落地。
     if (!landingsCache.length) {
@@ -616,12 +629,16 @@ function modeText(l, relayAddr) {
   if (l.mode === 'door') return '任意门模式' + (relayAddr ? '（中转地址：' + esc(relayAddr) + '）' : '');
   return '标准模式';
 }
+let landingSearch = ''; // v1.3.20：落地列表搜索关键词（分页前先过滤）
 function renderLandingCards(page) {
   if (page) overviewPage = page;
   const wrap = $('#landing-cards');
   $('#overview-empty').classList.toggle('hidden', landingsCache.length > 0);
   if (!landingsCache.length) { wrap.innerHTML = ''; return; }
-  const pg = paginateCards(landingsCache, overviewPage);
+  // v1.3.20：落地列表搜索（名称/地址/证书域名，分页前先过滤）。
+  const filtered = landingsCache.filter((l) => matchSubText(landingSearch, [displayNameOf(l), l.landing, l.domain, l.cert_domain]));
+  if (!filtered.length) { wrap.innerHTML = '<div class="empty">没有匹配的落地，换个关键词试试。</div>'; return; }
+  const pg = paginateCards(filtered, overviewPage);
   overviewPage = pg.cur;
   const relayAddr = (statusCache && statusCache.relay_addr) || '';
   wrap.innerHTML = pg.slice.map((l) => landingMiniCard(l, relayAddr)).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'ovcards');
@@ -1668,6 +1685,21 @@ async function loadSettingsPage() {
     }
     renderSecurityCard(sec);
     updateWorkerExampleLink(sub.public_domain || '');
+    // 订阅到期时间（v1.3.20）：通用订阅的到期时间回填到设置页；永久时
+    // 日期框置灰、勾选永久。
+    const subExpDate = $('#sub-expiry-date');
+    if (subExpDate) { subExpDate.value = dateInputOfExpiry(sub.expires_at); subExpDate.disabled = !sub.expires_at; }
+    const subExpPerm = $('#sub-expiry-permanent');
+    if (subExpPerm) subExpPerm.checked = !sub.expires_at;
+    const subExpStatus = $('#sub-expiry-status');
+    if (subExpStatus) subExpStatus.textContent = sub.expires_at ? '当前：' + fmtExpiry(sub.expires_at) : '当前：永久';
+    // 订阅路径（v1.3.20）：回填当前路径段（空 = 默认 sub）。
+    const subPathEl = $('#sub-path');
+    if (subPathEl) subPathEl.value = sub.sub_path || 'sub';
+    const subPathEx = $('#sub-path-example');
+    if (subPathEx) subPathEx.textContent = sub.sub_path || 'sub';
+    // 面板 Logo（v1.3.20）：登录页、侧边栏与设置页预览按有没有 Logo 显示。
+    refreshLogoViews(!!(st.logo && st.logo.has_logo));
     $('#update-box').innerHTML = '<div class="kv"><span>当前版本</span><b>' + esc(st.version || '—') + '</b></div>' +
       '<div class="kv"><span>最新版本</span><b>' + esc(st.latest_version || '—') + '</b></div>' +
       '<div class="kv"><span>状态</span><b>' + (st.update_available ? '<span class="badge yellow">有更新</span>' : '<span class="badge green">已是最新</span>') + '</b></div>' +
@@ -1870,6 +1902,18 @@ function initSettings() {
     catch (err) { toast('撤销失败：' + err.message, 'err'); }
   });
   on('#sub-public-domain-save', 'click', async () => { await saveSubPublicDomain(); });
+  // 订阅到期时间与订阅路径（v1.3.20）
+  on('#sub-expiry-permanent', 'change', () => { const d = $('#sub-expiry-date'); if (d) d.disabled = $('#sub-expiry-permanent').checked; });
+  on('#sub-expiry-save', 'click', async () => { await saveSubExpiry(); });
+  on('#sub-path-save', 'click', async () => { await saveSubPath(); });
+  // 面板 Logo（v1.3.20）
+  on('#btn-logo-upload', 'click', async () => { await uploadLogo(); });
+  on('#btn-logo-delete', 'click', async () => { await deleteLogo(); });
+  // 列表搜索（v1.3.20）：订阅用户、审计日志、备份（落地列表在总览页接线，
+  // 合并订阅在集中管理页接线）。
+  wireListSearch('#sub-user-search', (q) => { subUserSearch = q; subUserPage = 1; loadSubUsers(); });
+  wireListSearch('#audit-search', (q) => { auditSearch = q; auditPage = 1; loadAudit(); });
+  wireListSearch('#sched-backup-search', (q) => { schedBackupSearch = q; schedBackupPage = 1; loadSchedBackups(); });
   on('#sub-copy', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, ''), e.target); });
   on('#sub-copy-clash', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'clash'), e.target); });
   on('#sub-copy-plain', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'plain'), e.target); });
@@ -1880,6 +1924,22 @@ function initSettings() {
     await loadSubQr();
   });
   on('#sub-mode', 'change', async () => { const box = $('#sub-qr-box'); if (box && !box.classList.contains('hidden')) await loadSubQr(); });
+  // 三选一（内容模式）改了，二维码正显示着就跟着重生成（v1.3.20）：
+  // 二维码编的是令牌 URL，模式跟令牌走，重新拉一次保证扫出来就是新内容。
+  // 监听 input 自身的 click（不是 label 的 click，也不是 change）：
+  // 点 label 会先触发 label 的 click、再由 label 激活行为触发 input 的
+  // click 冒泡回 label，label 的 click 监听会连发两次；input 的 click
+  // 无论点 label 还是直接点圆圈都只发一次。change 不可用：点 label 时
+  // bindSubModeGroup 已先把 input 置为选中（程序赋值不触发 change），
+  // 激活行为点到已选中的 input 时 change 根本不触发。
+  $$('#sub-token-mode-group input[name="sub-token-mode"]').forEach((r) => r.addEventListener('click', async () => {
+    const box = $('#sub-qr-box');
+    if (box && !box.classList.contains('hidden')) await loadSubQr();
+  }));
+  $$('#sub-user-mode-group input[name="sub-user-mode"]').forEach((r) => r.addEventListener('click', async () => {
+    const box = $('#sub-user-qr-box');
+    if (box && !box.classList.contains('hidden')) await loadSubUserQr();
+  }));
   on('#sub-user-create', 'click', async () => { await subUserCreate(); });
   on('#sub-user-copy', 'click', (e) => { copyText(subLinkWithMode($('#sub-user-url-value').textContent, ''), e.target); });
   on('#sub-user-copy-clash', 'click', (e) => { copyText(subLinkWithMode($('#sub-user-url-value').textContent, 'clash'), e.target); });
@@ -2053,6 +2113,7 @@ function initUpdatePoll() {
   });
 }
 // 自动定时备份列表（v1.3.6）：恢复/删除，恢复前弹确认（会覆盖当前配置并重启 realm）。
+let schedBackupPage = 1, schedBackupSearch = ''; // v1.3.20：备份列表分页与搜索
 async function loadSchedBackups() {
   const wrap = $('#sched-backup-list');
   if (!wrap) return;
@@ -2062,10 +2123,17 @@ async function loadSchedBackups() {
     const last = $('#bk-last');
     if (last) last.textContent = r.last_backup ? '上次备份：' + fmtDate(r.last_backup.ts) + '（' + (r.last_backup.label || '') + '）' : '还没有定时备份。';
     if (!list.length) { wrap.innerHTML = '<div class="empty">暂无定时备份。</div>'; return; }
-    wrap.innerHTML = list.map((b) =>
+    // v1.3.20：备份列表搜索（时间/类型/编号，分页前先过滤）+ 分页（每页 20 条）。
+    const filtered = list.filter((b) => matchSubText(schedBackupSearch, [fmtDate(b.ts), b.label, b.id]));
+    if (!filtered.length) { wrap.innerHTML = '<div class="empty">没有匹配的备份，换个关键词试试。</div>'; return; }
+    const pg = paginate(filtered, schedBackupPage);
+    schedBackupPage = pg.cur;
+    wrap.innerHTML = pg.slice.map((b) =>
       '<div class="kv"><span>' + esc(fmtDate(b.ts)) + '<br><span class="small">' + esc(b.label || '') + ' · ' + (b.size != null ? (b.size / 1024).toFixed(1) + ' KB' : '') + '</span></span>' +
       '<span><button class="btn secondary sm" type="button" data-restore-sbk="' + esc(b.id) + '">恢复</button> ' +
-      '<button class="btn secondary sm" type="button" data-del-sbk="' + esc(b.id) + '">删除</button></span></div>').join('');
+      '<button class="btn secondary sm" type="button" data-del-sbk="' + esc(b.id) + '">删除</button></span></div>').join('') +
+      pagerHtml(pg.total, pg.cur, pg.totalPages, 'schedbackup');
+    if (pg.totalPages > 1) wirePager(wrap, 'schedbackup', pg.cur, pg.totalPages, (p) => { schedBackupPage = p; loadSchedBackups(); });
     $$('[data-restore-sbk]', wrap).forEach((btn) => btn.addEventListener('click', async () => {
       const ok = await confirmModal('恢复定时备份', '<p>恢复会用这份备份覆盖当前配置并重启 realm；恢复后不在备份里的订阅用户会被移除，新用户的订阅令牌要重新生成。确定恢复吗？</p>', '恢复备份', true);
       if (!ok) return;
@@ -2198,11 +2266,13 @@ function wirePager(wrap, ns, cur, totalPages, onPage) {
 }
 let auditPage = 1;
 const AUDIT_PAGE_SIZE = 10; // v1.3.13：审计日志每页 10 条
+let auditSearch = ''; // v1.3.20：审计日志搜索关键词（服务端按 q 过滤）
 async function loadAudit(page) {
   if (page) auditPage = page;
   const wrap = $('#audit-list');
   try {
-    const r = await api('/api/v1/audit?page=' + auditPage + '&page_size=' + AUDIT_PAGE_SIZE);
+    const q = auditSearch || '';
+    const r = await api('/api/v1/audit?page=' + auditPage + '&page_size=' + AUDIT_PAGE_SIZE + (q ? '&q=' + encodeURIComponent(q) : ''));
     const entries = r.entries || [];
     const total = r.total || 0, totalPages = r.total_pages || 0, cur = r.page || auditPage;
     if (!total) { wrap.innerHTML = '<div class="empty">暂无审计记录。</div>'; return; }
@@ -2515,6 +2585,98 @@ function initSubMode() {
   $$('[data-sub-mode-group]').forEach(bindSubModeGroup);
   syncSubModeGroups(savedSubMode());
 }
+/* ---------- 订阅到期时间（v1.3.20） ---------- */
+// fmtExpiry: "永久" / "2027-02-17 到期" / "已过期（2026-11-19）"。
+function fmtExpiry(expiresAt) {
+  if (!expiresAt) return '永久';
+  const d = new Date(expiresAt);
+  if (isNaN(d.getTime())) return '永久';
+  const day = expiresAt.slice(0, 10);
+  return d.getTime() < Date.now() ? '已过期（' + day + '）' : day + ' 到期';
+}
+// expiryBadge: 列表行里的到期徽章（永久灰、30 天内黄、7 天内与已过期红）。
+function expiryBadge(expiresAt) {
+  if (!expiresAt) return '<span class="badge grey">永久</span>';
+  const d = new Date(expiresAt);
+  if (isNaN(d.getTime())) return '<span class="badge grey">永久</span>';
+  const day = expiresAt.slice(0, 10);
+  if (d.getTime() < Date.now()) return '<span class="badge red">已过期 ' + esc(day) + '</span>';
+  const days = Math.ceil((d.getTime() - Date.now()) / 86400000);
+  const cls = days <= 7 ? 'red' : days <= 30 ? 'yellow' : 'green';
+  return '<span class="badge ' + cls + '">' + esc(day) + ' 到期</span>';
+}
+// dateInputOfExpiry: RFC3339 -> date input 的 YYYY-MM-DD（空 = 永久）。
+function dateInputOfExpiry(expiresAt) {
+  if (!expiresAt) return '';
+  const d = new Date(expiresAt);
+  return isNaN(d.getTime()) ? '' : expiresAt.slice(0, 10);
+}
+/* ---------- 列表搜索（v1.3.20） ---------- */
+// matchSubText: 不区分大小写，任一字段包含关键词即命中；关键词为空全过。
+function matchSubText(q, fields) {
+  if (!q) return true;
+  const needle = String(q).toLowerCase();
+  return fields.some((f) => String(f || '').toLowerCase().includes(needle));
+}
+// wireListSearch: 搜索框只绑一次（dataset.wired 守卫，多次调 loadX 也不会叠加）。
+function wireListSearch(sel, onInput) {
+  const el = $(sel);
+  if (!el || el.dataset.wired) return;
+  el.dataset.wired = '1';
+  el.addEventListener('input', () => onInput(el.value.trim()));
+}
+/* ---------- 面板 Logo（v1.3.20） ---------- */
+// initLogos: 登录页/侧边栏/设置页三处 Logo 的加载成败回退——/logo 200 就显示
+// 图片、404 就显示默认样式。登录页在登录前就要能显示，所以启动时就绑。
+function initLogos() {
+  [['#login-logo', '#login-logo-default'], ['#brand-logo', '#brand-logo-default'], ['#logo-preview', '#logo-preview-default']].forEach(([imgSel, defSel]) => {
+    const img = $(imgSel), def = $(defSel);
+    if (!img || !def) return;
+    img.addEventListener('error', () => { img.classList.add('hidden'); def.classList.remove('hidden'); });
+    img.addEventListener('load', () => { img.classList.remove('hidden'); def.classList.add('hidden'); });
+    if (img.complete && img.naturalWidth > 0) { img.classList.remove('hidden'); def.classList.add('hidden'); }
+  });
+}
+// refreshLogoViews: 设置页回填后按有没有 Logo 切换三处显示（有 Logo 时带
+// 时间戳重新拉一次，换图后立即生效，不用等缓存过期）。
+function refreshLogoViews(hasLogo) {
+  [['#login-logo', '#login-logo-default'], ['#brand-logo', '#brand-logo-default'], ['#logo-preview', '#logo-preview-default']].forEach(([imgSel, defSel]) => {
+    const img = $(imgSel), def = $(defSel);
+    if (!img || !def) return;
+    if (hasLogo) { img.src = '/logo?' + Date.now(); img.classList.remove('hidden'); def.classList.add('hidden'); }
+    else { img.classList.add('hidden'); def.classList.remove('hidden'); }
+  });
+}
+// 上传 Logo：只接受图片（后端按文件头嗅探，超 2MB 后端直接拒）。
+async function uploadLogo() {
+  const input = $('#logo-input');
+  const file = input && input.files && input.files[0];
+  if (!file) { toast('请先选一张图片', 'err'); return; }
+  const fd = new FormData();
+  fd.append('logo', file);
+  try {
+    const r = await apiPostForm('/api/v1/settings/logo', fd);
+    const msg = $('#logo-msg');
+    if (msg) msg.textContent = '已上传，圆形显示在面板左上角与登录页。';
+    toast('Logo 已上传', 'ok');
+    refreshLogoViews(!!(r && r.has_logo));
+    input.value = '';
+  } catch (err) { toast('上传失败：' + err.message, 'err'); }
+}
+// 删除 Logo：删文件、清 MIME，之后显示默认样式。
+async function deleteLogo() {
+  const ok = await confirmModal('删除面板 Logo', '<p>删掉后面板左上角与登录页恢复默认样式。确定吗？</p>', '删除 Logo', true);
+  if (!ok) return;
+  try {
+    await api('/api/v1/settings/logo', { method: 'DELETE' });
+    const msg = $('#logo-msg');
+    if (msg) msg.textContent = '已删除，恢复默认样式。';
+    toast('Logo 已删除', 'ok');
+    refreshLogoViews(false);
+    const input = $('#logo-input');
+    if (input) input.value = '';
+  } catch (err) { toast('删除失败：' + err.message, 'err'); }
+}
 // ---------- 订阅链接 ----------
 // 订阅链接默认不带 mode 参数（服务端缺省就是分流 MATCH,DIRECT）；只有在
 // 模式选择里显式选了分流/全局，才在复制的链接与二维码里带上 ?mode=。
@@ -2592,6 +2754,47 @@ async function subTokenGenerate(rotated) {
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
 // ---------- 订阅对外域名（v1.3.2） ----------
+// currentSubPath: 当前订阅路径段（settingsCache 里回填的 sub_path，
+// 空 = 默认 sub）。v1.3.20：对外域名、Worker 示例、链接换基地址都走它，
+// 不再写死 'sub'。
+function currentSubPath() {
+  const s = settingsCache && settingsCache.subscription;
+  return (s && s.sub_path) || 'sub';
+}
+// 保存订阅到期时间（v1.3.20）：勾永久 = 空串（永不过期）；填日期 =
+// 当天 23:59:59 到期。只改到期时间，不换令牌，链接不变。
+async function saveSubExpiry() {
+  const perm = $('#sub-expiry-permanent');
+  const dateEl = $('#sub-expiry-date');
+  const expiresAt = (perm && perm.checked) ? '' : (dateEl ? dateEl.value : '');
+  try {
+    const r = await apiPost('/api/v1/settings/subscription/expiry', { expires_at: expiresAt });
+    const status = $('#sub-expiry-status');
+    if (status) status.textContent = r.expires_at ? '当前：' + fmtExpiry(r.expires_at) : '当前：永久';
+    if (dateEl) dateEl.disabled = !r.expires_at;
+    toast(r.expires_at ? '到期时间已保存：' + fmtExpiry(r.expires_at) : '到期时间已保存：永久', 'ok');
+    loadSettingsPage();
+  } catch (err) { toast('保存失败：' + err.message, 'err'); }
+}
+// 保存订阅路径（v1.3.20）：改路径 = 旧订阅链接全部失效 + 面板重启 +
+// 重新登录 + 客户端重新导入，先弹确认框说清楚再调接口。
+async function saveSubPath() {
+  const input = $('#sub-path');
+  const path = input ? input.value.trim() : '';
+  const target = path || 'sub';
+  const cur = currentSubPath();
+  if (target === cur) { toast('订阅路径没变', 'ok'); return; }
+  const ok = await confirmModal('改订阅路径',
+    '<p>订阅路径将从 <b>/' + esc(cur) + '/</b> 改成 <b>/' + esc(target) + '/</b>。</p>' +
+    '<p>改完之后：<b>旧订阅链接全部失效</b>，客户端须重新导入新链接；面板会重启一次，要重新登录；Worker 反代代码也要按新路径重新生成、重新部署。确定吗？</p>',
+    '改路径并重启', true);
+  if (!ok) return;
+  try {
+    const r = await apiPost('/api/v1/settings/sub-path', { path: target });
+    toast(r.msg || '订阅路径已改，面板正在重启', 'ok');
+    setTimeout(() => location.reload(), 1200);
+  } catch (err) { toast('保存失败：' + err.message, 'err'); }
+}
 // 保存订阅对外域名：空 = 清除（恢复成面板自己的地址）；保存后把页面上
 // 正在显示的一次性订阅链接就地换成新域名（只换地址部分，令牌与参数不动），
 // 二维码收起来（里面还是旧链接，重新点一次就好）。
@@ -2607,32 +2810,38 @@ async function saveSubPublicDomain() {
     if (q1) { q1.classList.add('hidden'); q1.hidden = true; }
     if (q2) { q2.classList.add('hidden'); q2.hidden = true; }
     updateWorkerExampleLink(r.domain || '');
-    toast(r.domain ? '订阅对外域名已保存，订阅链接改用 https://' + r.domain + '/sub/…' : '订阅对外域名已清除，订阅链接恢复成面板自己的地址', 'ok');
+    toast(r.domain ? '订阅对外域名已保存，订阅链接改用 https://' + r.domain + '/' + currentSubPath() + '/…' : '订阅对外域名已清除，订阅链接恢复成面板自己的地址', 'ok');
     loadSettingsPage();
   } catch (err) { toast('保存失败：' + err.message, 'err'); }
 }
 // 把页面上正在显示的一次性订阅链接换成新域名（只换地址部分）：
 // 有域名 → https://域名 + 原路径；没域名 → 当前打开面板的地址 + 原路径。
+// 路径段走当前订阅路径（v1.3.20 可自定义），不是写死的 /sub/。
 function rebaseShownSubUrls(domain) {
   const base = domain ? 'https://' + domain : location.origin;
+  const seg = currentSubPath();
   ['#sub-url-value', '#sub-user-url-value'].forEach((sel) => {
     const el = $(sel);
     if (!el || !el.textContent) return;
     try {
       const u = new URL(el.textContent.trim());
-      if (!u.pathname.startsWith('/sub/')) return;
+      if (!u.pathname.startsWith('/' + seg + '/')) return;
       el.textContent = base + u.pathname + u.search + u.hash;
     } catch (e) { /* 不是合法 URL 就不动 */ }
   });
 }
 // Worker 卡片里的示例订阅链接：填了订阅对外域名就用它，没填时用面板自己的地址。
+// 路径段走当前订阅路径（v1.3.20 可自定义）。
 function updateWorkerExampleLink(domain) {
   const el = $('#worker-example-link');
   if (!el) return;
-  el.textContent = domain ? 'https://' + domain + '/sub/<令牌>' : location.origin + '/sub/<令牌>';
+  el.textContent = domain ? 'https://' + domain + '/' + currentSubPath() + '/<令牌>' : location.origin + '/' + currentSubPath() + '/<令牌>';
 }
 // ---------- 订阅用户：一人一条（v1.3.0） ----------
 // 列表只含名字与生成时间，不含令牌；每行都有“复制”按钮，随时能重新拿链接。
+// v1.3.20：列表搜索（名字/备注/勾选摘要）+ 分页（每页 20 条）+ 到期徽章 +
+// 每行“二维码”按钮（扫码导入，编的是这条订阅的链接）。
+let subUserPage = 1, subUserSearch = '';
 async function loadSubUsers() {
   const list = $('#sub-user-list');
   if (!list) return;
@@ -2640,12 +2849,18 @@ async function loadSubUsers() {
     const r = await api('/api/v1/subscriptions/users');
     const users = r.users || [];
     if (!users.length) { list.innerHTML = '<p class="muted small">还没有订阅用户：上面填名字点“新建订阅用户”，每人一条独立链接。</p>'; return; }
-    list.innerHTML = '<h3>订阅用户</h3>' + users.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 内容' + esc(subModeLabel(u.mode)) + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-edit="' + esc(u.id) + '">编辑</button> <button class="btn secondary sm" type="button" data-sub-user-copy="' + esc(u.id) + '">复制</button> <button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
+    const filtered = users.filter((u) => matchSubText(subUserSearch, [u.name, u.note, u.summary, u.kind]));
+    if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的订阅用户，换个关键词试试。</p>'; return; }
+    const pg = paginate(filtered, subUserPage);
+    subUserPage = pg.cur;
+    list.innerHTML = '<h3>订阅用户</h3>' + pg.slice.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 内容' + esc(subModeLabel(u.mode)) + ' · ' + expiryBadge(u.expires_at) + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-edit="' + esc(u.id) + '">编辑</button> <button class="btn secondary sm" type="button" data-sub-user-copy="' + esc(u.id) + '">复制</button> <button class="btn secondary sm" type="button" data-sub-user-qr="' + esc(u.id) + '">二维码</button> <button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
+      pagerHtml(pg.total, pg.cur, pg.totalPages, 'subuser') +
       '<p class="muted small">编辑只改勾选与内容，链接不变；撤销只影响那个人，其他人的链接照常；轮换后旧链接立即失效。</p>';
+    if (pg.totalPages > 1) wirePager(list, 'subuser', pg.cur, pg.totalPages, (p) => { subUserPage = p; loadSubUsers(); });
     $$('[data-sub-user-edit]', list).forEach((b) => b.addEventListener('click', () => {
       const u = users.find((x) => x.id === b.dataset.subUserEdit);
       if (!u) return;
-      openSubEditModal({ kind: 'user', id: u.id, name: u.name, note: u.note, selection: u.selection || [], mode: u.mode });
+      openSubEditModal({ kind: 'user', id: u.id, name: u.name, note: u.note, selection: u.selection || [], mode: u.mode, expires_at: u.expires_at });
     }));
     $$('[data-sub-user-copy]', list).forEach((b) => b.addEventListener('click', async () => {
       try {
@@ -2656,6 +2871,17 @@ async function loadSubUsers() {
         if (box) { box.classList.remove('hidden'); box.hidden = false; }
         copyText(subLinkWithMode(r.url || '', ''), b);
       } catch (e) { toast('复制失败：' + e.message, 'err'); }
+    }));
+    // 每行二维码：取回这条订阅的链接，显示在卡片下方并生成二维码（扫码导入）。
+    $$('[data-sub-user-qr]', list).forEach((b) => b.addEventListener('click', async () => {
+      try {
+        const r = await fetchSubLink('user', b.dataset.subUserQr);
+        if (r.legacy) { await legacySubPrompt(() => rotateSubUser(b.dataset.subUserQr)); return; }
+        $('#sub-user-url-value').textContent = r.url || '';
+        const box = $('#sub-user-once');
+        if (box) { box.classList.remove('hidden'); box.hidden = false; }
+        await loadSubUserQr();
+      } catch (e) { toast('二维码失败：' + e.message, 'err'); }
     }));
     $$('[data-sub-user-rotate]', list).forEach((b) => b.addEventListener('click', async () => {
       const ok = await confirmModal('轮换订阅用户链接', '<p>轮换后这个人的旧订阅链接立即失效，客户端里要换成新链接。确定吗？</p>', '轮换', true);
@@ -2685,11 +2911,13 @@ async function subUserCreate() {
   const name = $('#sub-user-name').value.trim();
   if (!name) { toast('请先填名字（用来认人）', 'err'); return; }
   try {
-    const r = await apiPost('/api/v1/subscriptions/users', { name, note: $('#sub-user-note').value.trim(), mode: subModeOf('sub-user-mode') });
+    const r = await apiPost('/api/v1/subscriptions/users', { name, note: $('#sub-user-note').value.trim(), mode: subModeOf('sub-user-mode'), expires_at: ($('#sub-user-expiry-date') || {}).value || '' });
     $('#sub-user-url-value').textContent = r.url || '';
     const box = $('#sub-user-once');
     if (box) { box.classList.remove('hidden'); box.hidden = false; }
     $('#sub-user-name').value = ''; $('#sub-user-note').value = '';
+    const expEl = $('#sub-user-expiry-date');
+    if (expEl) expEl.value = '';
     toast('订阅用户已新建，链接显示在下面，随时能复制', 'ok');
     loadSubUsers();
   } catch (err) { toast('新建失败：' + err.message, 'err'); }
@@ -2790,9 +3018,17 @@ async function openSubEditModal(opts) {
     '<div data-edit-tree style="margin-top:12px">加载中…</div>' +
     '<p class="muted small">' + esc(isMerged ? '合并订阅至少要勾一个落地。' : '全部不勾 = 全部落地（单面板全量订阅）。') + '</p>' +
     '<div data-sub-mode-group style="margin-top:12px">' + subModeRadioCardsHTML('sub-edit-mode') + '</div>' +
+    '<div class="btn-row" style="margin-top:12px"><label class="small">到期时间：<input type="date" data-edit-expiry value="' + esc(dateInputOfExpiry(opts.expires_at)) + '"' + (opts.expires_at ? '' : ' disabled') + '></label>' +
+    '<label class="small"><input type="checkbox" data-edit-permanent' + (opts.expires_at ? '' : ' checked') + '> 永久</label></div>' +
+    '<p class="muted small">到期时间到了，这条订阅就打不开；改到期时间不换令牌，链接不变。勾永久 = 永不过期；填日期 = 当天 23:59:59 到期。</p>' +
     '<div class="btn-row" style="margin-top:12px"><button class="btn" type="button" data-edit-save>保存</button>' +
     '<button class="btn secondary" type="button" data-edit-cancel>取消</button></div>', true);
   if (!m) return;
+  // 永久勾选与日期框联动：勾永久时日期框置灰。
+  onIn(m, '[data-edit-permanent]', 'change', () => {
+    const d = m.querySelector('[data-edit-expiry]'), p = m.querySelector('[data-edit-permanent]');
+    if (d && p) d.disabled = p.checked;
+  });
   // 三选一按当前值预选（只同步弹窗里这一组，不动页面上其他组与上次选择）。
   syncOneSubModeGroup(m.querySelector('[data-sub-mode-group]'), subModeValid(opts.mode || 'both'));
   m.querySelectorAll('[data-sub-mode-group] .radio-card').forEach((c) => c.addEventListener('click', () => {
@@ -2814,13 +3050,17 @@ async function openSubEditModal(opts) {
     if (isMerged && !selection.length) { toast('合并订阅至少要勾一个落地', 'err'); return; }
     if (!isMerged && !name) { toast('请先填名字（用来认人）', 'err'); return; }
     const mode = subModeOf('sub-edit-mode');
+    // 到期时间：勾永久 = 空串（永不过期）；不勾 = 日期框的值。
+    const permEl = m.querySelector('[data-edit-permanent]');
+    const expEl = m.querySelector('[data-edit-expiry]');
+    const expiresAt = (permEl && permEl.checked) ? '' : (expEl ? expEl.value : '');
     try {
       const url = isMerged
         ? '/api/v1/subscriptions/merged/' + encodeURIComponent(opts.id)
         : '/api/v1/subscriptions/users/' + encodeURIComponent(opts.id);
       const body = isMerged
-        ? { selection, name, mode }
-        : { name, note: ((m.querySelector('[data-edit-note]') || {}).value || '').trim(), selection, mode };
+        ? { selection, name, mode, expires_at: expiresAt }
+        : { name, note: ((m.querySelector('[data-edit-note]') || {}).value || '').trim(), selection, mode, expires_at: expiresAt };
       await api(url, { method: 'PUT', body: JSON.stringify(body) });
       closeModal();
       toast('已保存，订阅链接不变，下次更新即按新勾选同步', 'ok');
@@ -2856,6 +3096,7 @@ function openMergedSubModal(url, opts) {
     (opts.name ? '<div class="kv"><span>归属到人</span><b>' + esc(opts.name) + '</b></div>' : '') +
     '<div class="kv"><span>订阅链接</span><b class="mono" style="word-break:break-all" data-merged-url>' + esc(curUrl) + '</b></div>' +
     (opts.mode ? '<div class="kv"><span>订阅内容</span><b>' + esc(subModeLabel(opts.mode)) + '</b></div>' : '') +
+    (opts.expires_at !== undefined ? '<div class="kv"><span>到期时间</span><b>' + esc(fmtExpiry(opts.expires_at)) + '</b></div>' : '') +
     '<p class="muted small">模式（可选）：<select data-sub-mode><option value="" selected>默认（不带参数，服务端按分流出）</option><option value="split">分流（TikTok/社交/流媒体走节点，其他直连）</option><option value="global">全局（全部走代理）</option></select>　客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表）；也可以手动加后缀：?format=clash / base64 / plain，?mode=split / global。默认复制的链接不带模式参数；只有规则模式下想全走代理、又保留分类分流时，才选全局。</p>' +
     '<div class="btn-row"><button class="btn sm" type="button" data-sub-copy-url>复制订阅链接</button>' +
     '<button class="btn secondary sm" type="button" data-sub-copy-clash>复制 Clash 链接</button>' +
@@ -2928,11 +3169,11 @@ function openMergedSubModal(url, opts) {
 // 给一份勾选（单个或多个落地）生成订阅链接，弹窗显示链接与复制按钮。
 // selection: [{panel:'local'|远程面板 id, landing:编号}]；name 选填（归属到人，
 // 只在合并订阅生成时传，填了就新起一条、不走轮换）；mode 是内容范围
-// （both|relay|direct），不传默认全部。
-async function showSubForSelection(selection, title, name, mode) {
+// （both|relay|direct），不传默认全部；expiresAt 选填（日期，空 = 永久）。
+async function showSubForSelection(selection, title, name, mode, expiresAt) {
   try {
-    const r = await apiPost('/api/v1/subscriptions/merged', { selection, name: name || undefined, mode: subModeValid(mode || 'both') });
-    openMergedSubModal(r.url || '', { title, rotated: r.rotated, name, mergedId: r.id, mode: r.mode || mode || 'both' });
+    const r = await apiPost('/api/v1/subscriptions/merged', { selection, name: name || undefined, mode: subModeValid(mode || 'both'), expires_at: expiresAt || '' });
+    openMergedSubModal(r.url || '', { title, rotated: r.rotated, name, mergedId: r.id, mode: r.mode || mode || 'both', expires_at: r.expires_at });
     loadMergedSubsList();
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
@@ -3347,6 +3588,8 @@ function refreshCentralSubTreeStates() {
   if (gen) gen.disabled = checked === 0;
 }
 // 已生成的合并订阅列表（只列勾选内容与生成时间，不含链接本身）。
+// v1.3.20：合并订阅列表搜索（名字/勾选摘要）+ 分页（每页 20 条）+ 到期徽章。
+let mergedSubPage = 1, mergedSubSearch = '';
 async function loadMergedSubsList() {
   const list = $('#central-sub-list');
   if (!list) return;
@@ -3354,18 +3597,24 @@ async function loadMergedSubsList() {
     const r = await api('/api/v1/subscriptions/merged');
     const subs = r.subs || [];
     if (!subs.length) { list.innerHTML = '<p class="muted small">还没有合并订阅：上面勾选落地后点“生成合并订阅”。</p>'; return; }
-    list.innerHTML = '<h3>已生成的合并订阅</h3>' + subs.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-edit-merged="' + esc(s.id) + '">编辑</button> <button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-mode-merged="' + esc(s.mode || '') + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
+    const filtered = subs.filter((s) => matchSubText(mergedSubSearch, [s.name, s.summary]));
+    if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的合并订阅，换个关键词试试。</p>'; return; }
+    const pg = paginate(filtered, mergedSubPage);
+    mergedSubPage = pg.cur;
+    list.innerHTML = '<h3>已生成的合并订阅</h3>' + pg.slice.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-edit-merged="' + esc(s.id) + '">编辑</button> <button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-mode-merged="' + esc(s.mode || '') + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
+      pagerHtml(pg.total, pg.cur, pg.totalPages, 'mergedsub') +
       '<p class="muted small">编辑只改勾选与内容，链接不变；每条订阅都有“复制”按钮，链接加密存在面板里，随时能重新复制；旧链接（1.3.7 之前生成的）没有存密文，点轮换生成一条新的（旧链接立即失效），或重新勾选生成（不填名称时同一选择重新生成会轮换；填了名称是新起一条，各归各人）。</p>';
+    if (pg.totalPages > 1) wirePager(list, 'mergedsub', pg.cur, pg.totalPages, (p) => { mergedSubPage = p; loadMergedSubsList(); });
     $$('[data-sub-edit-merged]', list).forEach((b) => b.addEventListener('click', () => {
       const s = subs.find((x) => x.id === b.dataset.subEditMerged);
       if (!s) return;
-      openSubEditModal({ kind: 'merged', id: s.id, name: s.name, selection: s.selection || [], mode: s.mode });
+      openSubEditModal({ kind: 'merged', id: s.id, name: s.name, selection: s.selection || [], mode: s.mode, expires_at: s.expires_at });
     }));
     $$('[data-sub-copy-merged]', list).forEach((b) => b.addEventListener('click', async () => {
       try {
         const r = await fetchSubLink('merged', b.dataset.subCopyMerged);
         if (r.legacy) { await legacySubPrompt(() => rotateMergedSub(b.dataset.subCopyMerged, b.dataset.subNameMerged || undefined)); return; }
-        openMergedSubModal(r.url || '', { title: '订阅链接', name: b.dataset.subNameMerged || undefined, mergedId: b.dataset.subCopyMerged, mode: b.dataset.subModeMerged || undefined });
+        openMergedSubModal(r.url || '', { title: '订阅链接', name: b.dataset.subNameMerged || undefined, mergedId: b.dataset.subCopyMerged, mode: b.dataset.subModeMerged || undefined, expires_at: r.expires_at });
       } catch (e) { toast('复制失败：' + e.message, 'err'); }
     }));
     $$('[data-sub-rotate-merged]', list).forEach((b) => b.addEventListener('click', async () => {
@@ -4095,8 +4344,12 @@ function initCentral() {
     }));
     if (!selection.length) { toast('请先勾选至少一个落地', 'err'); return; }
     const nameEl = $('#central-sub-name');
-    await showSubForSelection(selection, '合并订阅', nameEl ? nameEl.value.trim() : '', subModeOf('central-sub-mode'));
+    const expEl = $('#central-sub-expiry-date');
+    await showSubForSelection(selection, '合并订阅', nameEl ? nameEl.value.trim() : '', subModeOf('central-sub-mode'), expEl ? expEl.value : '');
+    if (expEl) expEl.value = '';
   });
+  // 合并订阅列表搜索（v1.3.20）：输入即过滤，回到第 1 页。
+  wireListSearch('#central-sub-search', (q) => { mergedSubSearch = q; mergedSubPage = 1; loadMergedSubsList(); });
   on('#central-add-form', 'submit', async (e) => {
     e.preventDefault();
     const name = $('#central-name').value.trim();
@@ -4126,6 +4379,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // 否则登录页和后台都出不来，页面就是白板。
   const safeInit = (fn) => { try { fn(); } catch (e) { /* 忽略：单个初始化失败不影响其他 */ } };
   safeInit(initTheme);
+  safeInit(initLogos); // v1.3.20：登录页/侧边栏 Logo 加载成败回退（登录前就要能显示）
   safeInit(buildNav);
   safeInit(initDrawer);
   safeInit(initLogin);

@@ -48,12 +48,16 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/links", s.requireAuth(s.handleLinks))
 	mux.HandleFunc("POST /api/v1/links/twin", s.requireAuth(s.handleTwin))
 	mux.HandleFunc("POST /api/v1/links/delete", s.requireAuth(s.handleDeleteLinksGroups))
-	// 订阅链接（v1.2.7）：/sub/{token} 是公开端点（令牌本身就是鉴权），不走登录会话
-	mux.HandleFunc("GET /sub/{token}", s.handleSub)
+	// 订阅链接（v1.2.7）：/<订阅路径>/{token} 是公开端点（令牌本身就是鉴权），不走登录会话。
+	// 路径段走 s.subPath()（v1.3.20 可自定义，默认 sub）；改路径要重启面板
+	// （路由在启动时注册），旧路径不再有路由。
+	mux.HandleFunc("GET /"+s.subPath()+"/{token}", s.handleSub)
 	mux.HandleFunc("GET /api/v1/settings/subscription", s.requireAuth(s.handleSubTokenGet))
 	mux.HandleFunc("POST /api/v1/settings/subscription/generate", s.requireAuth(s.handleSubTokenGenerate))
+	mux.HandleFunc("POST /api/v1/settings/subscription/expiry", s.requireAuth(s.handleSubTokenSetExpiry))
 	mux.HandleFunc("POST /api/v1/settings/subscription/revoke", s.requireAuth(s.handleSubTokenRevoke))
 	mux.HandleFunc("POST /api/v1/settings/subscription-domain", s.requireAuth(s.handleSubPublicDomainSet))
+	mux.HandleFunc("POST /api/v1/settings/sub-path", s.requireAuth(s.handleSubPathSet))
 	mux.HandleFunc("POST /api/v1/subscription/qr", s.requireAuth(s.handleSubQR))
 	mux.HandleFunc("GET /api/v1/subscriptions/link", s.requireAuth(s.handleSubLink))
 	mux.HandleFunc("GET /api/v1/subscriptions/merged", s.requireAuth(s.handleMergedSubsList))
@@ -75,6 +79,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/service/{action}", s.requireAuth(s.handleService))
 	mux.HandleFunc("GET /api/v1/logs", s.requireAuth(s.handleLogs))
 	mux.HandleFunc("GET /api/v1/ports", s.requireAuth(s.handlePorts))
+	// 面板 Logo（v1.3.20）：GET /logo 是公开端点（登录页未登录也要显示），
+	// 不走登录会话；上传/删除走会话认证。
+	mux.HandleFunc("GET /logo", s.handleLogo)
+	mux.HandleFunc("POST /api/v1/settings/logo", s.requireAuth(s.handleLogoUpload))
+	mux.HandleFunc("DELETE /api/v1/settings/logo", s.requireAuth(s.handleLogoDelete))
 	// 设置
 	mux.HandleFunc("GET /api/v1/settings", s.requireAuth(s.handleSettings))
 	mux.HandleFunc("POST /api/v1/settings/panel-name", s.requireAuth(s.handlePanelNameSet))
@@ -186,10 +195,11 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // ipWhitelistMiddleware IP 白名单：空=不限制；白名单外任何接口都 403。
-// 例外：/sub/ 订阅端点不走白名单（订阅客户端从任意 IP 拉取，令牌本身就是鉴权）。
+// 例外：订阅端点不走白名单（订阅客户端从任意 IP 拉取，令牌本身就是鉴权），
+// 路径段走 s.subPath()；/logo 也不走白名单（登录页未登录也要显示）。
 func (s *Server) ipWhitelistMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/sub/") {
+		if strings.HasPrefix(r.URL.Path, "/"+s.subPath()+"/") || r.URL.Path == "/logo" {
 			next.ServeHTTP(w, r)
 			return
 		}

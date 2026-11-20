@@ -50,10 +50,21 @@ type PanelConfig struct {
 	// 不用重新导出。
 	// SubTokenMode（v1.3.17）：这条通用订阅的内容范围，both|relay|direct，
 	// 空（老记录）按 both；/sub/ 服务时按它过滤链接。
+	// SubTokenExpiresAt（v1.3.20）：通用订阅到期时间，RFC3339，空 = 永久；
+	// 到期后 /sub/{token} 返回 410，客户端更新拉不到节点；轮换不改它。
 	SubTokenHash      string `json:"sub_token_hash"`
 	SubTokenEnc       string `json:"sub_token_enc,omitempty"`
 	SubTokenCreatedAt string `json:"sub_token_created_at"`
 	SubTokenMode      string `json:"sub_token_mode,omitempty"`
+	SubTokenExpiresAt string `json:"sub_token_expires_at,omitempty"`
+	// 订阅路径（v1.3.20，反特征）：订阅端点的路径段，默认 "sub"，即 /sub/{token}。
+	// 可改成任意单段路径（如 x9f2）；改了之后旧订阅链接全部失效（路由只注册
+	// 新路径），改路径会重启面板（路由在启动时注册）并要求重新登录。
+	// 空（老配置）= 默认 "sub"。
+	SubPath string `json:"sub_path,omitempty"`
+	// 面板 Logo（v1.3.20）：文件存在 PANEL_HOME/logo（更新不丢），这里只记
+	// 它的 MIME（上传时嗅探得到）；空 = 没传 Logo，显示默认样式。
+	LogoMime string `json:"logo_mime,omitempty"`
 	// 订阅对外域名（v1.3.2）：部署完 Cloudflare Worker 后填 Worker 的域名
 	// （或在触发器里绑的自定义域名）。填了之后，面板里显示与复制的订阅链接
 	// （通用链接、每人链接、合并订阅、二维码）都改用 https://这个域名/sub/…，
@@ -145,6 +156,8 @@ type SubSelection struct {
 // Selection 是这份订阅绑定的勾选集合。
 // Mode（v1.3.17）：内容范围，both|relay|direct，空（老记录）按 both；
 // /sub/ 服务时按它过滤链接；轮换令牌时保持不变（专用轮换接口不带 mode）。
+// ExpiresAt（v1.3.20）：到期时间，RFC3339，空 = 永久；到期后 /sub/{token}
+// 返回 410；轮换不改它，编辑时可改。
 // Name 是归属到人（v1.3.0，选填）：填了就新起一条，同一勾选集合可有
 // 多个不同名称的令牌，各归各人；不填走老逻辑（同一选择重新生成会轮换）。
 type MergedSub struct {
@@ -155,6 +168,7 @@ type MergedSub struct {
 	CreatedAt string         `json:"created_at"`
 	Selection []SubSelection `json:"selection"`
 	Mode      string         `json:"mode,omitempty"`
+	ExpiresAt string         `json:"expires_at,omitempty"`
 }
 
 // SubUser 一人一条订阅链接（v1.3.0）：TokenHash 是订阅令牌的 SHA-256
@@ -164,6 +178,8 @@ type MergedSub struct {
 // 非空 = 合并订阅的勾选集合（只导选中的落地）。
 // Mode（v1.3.17）：内容范围，both|relay|direct，空（老记录）按 both；
 // /sub/ 服务时按它过滤链接；轮换令牌时保持不变（专用轮换接口不带 mode）。
+// ExpiresAt（v1.3.20）：到期时间，RFC3339，空 = 永久；到期后 /sub/{token}
+// 返回 410；轮换不改它，编辑时可改。
 type SubUser struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
@@ -173,6 +189,7 @@ type SubUser struct {
 	CreatedAt string         `json:"created_at"`
 	Selection []SubSelection `json:"selection,omitempty"`
 	Mode      string         `json:"mode,omitempty"`
+	ExpiresAt string         `json:"expires_at,omitempty"`
 }
 
 // ---------- 面板扩展状态（PANEL_HOME/state.json） ----------
@@ -697,6 +714,74 @@ func pruneDir(dir string, keep int) {
 	}
 }
 
+// subPath 订阅端点的路径段（v1.3.20，反特征）：配置里 SubPath 为空
+// （老配置）时默认 "sub"，即 /sub/{token}；改了就用改的值。
+func (s *Server) subPath() string {
+	p := strings.TrimSpace(s.cfg.SubPath)
+	if p == "" {
+		return "sub"
+	}
+	return p
+}
+
+// validSubPath 校验自定义订阅路径段：单段、字母数字开头、只含字母数字
+// 与 - _、1–32 个字符；"api" 与 "logo" 是保留段（路由与 Logo 接口在用），
+// 不能用；"sub" 是默认值，允许（改回默认）。
+func validSubPath(p string) bool {
+	if p == "" {
+		return false
+	}
+	if len(p) > 32 {
+		return false
+	}
+	if p == "api" || p == "logo" {
+		return false
+	}
+	for i, r := range p {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_'
+		if !ok {
+			return false
+		}
+		if i == 0 && r >= '0' && r <= '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// ---------- 订阅到期时间（v1.3.20） ----------
+
+// parseSubExpiry 解析用户填的到期时间：空 = 永久；"YYYY-MM-DD" = 当天
+// 23:59:59（服务器本地时间）；RFC3339 全串原样接受。返回规范化后的
+// RFC3339（空 = 永久），非法返回错误。
+func parseSubExpiry(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", nil
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t.UTC().Format(time.RFC3339), nil
+	}
+	if d, err := time.ParseInLocation("2006-01-02", v, time.Local); err == nil {
+		end := time.Date(d.Year(), d.Month(), d.Day(), 23, 59, 59, 0, time.Local)
+		return end.UTC().Format(time.RFC3339), nil
+	}
+	return "", fmt.Errorf("到期时间不对：填日期（如 2026-12-31）或留空表示永久")
+}
+
+// subExpired 到期时间是否已过：空 = 永久不过期；解析失败的按不过期处理
+// （旧数据容错，不因格式问题把订阅直接判死）。
+func subExpired(expiresAt string, now time.Time) bool {
+	if strings.TrimSpace(expiresAt) == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		return false
+	}
+	return now.After(t)
+}
+
 // ---------- 审计日志 ----------
 
 type AuditEntry struct {
@@ -727,7 +812,10 @@ func (s *Server) audit(user, action, target, result, detail string) {
 // 连轮转旧份一起读（audit.log 最新，其次 .1/.2/.3），这样翻页能看到轮转前的旧记录。
 // 单次扫描：文件本身被轮转限制在 10MB 以内，读全文件再切片是可接受的；
 // 只保留当前页的条目进内存，total 是全部有效记录数。page 从 1 开始。
-func (s *Server) readAuditPage(page, pageSize int) ([]AuditEntry, int) {
+// q（v1.3.20）：搜索关键词，空 = 不过滤；非空时只留时间/用户/操作/对象/
+// 结果/详情里含该词（不区分大小写）的记录，total 也按过滤后算。
+func (s *Server) readAuditPage(page, pageSize int, q string) ([]AuditEntry, int) {
+	q = strings.ToLower(strings.TrimSpace(q))
 	files := []string{"audit.log", "audit.log.1", "audit.log.2", "audit.log.3"}
 	offset := (page - 1) * pageSize
 	end := offset + pageSize
@@ -746,6 +834,12 @@ func (s *Server) readAuditPage(page, pageSize int) ([]AuditEntry, int) {
 			var e AuditEntry
 			if json.Unmarshal([]byte(lines[i]), &e) != nil {
 				continue
+			}
+			if q != "" {
+				hay := strings.ToLower(e.TS + " " + e.User + " " + e.Action + " " + e.Target + " " + e.Result + " " + e.Detail)
+				if !strings.Contains(hay, q) {
+					continue
+				}
 			}
 			if total >= offset && total < end {
 				out = append(out, e)

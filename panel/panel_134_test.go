@@ -154,35 +154,36 @@ func strconv_Quote134(s string) string {
 }
 
 // TestSubContentDisposition134 订阅响应带 Content-Disposition 文件名：
-// Clash YAML 用“<面板名称>.yaml”，base64/plain 用“<面板名称>.txt”；
-// 单面板与合并订阅都用本面板（合并订阅的主面板）的名。
+// v1.3.20 起文件名通用（反特征，不再用面板名）：Clash YAML 用
+// subscription.yaml，base64/plain 用 subscription.txt；改面板名也不变；
+// 单面板与合并订阅都一样。
 func TestSubContentDisposition134(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
 	s.cfg.SubTokenHash = hashSubToken(tok)
-	// Clash：默认名 CP管理（中文）→ filename* 带 UTF-8 编码的文件名
+	// Clash：通用名 subscription.yaml，不含面板名
 	rec := callSub(t, s, tok, "/sub/"+tok+"?format=clash", "Clash")
 	cd := rec.Header().Get("Content-Disposition")
-	if !strings.Contains(cd, `filename*=UTF-8''CP%E7%AE%A1%E7%90%86.yaml`) {
-		t.Fatalf("Clash 订阅的 Content-Disposition 应带 CP管理.yaml，实际：%q", cd)
+	if !strings.Contains(cd, `filename="subscription.yaml"`) {
+		t.Fatalf("Clash 订阅的 Content-Disposition 应是 subscription.yaml，实际：%q", cd)
 	}
-	if !strings.Contains(cd, `filename="panel.yaml"`) {
-		t.Fatalf("中文名时 filename 应有 ASCII 兜底 panel.yaml，实际：%q", cd)
+	if strings.Contains(cd, "CP管理") || strings.Contains(cd, "panel.yaml") {
+		t.Fatalf("下载文件名不应含面板名或旧兜底名，实际：%q", cd)
 	}
-	// base64 → .txt
+	// base64 → subscription.txt
 	rec = callSub(t, s, tok, "/sub/"+tok+"?format=base64", "")
 	cd = rec.Header().Get("Content-Disposition")
-	if !strings.Contains(cd, `filename*=UTF-8''CP%E7%AE%A1%E7%90%86.txt`) {
-		t.Fatalf("base64 订阅的 Content-Disposition 应带 CP管理.txt，实际：%q", cd)
+	if !strings.Contains(cd, `filename="subscription.txt"`) {
+		t.Fatalf("base64 订阅的 Content-Disposition 应是 subscription.txt，实际：%q", cd)
 	}
-	// 改成 ASCII 名后 filename 直接用原名
+	// 改成 ASCII 名后文件名仍是通用名（不跟面板名走）
 	s.cfg.PanelName = "MyPanel"
 	rec = callSub(t, s, tok, "/sub/"+tok+"?format=clash", "Clash")
 	cd = rec.Header().Get("Content-Disposition")
-	if !strings.Contains(cd, `filename="MyPanel.yaml"`) || !strings.Contains(cd, `filename*=UTF-8''MyPanel.yaml`) {
-		t.Fatalf("ASCII 名时两处都应用原名，实际：%q", cd)
+	if !strings.Contains(cd, `filename="subscription.yaml"`) || strings.Contains(cd, "MyPanel") {
+		t.Fatalf("改面板名后文件名仍应是通用名，实际：%q", cd)
 	}
-	// 合并订阅同样带文件名（用主面板的名）
+	// 合并订阅同样用通用名
 	req := httptest.NewRequest("POST", "/api/v1/subscriptions/merged", strings.NewReader(`{"selection":[{"panel":"local","landing":1}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec2 := httptest.NewRecorder()
@@ -199,8 +200,8 @@ func TestSubContentDisposition134(t *testing.T) {
 		t.Fatalf("合并订阅应 200，实际 %d", rec.Code)
 	}
 	cd = rec.Header().Get("Content-Disposition")
-	if !strings.Contains(cd, `filename="MyPanel.yaml"`) {
-		t.Fatalf("合并订阅也应用主面板名，实际：%q", cd)
+	if !strings.Contains(cd, `filename="subscription.yaml"`) {
+		t.Fatalf("合并订阅也应用通用名 subscription.yaml，实际：%q", cd)
 	}
 }
 

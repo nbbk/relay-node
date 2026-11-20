@@ -53,8 +53,15 @@ func (s *Server) serveEmbeddedWeb(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(data)
 		return
 	}
-	// 文件不存在：带后缀的当 404；无后缀路径当 SPA 回退
+	// 文件不存在：带后缀的当 404；无后缀路径当 SPA 回退。
+	// 但像订阅链接的路径（两段、第二段以 sub_ 开头）绝不回退 index.html：
+	// 订阅路径改了之后，旧路径上的令牌请求必须 404（改路径即旧链接失效），
+	// 回退成 index.html 会让客户端拿到一个 HTML 当订阅，静默失败。
 	if strings.Contains(p, ".") {
+		http.NotFound(w, r)
+		return
+	}
+	if parts := strings.Split(strings.Trim(p, "/"), "/"); len(parts) == 2 && strings.HasPrefix(parts[1], "sub_") {
 		http.NotFound(w, r)
 		return
 	}

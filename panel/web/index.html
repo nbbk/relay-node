@@ -25,6 +25,7 @@
 <!-- 登录页默认隐藏：由 JS 在会话校验失败后才显示；内联兜底脚本在 app.js 失效时也会把它放出来 -->
 <div id="login-view" class="login-wrap hidden" hidden>
   <div class="login-card">
+    <div class="login-logo-wrap"><img id="login-logo" class="login-logo hidden" src="/logo" alt="面板 Logo"><span id="login-logo-default" class="logo-default login-logo">管</span></div>
     <div class="brand">__PANEL_NAME__</div>
     <p class="sub">__PANEL_NAME__ · 请登录</p>
     <div id="login-error" class="error-box hidden"></div>
@@ -48,7 +49,7 @@
 <div id="app" class="hidden" hidden>
   <div class="scrim hidden" id="scrim" hidden></div>
   <aside class="sidebar" id="sidebar">
-    <div class="brand">__PANEL_NAME__<button class="icon-btn sidebar-close" id="sidebar-close" type="button" aria-label="关闭菜单">✕</button></div>
+    <div class="brand"><img id="brand-logo" class="brand-logo hidden" src="/logo" alt="面板 Logo"><span id="brand-logo-default" class="logo-default brand-logo">管</span><span id="brand-name">__PANEL_NAME__</span><button class="icon-btn sidebar-close" id="sidebar-close" type="button" aria-label="关闭菜单">✕</button></div>
     <nav id="side-nav"></nav>
     <div class="foot">
       <div>面板版本：<span id="side-version">—</span></div>
@@ -79,6 +80,7 @@
         <div id="check-result" style="margin-top:16px"></div>
         <div id="update-banner" style="margin-top:16px"></div>
         <h2 style="margin-top:20px">落地列表</h2>
+        <div class="list-toolbar"><input id="landing-search" class="list-search" type="search" placeholder="搜索落地：名称、地址、域名…" aria-label="搜索落地"></div>
         <div class="landing-grid" id="landing-cards"></div>
         <div id="overview-empty" class="empty hidden">中转还没装好，也没有落地节点。<br>去「添加落地」加第一个落地，中转会自动装好。<br><button class="btn" type="button" data-goto="add" style="margin-top:10px">＋ 添加第一个落地</button></div>
       </section>
@@ -252,7 +254,14 @@
               <input id="panel-name" maxlength="24" placeholder="CP管理" required>
               <div class="btn-row"><button class="btn" type="submit">保存名称</button></div>
             </form>
-            <p class="small muted">订阅导入客户端后，配置就叫这个名（订阅响应带 Content-Disposition 文件名：Clash 订阅是“&lt;面板名称&gt;.yaml”，其他格式是“&lt;面板名称&gt;.txt”）。</p>
+            <p class="small muted">订阅导入客户端后，配置就叫这个名。下载的文件名固定叫 <code>subscription.yaml</code>（Clash 配置）或 <code>subscription.txt</code>（其他格式），不带面板名，避免被认出来是机场订阅。</p>
+          </div>
+              <div class="card" id="card-logo">
+            <h2>面板 Logo</h2>
+            <p class="muted">传一张图片，圆形显示在面板左上角和登录页面板名称上方；没传显示默认样式。文件存在面板数据目录里，更新面板不会丢；换图直接重新上传，删掉就恢复默认。只支持 PNG、JPG、GIF、WebP，大小不超过 2MB。</p>
+            <div class="logo-preview-wrap"><img id="logo-preview" class="login-logo hidden" src="/logo" alt="Logo 预览"><span id="logo-preview-default" class="logo-default login-logo">管</span></div>
+            <div class="row"><input type="file" id="logo-input" accept="image/png,image/jpeg,image/gif,image/webp"><button class="btn" id="btn-logo-upload" type="button">上传 Logo</button><button class="btn btn-danger" id="btn-logo-delete" type="button">删除 Logo</button></div>
+            <div id="logo-msg" class="hint"></div>
           </div>
               <div class="card">
             <h2>面板端口</h2>
@@ -380,7 +389,7 @@
               <button class="btn danger" id="central-token-revoke" type="button">撤销令牌</button>
             </div>
           </div>
-              <div class="card"><div id="audit-list"></div></div>
+              <div class="card"><div class="list-toolbar"><input id="audit-search" class="list-search" type="search" placeholder="搜索审计日志：用户、操作、对象…" aria-label="搜索审计日志"></div><div id="audit-list"></div></div>
             </div>
           </div>
           <div class="settings-panel hidden" role="tabpanel" id="settings-panel-subscription" aria-labelledby="settings-tab-subscription" hidden>
@@ -428,10 +437,22 @@
             </div>
             <p class="small">链接泄露可一键轮换，旧链接立即失效；撤销后订阅立即打不开。</p>
             <div class="btn-row" style="margin-top:10px">
+              <label class="small">到期时间：<input id="sub-expiry-date" type="date"></label>
+              <label class="small"><input type="checkbox" id="sub-expiry-permanent" checked> 永久</label>
+              <button class="btn secondary" id="sub-expiry-save" type="button">保存到期时间</button>
+              <span class="small muted" id="sub-expiry-status"></span>
+            </div>
+            <p class="small muted">到期时间到了，订阅链接就打不开（客户端更新拉不到节点）；轮换不改到期时间。留空勾永久 = 永不过期；填日期 = 当天 23:59:59 到期。</p>
+            <div class="btn-row" style="margin-top:10px">
               <label class="small">订阅对外域名（选填）：<input id="sub-public-domain" type="text" placeholder="例如：relay.example.com" style="width:280px"></label>
               <button class="btn secondary" id="sub-public-domain-save" type="button">保存</button>
             </div>
-            <p class="small muted">选填，留空就用面板自己的地址（IP:端口），直接能用，不用配域名。部署完 Cloudflare Worker、想让订阅走 Worker 域名时再填 Worker 的域名（或在触发器里绑的自定义域名）：填了之后，面板里所有订阅链接（通用链接、每人链接、合并订阅、二维码）都改成 https://这个域名/sub/…，不再显示面板自己的地址；留空保存就恢复成面板自己的地址。只填域名（可带端口），不用写 https://，不用写路径。Worker 代码里的源站地址不受影响，仍是面板真实地址。</p>
+            <p class="small muted">选填，留空就用面板自己的地址（IP:端口），直接能用，不用配域名。部署完 Cloudflare Worker、想让订阅走 Worker 域名时再填 Worker 的域名（或在触发器里绑的自定义域名）：填了之后，面板里所有订阅链接（通用链接、每人链接、合并订阅、二维码）都改成 https://这个域名/<span id="sub-path-example">sub</span>/…，不再显示面板自己的地址；留空保存就恢复成面板自己的地址。只填域名（可带端口），不用写 https://，不用写路径。Worker 代码里的源站地址不受影响，仍是面板真实地址。</p>
+            <div class="btn-row" style="margin-top:10px">
+              <label class="small">订阅路径（选填）：<span class="mono">/</span><input id="sub-path" type="text" placeholder="sub" style="width:140px"></label>
+              <button class="btn secondary" id="sub-path-save" type="button">保存路径</button>
+            </div>
+            <p class="small muted">默认是 /sub/，订阅链接就是 https://域名/sub/&lt;令牌&gt;。想让订阅链接更不像机场，就改成别的单段路径（例如 x9f2，链接变成 https://域名/x9f2/&lt;令牌&gt;）。改路径后：面板会重启一次、要重新登录；旧订阅链接全部失效，客户端须重新导入新链接；Worker 反代代码也要按新路径重新生成、重新部署。路径只允许字母开头、字母数字与 - _、1–32 个字符；api 与 logo 是保留段，不能用。留空保存 = 恢复默认 sub。</p>
           </div>
               <div class="card">
             <h2>订阅用户（一人一条）</h2>
@@ -439,8 +460,10 @@
             <div class="btn-row">
               <label class="small">名字：<input id="sub-user-name" type="text" placeholder="例如：张三的手机" style="width:160px"></label>
               <label class="small">备注：<input id="sub-user-note" type="text" placeholder="选填，例如：备用机" style="width:160px"></label>
+              <label class="small">到期（选填）：<input id="sub-user-expiry-date" type="date"></label>
               <button class="btn" id="sub-user-create" type="button">新建订阅用户</button>
             </div>
+            <p class="small muted">到期留空 = 永久；填日期 = 当天 23:59:59 到期，到期后这条订阅打不开。</p>
             <div id="sub-user-mode-group" data-sub-mode-group style="margin-top:12px">
               <div class="small muted" style="margin-bottom:6px">订阅内容：</div>
               <label class="radio-card selected" data-sub-mode="both"><input type="radio" name="sub-user-mode" value="both" checked> <span class="opt-title">全部</span><div class="opt-desc">中转和直连的节点都进订阅。</div></label>
@@ -463,6 +486,7 @@
                 <p class="small muted">二维码里是上面这条订阅链接（默认不带模式参数；选了全局才带 ?mode=global）；换模式后二维码跟着重新生成，扫码后客户端按 UA 自动识别格式。</p>
               </div>
             </div>
+            <div class="list-toolbar"><input id="sub-user-search" class="list-search" type="search" placeholder="搜索订阅用户：名字、备注…" aria-label="搜索订阅用户"></div>
             <div id="sub-user-list" style="margin-top:12px">加载中…</div>
           </div>
               <div class="card">
@@ -555,6 +579,7 @@
               <button class="btn" id="bk-save" type="button">保存设置</button>
             </div>
             <div id="bk-last" class="small muted" style="margin-top:8px"></div>
+            <div class="list-toolbar"><input id="sched-backup-search" class="list-search" type="search" placeholder="搜索备份：时间、类型…" aria-label="搜索备份"></div>
             <div id="sched-backup-list" style="margin-top:12px"></div>
           </div>
               <div class="card">
@@ -745,7 +770,9 @@
               <label class="radio-card" data-sub-mode="relay"><input type="radio" name="central-sub-mode" value="relay"> <span class="opt-title">仅中转</span><div class="opt-desc">只要走中转机的节点。</div></label>
               <label class="radio-card" data-sub-mode="direct"><input type="radio" name="central-sub-mode" value="direct"> <span class="opt-title">仅直连</span><div class="opt-desc">只要直连落地机的节点。</div></label>
             </div>
-            <div class="btn-row"><label class="small">归属到人（选填）：<input id="central-sub-name" type="text" placeholder="例如：张三的手机" style="width:160px"></label><button class="btn" id="central-sub-generate" type="button" disabled>生成合并订阅</button></div>
+            <div class="btn-row"><label class="small">归属到人（选填）：<input id="central-sub-name" type="text" placeholder="例如：张三的手机" style="width:160px"></label><label class="small">到期（选填）：<input id="central-sub-expiry-date" type="date"></label><button class="btn" id="central-sub-generate" type="button" disabled>生成合并订阅</button></div>
+            <p class="small muted">到期留空 = 永久；填日期 = 当天 23:59:59 到期，到期后这条订阅打不开。</p>
+            <div class="list-toolbar"><input id="central-sub-search" class="list-search" type="search" placeholder="搜索合并订阅：名字、勾选…" aria-label="搜索合并订阅"></div>
             <div id="central-sub-list" style="margin-top:12px"></div>
           </div>
         </div>

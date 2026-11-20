@@ -308,7 +308,7 @@ func TestEvaluateLatencyDedupThrottleRecover(t *testing.T) {
 		t.Fatalf("再次离线后审计=%d want 3", n)
 	}
 	// 审计内容应包含离线与恢复两种事件
-	entries, _ := s.readAuditPage(1, 1000)
+	entries, _ := s.readAuditPage(1, 1000, "")
 	var sawOff, sawRecover bool
 	for _, e := range entries {
 		if e.Action != "延迟探测" || e.Target != "203.0.113.1" {

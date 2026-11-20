@@ -32,7 +32,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"backup":        s.cfg.Backup,
 		"remote_backup": s.remoteBackupStatus(),
 		"central_token": map[string]any{"has_token": s.cfg.RemoteTokenHash != "", "created_at": s.cfg.RemoteTokenCreatedAt},
-		"subscription":  map[string]any{"has_token": s.cfg.SubTokenHash != "", "has_link": s.cfg.SubTokenEnc != "", "created_at": s.cfg.SubTokenCreatedAt, "public_domain": s.cfg.SubPublicDomain, "worker_origin": s.cfg.WorkerOrigin, "mode": s.cfg.SubTokenMode},
+		"subscription":  map[string]any{"has_token": s.cfg.SubTokenHash != "", "has_link": s.cfg.SubTokenEnc != "", "created_at": s.cfg.SubTokenCreatedAt, "public_domain": s.cfg.SubPublicDomain, "worker_origin": s.cfg.WorkerOrigin, "mode": s.cfg.SubTokenMode, "expires_at": s.cfg.SubTokenExpiresAt, "sub_path": s.subPath()},
+		"logo":         map[string]any{"has_logo": s.logoExists()},
 		// 登录安全（v1.3.8，可选，默认关）：telegram_configured 指 Telegram 提醒
 		// 真能发（开关开着且 Token 与 Chat ID 都填了），没配好时登录告警开关置灰；
 		// 密钥与备用码明文绝不经这个接口返回。
@@ -879,14 +880,18 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	if pageSize > 100 {
 		pageSize = 100
 	}
-	entries, total := s.readAuditPage(page, pageSize)
+	q := r.URL.Query().Get("q")
+	if len(q) > 200 {
+		q = q[:200]
+	}
+	entries, total := s.readAuditPage(page, pageSize, q)
 	totalPages := 0
 	if total > 0 {
 		totalPages = (total + pageSize - 1) / pageSize
 	}
 	writeJSON(w, 200, okResp(map[string]any{
 		"entries": entries, "total": total, "page": page,
-		"page_size": pageSize, "total_pages": totalPages,
+		"page_size": pageSize, "total_pages": totalPages, "q": q,
 	}))
 }
 
