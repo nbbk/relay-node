@@ -1673,7 +1673,7 @@ async function loadSettingsPage() {
       '<div class="kv"><span>状态</span><b>' + (st.update_available ? '<span class="badge yellow">有更新</span>' : '<span class="badge green">已是最新</span>') + '</b></div>' +
       '<div class="kv"><span>仓库</span><b><a href="https://github.com/nbbk/relay-node" target="_blank" rel="noopener">relay-node</a></b></div>';
   } catch (e) { toast('设置加载失败：' + e.message, 'err'); }
-  loadBackups(); loadAudit(); loadSubUsers(); loadSchedBackups();
+  loadAudit(); loadSubUsers(); loadSchedBackups();
 }
 // 切换面板模式（v1.2.8）：只改 manager_only 开关，数据保留；切完刷新页面重建导航。
 async function switchPanelMode(toManager) {
@@ -1899,10 +1899,6 @@ function initSettings() {
       toast(r.update_available ? '发现新版本 ' + (r.latest_version || '') : '已是最新版本', r.update_available ? undefined : 'ok');
     } catch (err) { toast('检查失败：' + err.message, 'err'); }
   });
-  on('#backup-create', 'click', async () => {
-    try { await apiPost('/api/v1/backups', { label: '手动备份' }); toast('备份已创建', 'ok'); loadBackups(); }
-    catch (err) { toast('备份失败：' + err.message, 'err'); }
-  });
   // 自动定时备份设置（v1.3.6）
   on('#bk-save', 'click', async () => {
     try {
@@ -2055,28 +2051,6 @@ function initUpdatePoll() {
       toast('更新失败：' + err.message, 'err');
     }
   });
-}
-let backupsPage = 1;
-async function loadBackups(page) {
-  if (page) backupsPage = page;
-  const wrap = $('#backup-list');
-  try {
-    const r = await api('/api/v1/backups');
-    const list = r.backups || [];
-    if (!list.length) { wrap.innerHTML = '<div class="empty">暂无备份。</div>'; return; }
-    const pg = paginate(list, backupsPage);
-    backupsPage = pg.cur;
-    wrap.innerHTML = pg.slice.map((b) =>
-      '<div class="kv"><span>' + esc(b.label || b.id) + '<br><span class="small">' + esc(fmtDate(b.ts)) + ' · ' + esc(b.scope || '') + '</span></span>' +
-      '<span><button class="btn secondary sm" type="button" data-restore-bk="' + esc(b.id) + '">恢复</button></span></div>').join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'backups');
-    $$('[data-restore-bk]', wrap).forEach((btn) => btn.addEventListener('click', async () => {
-      const ok = await confirmModal('恢复备份', '<p>恢复会用这份备份覆盖当前配置并重启 realm。确定恢复吗？</p>', '恢复备份', true);
-      if (!ok) return;
-      try { await apiPost('/api/v1/backups/' + encodeURIComponent(btn.dataset.restoreBk) + '/restore', {}); toast('备份已恢复', 'ok'); loadOverview(); }
-      catch (e) { toast('恢复失败：' + e.message, 'err'); }
-    }));
-    if (pg.totalPages > 1) wirePager(wrap, 'backups', pg.cur, pg.totalPages, (p) => loadBackups(p));
-  } catch (e) { wrap.innerHTML = '<div class="empty">备份列表不可用：' + esc(e.message) + '</div>'; }
 }
 // 自动定时备份列表（v1.3.6）：恢复/删除，恢复前弹确认（会覆盖当前配置并重启 realm）。
 async function loadSchedBackups() {

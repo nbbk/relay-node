@@ -805,80 +805,11 @@ func (s *Server) handleTrafficReset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, okResp(nil))
 }
 
-// ---------- 备份 / 导出导入 / 审计 ----------
-
-func (s *Server) handleBackupsList(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, okResp(map[string]any{"backups": s.listBackups()}))
-}
-
-func (s *Server) handleBackupsCreate(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Label string `json:"label"`
-	}
-	_ = decodeJSON(r, &req)
-	if req.Label == "" {
-		req.Label = "手动备份"
-	}
-	if !s.tryOpLock(w) {
-		return
-	}
-	defer s.opMu.Unlock()
-	id, err := s.backupNow(req.Label, "realm")
-	if err != nil {
-		writeJSON(w, 500, errResp("备份失败："+err.Error()))
-		return
-	}
-	s.audit(s.currentUser(r), "备份", req.Label, "成功", id)
-	writeJSON(w, 200, okResp(map[string]any{"id": id}))
-}
-
-func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	dir := filepath.Join(s.env.PanelHome, "backups", id)
-	if _, err := os.Stat(filepath.Join(dir, "meta.json")); err != nil {
-		writeJSON(w, 404, errResp("没有这份备份"))
-		return
-	}
-	if !s.tryOpLock(w) {
-		return
-	}
-	defer s.opMu.Unlock()
-	// 先备份当前再恢复
-	_, _ = s.backupNow("恢复备份前自动备份", "realm")
-	if b, err := os.ReadFile(filepath.Join(dir, "config.toml")); err == nil {
-		if err := s.writeConfigTomlAtomic(b); err != nil {
-			writeJSON(w, 500, errResp("恢复 config.toml 失败："+err.Error()))
-			return
-		}
-	}
-	if b, err := os.ReadFile(filepath.Join(dir, "relay.conf")); err == nil {
-		if err := s.writeRelayConfAtomic(b); err != nil {
-			writeJSON(w, 500, errResp("恢复 relay.conf 失败："+err.Error()))
-			return
-		}
-	}
-	if b, err := os.ReadFile(filepath.Join(dir, "state.json")); err == nil {
-		_ = writeFileAtomic(filepath.Join(s.env.PanelHome, "state.json"), b, 0o600)
-		_ = s.loadState()
-	}
-	_ = s.regenProxies()
-	if err := s.restartRealm(); err != nil {
-		writeJSON(w, 200, errResp("配置已恢复，但重启 realm 失败："+err.Error()))
-		return
-	}
-	if rc, _, err := s.readRelayConf(); err == nil {
-		var ports []PortSpec
-		for _, l := range rc.Landings {
-			ports = append(ports, l.Ports...)
-		}
-		if err := verifyPorts(ports); err != nil {
-			writeJSON(w, 200, errResp("恢复后端口校验失败："+err.Error()))
-			return
-		}
-	}
-	s.audit(s.currentUser(r), "恢复备份", id, "成功", "")
-	writeJSON(w, 200, okResp(nil))
-}
+// ---------- 导出导入 / 审计 ----------
+// v1.3.18：旧手动备份（/api/v1/backups，backups/ 文件快照）已删——
+// 唯一备份入口是定时备份 JSON（/api/v1/scheduled-backups），恢复走它。
+// backupNow 本身保留：仍是改配置前操作自动快照的内部安全网
+// （写 backups/ 与 /etc/realm/backup/，各留最近 10 份；面板里不再列出）。
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	// 数据口径见 exportData（与定时备份共用；不含密码哈希和 Telegram Token）。

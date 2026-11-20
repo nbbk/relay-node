@@ -689,7 +689,8 @@ func TestMobileDrawerAndUpdatePoll(t *testing.T) {
 		// 刷新按钮反馈：转圈 + 成功/失败 toast + 防重复点
 		"spinning", "已刷新", "刷新失败",
 		// 各列表分页命名空间 + 组内链接收起
-		"'overview'", "'manage'", "'recycle'", "'links'", "'certs'", "'backups'", "'firewall'", "'ports'",
+		// （v1.3.18：旧手动备份列表已删，它的 'backups' 分页命名空间随之没了）
+		"'overview'", "'manage'", "'recycle'", "'links'", "'certs'", "'firewall'", "'ports'",
 		"extra-links", "data-expand-links",
 	} {
 		if !strings.Contains(js, want) {

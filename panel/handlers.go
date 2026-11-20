@@ -144,10 +144,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/firewall", s.requireAuth(s.handleFirewallPost))
 	mux.HandleFunc("GET /api/v1/traffic", s.requireAuth(s.handleTrafficGet))
 	mux.HandleFunc("POST /api/v1/traffic/reset", s.requireAuth(s.handleTrafficReset))
-	mux.HandleFunc("GET /api/v1/backups", s.requireAuth(s.handleBackupsList))
-	mux.HandleFunc("POST /api/v1/backups", s.requireAuth(s.handleBackupsCreate))
-	mux.HandleFunc("POST /api/v1/backups/{id}/restore", s.requireAuth(s.handleBackupRestore))
-	// 自动定时备份（v1.3.6）
+	// 自动定时备份（v1.3.6；v1.3.18 起唯一的备份入口，旧 /api/v1/backups 已删）
 	mux.HandleFunc("GET /api/v1/settings/backup", s.requireAuth(s.handleBackupSettingsGet))
 	mux.HandleFunc("POST /api/v1/settings/backup", s.requireAuth(s.handleBackupSettingsPost))
 	mux.HandleFunc("GET /api/v1/scheduled-backups", s.requireAuth(s.handleScheduledBackupsList))

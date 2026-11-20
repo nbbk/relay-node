@@ -697,29 +697,6 @@ func pruneDir(dir string, keep int) {
 	}
 }
 
-func (s *Server) listBackups() []BackupMeta {
-	out := []BackupMeta{}
-	ents, err := os.ReadDir(filepath.Join(s.env.PanelHome, "backups"))
-	if err != nil {
-		return out
-	}
-	for _, e := range ents {
-		if !e.IsDir() {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(s.env.PanelHome, "backups", e.Name(), "meta.json"))
-		if err != nil {
-			continue
-		}
-		var m BackupMeta
-		if json.Unmarshal(b, &m) == nil {
-			out = append(out, m)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].TS > out[j].TS })
-	return out
-}
-
 // ---------- 审计日志 ----------
 
 type AuditEntry struct {

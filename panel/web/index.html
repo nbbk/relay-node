@@ -544,12 +544,10 @@
           <div class="settings-panel hidden" role="tabpanel" id="settings-panel-backup" aria-labelledby="settings-tab-backup" hidden>
             <div class="grid cols-2">
               <div class="card">
-            <h2>备份（本机备份）</h2>
-            <p class="muted">备份到面板本机：点“立即备份”在本机生成一份备份文件，存在面板本机；恢复点下面列表里的“恢复”。</p>
-            <div class="btn-row" style="margin-top:0"><button class="btn" id="backup-create" type="button">立即备份</button></div>
-            <div id="backup-list" style="margin-top:12px"></div>
-            <h2 style="margin-top:20px">自动定时备份（本机备份）</h2>
-            <p class="muted">每天自动备份一次，存在面板本机；备份内容和手动导出一样（落地、设置、订阅用户、流量库），不含密码哈希与 Telegram Token。保留份数到了就删最旧的，不会把盘写满。备完后自动加密传一份到 R2 和七牛云（见下面“远程备份”）。</p>
+            <h2>备份</h2>
+            <p class="muted">每次备份都先存本机；R2 和七牛云开了才另外加密传一份，没开就不传。备份内容包括落地、设置、订阅用户、流量库，不含密码哈希与 Telegram Token；保留份数到了就删最旧的，不会把盘写满。</p>
+            <div class="btn-row" style="margin-top:0"><button class="btn" id="bk-now" type="button">立即备份</button></div>
+            <h2 style="margin-top:20px">自动定时备份</h2>
             <div class="btn-row" style="margin-top:0;flex-wrap:wrap">
               <label class="small"><input id="bk-enabled" type="checkbox"> 启用自动备份</label>
               <label class="small">时间 <input id="bk-time" type="time" value="03:00" style="width:96px"></label>
@@ -557,7 +555,6 @@
               <button class="btn" id="bk-save" type="button">保存设置</button>
             </div>
             <div id="bk-last" class="small muted" style="margin-top:8px"></div>
-            <div class="btn-row"><button class="btn" id="bk-now" type="button">立即备份一次</button></div>
             <div id="sched-backup-list" style="margin-top:12px"></div>
           </div>
               <div class="card">
