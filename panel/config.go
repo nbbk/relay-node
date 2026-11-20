@@ -99,6 +99,14 @@ type PanelConfig struct {
 	// 登录页标题/品牌、侧边栏品牌、manifest 与订阅导入后的配置名都跟着它变；
 	// 旧 config.json 里没有这个字段时按默认值处理，不用迁移。
 	PanelName string `json:"panel_name"`
+	// 登录页公告（v1.3.21）：设置页可改的多行纯文本，显示在登录页登录按钮
+	// 下方；空 = 不显示。只按纯文本展示，不解析 HTML；限 500 字。
+	// 旧 config.json 里没有这个字段时按空处理，不用迁移。
+	LoginNotice string `json:"login_notice,omitempty"`
+	// 登录页签名（v1.3.21）：设置页可改的单行文本，显示在登录页面板名称
+	// 下方；空 = 回落到默认“{面板名} · 请登录”。只按纯文本展示，不解析
+	// HTML；限 60 字。旧 config.json 里没有这个字段时按空处理，不用迁移。
+	LoginSignature string `json:"login_signature,omitempty"`
 	// 登录告警（v1.3.8，可选，默认关）：连续 5 次登录失败触发锁定时、
 	// 以及新 IP 第一次成功登录时，走 Telegram 发提醒。没配 Telegram 时
 	// 开关不可用（前端置灰并提示先配 Telegram）；旧配置没有这个字段时

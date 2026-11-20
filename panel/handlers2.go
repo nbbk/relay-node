@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ---------- 设置 ----------
@@ -24,16 +25,18 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, okResp(map[string]any{
 		"port": s.cfg.Port, "https_enabled": s.cfg.HTTPSEnabled, "https_domain": s.cfg.HTTPSDomain,
 		"ip_whitelist": s.cfg.IPWhitelist, "relay_addr": relayAddr,
-		"manager_only":  s.cfg.ManagerOnly,
-		"panel_name":    s.panelName(),
-		"telegram":      map[string]any{"enabled": s.cfg.Telegram.Enabled, "chat_id": s.cfg.Telegram.ChatID, "has_token": s.cfg.Telegram.BotToken != ""},
-		"monitor":       s.cfg.Monitor,
-		"latency":       s.cfg.Latency,
-		"backup":        s.cfg.Backup,
-		"remote_backup": s.remoteBackupStatus(),
-		"central_token": map[string]any{"has_token": s.cfg.RemoteTokenHash != "", "created_at": s.cfg.RemoteTokenCreatedAt},
-		"subscription":  map[string]any{"has_token": s.cfg.SubTokenHash != "", "has_link": s.cfg.SubTokenEnc != "", "created_at": s.cfg.SubTokenCreatedAt, "public_domain": s.cfg.SubPublicDomain, "worker_origin": s.cfg.WorkerOrigin, "mode": s.cfg.SubTokenMode, "expires_at": s.cfg.SubTokenExpiresAt, "sub_path": s.subPath()},
-		"logo":         map[string]any{"has_logo": s.logoExists()},
+		"manager_only":    s.cfg.ManagerOnly,
+		"panel_name":      s.panelName(),
+		"login_notice":    s.cfg.LoginNotice,
+		"login_signature": s.cfg.LoginSignature,
+		"telegram":        map[string]any{"enabled": s.cfg.Telegram.Enabled, "chat_id": s.cfg.Telegram.ChatID, "has_token": s.cfg.Telegram.BotToken != ""},
+		"monitor":         s.cfg.Monitor,
+		"latency":         s.cfg.Latency,
+		"backup":          s.cfg.Backup,
+		"remote_backup":   s.remoteBackupStatus(),
+		"central_token":   map[string]any{"has_token": s.cfg.RemoteTokenHash != "", "created_at": s.cfg.RemoteTokenCreatedAt},
+		"subscription":    map[string]any{"has_token": s.cfg.SubTokenHash != "", "has_link": s.cfg.SubTokenEnc != "", "created_at": s.cfg.SubTokenCreatedAt, "public_domain": s.cfg.SubPublicDomain, "worker_origin": s.cfg.WorkerOrigin, "mode": s.cfg.SubTokenMode, "expires_at": s.cfg.SubTokenExpiresAt, "sub_path": s.subPath()},
+		"logo":            map[string]any{"has_logo": s.logoExists()},
 		// 登录安全（v1.3.8，可选，默认关）：telegram_configured 指 Telegram 提醒
 		// 真能发（开关开着且 Token 与 Chat ID 都填了），没配好时登录告警开关置灰；
 		// 密钥与备用码明文绝不经这个接口返回。
@@ -95,6 +98,97 @@ func (s *Server) handlePanelNameSet(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(s.currentUser(r), "改面板名称", "改成 "+name, "成功", "")
 	writeJSON(w, 200, okResp(map[string]any{"panel_name": s.panelName()}))
+}
+
+// ---------- 登录页公告（v1.3.21） ----------
+
+// handlePublicInfo 公开读登录页公开信息：登录页未登录也要读，不走登录会话
+// 与 IP 白名单（见 ipWhitelistMiddleware 的例外）。公告空 = 没设置，登录
+// 页不显示；签名空 = 回落默认“{面板名} · 请登录”。
+func (s *Server) handlePublicInfo(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, okResp(map[string]any{"login_notice": s.cfg.LoginNotice, "login_signature": s.cfg.LoginSignature}))
+}
+
+// validLoginNotice 校验公告文案：限 500 字；只允许多行纯文本，控制字符里
+// 只认换行与制表（\n \r \t），其余一律拒绝——登录页只按纯文本输出，不解析
+// HTML，双重保险。
+func validLoginNotice(notice string) bool {
+	if utf8.RuneCountInString(notice) > 500 {
+		return false
+	}
+	for _, r := range notice {
+		if (r < 0x20 && r != '\n' && r != '\r' && r != '\t') || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// handleLoginNoticeSet 改登录页公告：存 config.json 的 login_notice。
+// 留空 = 清掉，登录页不再显示。超 500 字或含非法控制字符时返回 400。
+func (s *Server) handleLoginNoticeSet(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Notice string `json:"notice"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	notice := strings.TrimSpace(req.Notice)
+	if !validLoginNotice(notice) {
+		writeJSON(w, 400, errResp("公告不对：最多 500 字，不能含控制字符"))
+		return
+	}
+	old := s.cfg.LoginNotice
+	s.cfg.LoginNotice = notice
+	if err := s.saveConfig(); err != nil {
+		s.cfg.LoginNotice = old
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	s.audit(s.currentUser(r), "改登录页公告", map[bool]string{true: "已清空", false: "已保存"}[notice == ""], "成功", "")
+	writeJSON(w, 200, okResp(map[string]any{"login_notice": s.cfg.LoginNotice}))
+}
+
+// validLoginSignature 校验登录页签名：单行文本，限 60 字；任何控制字符
+// （含换行、制表）都不认——登录页只按纯文本输出，不解析 HTML，双重保险。
+func validLoginSignature(sig string) bool {
+	if utf8.RuneCountInString(sig) > 60 {
+		return false
+	}
+	for _, r := range sig {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// handleLoginSignatureSet 改登录页签名：存 config.json 的 login_signature。
+// 留空 = 清掉，登录页副标题回落默认“{面板名} · 请登录”。超 60 字或含控制
+// 字符时返回 400。
+func (s *Server) handleLoginSignatureSet(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Signature string `json:"signature"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	sig := strings.TrimSpace(req.Signature)
+	if !validLoginSignature(sig) {
+		writeJSON(w, 400, errResp("签名不对：最多 60 字，不能换行、不能含控制字符"))
+		return
+	}
+	old := s.cfg.LoginSignature
+	s.cfg.LoginSignature = sig
+	if err := s.saveConfig(); err != nil {
+		s.cfg.LoginSignature = old
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	s.audit(s.currentUser(r), "改登录页签名", map[bool]string{true: "已清空", false: "已保存"}[sig == ""], "成功", "")
+	writeJSON(w, 200, okResp(map[string]any{"login_signature": s.cfg.LoginSignature}))
 }
 
 // ---------- 管理面板模式切换（v1.2.8） ----------

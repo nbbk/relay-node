@@ -139,11 +139,17 @@ async function apiPostForm(path, formData) {
 }
 
 /* ---------- 弹窗 ---------- */
+// 统一弹窗（v1.3.21）：全面板唯一一种弹窗样式——同一遮罩、同一卡片、同一关闭
+// 方式（右上角 × 按钮 + 点遮罩关闭 + Esc 关闭）。内容包在 .modal-body 里；
+// 弹窗里再有异步改写（如体检结果、中央详情）只改 .modal-body 或里面的子节点，
+// 绝不整块替换 .modal，保证 × 按钮不被洗掉。
 function openModal(html, wide) {
   const root = $('#modal-root');
   if (!root) return null; // 弹窗容器缺失时直接放弃，绝不抛错
-  root.innerHTML = '<div class="modal-backdrop"><div class="modal' + (wide ? ' wide' : '') + '" role="dialog" aria-modal="true">' + html + '</div></div>';
+  root.innerHTML = '<div class="modal-backdrop"><div class="modal' + (wide ? ' wide' : '') + '" role="dialog" aria-modal="true">' +
+    '<button class="modal-x" type="button" aria-label="关闭弹窗">×</button><div class="modal-body">' + html + '</div></div></div>';
   onIn(root, '.modal-backdrop', 'click', (e) => { if (e.target.classList.contains('modal-backdrop')) closeModal(); });
+  onIn(root, '.modal-x', 'click', () => closeModal());
   return $('.modal', root);
 }
 function closeModal() { const r = $('#modal-root'); if (r) r.innerHTML = ''; }
@@ -291,12 +297,38 @@ function showLogin() {
   const app = $('#app'), login = $('#login-view');
   if (app) { app.classList.add('hidden'); app.hidden = true; }
   if (login) { login.classList.remove('hidden'); login.hidden = false; }
+  loadLoginPublic();
 }
 function showApp() {
   hideLoading();
   const app = $('#app'), login = $('#login-view');
   if (login) { login.classList.add('hidden'); login.hidden = true; }
   if (app) { app.classList.remove('hidden'); app.hidden = false; }
+}
+
+// 登录页公开信息（v1.3.21）：公告与签名走公开接口读，不走登录会话；
+// 公告用 textContent 输出（纯文本，不解析 HTML），没设置就不显示；
+// 签名设置了就替换副标题，没设置就留服务端渲染的默认文案不动。
+// 拉不到（网络问题/接口异常）就静默跳过，不影响登录。
+async function loadLoginPublic() {
+  const noticeBox = $('#login-notice'), sub = $('#login-sub');
+  if (!noticeBox && !sub) return;
+  let d = null;
+  try {
+    const r = await fetch('/api/v1/public-info');
+    if (!r.ok) return;
+    d = await r.json();
+  } catch (e) { return; }
+  if (!d) return;
+  if (noticeBox) {
+    const notice = (d.login_notice || '').trim();
+    if (!notice) { noticeBox.classList.add('hidden'); noticeBox.hidden = true; }
+    else { noticeBox.textContent = d.login_notice; noticeBox.classList.remove('hidden'); noticeBox.hidden = false; }
+  }
+  if (sub) {
+    const sig = (d.login_signature || '').trim();
+    if (sig) sub.textContent = d.login_signature;
+  }
 }
 // 显隐切换：class 与 hidden 属性一起切（只靠 class 的话，style.css 加载失败时会堆在一起）
 function setVisible(el, show) {
@@ -435,7 +467,7 @@ document.addEventListener('click', (e) => {
   if (g) goto(g.dataset.goto);
   const x = e.target.closest('[data-expand-links]');
   if (x) {
-    const box = x.closest('.card, .central-link-body, .central-landing-body');
+    const box = x.closest('.card, .central-link-body, .modal-body');
     const extra = box ? box.querySelector('.extra-links') : null;
     if (!extra) return;
     const nowHidden = extra.classList.toggle('hidden');
@@ -647,13 +679,16 @@ function renderLandingCards(page) {
 }
 
 /* ---------- 一键体检 + 一键修复 ---------- */
+// 体检结果走统一弹窗（v1.3.21）：以前是服务页行内卡片，现在点“体检”弹弹窗，
+// 异步回来的结果只写弹窗里的 .modal-body，右上角 × 不会被洗掉。
 function initCheck() {
   on('#check-btn', 'click', async () => {
-    const box = $('#check-result');
-    box.innerHTML = '<div class="card">体检中，请稍候…</div>';
+    const m = openModal('<h2>体检结果</h2><p class="muted">体检中，请稍候…</p>');
+    if (!m) return;
+    const body = m.querySelector('.modal-body');
     try {
       const c = await apiPost('/api/v1/check', {});
-      let h = '<div class="card"><h2>体检结果</h2>';
+      let h = '<h2>体检结果</h2>';
       (c.sections || []).forEach((sec) => {
         h += '<h3 style="margin-top:12px">' + esc(sec.name) + ' <span class="badge ' + (sec.status === 'pass' ? 'green' : sec.status === 'warn' ? 'yellow' : 'red') + '">' + esc(sec.status) + '</span></h3>';
         (sec.items || []).forEach((it) => {
@@ -666,13 +701,12 @@ function initCheck() {
         issues.forEach((is, i) => {
           h += '<div class="kv"><span>❌ ' + esc(is.message || is.code) + '</span><span><button class="btn sm" type="button" data-fix="' + i + '">一键修复</button></span></div>';
         });
-        box.dataset.issues = JSON.stringify(issues);
+        body.dataset.issues = JSON.stringify(issues);
       } else h += '<div class="ok-box" style="margin-top:12px">全部正常，没有发现问题。</div>';
-      h += '</div>';
-      box.innerHTML = h;
-      $$('[data-fix]', box).forEach((b) => b.addEventListener('click', () => fixIssue(JSON.parse(box.dataset.issues)[Number(b.dataset.fix)])));
+      body.innerHTML = h;
+      $$('[data-fix]', body).forEach((b) => b.addEventListener('click', () => fixIssue(JSON.parse(body.dataset.issues)[Number(b.dataset.fix)])));
     } catch (e) {
-      box.innerHTML = '<div class="card"><div class="error-box">体检失败：' + esc(e.message) + '</div></div>';
+      body.innerHTML = '<div class="error-box">体检失败：' + esc(e.message) + '</div>';
     }
   });
 }
@@ -774,10 +808,10 @@ async function submitAdd(payload, shareChoice) {
     if (shareChoice) { body.share_mode = shareChoice.mode; if (shareChoice.overrides) body.listen_overrides = shareChoice.overrides; }
     const r = await apiPost('/api/v1/landings', body);
     if (r.need_choice) { await showShareChoice(r, payload); return; }
-    $('#add-result').innerHTML = '<div class="card"><h2>✅ 落地添加成功</h2>' +
+    openModal('<h2>✅ 落地添加成功</h2>' +
       (r.door_note ? '<div class="warn-box">' + esc(r.door_note) + '</div>' : '') +
       ((r.qr && Object.keys(r.qr).length) ? '' : '<p class="muted">二维码生成失败，仅显示链接。</p>') +
-      linksHtml(r.links, r.qr) + '</div>';
+      linksHtml(r.links, r.qr));
     toast('落地添加成功', 'ok');
     loadOverview();
   } catch (e) {
@@ -1224,8 +1258,7 @@ async function loadLinks(page) {
         (g.mode === 'door' ? ' <span class="badge blue">任意门模式</span>' : '') +
         '<button class="btn secondary sm" type="button" data-group-export="' + ord + '">导出</button>' +
         '<button class="btn danger sm" type="button" data-group-del="' + ord + '">删除</button>' +
-        '<button class="btn secondary sm" type="button" data-group-toggle="' + ord + '">展开 ▸</button></div>' +
-        '<div class="group-body hidden" data-group-body="' + ord + '">' + linksHtml(g.links, g.qr) + '</div></div>';
+        '<button class="btn secondary sm" type="button" data-group-toggle="' + ord + '">查看</button></div></div>';
     }).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'links');
     renderLinksToolbar();
     // 全选框状态：本页全勾才勾上
@@ -1245,12 +1278,12 @@ async function loadLinks(page) {
         all2.checked = boxes.length > 0 && boxes.every((b) => b.checked);
       }
     }));
-    // 点行（除勾选框与按钮外）展开/收起
+    // 点行（除勾选框与按钮外）弹出该组详情弹窗
     $$('[data-group-head]', wrap).forEach((head) => head.addEventListener('click', (e) => {
       if (e.target.closest('input[type="checkbox"]') || e.target.closest('button')) return;
-      toggleLinksGroup(Number(head.dataset.groupHead));
+      showLinksGroupModal(Number(head.dataset.groupHead));
     }));
-    $$('[data-group-toggle]', wrap).forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); toggleLinksGroup(Number(b.dataset.groupToggle)); }));
+    $$('[data-group-toggle]', wrap).forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); showLinksGroupModal(Number(b.dataset.groupToggle)); }));
     $$('[data-group-export]', wrap).forEach((b) => b.addEventListener('click', (e) => {
       e.stopPropagation();
       const g = linksGroupsCache[Number(b.dataset.groupExport)];
@@ -1277,39 +1310,29 @@ async function loadLinks(page) {
   }
 }
 // 展开/收起一组历史记录（默认折叠）
-function toggleLinksGroup(ord) {
-  const body = $('[data-group-body="' + ord + '"]');
-  const btn = $('[data-group-toggle="' + ord + '"]');
-  if (!body) return;
-  const nowHidden = body.classList.toggle('hidden');
-  if (btn) btn.textContent = nowHidden ? '展开 ▸' : '收起 ▾';
+// 历史记录组详情弹窗（v1.3.21）：以前点行是行内展开，现在统一走弹窗。
+function showLinksGroupModal(ord) {
+  const g = linksGroupsCache[ord];
+  if (!g) return;
+  openModal('<h2>' + esc(g.name || g.landing || '') + '</h2>' + linksHtml(g.links, g.qr));
 }
 // v1.3.16：节点链接生成方式（三选一），上次的选择记在 localStorage，默认全部。
 const TWIN_MODE_KEY = 'relay-panel-twin-mode';
 function twinMode() {
-  const c = document.querySelector('input[name="twin-mode"]:checked');
-  const v = c ? c.value : 'both';
+  const s = document.querySelector('select[name="twin-mode"]');
+  const v = s ? s.value : 'both';
   return (v === 'relay' || v === 'direct' || v === 'both') ? v : 'both';
 }
 function initTwin() {
   // 恢复上次的生成方式（非法值回落到全部）
+  const sel = document.querySelector('select[name="twin-mode"]');
   try {
     const saved = localStorage.getItem(TWIN_MODE_KEY);
-    if (saved === 'relay' || saved === 'direct' || saved === 'both') {
-      const input = document.querySelector('input[name="twin-mode"][value="' + saved + '"]');
-      if (input) input.checked = true;
-    }
+    if (sel && (saved === 'relay' || saved === 'direct' || saved === 'both')) sel.value = saved;
   } catch (e) { /* 隐私模式等存不了就每次回默认 */ }
-  const syncTwinModeCards = () => {
-    $$('#twin-mode-group .radio-card').forEach((c) => c.classList.toggle('selected', c.dataset.twinMode === twinMode()));
-  };
-  syncTwinModeCards();
-  // 点卡片直接给它加 selected（label 的 click 先于 radio 切换触发，这里不读 checked，跟分流选择弹窗同一写法）。
-  $$('#twin-mode-group .radio-card').forEach((c) => c.addEventListener('click', () => {
-    $$('#twin-mode-group .radio-card').forEach((x) => x.classList.remove('selected'));
-    c.classList.add('selected');
-    try { localStorage.setItem(TWIN_MODE_KEY, c.dataset.twinMode); } catch (e) {}
-  }));
+  if (sel) sel.addEventListener('change', () => {
+    try { localStorage.setItem(TWIN_MODE_KEY, twinMode()); } catch (e) {}
+  });
   on('#twin-form', 'submit', async (e) => {
     e.preventDefault();
     const link = $('#twin-link').value.trim();
@@ -1325,11 +1348,11 @@ function initTwin() {
       const links = [];
       if (r.relay_link) links.push({ label: relayLabel, link: r.relay_link });
       if (r.direct_link) links.push({ label: '直连', link: r.direct_link });
-      $('#twin-result').innerHTML = '<div class="card" style="margin-top:16px"><h2>生成结果</h2>' +
+      openModal('<h2>生成结果</h2>' +
         (r.manual ? '<div class="warn-box">' + esc(r.manual) + '</div>' : '') +
         (r.persist_error ? '<div class="warn-box">' + esc(r.persist_error) + '</div>' : '') +
         ((r.qr && Object.keys(r.qr).length) ? '' : '<p class="muted">二维码生成失败，仅显示链接。</p>') +
-        linksHtml(links, r.qr) + '</div>';
+        linksHtml(links, r.qr));
       toast('twin 生成成功', 'ok');
     } catch (err) { toast('生成失败：' + err.message, 'err'); }
   });
@@ -1491,7 +1514,7 @@ function renderSecurityCard(sec) {
 // 其他面板隐藏；上次点的选项卡记在 localStorage，刷新、重启面板、检查更新回来
 // 后仍停在那里。选项卡是原生 button：Tab 能走到，回车/空格切换；方向键在
 // 选项卡之间移动并切换，Home/End 跳到两端。
-const SETTINGS_TABS = ['basic', 'security', 'subscription', 'alerts', 'backup'];
+const SETTINGS_TABS = ['basic', 'security', 'audit', 'subscription', 'domain', 'alerts', 'backup'];
 const SETTINGS_TAB_KEY = 'relay-panel-settings-tab';
 function settingsTabValid(id) { return SETTINGS_TABS.indexOf(id) >= 0; }
 function showSettingsTab(id) {
@@ -1653,8 +1676,8 @@ async function loadSettingsPage() {
       $('#sub-status').textContent = '已生成订阅链接' + (sub.created_at ? '（生成于 ' + fmtDate(sub.created_at) + '）' : '') + '：内容' + subModeLabel(sub.mode) + '，链接已加密存在面板里，随时能点复制重新拿。';
       loadGenericSubLink();
     }
-    // 通用订阅的三选一按存下来的模式预选（没生成过时按上次选择）。
-    if (sub.has_token && sub.mode) syncOneSubModeGroup($('#sub-token-mode-group'), sub.mode);
+    // 通用订阅的三选一下拉按存下来的模式预选（没生成过时按上次选择）。
+    if (sub.has_token && sub.mode) syncSubModeSelect($('#sub-token-mode'), sub.mode);
     const subDomain = $('#sub-public-domain');
     if (subDomain) subDomain.value = sub.public_domain || '';
     // Worker 源站地址（v1.3.5）：存过就回填到输入框；留空就是默认用法。
@@ -1670,6 +1693,11 @@ async function loadSettingsPage() {
     // 面板名称（v1.3.4）：设置接口下发的当前名填进输入框。
     const pn = $('#panel-name');
     if (pn) pn.value = st.panel_name || 'CP管理';
+    // 登录页公告与签名（v1.3.21）：设置接口下发的当前值填进输入框。
+    const ln = $('#login-notice-text');
+    if (ln) ln.value = st.login_notice || '';
+    const ls = $('#login-signature');
+    if (ls) ls.value = st.login_signature || '';
     // 登录安全（v1.3.8）：登录告警开关（没配 Telegram 时置灰）、二次验证状态。
     const sec = st.security || {};
     const laEnabled = $('#login-alert-enabled');
@@ -1909,6 +1937,9 @@ function initSettings() {
   // 面板 Logo（v1.3.20）
   on('#btn-logo-upload', 'click', async () => { await uploadLogo(); });
   on('#btn-logo-delete', 'click', async () => { await deleteLogo(); });
+  // 登录页公告与签名（v1.3.21）
+  on('#login-notice-save', 'click', async () => { await saveLoginNotice(); });
+  on('#login-signature-save', 'click', async () => { await saveLoginSignature(); });
   // 列表搜索（v1.3.20）：订阅用户、审计日志、备份（落地列表在总览页接线，
   // 合并订阅在集中管理页接线）。
   wireListSearch('#sub-user-search', (q) => { subUserSearch = q; subUserPage = 1; loadSubUsers(); });
@@ -1917,39 +1948,21 @@ function initSettings() {
   on('#sub-copy', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, ''), e.target); });
   on('#sub-copy-clash', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'clash'), e.target); });
   on('#sub-copy-plain', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'plain'), e.target); });
-  on('#sub-qr', 'click', async () => {
-    const box = $('#sub-qr-box');
-    if (!box) return;
-    if (!box.classList.contains('hidden')) { box.classList.add('hidden'); box.hidden = true; return; }
-    await loadSubQr();
-  });
-  on('#sub-mode', 'change', async () => { const box = $('#sub-qr-box'); if (box && !box.classList.contains('hidden')) await loadSubQr(); });
-  // 三选一（内容模式）改了，二维码正显示着就跟着重生成（v1.3.20）：
+  on('#sub-qr', 'click', async () => { await showSubQrModal('generic'); });
+  on('#sub-mode', 'change', async () => { if (openQrKind === 'generic') await refreshSubQrModal('generic'); });
+  // 三选一（内容模式）改了，二维码正显示着就跟着重生成（v1.3.20，v1.3.21 起二维码在弹窗里）：
   // 二维码编的是令牌 URL，模式跟令牌走，重新拉一次保证扫出来就是新内容。
-  // 监听 input 自身的 click（不是 label 的 click，也不是 change）：
-  // 点 label 会先触发 label 的 click、再由 label 激活行为触发 input 的
-  // click 冒泡回 label，label 的 click 监听会连发两次；input 的 click
-  // 无论点 label 还是直接点圆圈都只发一次。change 不可用：点 label 时
-  // bindSubModeGroup 已先把 input 置为选中（程序赋值不触发 change），
-  // 激活行为点到已选中的 input 时 change 根本不触发。
-  $$('#sub-token-mode-group input[name="sub-token-mode"]').forEach((r) => r.addEventListener('click', async () => {
-    const box = $('#sub-qr-box');
-    if (box && !box.classList.contains('hidden')) await loadSubQr();
-  }));
-  $$('#sub-user-mode-group input[name="sub-user-mode"]').forEach((r) => r.addEventListener('click', async () => {
-    const box = $('#sub-user-qr-box');
-    if (box && !box.classList.contains('hidden')) await loadSubUserQr();
-  }));
+  on('#sub-token-mode', 'change', async () => {
+    if (openQrKind === 'generic') await refreshSubQrModal('generic');
+  });
+  on('#sub-user-mode', 'change', async () => {
+    if (openQrKind === 'user') await refreshSubQrModal('user');
+  });
   on('#sub-user-create', 'click', async () => { await subUserCreate(); });
   on('#sub-user-copy', 'click', (e) => { copyText(subLinkWithMode($('#sub-user-url-value').textContent, ''), e.target); });
   on('#sub-user-copy-clash', 'click', (e) => { copyText(subLinkWithMode($('#sub-user-url-value').textContent, 'clash'), e.target); });
   on('#sub-user-copy-plain', 'click', (e) => { copyText(subLinkWithMode($('#sub-user-url-value').textContent, 'plain'), e.target); });
-  on('#sub-user-qr', 'click', async () => {
-    const box = $('#sub-user-qr-box');
-    if (!box) return;
-    if (!box.classList.contains('hidden')) { box.classList.add('hidden'); box.hidden = true; return; }
-    await loadSubUserQr();
-  });
+  on('#sub-user-qr', 'click', async () => { await showSubQrModal('user'); });
   on('#worker-generate', 'click', async () => { await loadWorkerCode(); });
   on('#worker-copy', 'click', (e) => { copyText($('#worker-code').textContent, e.target); });
   on('#update-check', 'click', async () => {
@@ -2506,7 +2519,6 @@ let centralDetailId = null;
 let centralDetailPage = 1;
 let centralDetailLandings = [];
 let centralDetailRelayAddr = ''; // 当前展开的远程面板的任意门地址（编辑任意门落地时预填）
-let centralOpenLanding = null; // 集中管理落地列表当前展开的落地编号（单开手风琴，null=全收起）
 let centralDetailLinksRemote = null; // 落地链接缓存属于哪台远程
 let centralDetailLinksGroups = null; // 该远程的 /links 分组缓存（展开时才取）
 
@@ -2537,53 +2549,53 @@ async function centralTokenGenerate(rotated) {
     loadSettingsPage();
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
-// ---------- 订阅内容三选一（v1.3.17） ----------
+// ---------- 订阅内容三选一（v1.3.17，下拉版 v1.3.21） ----------
 // 模式存在令牌记录上（通用订阅、每人链接、合并订阅各一条），/sub/ 服务时按
 // 令牌过滤链接；与 ?mode=split|global 的分流模式无关（那个只改 Clash 规则
-// 的 MATCH 走向，不改链接集合）。各创建表单共用一个 localStorage 键记住上次选择。
-const SUB_MODE_KEY = 'relay-panel-sub-mode';
+// 的 MATCH 走向，不改链接集合）。
+// v1.3.21：三选一从 radio-card 改成 <select> 下拉；每个表单各记各的上次
+// 选择（key 不同），改一边不再同步另一边；编辑弹窗不记键，只按记录预选。
 const SUB_MODE_LABELS = { both: '全部', relay: '仅中转', direct: '仅直连' };
 function subModeValid(v) { return (v === 'relay' || v === 'direct' || v === 'both') ? v : 'both'; }
 function subModeLabel(v) { return SUB_MODE_LABELS[subModeValid(v)] || '全部'; }
-function savedSubMode() {
-  try { return subModeValid(localStorage.getItem(SUB_MODE_KEY) || 'both'); } catch (e) { return 'both'; }
+function savedSubMode(key) {
+  try { return subModeValid(localStorage.getItem(key) || 'both'); } catch (e) { return 'both'; }
 }
-// 一组三选一卡片的 HTML（name 是这组 radio 的名字；单落地小窗里动态生成，
+// 一组三选一下拉的 HTML（name 是 select 的名字；key 是这个表单专用的
+// localStorage 键，空串 = 不记上次选择；单落地小窗与编辑弹窗里动态生成，
 // 静态表单直接写在 index.html 里，结构与这里一致）。
-function subModeRadioCardsHTML(name) {
-  return '<div class="small muted" style="margin-bottom:6px">订阅内容：</div>' +
-    '<label class="radio-card selected" data-sub-mode="both"><input type="radio" name="' + esc(name) + '" value="both" checked> <span class="opt-title">全部</span><div class="opt-desc">中转和直连的节点都进订阅。</div></label>' +
-    '<label class="radio-card" data-sub-mode="relay"><input type="radio" name="' + esc(name) + '" value="relay"> <span class="opt-title">仅中转</span><div class="opt-desc">只要走中转机的节点。</div></label>' +
-    '<label class="radio-card" data-sub-mode="direct"><input type="radio" name="' + esc(name) + '" value="direct"> <span class="opt-title">仅直连</span><div class="opt-desc">只要直连落地机的节点。</div></label>';
+function subModeSelectHTML(name, key) {
+  return '<label class="small">订阅内容：<select name="' + esc(name) + '"' + (key ? ' data-sub-mode-select data-sub-mode-key="' + esc(key) + '"' : '') + '>' +
+    '<option value="both">全部</option>' +
+    '<option value="relay">仅中转</option>' +
+    '<option value="direct">仅直连</option>' +
+    '</select></label>' +
+    '<span class="small muted">全部：中转和直连的节点都进订阅；仅中转：只要走中转机的节点；仅直连：只要直连落地机的节点。</span>';
 }
 function subModeOf(name) {
-  const c = document.querySelector('input[name="' + name + '"]:checked');
-  return subModeValid(c ? c.value : 'both');
+  const s = document.querySelector('select[name="' + name + '"]');
+  return subModeValid(s ? s.value : 'both');
 }
-// 把一组三选一同步成指定值（写 checked + selected 样式）。
-function syncOneSubModeGroup(g, value) {
-  if (!g) return;
-  value = subModeValid(value);
-  g.querySelectorAll('.radio-card').forEach((c) => c.classList.toggle('selected', c.dataset.subMode === value));
-  const input = g.querySelector('input[value="' + value + '"]');
-  if (input) input.checked = true;
+// 把一个下拉同步成指定值。
+function syncSubModeSelect(sel, value) {
+  if (!sel) return;
+  sel.value = subModeValid(value);
 }
-// 把页面上所有三选一组同步成指定值。
-function syncSubModeGroups(value) {
-  $$('[data-sub-mode-group]').forEach((g) => syncOneSubModeGroup(g, value));
-}
-function bindSubModeGroup(g) {
-  if (!g || g._subModeBound) return;
-  g._subModeBound = true;
-  g.querySelectorAll('.radio-card').forEach((c) => c.addEventListener('click', () => {
-    const v = subModeValid(c.dataset.subMode);
-    try { localStorage.setItem(SUB_MODE_KEY, v); } catch (e) {}
-    syncSubModeGroups(v);
-  }));
+// 绑定一个下拉：改了就只记自己表单的键，不动其他表单。
+function bindSubModeSelect(sel) {
+  if (!sel || sel._subModeBound) return;
+  sel._subModeBound = true;
+  const key = sel.dataset.subModeKey || '';
+  if (!key) return;
+  sel.addEventListener('change', () => {
+    try { localStorage.setItem(key, subModeValid(sel.value)); } catch (e) {}
+  });
 }
 function initSubMode() {
-  $$('[data-sub-mode-group]').forEach(bindSubModeGroup);
-  syncSubModeGroups(savedSubMode());
+  $$('select[data-sub-mode-select]').forEach((sel) => {
+    bindSubModeSelect(sel);
+    syncSubModeSelect(sel, savedSubMode(sel.dataset.subModeKey || ''));
+  });
 }
 /* ---------- 订阅到期时间（v1.3.20） ---------- */
 // fmtExpiry: "永久" / "2027-02-17 到期" / "已过期（2026-11-19）"。
@@ -2691,20 +2703,31 @@ function subLinkWithMode(url, format) {
   if (!q.length) return url;
   return url + '?' + q.join('&');
 }
-// 订阅链接二维码：点“二维码”按钮按当前链接（默认不带模式参数）向后端要一张图；
-// 模式切换时如果二维码正显示着，跟着重新生成。复用节点链接同一套后端
-// 生成（Go 原生 qrcode），图片的复制/下载走页面已有的 data-copy-img /
-// data-download-img 事件委托，不用另写。
-async function loadSubQr() {
-  const box = $('#sub-qr-box'), img = $('#sub-qr-img'), fig = $('#sub-qr-figure');
-  if (!box || !img) return;
-  const url = subLinkWithMode($('#sub-url-value').textContent, '');
+// 订阅链接二维码弹窗（v1.3.21）：设置页通用订阅与订阅用户的二维码以前是卡片内
+// 行内展开，现在统一走弹窗。弹窗打开时改模式（内容三选一或 ?mode= 分流/全局）
+// 也要同步更新：改模式的 change 监听里，弹窗开着就重新拉一次写进弹窗。
+// 图片的复制/下载走页面已有的 data-copy-img / data-download-img 事件委托。
+let openQrKind = null; // 当前打开的设置页二维码弹窗：'generic' | 'user' | null
+async function showSubQrModal(kind) {
+  openQrKind = kind;
+  const m = openModal('<h2>订阅链接二维码</h2><p class="muted small">扫码后客户端按 UA 自动识别格式，直接导入；默认不带模式参数，选了全局才带 ?mode=global；换模式后二维码跟着重新生成。</p>' +
+    '<div class="qr-wrap"><figure data-qr-modal-figure><img data-qr-modal-img alt="订阅链接二维码"><figcaption>订阅链接二维码</figcaption>' +
+    '<div class="btn-row"><button class="btn secondary sm" type="button" data-copy-img>复制图片</button>' +
+    '<button class="btn secondary sm" type="button" data-download-img="订阅链接-二维码.png">下载图片</button></div></figure></div>');
+  if (!m) { openQrKind = null; return; }
+  await refreshSubQrModal(kind);
+}
+async function refreshSubQrModal(kind) {
+  const img = document.querySelector('[data-qr-modal-img]');
+  const fig = document.querySelector('[data-qr-modal-figure]');
+  if (!img) { openQrKind = null; return; } // 弹窗已经关了（或被别的弹窗顶掉），不用再拉
+  const urlEl = kind === 'user' ? $('#sub-user-url-value') : $('#sub-url-value');
+  const url = subLinkWithMode(urlEl ? urlEl.textContent : '', '');
   try {
     const r = await apiPost('/api/v1/subscription/qr', { url });
     if (!r.qr) throw new Error('后端没有返回二维码');
     img.src = r.qr;
     if (fig) fig.dataset.qr = r.qr;
-    box.classList.remove('hidden'); box.hidden = false;
   } catch (err) { toast('二维码生成失败：' + err.message, 'err'); }
 }
 // ---------- 重新复制订阅链接（v1.3.7） ----------
@@ -2776,6 +2799,28 @@ async function saveSubExpiry() {
     loadSettingsPage();
   } catch (err) { toast('保存失败：' + err.message, 'err'); }
 }
+// 登录页公告（v1.3.21）：多行纯文本，留空 = 清掉，登录页不再显示。
+async function saveLoginNotice() {
+  const el = $('#login-notice-text');
+  const status = $('#login-notice-status');
+  const notice = el ? el.value.trim() : '';
+  try {
+    const r = await apiPost('/api/v1/settings/login-notice', { notice });
+    if (status) status.textContent = r.login_notice ? '已保存，登录页会显示这段公告。' : '已清空，登录页不再显示公告。';
+    toast('登录页公告已保存', 'ok');
+  } catch (err) { toast('保存失败：' + err.message, 'err'); }
+}
+// 登录页签名（v1.3.21）：单行文本，留空 = 清掉，登录页副标题回落默认文案。
+async function saveLoginSignature() {
+  const el = $('#login-signature');
+  const status = $('#login-signature-status');
+  const signature = el ? el.value.trim() : '';
+  try {
+    const r = await apiPost('/api/v1/settings/login-signature', { signature });
+    if (status) status.textContent = r.login_signature ? '已保存，登录页副标题会显示这句签名。' : '已清空，登录页副标题恢复默认。';
+    toast('登录页签名已保存', 'ok');
+  } catch (err) { toast('保存失败：' + err.message, 'err'); }
+}
 // 保存订阅路径（v1.3.20）：改路径 = 旧订阅链接全部失效 + 面板重启 +
 // 重新登录 + 客户端重新导入，先弹确认框说清楚再调接口。
 async function saveSubPath() {
@@ -2806,9 +2851,6 @@ async function saveSubPublicDomain() {
     const r = await apiPost('/api/v1/settings/subscription-domain', { domain });
     input.value = r.domain || '';
     rebaseShownSubUrls(r.domain || '');
-    const q1 = $('#sub-qr-box'), q2 = $('#sub-user-qr-box');
-    if (q1) { q1.classList.add('hidden'); q1.hidden = true; }
-    if (q2) { q2.classList.add('hidden'); q2.hidden = true; }
     updateWorkerExampleLink(r.domain || '');
     toast(r.domain ? '订阅对外域名已保存，订阅链接改用 https://' + r.domain + '/' + currentSubPath() + '/…' : '订阅对外域名已清除，订阅链接恢复成面板自己的地址', 'ok');
     loadSettingsPage();
@@ -2880,7 +2922,7 @@ async function loadSubUsers() {
         $('#sub-user-url-value').textContent = r.url || '';
         const box = $('#sub-user-once');
         if (box) { box.classList.remove('hidden'); box.hidden = false; }
-        await loadSubUserQr();
+        await showSubQrModal('user');
       } catch (e) { toast('二维码失败：' + e.message, 'err'); }
     }));
     $$('[data-sub-user-rotate]', list).forEach((b) => b.addEventListener('click', async () => {
@@ -2921,19 +2963,6 @@ async function subUserCreate() {
     toast('订阅用户已新建，链接显示在下面，随时能复制', 'ok');
     loadSubUsers();
   } catch (err) { toast('新建失败：' + err.message, 'err'); }
-}
-// 订阅用户链接的二维码：与通用订阅链接同一套后端生成，默认不带模式参数。
-async function loadSubUserQr() {
-  const box = $('#sub-user-qr-box'), img = $('#sub-user-qr-img'), fig = $('#sub-user-qr-figure');
-  if (!box || !img) return;
-  const url = subLinkWithMode($('#sub-user-url-value').textContent, '');
-  try {
-    const r = await apiPost('/api/v1/subscription/qr', { url });
-    if (!r.qr) throw new Error('后端没有返回二维码');
-    img.src = r.qr;
-    if (fig) fig.dataset.qr = r.qr;
-    box.classList.remove('hidden'); box.hidden = false;
-  } catch (err) { toast('二维码生成失败：' + err.message, 'err'); }
 }
 // ---------- 编辑订阅用户 / 合并订阅（v1.3.19） ----------
 // 把面板数据渲染成勾选树（面板框 + 落地行，半选态与全选框与集中管理页同一套）：
@@ -3017,7 +3046,7 @@ async function openSubEditModal(opts) {
     (isMerged ? '' : '<label class="small" style="margin-left:8px">备注：<input type="text" data-edit-note style="width:160px" value="' + esc(opts.note || '') + '" placeholder="选填"></label>') +
     '<div data-edit-tree style="margin-top:12px">加载中…</div>' +
     '<p class="muted small">' + esc(isMerged ? '合并订阅至少要勾一个落地。' : '全部不勾 = 全部落地（单面板全量订阅）。') + '</p>' +
-    '<div data-sub-mode-group style="margin-top:12px">' + subModeRadioCardsHTML('sub-edit-mode') + '</div>' +
+    '<div style="margin-top:12px">' + subModeSelectHTML('sub-edit-mode', '') + '</div>' +
     '<div class="btn-row" style="margin-top:12px"><label class="small">到期时间：<input type="date" data-edit-expiry value="' + esc(dateInputOfExpiry(opts.expires_at)) + '"' + (opts.expires_at ? '' : ' disabled') + '></label>' +
     '<label class="small"><input type="checkbox" data-edit-permanent' + (opts.expires_at ? '' : ' checked') + '> 永久</label></div>' +
     '<p class="muted small">到期时间到了，这条订阅就打不开；改到期时间不换令牌，链接不变。勾永久 = 永不过期；填日期 = 当天 23:59:59 到期。</p>' +
@@ -3029,11 +3058,8 @@ async function openSubEditModal(opts) {
     const d = m.querySelector('[data-edit-expiry]'), p = m.querySelector('[data-edit-permanent]');
     if (d && p) d.disabled = p.checked;
   });
-  // 三选一按当前值预选（只同步弹窗里这一组，不动页面上其他组与上次选择）。
-  syncOneSubModeGroup(m.querySelector('[data-sub-mode-group]'), subModeValid(opts.mode || 'both'));
-  m.querySelectorAll('[data-sub-mode-group] .radio-card').forEach((c) => c.addEventListener('click', () => {
-    syncOneSubModeGroup(m.querySelector('[data-sub-mode-group]'), subModeValid(c.dataset.subMode));
-  }));
+  // 三选一下拉按当前值预选（只改弹窗里这一个下拉，不动页面上其他表单与上次选择）。
+  syncSubModeSelect(m.querySelector('select[name="sub-edit-mode"]'), subModeValid(opts.mode || 'both'));
   const checked = {};
   (opts.selection || []).forEach((e) => { checked[subTreeKey(e.panel, e.landing)] = true; });
   const treeBox = m.querySelector('[data-edit-tree]');
@@ -3178,16 +3204,17 @@ async function showSubForSelection(selection, title, name, mode, expiresAt) {
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
 // 单落地“订阅”按钮：先弹小窗选订阅内容（全部/仅中转/仅直连），再生成。
-// 选择记到共用的上次选择里，下次打开还是它。
+// 选择记到这个小窗自己的上次选择里，下次打开还是它。
 function askSubModeForSelection(selection, title) {
   const m = openModal('<h2>' + esc(title) + '</h2>' +
     '<p class="muted small">选这条订阅里要哪些节点：</p>' +
-    '<div data-sub-mode-group>' + subModeRadioCardsHTML('single-sub-mode') + '</div>' +
+    '<div>' + subModeSelectHTML('single-sub-mode', 'relay-panel-sub-mode-single') + '</div>' +
     '<div class="btn-row"><button class="btn" type="button" data-single-sub-go>生成订阅链接</button>' +
     '<button class="btn secondary" type="button" data-single-sub-cancel>取消</button></div>');
   if (!m) return;
-  bindSubModeGroup(m.querySelector('[data-sub-mode-group]'));
-  syncSubModeGroups(savedSubMode());
+  const sel = m.querySelector('select[name="single-sub-mode"]');
+  bindSubModeSelect(sel);
+  syncSubModeSelect(sel, savedSubMode('relay-panel-sub-mode-single'));
   onIn(m, '[data-single-sub-go]', 'click', async () => {
     const mode = subModeOf('single-sub-mode');
     closeModal();
@@ -3639,10 +3666,53 @@ async function rotateMergedSub(id, name) {
   loadMergedSubsList();
   return r;
 }
+// 集中管理落地详情字段（v1.3.21）：行头与详情弹窗共用同一份计算，改一处两处都变。
+function centralLandingFacts(l) {
+  const ports = (l.ports || []).map((p) => esc(p.proto) + ' ' + esc(p.listen) + '→' + esc(p.remote)).join('、') || '—';
+  const on = l.online === true ? '<span class="badge green">在线</span>' : l.online === false ? '<span class="badge red">离线</span>' : '<span class="badge">未知</span>';
+  const lat = l.latency_ms == null ? '—' : esc(l.latency_ms) + ' ms';
+  const cert = l.cert_days_left == null ? '—' : esc(l.cert_days_left) + ' 天' + (l.renew_mode ? '（' + esc(l.renew_mode) + '）' : '');
+  const exp = l.days_left == null ? '永久' : (l.days_left < 0 ? '已到期 ' + esc(-l.days_left) + ' 天' : '剩余 ' + esc(l.days_left) + ' 天');
+  const tr = l.traffic || {};
+  const traffic = '今日 ' + esc(fmtBytes((tr.today_up || 0) + (tr.today_down || 0))) + ' / 本月 ' + esc(fmtBytes((tr.month_up || 0) + (tr.month_down || 0))) + ' / 累计 ' + esc(fmtBytes((tr.total_up || 0) + (tr.total_down || 0))) + (tr.limit_bytes ? '（上限 ' + esc(fmtBytes(tr.limit_bytes)) + '，已用 ' + esc(Math.round(tr.pct || 0)) + '%）' : '（不限）');
+  const subs = (l.subnodes || []).map((sn) =>
+    '<div class="kv"><span>' + esc(sn.domain) + '</span><span><button class="btn danger sm" type="button" data-central-delsub="' + esc(l.index) + '|' + esc(sn.domain) + '">删除节点</button></span></div>'
+  ).join('');
+  // 行头也放到期与流量（和本机卡片同一款式）：不用点开就看得到。
+  const expCls = l.days_left == null ? 'grey' : l.days_left < 0 ? 'red' : l.days_left <= 7 ? 'red' : l.days_left <= 30 ? 'yellow' : 'green';
+  const trafficHead = '今日 ' + esc(fmtBytes((tr.today_up || 0) + (tr.today_down || 0))) + ' · 累计 ' + esc(fmtBytes((tr.total_up || 0) + (tr.total_down || 0)));
+  // 子节点没有独立流量：同一落地的节点共用一份流量（中转机按端口统计，
+  // 分不清节点），下面正文里的流量就是该落地的共享流量，别当成单个节点的。
+  const subShared = (l.subnodes && l.subnodes.length)
+    ? '<div class="small muted">子节点流量：同一落地的节点共用一份流量（中转机按端口统计，分不清节点），下面是该落地的共享流量。</div>'
+    : '';
+  return { ports, on, lat, cert, exp, expCls, traffic, trafficHead, subs, subShared };
+}
+// 集中管理落地详情正文（v1.3.21）：以前是详情弹窗里的手风琴展开体，现在是
+// 点行弹出的独立落地详情弹窗的正文（kv + 子节点 + 链接与二维码 + 操作按钮）。
+function centralLandingBodyHtml(l) {
+  const f = centralLandingFacts(l);
+  return f.subShared +
+    '<div class="kv"><span>落地</span><b>' + esc(centralLandingTitle(l)) + '</b></div>' +
+    '<div class="kv"><span>监听端口</span><b>' + f.ports + '</b></div>' +
+    '<div class="kv"><span>证书</span><b>' + f.cert + '</b></div>' +
+    '<div class="kv"><span>到期</span><b>' + f.exp + '</b></div>' +
+    '<div class="kv"><span>流量</span><b>' + f.traffic + '</b></div>' +
+    (f.subs ? '<div class="kv"><span>子节点</span><b>' + esc((l.subnodes || []).length) + ' 个</b></div>' + f.subs : '') +
+    '<div class="central-landing-links" data-central-links-box="' + esc(l.index) + '"></div>' +
+    '<div class="btn-row"><button class="btn secondary sm" type="button" data-central-addnode="' + esc(l.index) + '">＋ 新增节点</button>' +
+    '<button class="btn secondary sm" type="button" data-central-edit="' + esc(l.index) + '">编辑落地</button>' +
+    '<button class="btn secondary sm" type="button" data-central-renew="' + esc(l.index) + '">续期</button>' +
+    '<button class="btn secondary sm" type="button" data-central-traffic="' + esc(l.index) + '">流量设置</button>' +
+    '<button class="btn secondary sm" type="button" data-central-addtraffic="' + esc(l.index) + '">续量</button>' +
+    '<button class="btn secondary sm" type="button" data-central-origlink="' + esc(l.index) + '">补链接</button>' +
+    '<button class="btn secondary sm" type="button" data-central-certs="' + esc(l.index) + '">证书</button>' +
+    '<button class="btn secondary sm" type="button" data-central-sub-landing="' + esc(l.index) + '">订阅</button>' +
+    '<button class="btn danger sm" type="button" data-central-del-landing="' + esc(l.index) + '">删除该落地</button></div>';
+}
 async function loadCentralLandings(id, page) {
   if (page) centralDetailPage = page;
   centralDetailId = id;
-  centralOpenLanding = null; // 默认全收起：翻页/重进都回到折叠态
   if (centralDetailLinksRemote !== id) { centralDetailLinksGroups = null; centralDetailLinksRemote = null; }
   const rm = centralRemotes.find((x) => x.id === id);
   const detail = centralDetailEl();
@@ -3663,105 +3733,62 @@ async function loadCentralLandings(id, page) {
       return;
     }
     detail.innerHTML = cachedNote +
-      '<p class="muted small">点一行展开看它的链接、二维码与操作；一次只展开一个，再点一次收起。实时日志不代理，要看日志点上面卡片里的“打开远程面板”跳过去。</p>' +
+      '<p class="muted small">点一行弹出它的详情（链接、二维码与操作）。实时日志不代理，要看日志点上面卡片里的“打开远程面板”跳过去。</p>' +
       pg.slice.map((l) => {
-        const ports = (l.ports || []).map((p) => esc(p.proto) + ' ' + esc(p.listen) + '→' + esc(p.remote)).join('、') || '—';
-        const on = l.online === true ? '<span class="badge green">在线</span>' : l.online === false ? '<span class="badge red">离线</span>' : '<span class="badge">未知</span>';
-        const lat = l.latency_ms == null ? '—' : esc(l.latency_ms) + ' ms';
-        const cert = l.cert_days_left == null ? '—' : esc(l.cert_days_left) + ' 天' + (l.renew_mode ? '（' + esc(l.renew_mode) + '）' : '');
-        const exp = l.days_left == null ? '永久' : (l.days_left < 0 ? '已到期 ' + esc(-l.days_left) + ' 天' : '剩余 ' + esc(l.days_left) + ' 天');
-        const tr = l.traffic || {};
-        const traffic = '今日 ' + esc(fmtBytes((tr.today_up || 0) + (tr.today_down || 0))) + ' / 本月 ' + esc(fmtBytes((tr.month_up || 0) + (tr.month_down || 0))) + ' / 累计 ' + esc(fmtBytes((tr.total_up || 0) + (tr.total_down || 0))) + (tr.limit_bytes ? '（上限 ' + esc(fmtBytes(tr.limit_bytes)) + '，已用 ' + esc(Math.round(tr.pct || 0)) + '%）' : '（不限）');
-        const subs = (l.subnodes || []).map((sn) =>
-          '<div class="kv"><span>' + esc(sn.domain) + '</span><span><button class="btn danger sm" type="button" data-central-delsub="' + esc(l.index) + '|' + esc(sn.domain) + '">删除节点</button></span></div>'
-        ).join('');
-        // 行头也放到期与流量（和本机卡片同一款式）：不用点开就看得到。
-        const expCls = l.days_left == null ? 'grey' : l.days_left < 0 ? 'red' : l.days_left <= 7 ? 'red' : l.days_left <= 30 ? 'yellow' : 'green';
-        const trafficHead = '今日 ' + esc(fmtBytes((tr.today_up || 0) + (tr.today_down || 0))) + ' · 累计 ' + esc(fmtBytes((tr.total_up || 0) + (tr.total_down || 0)));
-        // 子节点没有独立流量：同一落地的节点共用一份流量（中转机按端口统计，
-        // 分不清节点），下面展开体里的流量就是该落地的共享流量，别当成单个节点的。
-        const subShared = (l.subnodes && l.subnodes.length)
-          ? '<div class="small muted">子节点流量：同一落地的节点共用一份流量（中转机按端口统计，分不清节点），下面是该落地的共享流量。</div>'
-          : '';
+        const f = centralLandingFacts(l);
         return '<div class="central-landing">' +
-          '<div class="central-landing-head" data-central-toggle="' + esc(l.index) + '" role="button" tabindex="0"><span>' + esc(centralLandingTitle(l)) + ' <span class="small">#' + esc(l.index) + '</span></span><span>' + on + ' ' + lat +
-          ' <span class="small">到期 <span class="badge ' + expCls + '">' + exp + '</span></span>' +
-          ' <span class="small muted">' + trafficHead + '</span>' +
-          ' <span class="central-caret">▸</span></span></div>' +
-          subShared +
-          '<div class="central-landing-body hidden" data-central-body="' + esc(l.index) + '">' +
-          '<div class="kv"><span>落地</span><b>' + esc(centralLandingTitle(l)) + '</b></div>' +
-          '<div class="kv"><span>监听端口</span><b>' + ports + '</b></div>' +
-          '<div class="kv"><span>证书</span><b>' + cert + '</b></div>' +
-          '<div class="kv"><span>到期</span><b>' + exp + '</b></div>' +
-          '<div class="kv"><span>流量</span><b>' + traffic + '</b></div>' +
-          (subs ? '<div class="kv"><span>子节点</span><b>' + esc((l.subnodes || []).length) + ' 个</b></div>' + subs : '') +
-          '<div class="central-landing-links" data-central-links-box="' + esc(l.index) + '"></div>' +
-          '<div class="btn-row"><button class="btn secondary sm" type="button" data-central-addnode="' + esc(l.index) + '">＋ 新增节点</button>' +
-          '<button class="btn secondary sm" type="button" data-central-edit="' + esc(l.index) + '">编辑落地</button>' +
-          '<button class="btn secondary sm" type="button" data-central-renew="' + esc(l.index) + '">续期</button>' +
-          '<button class="btn secondary sm" type="button" data-central-traffic="' + esc(l.index) + '">流量设置</button>' +
-          '<button class="btn secondary sm" type="button" data-central-addtraffic="' + esc(l.index) + '">续量</button>' +
-          '<button class="btn secondary sm" type="button" data-central-origlink="' + esc(l.index) + '">补链接</button>' +
-          '<button class="btn secondary sm" type="button" data-central-certs="' + esc(l.index) + '">证书</button>' +
-          '<button class="btn secondary sm" type="button" data-central-sub-landing="' + esc(l.index) + '">订阅</button>' +
-          '<button class="btn danger sm" type="button" data-central-del-landing="' + esc(l.index) + '">删除该落地</button></div></div></div>';
+          '<div class="central-landing-head" data-central-toggle="' + esc(l.index) + '" role="button" tabindex="0"><span>' + esc(centralLandingTitle(l)) + ' <span class="small">#' + esc(l.index) + '</span></span><span>' + f.on + ' ' + f.lat +
+          ' <span class="small">到期 <span class="badge ' + f.expCls + '">' + f.exp + '</span></span>' +
+          ' <span class="small muted">' + f.trafficHead + '</span>' +
+          ' <span class="central-caret">▸</span></span></div></div>';
       }).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'central');
     $$('[data-central-toggle]', detail).forEach((h) => {
-      const toggle = () => centralToggleLanding(Number(h.dataset.centralToggle));
-      h.addEventListener('click', toggle);
-      h.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+      const open = () => showCentralLandingDetail(id, Number(h.dataset.centralToggle));
+      h.addEventListener('click', open);
+      h.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
     });
-    $$('[data-central-addnode]', detail).forEach((b) => b.addEventListener('click', () => {
-      const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralAddnode));
-      centralAddNodeWizard(id, Number(b.dataset.centralAddnode), l ? centralLandingTitle(l) : ('#' + b.dataset.centralAddnode));
-    }));
-    $$('[data-central-edit]', detail).forEach((b) => b.addEventListener('click', () => {
-      const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralEdit));
-      centralEditLanding(id, Number(b.dataset.centralEdit), l);
-    }));
-    $$('[data-central-renew]', detail).forEach((b) => b.addEventListener('click', () => centralRenewLanding(id, Number(b.dataset.centralRenew))));
-    $$('[data-central-traffic]', detail).forEach((b) => b.addEventListener('click', () => {
-      const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralTraffic));
-      centralTrafficSettings(id, Number(b.dataset.centralTraffic), l);
-    }));
-    $$('[data-central-addtraffic]', detail).forEach((b) => b.addEventListener('click', () => centralAddTraffic(id, Number(b.dataset.centralAddtraffic))));
-    $$('[data-central-origlink]', detail).forEach((b) => b.addEventListener('click', () => {
-      const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralOriglink));
-      centralPasteOrigLink(id, Number(b.dataset.centralOriglink), l);
-    }));
-    $$('[data-central-certs]', detail).forEach((b) => b.addEventListener('click', () => centralCerts(id)));
-    $$('[data-central-delsub]', detail).forEach((b) => b.addEventListener('click', () => {
-      const parts = String(b.dataset.centralDelsub).split('|');
-      centralDeleteSubnode(id, Number(parts[0]), parts[1]);
-    }));
-    $$('[data-central-sub-landing]', detail).forEach((b) => b.addEventListener('click', () => {
-      const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralSubLanding));
-      askSubModeForSelection([{ panel: id, landing: Number(b.dataset.centralSubLanding) }], (l ? centralLandingTitle(l) : '落地') + ' 的订阅');
-    }));
-    $$('[data-central-del-landing]', detail).forEach((b) => b.addEventListener('click', () => centralDeleteLanding(id, Number(b.dataset.centralDelLanding))));
     if (pg.totalPages > 1) wirePager(detail, 'central', pg.cur, pg.totalPages, (p) => loadCentralLandings(id, p));
   } catch (e) {
     detail.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>';
   }
 }
-// 手风琴开关：点开一个、收起其他；再点已开的就收起。链接只在第一次展开时取。
-function centralToggleLanding(index) {
-  const detail = centralDetailEl();
-  if (!detail) return;
-  const wasOpen = centralOpenLanding === index;
-  $$('.central-landing-body', detail).forEach((b) => b.classList.add('hidden'));
-  $$('.central-caret', detail).forEach((c) => { c.textContent = '▸'; });
-  if (wasOpen) { centralOpenLanding = null; return; }
-  centralOpenLanding = index;
-  const body = $('[data-central-body="' + index + '"]', detail);
-  const head = $('[data-central-toggle="' + index + '"]', detail);
-  if (body) body.classList.remove('hidden');
-  if (head) { const c = head.querySelector('.central-caret'); if (c) c.textContent = '▾'; }
-  centralLoadLandingLinks(centralDetailId, index);
+// 集中管理落地详情弹窗（v1.3.21）：以前是详情弹窗里的手风琴展开体，现在点行
+// 弹独立的落地详情弹窗（与本机落地详情弹窗同一套样式）。返回按钮回到远程面板
+// 详情弹窗（重新拉取，回到全部收起）。
+function showCentralLandingDetail(remoteId, index) {
+  const l = centralDetailLandings.find((x) => x.index === index);
+  if (!l) return;
+  const m = openModal('<h2>' + esc(centralLandingTitle(l)) + '</h2>' + centralLandingBodyHtml(l) +
+    '<div class="btn-row" style="margin-top:12px"><button class="btn secondary" type="button" data-central-back>返回</button></div>', true);
+  if (!m) return;
+  onIn(m, '[data-central-back]', 'click', () => { closeModal(); openCentralDetail(remoteId); });
+  $$('[data-central-addnode]', m).forEach((b) => b.addEventListener('click', () => {
+    centralAddNodeWizard(remoteId, Number(b.dataset.centralAddnode), centralLandingTitle(l));
+  }));
+  $$('[data-central-edit]', m).forEach((b) => b.addEventListener('click', () => {
+    centralEditLanding(remoteId, Number(b.dataset.centralEdit), l);
+  }));
+  $$('[data-central-renew]', m).forEach((b) => b.addEventListener('click', () => centralRenewLanding(remoteId, Number(b.dataset.centralRenew))));
+  $$('[data-central-traffic]', m).forEach((b) => b.addEventListener('click', () => {
+    centralTrafficSettings(remoteId, Number(b.dataset.centralTraffic), l);
+  }));
+  $$('[data-central-addtraffic]', m).forEach((b) => b.addEventListener('click', () => centralAddTraffic(remoteId, Number(b.dataset.centralAddtraffic))));
+  $$('[data-central-origlink]', m).forEach((b) => b.addEventListener('click', () => {
+    centralPasteOrigLink(remoteId, Number(b.dataset.centralOriglink), l);
+  }));
+  $$('[data-central-certs]', m).forEach((b) => b.addEventListener('click', () => centralCerts(remoteId)));
+  $$('[data-central-delsub]', m).forEach((b) => b.addEventListener('click', () => {
+    const parts = String(b.dataset.centralDelsub).split('|');
+    centralDeleteSubnode(remoteId, Number(parts[0]), parts[1]);
+  }));
+  $$('[data-central-sub-landing]', m).forEach((b) => b.addEventListener('click', () => {
+    askSubModeForSelection([{ panel: remoteId, landing: Number(b.dataset.centralSubLanding) }], centralLandingTitle(l) + ' 的订阅');
+  }));
+  $$('[data-central-del-landing]', m).forEach((b) => b.addEventListener('click', () => centralDeleteLanding(remoteId, Number(b.dataset.centralDelLanding))));
+  centralLoadLandingLinks(remoteId, index, m);
 }
-async function centralLoadLandingLinks(remoteId, index) {
-  const detail = centralDetailEl();
+async function centralLoadLandingLinks(remoteId, index, rootEl) {
+  const detail = rootEl || centralDetailEl();
   const box = detail ? $('[data-central-links-box="' + index + '"]', detail) : null;
   if (!box || box.dataset.loaded) return;
   box.innerHTML = '<p class="muted">链接加载中…</p>';

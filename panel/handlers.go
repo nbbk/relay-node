@@ -82,6 +82,11 @@ func (s *Server) routes() http.Handler {
 	// 面板 Logo（v1.3.20）：GET /logo 是公开端点（登录页未登录也要显示），
 	// 不走登录会话；上传/删除走会话认证。
 	mux.HandleFunc("GET /logo", s.handleLogo)
+	// 登录页公开信息（v1.3.21）：GET /api/v1/public-info 是公开端点（登录页
+	// 未登录也要读公告与签名），不走登录会话；保存走会话认证。
+	mux.HandleFunc("GET /api/v1/public-info", s.handlePublicInfo)
+	mux.HandleFunc("POST /api/v1/settings/login-notice", s.requireAuth(s.handleLoginNoticeSet))
+	mux.HandleFunc("POST /api/v1/settings/login-signature", s.requireAuth(s.handleLoginSignatureSet))
 	mux.HandleFunc("POST /api/v1/settings/logo", s.requireAuth(s.handleLogoUpload))
 	mux.HandleFunc("DELETE /api/v1/settings/logo", s.requireAuth(s.handleLogoDelete))
 	// 设置
@@ -196,10 +201,11 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 // ipWhitelistMiddleware IP 白名单：空=不限制；白名单外任何接口都 403。
 // 例外：订阅端点不走白名单（订阅客户端从任意 IP 拉取，令牌本身就是鉴权），
-// 路径段走 s.subPath()；/logo 也不走白名单（登录页未登录也要显示）。
+// 路径段走 s.subPath()；/logo 与 /api/v1/public-info 也不走白名单（登录页
+// 未登录也要显示/读取）。
 func (s *Server) ipWhitelistMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/"+s.subPath()+"/") || r.URL.Path == "/logo" {
+		if strings.HasPrefix(r.URL.Path, "/"+s.subPath()+"/") || r.URL.Path == "/logo" || r.URL.Path == "/api/v1/public-info" {
 			next.ServeHTTP(w, r)
 			return
 		}
