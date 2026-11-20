@@ -16,10 +16,10 @@ var vlessPair1323 = []subLink{
 	{Name: "智利-直连", Link: "vless://11111111-2222-3333-4444-555555555555@203.0.113.1:24443?encryption=none&security=tls&type=ws&host=example.com&path=%2Fexample-path#智利-直连"},
 }
 
-// TestVersion1323 VERSION 文件是 1.3.23。
-func TestVersion1323(t *testing.T) {
-	if Version != "1.3.23" {
-		t.Fatalf("VERSION 应是 1.3.23，实际 %q", Version)
+// TestVersion1324 VERSION 文件是 1.3.24。
+func TestVersion1324(t *testing.T) {
+	if Version != "1.3.24" {
+		t.Fatalf("VERSION 应是 1.3.24，实际 %q", Version)
 	}
 }
 

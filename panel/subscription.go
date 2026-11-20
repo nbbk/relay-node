@@ -397,6 +397,7 @@ func renderSingboxJSON(links []subLink) string {
 			"rules": []any{
 				map[string]any{"domain_suffix": []string{".cn"}, "server": "dns-direct"},
 				map[string]any{"domain_suffix": tiktokSuffixes, "server": "dns-proxy"},
+				map[string]any{"domain_suffix": ipCheckSuffixes, "server": "dns-proxy"},
 			},
 			"final": "dns-direct",
 		},
@@ -432,6 +433,7 @@ func renderSingboxJSON(links []subLink) string {
 			map[string]any{"domain_suffix": tiktokSuffixes, "outbound": "Proxy"},
 			map[string]any{"domain_suffix": socialSuffixes, "outbound": "Proxy"},
 			map[string]any{"domain_suffix": streamSuffixes, "outbound": "Proxy"},
+			map[string]any{"domain_suffix": ipCheckSuffixes, "outbound": "Proxy"},
 			map[string]any{"domain_suffix": []string{".cn"}, "outbound": "direct"},
 		)
 	}
@@ -719,8 +721,8 @@ func subLinkDomains(link string) []string {
 // 中转节点（select，只有中转链接）、直连节点（select，只有直连链接）、
 // 社交（select，全部节点）、流媒体（select，全部节点）。中转/直连按 twin
 // 名字后缀 -中转/-直连 分组；没有中转或直连链接时对应组不出现（不出空组）。
-// 规则顺序：TikTok → 社交 → 流媒体 → MATCH；TikTok/社交/流媒体三组规则
-// 都直接指向自动选择（url-test 组，死节点自动排除——v1.3.23 从手动选择改过来：
+// 规则顺序：TikTok → 社交 → 流媒体 → 测 IP → MATCH；TikTok/社交/流媒体/
+// 测 IP 四组规则都直接指向自动选择（url-test 组，死节点自动排除——v1.3.23 从手动选择改过来：
 // 手动选择组的默认成员是列表第一个节点，中转节点已死时会把分流流量全拖死，
 // ?mode=global 同样落到它，也救不了）。社交/流媒体组保留（select，全部节点），
 // 供用户在客户端里手动切换，但规则不再经过它们。
@@ -760,6 +762,33 @@ var streamSuffixes = []string{
 	"primevideo.com", "amazonvideo.com", "aiv-cdn.net", "tv.apple.com",
 	"spotify.com", "scdn.co", "spotifycdn.com", "twitch.tv", "twitchcdn.net",
 	"jtvnw.net",
+}
+
+// ipCheckSuffixes 各主流客户端“测 IP / 网络检测”用的查 IP 服务域名
+// （v1.3.24）：规则模式下这些请求本来走 DIRECT，在 fake-ip 下失败，
+// 检测显示失败；加规则指自动选择后走代理，显示代理出口 IP。
+// 域名均已从源码或官方文档核实（只写确认了的，没确认的不写）：
+//   - FlClash（chen08209/FlClash，lib/common/service_probe.dart 的
+//     ipInfoSources，8 个源竞速）：www.cloudflare.com、api.ip.sb、
+//     ipinfo.io、ipwho.is、get.geojs.io、api.country.is、
+//     api.ipquery.io、ident.me；
+//   - Clash Verge Rev（官方 PRIVACY.md §4.5，IP 信息卡随机选一个）：
+//     api.ip.sb、ipapi.co、api.ipapi.is、ipwho.is、ip.api.skk.moe、
+//     get.geojs.io；
+//   - Hiddify（hiddify-app，lib/features/proxy/data/
+//     proxy_repository.dart 的 _ipInfoSources，proxyOnly: true 强制走
+//     代理）：ipwho.is、api.ip.sb、ipapi.co、ipinfo.io；
+//   - Mihomo Party（调研代理从源码核实）：api.internetdata.io。
+// 未确认的不写进规则：Stash、Shadowrocket、Surge、Quantumult X、Loon、
+// Clash 官方 iOS 客户端（ProjectClash/Clash-Client）、Karing、SFA、
+// NekoBox——官方文档/源码里没找到内置查 IP 服务的域名；v2rayNG 吃
+// base64 订阅、测 IP 走代理（api.ip.sb/geoip），不需要这边配合。
+// 注意 www.cloudflare.com 是 FlClash 检测的首选源（cdn-cgi/trace），
+// 域名规则只覆盖 www.cloudflare.com，不影响其他 Cloudflare 域名。
+var ipCheckSuffixes = []string{
+	"www.cloudflare.com", "api.ip.sb", "ipinfo.io", "ipwho.is",
+	"get.geojs.io", "api.country.is", "api.ipquery.io", "ident.me",
+	"ipapi.co", "api.ipapi.is", "ip.api.skk.moe", "api.internetdata.io",
 }
 
 // renderClashHeader 渲染 Clash YAML 顶部的 dns / ipv6 / mode / sniffer 段
@@ -908,7 +937,7 @@ func renderClashYAML(links []subLink, mode string) string {
 	}
 	writeGroup("社交", "select", names)
 	writeGroup("流媒体", "select", names)
-	// 分流规则：TikTok → 社交 → 流媒体 → MATCH（先命中先走）。
+	// 分流规则：TikTok → 社交 → 流媒体 → 测 IP → MATCH（先命中先走）。
 	b.WriteString("rules:\n")
 	seenSuffix := map[string]bool{}
 	writeSuffixRules := func(suffixes []string, group string) {
@@ -924,6 +953,11 @@ func renderClashYAML(links []subLink, mode string) string {
 	b.WriteString("  - DOMAIN-KEYWORD,tiktok,自动选择\n")
 	writeSuffixRules(socialSuffixes, "自动选择")
 	writeSuffixRules(streamSuffixes, "自动选择")
+	// 测 IP 域名走代理（v1.3.24）：客户端自带的测 IP/网络检测在规则模式
+	// 下本来走 DIRECT，在 fake-ip 下失败、显示检测失败；指自动选择后
+	// 走代理，显示代理出口 IP。空配置（无节点）时不写这组规则（没有
+	// 自动选择组可指，写了会让 mihomo -t 报错）。
+	writeSuffixRules(ipCheckSuffixes, "自动选择")
 	if mode == "global" {
 		b.WriteString("  - MATCH,手动选择\n")
 	} else {
@@ -996,11 +1030,16 @@ func resolveSubFormat(r *http.Request) (string, error) {
 
 // subUserinfoHeader 按 subscription-userinfo 规范拼响应头，只用现成真实数据：
 // upload/download 取流量统计的累计值（本面板这些落地没数据就不含这两项），
-// total 取各落地流量上限之和（都没设限就不含），expire 取各落地到期日里
-// 最早的（都没设就不含）。三项都没有就不返回头，不编数据。
+// total 取各落地流量上限之和（都没设限就不含），expire 取「订阅本身的到期
+// 时间（tokenExpiry，RFC3339，空 = 永久）」与「各落地到期日里最早的」两
+// 者中更早的（都没设就不含）。三项都没有就不返回头，不编数据。
 // localIndices 为 nil 表示本面板全部落地；合并订阅只统计其中本面板的部分
-// （远程面板的流量数据主面板拿不到，不含）。
-func (s *Server) subUserinfoHeader(localIndices map[int]bool) string {
+// （远程面板的流量数据主面板拿不到，不含）。订阅本身的到期必须算进来：
+// 管理面板模式下本机没有落地，落地数据全空时只靠令牌到期才能让客户端
+// （如小火箭）显示到期时间，否则客户端只能显示更新/生成时间。
+// 调用方保证令牌未过期（已过期的令牌在 handleSub 里直接 410），这里
+// 不用再判过期。
+func (s *Server) subUserinfoHeader(localIndices map[int]bool, tokenExpiry string) string {
 	rc, _, err := s.readRelayConf()
 	if err != nil {
 		return ""
@@ -1008,6 +1047,11 @@ func (s *Server) subUserinfoHeader(localIndices map[int]bool) string {
 	var up, down, total int64
 	var hasTraffic, hasLimit bool
 	var earliest time.Time
+	if tokenExpiry != "" {
+		if t, err := time.Parse(time.RFC3339, tokenExpiry); err == nil {
+			earliest = t
+		}
+	}
 	s.stateMu.Lock()
 	exts := map[string]*LandingExt{}
 	for k, v := range s.state.Landings {
@@ -1162,7 +1206,10 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	if h := s.subUserinfoHeader(localIndices); h != "" {
+	// 令牌到期与落地到期取更早的（v1.3.24：订阅本身的到期也要进 userinfo，
+	// 否则管理面板模式下客户端看不到到期时间）。
+	exp, _ := s.subExpiryForToken(tok)
+	if h := s.subUserinfoHeader(localIndices, exp); h != "" {
 		w.Header().Set("subscription-userinfo", h)
 	}
 	w.Header().Set("Content-Type", ctype)
