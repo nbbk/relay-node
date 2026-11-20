@@ -151,12 +151,15 @@ func (s *Server) buildScheduledBackupData(label string) map[string]any {
 }
 
 // subUserBackup / mergedSubBackup 备份文件里的订阅用户（脱敏：不含 token 哈希与 token 密文）。
+// Mode（v1.3.17）是内容范围（both|relay|direct），跟着记录走，恢复时不丢；
+// 老备份里没有该字段时按空处理（= 全部）。
 type subUserBackup struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
 	Note      string         `json:"note,omitempty"`
 	CreatedAt string         `json:"created_at,omitempty"`
 	Selection []SubSelection `json:"selection,omitempty"`
+	Mode      string         `json:"mode,omitempty"`
 }
 
 type mergedSubBackup struct {
@@ -164,12 +167,13 @@ type mergedSubBackup struct {
 	Name      string         `json:"name,omitempty"`
 	CreatedAt string         `json:"created_at,omitempty"`
 	Selection []SubSelection `json:"selection"`
+	Mode      string         `json:"mode,omitempty"`
 }
 
 func sanitizeSubUsers(users []SubUser) []subUserBackup {
 	out := make([]subUserBackup, 0, len(users))
 	for _, u := range users {
-		out = append(out, subUserBackup{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Selection: u.Selection})
+		out = append(out, subUserBackup{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Selection: u.Selection, Mode: u.Mode})
 	}
 	return out
 }
@@ -177,7 +181,7 @@ func sanitizeSubUsers(users []SubUser) []subUserBackup {
 func sanitizeMergedSubs(subs []MergedSub) []mergedSubBackup {
 	out := make([]mergedSubBackup, 0, len(subs))
 	for _, m := range subs {
-		out = append(out, mergedSubBackup{ID: m.ID, Name: m.Name, CreatedAt: m.CreatedAt, Selection: m.Selection})
+		out = append(out, mergedSubBackup{ID: m.ID, Name: m.Name, CreatedAt: m.CreatedAt, Selection: m.Selection, Mode: m.Mode})
 	}
 	return out
 }
@@ -428,7 +432,7 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 		}
 		users := make([]SubUser, 0, len(p.SubUsers))
 		for _, bu := range p.SubUsers {
-			u := SubUser{ID: bu.ID, Name: bu.Name, Note: bu.Note, CreatedAt: bu.CreatedAt, Selection: bu.Selection}
+			u := SubUser{ID: bu.ID, Name: bu.Name, Note: bu.Note, CreatedAt: bu.CreatedAt, Selection: bu.Selection, Mode: bu.Mode}
 			if h, ok := keepHash[bu.ID]; ok {
 				u.TokenHash = h
 			}
@@ -453,7 +457,7 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 		}
 		subs := make([]MergedSub, 0, len(p.MergedSubs))
 		for _, bm := range p.MergedSubs {
-			m := MergedSub{ID: bm.ID, Name: bm.Name, CreatedAt: bm.CreatedAt, Selection: bm.Selection}
+			m := MergedSub{ID: bm.ID, Name: bm.Name, CreatedAt: bm.CreatedAt, Selection: bm.Selection, Mode: bm.Mode}
 			if h, ok := keepHash[bm.ID]; ok {
 				m.TokenHash = h
 			}

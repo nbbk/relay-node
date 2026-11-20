@@ -387,7 +387,7 @@
             <div class="grid cols-2">
               <div class="card">
             <h2>订阅链接</h2>
-            <p class="muted">一个链接导入全部节点：客户端粘贴订阅链接后一次拿到本面板所有节点（中转 + 直连）。内容实时生成，面板里增删节点后订阅自动跟着变，不用重新导出。客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表），也可以在链接后面加 ?format=clash / base64 / plain 手动指定；Clash 订阅默认不带模式参数，服务端按分流出（TikTok/社交/流媒体走节点，其他直连），想手动指定可以在链接后面加 ?mode=split（分流）/ global（全局）。?mode=global 只有一种情况才需要：规则模式下想全走代理、又保留 TikTok/社交/流媒体的分类分流——客户端切全局模式会忽略全部规则，分类分流就没了。</p>
+            <p class="muted">一个链接导入节点：默认一次拿到本面板的节点（中转 + 直连），下面能选只要中转或只要直连。内容实时生成，面板里增删节点后订阅自动跟着变，不用重新导出。客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表），也可以在链接后面加 ?format=clash / base64 / plain 手动指定；Clash 订阅默认不带模式参数，服务端按分流出（TikTok/社交/流媒体走节点，其他直连），想手动指定可以在链接后面加 ?mode=split（分流）/ global（全局）。?mode=global 只有一种情况才需要：规则模式下想全走代理、又保留 TikTok/社交/流媒体的分类分流——客户端切全局模式会忽略全部规则，分类分流就没了。</p>
             <div class="small" id="sub-status">未生成订阅链接</div>
             <div id="sub-once" class="hidden" style="margin-top:10px">
               <div class="warn-box">链接已加密存在面板里，随时能点“复制”重新拿；轮换后旧链接立即失效。</div>
@@ -420,6 +420,12 @@
               <button class="btn secondary" id="sub-rotate" type="button">轮换订阅链接</button>
               <button class="btn danger" id="sub-revoke" type="button">撤销订阅链接</button>
             </div>
+            <div id="sub-token-mode-group" data-sub-mode-group style="margin-top:12px">
+              <div class="small muted" style="margin-bottom:6px">订阅内容：</div>
+              <label class="radio-card selected" data-sub-mode="both"><input type="radio" name="sub-token-mode" value="both" checked> <span class="opt-title">全部</span><div class="opt-desc">中转和直连的节点都进订阅。</div></label>
+              <label class="radio-card" data-sub-mode="relay"><input type="radio" name="sub-token-mode" value="relay"> <span class="opt-title">仅中转</span><div class="opt-desc">只要走中转机的节点。</div></label>
+              <label class="radio-card" data-sub-mode="direct"><input type="radio" name="sub-token-mode" value="direct"> <span class="opt-title">仅直连</span><div class="opt-desc">只要直连落地机的节点。</div></label>
+            </div>
             <p class="small">链接泄露可一键轮换，旧链接立即失效；撤销后订阅立即打不开。</p>
             <div class="btn-row" style="margin-top:10px">
               <label class="small">订阅对外域名（选填）：<input id="sub-public-domain" type="text" placeholder="例如：relay.example.com" style="width:280px"></label>
@@ -434,6 +440,12 @@
               <label class="small">名字：<input id="sub-user-name" type="text" placeholder="例如：张三的手机" style="width:160px"></label>
               <label class="small">备注：<input id="sub-user-note" type="text" placeholder="选填，例如：备用机" style="width:160px"></label>
               <button class="btn" id="sub-user-create" type="button">新建订阅用户</button>
+            </div>
+            <div id="sub-user-mode-group" data-sub-mode-group style="margin-top:12px">
+              <div class="small muted" style="margin-bottom:6px">订阅内容：</div>
+              <label class="radio-card selected" data-sub-mode="both"><input type="radio" name="sub-user-mode" value="both" checked> <span class="opt-title">全部</span><div class="opt-desc">中转和直连的节点都进订阅。</div></label>
+              <label class="radio-card" data-sub-mode="relay"><input type="radio" name="sub-user-mode" value="relay"> <span class="opt-title">仅中转</span><div class="opt-desc">只要走中转机的节点。</div></label>
+              <label class="radio-card" data-sub-mode="direct"><input type="radio" name="sub-user-mode" value="direct"> <span class="opt-title">仅直连</span><div class="opt-desc">只要直连落地机的节点。</div></label>
             </div>
             <div id="sub-user-once" class="hidden" style="margin-top:10px">
               <div class="warn-box">链接已加密存在面板里，随时能点“复制”重新拿；轮换后旧链接立即失效。</div>
@@ -728,8 +740,14 @@
           </div>
           <div class="central-panel hidden" role="tabpanel" id="central-panel-sub" aria-labelledby="central-tab-sub" hidden>
             <h2>合并订阅</h2>
-            <p class="muted">按落地勾选，生成一条合并订阅链接：一个链接导入，客户端一次拿到选中落地的全部节点。勾面板即选它下面全部落地，部分选时面板框显示半选；顶上可全选全部面板。每个落地行上还有“复制订阅”，只导这一个落地的节点。内容实时生成，面板里增删节点后自动跟着变；勾选变了就重新生成一条，不同选择各用各的令牌。</p>
+            <p class="muted">按落地勾选，生成一条合并订阅链接：一个链接导入，客户端一次拿到选中落地的节点（下面能选只要中转或只要直连）。勾面板即选它下面全部落地，部分选时面板框显示半选；顶上可全选全部面板。每个落地行上还有“复制订阅”，只导这一个落地的节点。内容实时生成，面板里增删节点后自动跟着变；勾选变了就重新生成一条，不同选择各用各的令牌。</p>
             <div id="central-sub-tree">加载中…</div>
+            <div id="central-sub-mode-group" data-sub-mode-group style="margin-top:12px">
+              <div class="small muted" style="margin-bottom:6px">订阅内容：</div>
+              <label class="radio-card selected" data-sub-mode="both"><input type="radio" name="central-sub-mode" value="both" checked> <span class="opt-title">全部</span><div class="opt-desc">中转和直连的节点都进订阅。</div></label>
+              <label class="radio-card" data-sub-mode="relay"><input type="radio" name="central-sub-mode" value="relay"> <span class="opt-title">仅中转</span><div class="opt-desc">只要走中转机的节点。</div></label>
+              <label class="radio-card" data-sub-mode="direct"><input type="radio" name="central-sub-mode" value="direct"> <span class="opt-title">仅直连</span><div class="opt-desc">只要直连落地机的节点。</div></label>
+            </div>
             <div class="btn-row"><label class="small">归属到人（选填）：<input id="central-sub-name" type="text" placeholder="例如：张三的手机" style="width:160px"></label><button class="btn" id="central-sub-generate" type="button" disabled>生成合并订阅</button></div>
             <div id="central-sub-list" style="margin-top:12px"></div>
           </div>

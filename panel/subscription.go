@@ -31,7 +31,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -142,6 +144,62 @@ func (s *Server) collectSubLinks(landingIndices map[int]bool) []subLink {
 		for _, l := range g.Links {
 			name := linkDisplayName(l.Link, g.Name+"-"+l.Label)
 			out = append(out, subLink{Name: name, Link: l.Link})
+		}
+	}
+	return out
+}
+
+// ---------- 订阅内容范围三选一（v1.3.17） ----------
+// 模式存在令牌记录上（通用订阅是 cfg.SubTokenMode，SubUser/MergedSub 是
+// 各自的 Mode 字段），/sub/ 服务时按它过滤链接再渲染；与 ?mode=split|global
+// 的分流模式无关（那个只改 Clash 规则的 MATCH 走向，不改链接集合）。
+// 值：both=全部（中转+直连，默认）、relay=仅中转、direct=仅直连。
+// 老记录没有该字段一律按 both，已发出去的订阅链接行为不变。
+
+// normalizeSubMode 校验创建表单传来的模式：空 = 默认 both；非法值报错。
+func normalizeSubMode(m string) (string, error) {
+	switch strings.TrimSpace(m) {
+	case "", "both":
+		return "both", nil
+	case "relay", "direct":
+		return strings.TrimSpace(m), nil
+	default:
+		return "", fmt.Errorf("生成方式只支持 全部/仅中转/仅直连")
+	}
+}
+
+// subModeLabel 模式值写成人话（列表与弹窗里显示用）。
+func subModeLabel(m string) string {
+	switch m {
+	case "relay":
+		return "仅中转"
+	case "direct":
+		return "仅直连"
+	default:
+		return "全部"
+	}
+}
+
+// filterSubLinksByKind 按内容范围过滤已收集的订阅链接：仅中转留名字以
+// “-中转”结尾的，仅直连留以“-直连”结尾的；名字没有这两种后缀的（手工
+// 改过备注的节点）两边都留着，不丢数据。both/空 = 不过滤。
+func filterSubLinksByKind(links []subLink, kind string) []subLink {
+	if kind == "" || kind == "both" {
+		return links
+	}
+	out := []subLink{}
+	for _, l := range links {
+		switch kind {
+		case "relay":
+			if strings.HasSuffix(l.Name, "-中转") || (!strings.HasSuffix(l.Name, "-中转") && !strings.HasSuffix(l.Name, "-直连")) {
+				out = append(out, l)
+			}
+		case "direct":
+			if strings.HasSuffix(l.Name, "-直连") || (!strings.HasSuffix(l.Name, "-中转") && !strings.HasSuffix(l.Name, "-直连")) {
+				out = append(out, l)
+			}
+		default:
+			out = append(out, l)
 		}
 	}
 	return out
@@ -627,21 +685,28 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 	}
 	var links []subLink
 	var localIndices map[int]bool
+	// contentMode 是令牌上存的订阅内容范围（both|relay|direct，老记录空 = both），
+	// 与上面 resolveSubMode 的分流模式（split|global）是两回事。
+	contentMode := "both"
 	if tok != "" && s.cfg.SubTokenHash != "" && verifySubToken(tok, s.cfg.SubTokenHash) {
 		links = s.collectSubLinks(nil)
+		contentMode = s.cfg.SubTokenMode
 	} else if u, ok := s.findSubUser(tok); ok {
 		// 一人一条（v1.3.0）：没勾选 = 单面板全量订阅，有勾选 = 合并订阅
+		contentMode = u.Mode
 		if len(u.Selection) == 0 {
 			links = s.collectSubLinks(nil)
 		} else {
 			links, localIndices = s.collectMergedSubLinks(&MergedSub{Selection: u.Selection})
 		}
 	} else if ms, ok := s.findMergedSub(tok); ok {
+		contentMode = ms.Mode
 		links, localIndices = s.collectMergedSubLinks(ms)
 	} else {
 		http.NotFound(w, r)
 		return
 	}
+	links = filterSubLinksByKind(links, contentMode)
 	body, ctype, err := renderSubContent(links, format, mode)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
@@ -748,12 +813,29 @@ func (s *Server) handleSubTokenGet(w http.ResponseWriter, r *http.Request) {
 		"has_token":  s.cfg.SubTokenHash != "",
 		"has_link":   s.cfg.SubTokenEnc != "",
 		"created_at": s.cfg.SubTokenCreatedAt,
+		"mode":       s.cfg.SubTokenMode,
 	}))
 }
 
 // handleSubTokenGenerate 生成（或轮换）单面板订阅令牌：哈希与密文一起存，
 // 链接随时能重新复制；已有令牌时旧链接立即失效。记审计日志（不记令牌本身）。
+// v1.3.17：请求可带 mode（both|relay|direct，不带默认 both），存进
+// SubTokenMode，轮换时同样按表单当前选择存（生成表单的显式选择）。
 func (s *Server) handleSubTokenGenerate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	subMode, err := normalizeSubMode(req.Mode)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
 	tok := generateSubToken()
 	enc, err := s.encryptSubTokenNow(tok)
 	if err != nil {
@@ -764,6 +846,7 @@ func (s *Server) handleSubTokenGenerate(w http.ResponseWriter, r *http.Request) 
 	s.cfg.SubTokenHash = hashSubToken(tok)
 	s.cfg.SubTokenEnc = enc
 	s.cfg.SubTokenCreatedAt = time.Now().UTC().Format(time.RFC3339)
+	s.cfg.SubTokenMode = subMode
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
@@ -773,7 +856,7 @@ func (s *Server) handleSubTokenGenerate(w http.ResponseWriter, r *http.Request) 
 		action = "轮换订阅链接"
 	}
 	s.audit(s.currentUser(r), action, "", "成功", "旧订阅链接已失效")
-	writeJSON(w, 200, okResp(map[string]any{"url": s.subURL(r, tok), "rotated": rotated}))
+	writeJSON(w, 200, okResp(map[string]any{"url": s.subURL(r, tok), "rotated": rotated, "mode": subMode}))
 }
 
 func (s *Server) handleSubTokenRevoke(w http.ResponseWriter, r *http.Request) {
@@ -784,6 +867,7 @@ func (s *Server) handleSubTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	s.cfg.SubTokenHash = ""
 	s.cfg.SubTokenEnc = ""
 	s.cfg.SubTokenCreatedAt = ""
+	s.cfg.SubTokenMode = ""
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
@@ -943,6 +1027,7 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 		Kind      string `json:"kind"` // single=单面板全量，merged=合并订阅
 		Summary   string `json:"summary"`
 		HasLink   bool   `json:"has_link"`
+		Mode      string `json:"mode"` // both|relay|direct，老记录空 = 全部
 	}
 	items := []item{}
 	for _, u := range s.cfg.SubUsers {
@@ -952,7 +1037,7 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 			kind = "merged"
 			summary = s.selectionSummary(u.Selection)
 		}
-		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != ""})
+		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"users": items}))
 }
@@ -960,11 +1045,13 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 // handleSubUsersCreate 新建订阅用户：名字必填（用来认人）；selection 为空
 // 就是单面板全量订阅，填了就是合并订阅（走同一套勾选校验，远程版本不够
 // 时同样提示先升级）。链接在这一次返回，之后随时能点复制重新拿。
+// v1.3.17：请求可带 mode（both|relay|direct，不带默认 both），存进记录。
 func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name      string         `json:"name"`
 		Note      string         `json:"note"`
 		Selection []SubSelection `json:"selection"`
+		Mode      string         `json:"mode"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -995,6 +1082,11 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	subMode, err := normalizeSubMode(req.Mode)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
 	tok := generateSubToken()
 	enc, err := s.encryptSubTokenNow(tok)
 	if err != nil {
@@ -1003,13 +1095,13 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	id := "su-" + randomTokenHex(6)
-	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: id, Name: name, Note: note, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel})
+	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: id, Name: name, Note: note, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode})
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
 	}
 	s.audit(s.currentUser(r), "新建订阅用户", name, "成功", "链接已加密存好，随时能复制")
-	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "name": name}))
+	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "name": name, "mode": subMode}))
 }
 
 // handleSubUsersRotate 轮换一个订阅用户的链接：旧链接立即失效，只影响这个人。
@@ -1033,7 +1125,11 @@ func (s *Server) handleSubUsersRotate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.audit(s.currentUser(r), "轮换订阅用户链接", s.cfg.SubUsers[i].Name, "成功", "旧链接已失效")
-		writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "name": s.cfg.SubUsers[i].Name}))
+		mode := s.cfg.SubUsers[i].Mode
+		if mode == "" {
+			mode = "both"
+		}
+		writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "name": s.cfg.SubUsers[i].Name, "mode": mode}))
 		return
 	}
 	writeJSON(w, 404, errResp("没有这个订阅用户"))
@@ -1408,13 +1504,14 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 		Selection []SubSelection `json:"selection"`
 		Summary   string         `json:"summary"`
 		HasLink   bool           `json:"has_link"`
+		Mode      string         `json:"mode"` // both|relay|direct，老记录空 = 全部
 	}
 	items := []item{}
 	for _, ms := range s.cfg.MergedSubs {
 		if ms.Selection == nil {
 			ms.Selection = []SubSelection{}
 		}
-		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: s.selectionSummary(ms.Selection), HasLink: ms.TokenEnc != ""})
+		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: s.selectionSummary(ms.Selection), HasLink: ms.TokenEnc != "", Mode: ms.Mode})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"subs": items}))
 }
@@ -1423,10 +1520,14 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 // （旧链接立即失效）；填了名称（归属到人）就新起一条——同一勾选集合可有
 // 多个不同名称的令牌，各归各人，撤销只影响那一个。链接在这一次返回，
 // 之后随时能点复制重新拿。
+// v1.3.17：请求可带 mode（both|relay|direct，不带默认 both），存进记录；
+// 同一选择重新生成时按表单当前选择存（生成表单的显式选择）；专用轮换接口
+// （handleMergedSubsRotate）不带 mode，轮换时保持原模式不变。
 func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Selection []SubSelection `json:"selection"`
 		Name      string         `json:"name"`
+		Mode      string         `json:"mode"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -1444,6 +1545,11 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 400, errResp(err.Error()))
 		return
 	}
+	subMode, err := normalizeSubMode(req.Mode)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
 	tok := generateSubToken()
 	enc, err := s.encryptSubTokenNow(tok)
 	if err != nil {
@@ -1455,7 +1561,7 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 	id := ""
 	if name != "" {
 		id = "ms-" + randomTokenHex(6)
-		s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, Name: name, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel})
+		s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, Name: name, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode})
 	} else {
 		for i := range s.cfg.MergedSubs {
 			// 只轮换同样没填名称的记录：已归属到人的那条不能被误轮换
@@ -1466,6 +1572,15 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 				s.cfg.MergedSubs[i].TokenHash = hashSubToken(tok)
 				s.cfg.MergedSubs[i].TokenEnc = enc
 				s.cfg.MergedSubs[i].CreatedAt = now
+				// 同一选择重新生成：按表单当前选择存；表单没传模式时保持原模式
+				if strings.TrimSpace(req.Mode) != "" {
+					s.cfg.MergedSubs[i].Mode = subMode
+				} else {
+					subMode = s.cfg.MergedSubs[i].Mode
+					if subMode == "" {
+						subMode = "both"
+					}
+				}
 				id = s.cfg.MergedSubs[i].ID
 				rotated = true
 				break
@@ -1473,7 +1588,7 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 		}
 		if id == "" {
 			id = "ms-" + randomTokenHex(6)
-			s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel})
+			s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode})
 		}
 	}
 	if err := s.saveConfig(); err != nil {
@@ -1489,12 +1604,12 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 		target = name + "（" + target + "）"
 	}
 	s.audit(s.currentUser(r), action, target, "成功", "链接已加密存好，随时能复制")
-	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": rotated, "selection": sel, "summary": s.selectionSummary(sel)}))
+	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": rotated, "selection": sel, "summary": s.selectionSummary(sel), "mode": subMode}))
 }
 
 // handleMergedSubsRotate 轮换一条合并订阅：同一勾选集合与同一归属人换一个
 // 新令牌，旧链接立即失效；新链接在这一次返回（弹窗里直接显示），之后
-// 随时能点复制重新拿。
+// 随时能点复制重新拿。模式保持不变（不带 mode 参数）。
 func (s *Server) handleMergedSubsRotate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	for i := range s.cfg.MergedSubs {
@@ -1521,7 +1636,11 @@ func (s *Server) handleMergedSubsRotate(w http.ResponseWriter, r *http.Request) 
 			target = s.cfg.MergedSubs[i].Name + "（" + summary + "）"
 		}
 		s.audit(s.currentUser(r), "轮换合并订阅", target, "成功", "旧订阅链接已失效")
-		writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": true, "selection": sel, "summary": summary}))
+		mode := s.cfg.MergedSubs[i].Mode
+		if mode == "" {
+			mode = "both"
+		}
+		writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": true, "selection": sel, "summary": summary, "mode": mode}))
 		return
 	}
 	writeJSON(w, 404, errResp("没有这条合并订阅"))

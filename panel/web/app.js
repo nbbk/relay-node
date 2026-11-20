@@ -574,7 +574,7 @@ function showLandingDetail(l) {
   if (!m) return;
   onIn(m, '#detail-close', 'click', closeModal);
   $$('[data-addnode]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); addNodeWizard(Number(b.dataset.addnode)); }));
-  $$('[data-sub-landing]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); const l = landingsCache.find((x) => x.index === Number(b.dataset.subLanding)); showSubForSelection([{ panel: 'local', landing: Number(b.dataset.subLanding) }], (l ? displayNameOf(l) : '落地') + ' 的订阅'); }));
+  $$('[data-sub-landing]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); const l = landingsCache.find((x) => x.index === Number(b.dataset.subLanding)); askSubModeForSelection([{ panel: 'local', landing: Number(b.dataset.subLanding) }], (l ? displayNameOf(l) : '落地') + ' 的订阅'); }));
   $$('[data-renew]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); renewLanding(Number(b.dataset.renew)); }));
   $$('[data-addtraffic]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); addTraffic(Number(b.dataset.addtraffic)); }));
   $$('[data-trafficset]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); trafficSettings(Number(b.dataset.trafficset)); }));
@@ -608,7 +608,7 @@ function wireMiniCards(wrap) {
   $$('[data-mini-sub]', wrap).forEach((b) => b.addEventListener('click', (e) => {
     e.stopPropagation();
     const l = landingsCache.find((x) => x.index === Number(b.dataset.miniSub));
-    showSubForSelection([{ panel: 'local', landing: Number(b.dataset.miniSub) }], (l ? displayNameOf(l) : '落地') + ' 的订阅');
+    askSubModeForSelection([{ panel: 'local', landing: Number(b.dataset.miniSub) }], (l ? displayNameOf(l) : '落地') + ' 的订阅');
   }));
 }
 let overviewPage = 1;
@@ -1633,9 +1633,11 @@ async function loadSettingsPage() {
       const box0 = $('#sub-once');
       if (box0) { box0.classList.add('hidden'); box0.hidden = true; }
     } else {
-      $('#sub-status').textContent = '已生成订阅链接' + (sub.created_at ? '（生成于 ' + fmtDate(sub.created_at) + '）' : '') + '：链接已加密存在面板里，随时能点复制重新拿。';
+      $('#sub-status').textContent = '已生成订阅链接' + (sub.created_at ? '（生成于 ' + fmtDate(sub.created_at) + '）' : '') + '：内容' + subModeLabel(sub.mode) + '，链接已加密存在面板里，随时能点复制重新拿。';
       loadGenericSubLink();
     }
+    // 通用订阅的三选一按存下来的模式预选（没生成过时按上次选择）。
+    if (sub.has_token && sub.mode) syncOneSubModeGroup($('#sub-token-mode-group'), sub.mode);
     const subDomain = $('#sub-public-domain');
     if (subDomain) subDomain.value = sub.public_domain || '';
     // Worker 源站地址（v1.3.5）：存过就回填到输入框；留空就是默认用法。
@@ -2491,6 +2493,54 @@ async function centralTokenGenerate(rotated) {
     loadSettingsPage();
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
+// ---------- 订阅内容三选一（v1.3.17） ----------
+// 模式存在令牌记录上（通用订阅、每人链接、合并订阅各一条），/sub/ 服务时按
+// 令牌过滤链接；与 ?mode=split|global 的分流模式无关（那个只改 Clash 规则
+// 的 MATCH 走向，不改链接集合）。各创建表单共用一个 localStorage 键记住上次选择。
+const SUB_MODE_KEY = 'relay-panel-sub-mode';
+const SUB_MODE_LABELS = { both: '全部', relay: '仅中转', direct: '仅直连' };
+function subModeValid(v) { return (v === 'relay' || v === 'direct' || v === 'both') ? v : 'both'; }
+function subModeLabel(v) { return SUB_MODE_LABELS[subModeValid(v)] || '全部'; }
+function savedSubMode() {
+  try { return subModeValid(localStorage.getItem(SUB_MODE_KEY) || 'both'); } catch (e) { return 'both'; }
+}
+// 一组三选一卡片的 HTML（name 是这组 radio 的名字；单落地小窗里动态生成，
+// 静态表单直接写在 index.html 里，结构与这里一致）。
+function subModeRadioCardsHTML(name) {
+  return '<div class="small muted" style="margin-bottom:6px">订阅内容：</div>' +
+    '<label class="radio-card selected" data-sub-mode="both"><input type="radio" name="' + esc(name) + '" value="both" checked> <span class="opt-title">全部</span><div class="opt-desc">中转和直连的节点都进订阅。</div></label>' +
+    '<label class="radio-card" data-sub-mode="relay"><input type="radio" name="' + esc(name) + '" value="relay"> <span class="opt-title">仅中转</span><div class="opt-desc">只要走中转机的节点。</div></label>' +
+    '<label class="radio-card" data-sub-mode="direct"><input type="radio" name="' + esc(name) + '" value="direct"> <span class="opt-title">仅直连</span><div class="opt-desc">只要直连落地机的节点。</div></label>';
+}
+function subModeOf(name) {
+  const c = document.querySelector('input[name="' + name + '"]:checked');
+  return subModeValid(c ? c.value : 'both');
+}
+// 把一组三选一同步成指定值（写 checked + selected 样式）。
+function syncOneSubModeGroup(g, value) {
+  if (!g) return;
+  value = subModeValid(value);
+  g.querySelectorAll('.radio-card').forEach((c) => c.classList.toggle('selected', c.dataset.subMode === value));
+  const input = g.querySelector('input[value="' + value + '"]');
+  if (input) input.checked = true;
+}
+// 把页面上所有三选一组同步成指定值。
+function syncSubModeGroups(value) {
+  $$('[data-sub-mode-group]').forEach((g) => syncOneSubModeGroup(g, value));
+}
+function bindSubModeGroup(g) {
+  if (!g || g._subModeBound) return;
+  g._subModeBound = true;
+  g.querySelectorAll('.radio-card').forEach((c) => c.addEventListener('click', () => {
+    const v = subModeValid(c.dataset.subMode);
+    try { localStorage.setItem(SUB_MODE_KEY, v); } catch (e) {}
+    syncSubModeGroups(v);
+  }));
+}
+function initSubMode() {
+  $$('[data-sub-mode-group]').forEach(bindSubModeGroup);
+  syncSubModeGroups(savedSubMode());
+}
 // ---------- 订阅链接 ----------
 // 订阅链接默认不带 mode 参数（服务端缺省就是分流 MATCH,DIRECT）；只有在
 // 模式选择里显式选了分流/全局，才在复制的链接与二维码里带上 ?mode=。
@@ -2556,9 +2606,10 @@ async function loadGenericSubLink() {
   } catch (e) { /* 取不到就留着状态文案 */ }
 }
 // 单面板订阅令牌生成/轮换：链接显示在设置页的订阅卡片里，之后随时能复制。
+// 生成方式按卡片上三选一的当前选择存进令牌（轮换也一样，表单的显式选择）。
 async function subTokenGenerate(rotated) {
   try {
-    const r = await apiPost('/api/v1/settings/subscription/generate', {});
+    const r = await apiPost('/api/v1/settings/subscription/generate', { mode: subModeOf('sub-token-mode') });
     $('#sub-url-value').textContent = r.url || '';
     const box = $('#sub-once');
     if (box) { box.classList.remove('hidden'); box.hidden = false; }
@@ -2615,7 +2666,7 @@ async function loadSubUsers() {
     const r = await api('/api/v1/subscriptions/users');
     const users = r.users || [];
     if (!users.length) { list.innerHTML = '<p class="muted small">还没有订阅用户：上面填名字点“新建订阅用户”，每人一条独立链接。</p>'; return; }
-    list.innerHTML = '<h3>订阅用户</h3>' + users.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-copy="' + esc(u.id) + '">复制</button> <button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
+    list.innerHTML = '<h3>订阅用户</h3>' + users.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 内容' + esc(subModeLabel(u.mode)) + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-copy="' + esc(u.id) + '">复制</button> <button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
       '<p class="muted small">撤销只影响那个人，其他人的链接照常；轮换后旧链接立即失效。</p>';
     $$('[data-sub-user-copy]', list).forEach((b) => b.addEventListener('click', async () => {
       try {
@@ -2655,7 +2706,7 @@ async function subUserCreate() {
   const name = $('#sub-user-name').value.trim();
   if (!name) { toast('请先填名字（用来认人）', 'err'); return; }
   try {
-    const r = await apiPost('/api/v1/subscriptions/users', { name, note: $('#sub-user-note').value.trim() });
+    const r = await apiPost('/api/v1/subscriptions/users', { name, note: $('#sub-user-note').value.trim(), mode: subModeOf('sub-user-mode') });
     $('#sub-user-url-value').textContent = r.url || '';
     const box = $('#sub-user-once');
     if (box) { box.classList.remove('hidden'); box.hidden = false; }
@@ -2695,8 +2746,8 @@ async function loadWorkerCode() {
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
 // 合并订阅弹窗：显示一条刚生成/轮换的订阅链接，带复制、
-// 二维码、模式选择，以及轮换/撤销按钮。opts: {title, rotated, name, mergedId}
-// mergedId 为空时不显示轮换/撤销（老调用方只传链接时用不到）。
+// 二维码、模式选择，以及轮换/撤销按钮。opts: {title, rotated, name, mergedId, mode}
+// mode 是这条订阅的内容范围（both|relay|direct），显示用；轮换时保持不变。
 function openMergedSubModal(url, opts) {
   opts = opts || {};
   let curUrl = url;
@@ -2704,6 +2755,7 @@ function openMergedSubModal(url, opts) {
     (opts.rotated ? '<div class="warn-box" data-merged-warn>这份选择之前生成过，已轮换：旧链接立即失效，请用下面这条新链接。</div>' : '<div class="warn-box" data-merged-warn>链接已加密存在面板里，关掉弹窗后在合并订阅列表里点“复制”随时能拿。</div>') +
     (opts.name ? '<div class="kv"><span>归属到人</span><b>' + esc(opts.name) + '</b></div>' : '') +
     '<div class="kv"><span>订阅链接</span><b class="mono" style="word-break:break-all" data-merged-url>' + esc(curUrl) + '</b></div>' +
+    (opts.mode ? '<div class="kv"><span>订阅内容</span><b>' + esc(subModeLabel(opts.mode)) + '</b></div>' : '') +
     '<p class="muted small">模式（可选）：<select data-sub-mode><option value="" selected>默认（不带参数，服务端按分流出）</option><option value="split">分流（TikTok/社交/流媒体走节点，其他直连）</option><option value="global">全局（全部走代理）</option></select>　客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表）；也可以手动加后缀：?format=clash / base64 / plain，?mode=split / global。默认复制的链接不带模式参数；只有规则模式下想全走代理、又保留分类分流时，才选全局。</p>' +
     '<div class="btn-row"><button class="btn sm" type="button" data-sub-copy-url>复制订阅链接</button>' +
     '<button class="btn secondary sm" type="button" data-sub-copy-clash>复制 Clash 链接</button>' +
@@ -2775,13 +2827,32 @@ function openMergedSubModal(url, opts) {
 }
 // 给一份勾选（单个或多个落地）生成订阅链接，弹窗显示链接与复制按钮。
 // selection: [{panel:'local'|远程面板 id, landing:编号}]；name 选填（归属到人，
-// 只在合并订阅生成时传，填了就新起一条、不走轮换）。
-async function showSubForSelection(selection, title, name) {
+// 只在合并订阅生成时传，填了就新起一条、不走轮换）；mode 是内容范围
+// （both|relay|direct），不传默认全部。
+async function showSubForSelection(selection, title, name, mode) {
   try {
-    const r = await apiPost('/api/v1/subscriptions/merged', { selection, name: name || undefined });
-    openMergedSubModal(r.url || '', { title, rotated: r.rotated, name, mergedId: r.id });
+    const r = await apiPost('/api/v1/subscriptions/merged', { selection, name: name || undefined, mode: subModeValid(mode || 'both') });
+    openMergedSubModal(r.url || '', { title, rotated: r.rotated, name, mergedId: r.id, mode: r.mode || mode || 'both' });
     loadMergedSubsList();
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
+}
+// 单落地“订阅”按钮：先弹小窗选订阅内容（全部/仅中转/仅直连），再生成。
+// 选择记到共用的上次选择里，下次打开还是它。
+function askSubModeForSelection(selection, title) {
+  const m = openModal('<h2>' + esc(title) + '</h2>' +
+    '<p class="muted small">选这条订阅里要哪些节点：</p>' +
+    '<div data-sub-mode-group>' + subModeRadioCardsHTML('single-sub-mode') + '</div>' +
+    '<div class="btn-row"><button class="btn" type="button" data-single-sub-go>生成订阅链接</button>' +
+    '<button class="btn secondary" type="button" data-single-sub-cancel>取消</button></div>');
+  if (!m) return;
+  bindSubModeGroup(m.querySelector('[data-sub-mode-group]'));
+  syncSubModeGroups(savedSubMode());
+  onIn(m, '[data-single-sub-go]', 'click', async () => {
+    const mode = subModeOf('single-sub-mode');
+    closeModal();
+    await showSubForSelection(selection, title, '', mode);
+  });
+  onIn(m, '[data-single-sub-cancel]', 'click', closeModal);
 }
 // ---------- 集中管理卡片汇总（v1.3.4） ----------
 // 远程落地流量与到期都来自集中管理快照（主面板每 2 分钟拉远程状态，
@@ -3144,7 +3215,7 @@ function renderCentralSubTree() {
     const pid = key.slice(0, idx), li = Number(key.slice(idx + 1));
     const panel = (centralSubTree || []).find((p) => p.id === pid);
     const l = panel ? panel.landings.find((x) => x.index === li) : null;
-    showSubForSelection([{ panel: pid, landing: li }], (l ? l.title : '落地') + ' 的订阅');
+    askSubModeForSelection([{ panel: pid, landing: li }], (l ? l.title : '落地') + ' 的订阅');
   }));
   refreshCentralSubTreeStates();
 }
@@ -3178,13 +3249,13 @@ async function loadMergedSubsList() {
     const r = await api('/api/v1/subscriptions/merged');
     const subs = r.subs || [];
     if (!subs.length) { list.innerHTML = '<p class="muted small">还没有合并订阅：上面勾选落地后点“生成合并订阅”。</p>'; return; }
-    list.innerHTML = '<h3>已生成的合并订阅</h3>' + subs.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + esc(s.summary || '') + '<br><span class="small muted">生成于 ' + esc(fmtDate(s.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
+    list.innerHTML = '<h3>已生成的合并订阅</h3>' + subs.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-mode-merged="' + esc(s.mode || '') + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
       '<p class="muted small">每条订阅都有“复制”按钮，链接加密存在面板里，随时能重新复制；旧链接（1.3.7 之前生成的）没有存密文，点轮换生成一条新的（旧链接立即失效），或重新勾选生成（不填名称时同一选择重新生成会轮换；填了名称是新起一条，各归各人）。</p>';
     $$('[data-sub-copy-merged]', list).forEach((b) => b.addEventListener('click', async () => {
       try {
         const r = await fetchSubLink('merged', b.dataset.subCopyMerged);
         if (r.legacy) { await legacySubPrompt(() => rotateMergedSub(b.dataset.subCopyMerged, b.dataset.subNameMerged || undefined)); return; }
-        openMergedSubModal(r.url || '', { title: '订阅链接', name: b.dataset.subNameMerged || undefined, mergedId: b.dataset.subCopyMerged });
+        openMergedSubModal(r.url || '', { title: '订阅链接', name: b.dataset.subNameMerged || undefined, mergedId: b.dataset.subCopyMerged, mode: b.dataset.subModeMerged || undefined });
       } catch (e) { toast('复制失败：' + e.message, 'err'); }
     }));
     $$('[data-sub-rotate-merged]', list).forEach((b) => b.addEventListener('click', async () => {
@@ -3205,7 +3276,7 @@ async function loadMergedSubsList() {
 // 新链接在弹窗里直接显示，之后随时能复制。
 async function rotateMergedSub(id, name) {
   const r = await apiPost('/api/v1/subscriptions/merged/' + encodeURIComponent(id) + '/rotate', {});
-  openMergedSubModal(r.url || '', { title: '订阅链接', rotated: true, name: name || undefined, mergedId: r.id });
+  openMergedSubModal(r.url || '', { title: '订阅链接', rotated: true, name: name || undefined, mergedId: r.id, mode: r.mode });
   loadMergedSubsList();
   return r;
 }
@@ -3307,7 +3378,7 @@ async function loadCentralLandings(id, page) {
     }));
     $$('[data-central-sub-landing]', detail).forEach((b) => b.addEventListener('click', () => {
       const l = centralDetailLandings.find((x) => x.index === Number(b.dataset.centralSubLanding));
-      showSubForSelection([{ panel: id, landing: Number(b.dataset.centralSubLanding) }], (l ? centralLandingTitle(l) : '落地') + ' 的订阅');
+      askSubModeForSelection([{ panel: id, landing: Number(b.dataset.centralSubLanding) }], (l ? centralLandingTitle(l) : '落地') + ' 的订阅');
     }));
     $$('[data-central-del-landing]', detail).forEach((b) => b.addEventListener('click', () => centralDeleteLanding(id, Number(b.dataset.centralDelLanding))));
     if (pg.totalPages > 1) wirePager(detail, 'central', pg.cur, pg.totalPages, (p) => loadCentralLandings(id, p));
@@ -3914,7 +3985,7 @@ function initCentral() {
     }));
     if (!selection.length) { toast('请先勾选至少一个落地', 'err'); return; }
     const nameEl = $('#central-sub-name');
-    await showSubForSelection(selection, '合并订阅', nameEl ? nameEl.value.trim() : '');
+    await showSubForSelection(selection, '合并订阅', nameEl ? nameEl.value.trim() : '', subModeOf('central-sub-mode'));
   });
   on('#central-add-form', 'submit', async (e) => {
     e.preventDefault();
@@ -3951,6 +4022,7 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initCheck);
   safeInit(initAddForm);
   safeInit(initTwin);
+  safeInit(initSubMode); // v1.3.17：订阅内容三选一绑定 + 恢复上次选择
   safeInit(initService);
   safeInit(initSettings);
   safeInit(initMonitorSettings);

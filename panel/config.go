@@ -48,9 +48,12 @@ type PanelConfig struct {
 	// 点复制重新拿；1.3.7 之前生成的没有密文，复制时提示轮换一次。
 	// 内容是实时生成的（全部落地），面板里增删节点后订阅内容自动跟着变，
 	// 不用重新导出。
+	// SubTokenMode（v1.3.17）：这条通用订阅的内容范围，both|relay|direct，
+	// 空（老记录）按 both；/sub/ 服务时按它过滤链接。
 	SubTokenHash      string `json:"sub_token_hash"`
 	SubTokenEnc       string `json:"sub_token_enc,omitempty"`
 	SubTokenCreatedAt string `json:"sub_token_created_at"`
+	SubTokenMode      string `json:"sub_token_mode,omitempty"`
 	// 订阅对外域名（v1.3.2）：部署完 Cloudflare Worker 后填 Worker 的域名
 	// （或在触发器里绑的自定义域名）。填了之后，面板里显示与复制的订阅链接
 	// （通用链接、每人链接、合并订阅、二维码）都改用 https://这个域名/sub/…，
@@ -140,6 +143,8 @@ type SubSelection struct {
 // TokenEnc 是同一令牌的 AES-GCM 密文（v1.3.7，密钥在 PANEL_HOME/sub_token.key），
 // 用来重新拼链接；1.3.7 之前生成的没有密文，复制时提示轮换一次。
 // Selection 是这份订阅绑定的勾选集合。
+// Mode（v1.3.17）：内容范围，both|relay|direct，空（老记录）按 both；
+// /sub/ 服务时按它过滤链接；轮换令牌时保持不变（专用轮换接口不带 mode）。
 // Name 是归属到人（v1.3.0，选填）：填了就新起一条，同一勾选集合可有
 // 多个不同名称的令牌，各归各人；不填走老逻辑（同一选择重新生成会轮换）。
 type MergedSub struct {
@@ -149,6 +154,7 @@ type MergedSub struct {
 	TokenEnc  string         `json:"token_enc,omitempty"`
 	CreatedAt string         `json:"created_at"`
 	Selection []SubSelection `json:"selection"`
+	Mode      string         `json:"mode,omitempty"`
 }
 
 // SubUser 一人一条订阅链接（v1.3.0）：TokenHash 是订阅令牌的 SHA-256
@@ -156,6 +162,8 @@ type MergedSub struct {
 // 用来重新拼链接；旧链接没有密文，复制时提示轮换一次）。Name 是人名/备注
 // （必填，用来认人）。Selection 为空 = 单面板全量订阅（全部落地），
 // 非空 = 合并订阅的勾选集合（只导选中的落地）。
+// Mode（v1.3.17）：内容范围，both|relay|direct，空（老记录）按 both；
+// /sub/ 服务时按它过滤链接；轮换令牌时保持不变（专用轮换接口不带 mode）。
 type SubUser struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
@@ -164,6 +172,7 @@ type SubUser struct {
 	TokenEnc  string         `json:"token_enc,omitempty"`
 	CreatedAt string         `json:"created_at"`
 	Selection []SubSelection `json:"selection,omitempty"`
+	Mode      string         `json:"mode,omitempty"`
 }
 
 // ---------- 面板扩展状态（PANEL_HOME/state.json） ----------

@@ -32,7 +32,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"backup":        s.cfg.Backup,
 		"remote_backup": s.remoteBackupStatus(),
 		"central_token": map[string]any{"has_token": s.cfg.RemoteTokenHash != "", "created_at": s.cfg.RemoteTokenCreatedAt},
-		"subscription":  map[string]any{"has_token": s.cfg.SubTokenHash != "", "has_link": s.cfg.SubTokenEnc != "", "created_at": s.cfg.SubTokenCreatedAt, "public_domain": s.cfg.SubPublicDomain, "worker_origin": s.cfg.WorkerOrigin},
+		"subscription":  map[string]any{"has_token": s.cfg.SubTokenHash != "", "has_link": s.cfg.SubTokenEnc != "", "created_at": s.cfg.SubTokenCreatedAt, "public_domain": s.cfg.SubPublicDomain, "worker_origin": s.cfg.WorkerOrigin, "mode": s.cfg.SubTokenMode},
 		// 登录安全（v1.3.8，可选，默认关）：telegram_configured 指 Telegram 提醒
 		// 真能发（开关开着且 Token 与 Chat ID 都填了），没配好时登录告警开关置灰；
 		// 密钥与备用码明文绝不经这个接口返回。
