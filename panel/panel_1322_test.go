@@ -11,13 +11,6 @@ import (
 
 // ---------- 1.3.22：Logo 按钮间距 + 删旧链接提示 + 域名选项卡布局根因修复 + 系统选项卡 ----------
 
-// TestVersion1322 VERSION 文件是 1.3.22。
-func TestVersion1322(t *testing.T) {
-	if Version != "1.3.22" {
-		t.Fatalf("VERSION 应是 1.3.22，实际 %q", Version)
-	}
-}
-
 // settingsIndexHTML1322 读内嵌的 index.html（回归测试用）。
 func settingsIndexHTML1322(t *testing.T) string {
 	t.Helper()
@@ -132,7 +125,7 @@ func TestSettingsLogoButtonsSpacing1322(t *testing.T) {
 }
 
 // TestSubUserLegacyHintRemoved1322 订阅用户里的旧链接提示句已删
-//（两处静态文案：订阅用户卡片段落、合并订阅列表底部说明；后端对旧链接的处理
+// （两处静态文案：订阅用户卡片段落、合并订阅列表底部说明；后端对旧链接的处理
 // 不动：真遇到旧链接时点轮换仍走原来的确认流程）。
 func TestSubUserLegacyHintRemoved1322(t *testing.T) {
 	html := settingsIndexHTML1322(t)
@@ -157,7 +150,7 @@ var ssOnly1322 = subLink{Name: "SS节点", Link: "ss://YWVzLTI1Ni1nY206cGFzc3dvc
 // TestRenderClashYAMLEmpty1322 节点为空时不出空策略组：以前会出 5 个
 // proxies: 为空的组，Clash 导入直接报
 // “proxy group[0]: 'use' or 'proxies' missing”。现在只出合法的空配置
-//（proxies: []、proxy-groups: []、规则只留 MATCH,DIRECT），不引用
+// （proxies: []、proxy-groups: []、规则只留 MATCH,DIRECT），不引用
 // 不存在的组。
 func TestRenderClashYAMLEmpty1322(t *testing.T) {
 	out := renderClashYAML(nil, "split")
@@ -176,17 +169,33 @@ func TestRenderClashYAMLEmpty1322(t *testing.T) {
 	}
 }
 
-// TestRenderClashYAMLSSOnly1322 全是 Clash 不支持的类型（SS/HY2/TUIC
-// 都会被 clashProxyFromLink 跳过）时同样不出空组。
+// TestRenderClashYAMLSSOnly1322 全是 SS 时：1.3.22 以前 SS 不进 Clash，
+// 出空配置；1.3.23 起 clashProxyFromLink 有了 ss 分支，SS 正常进
+// YAML（type: ss + cipher + password + udp: true），不再出空配置。
 func TestRenderClashYAMLSSOnly1322(t *testing.T) {
 	out := renderClashYAML([]subLink{ssOnly1322}, "split")
-	if !strings.Contains(out, "proxy-groups: []") {
-		t.Fatalf("SS-only 订阅应出空配置（SS 不进 Clash），实际：\n%s", out)
+	if strings.Contains(out, "proxy-groups: []") {
+		t.Fatalf("SS-only 订阅 1.3.23 起应有 SS 节点，不应出空配置，实际：\n%s", out)
+	}
+	for _, want := range []string{"name: \"SS节点\"", "type: ss", "cipher: \"aes-256-gcm\"", "password: \"password\"", "udp: true"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("SS-only 订阅缺 %q，实际：\n%s", want, out)
+		}
 	}
 }
 
-// TestRenderClashYAMLMixed1322 VLESS + SS 混合时 VLESS 正常进组、
-// SS 被跳过，每个策略组都有非空 proxies。
+// TestRenderClashYAMLHY2Only1322 全是 Clash 不支持的类型（HY2/TUIC
+// 仍会被 clashProxyFromLink 跳过）时不出空组。
+func TestRenderClashYAMLHY2Only1322(t *testing.T) {
+	hy2 := subLink{Name: "HY2节点", Link: "hysteria2://pass@203.0.113.1:8443#HY2节点"}
+	out := renderClashYAML([]subLink{hy2}, "split")
+	if !strings.Contains(out, "proxy-groups: []") {
+		t.Fatalf("HY2-only 订阅应出空配置（HY2 不进 Clash），实际：\n%s", out)
+	}
+}
+
+// TestRenderClashYAMLMixed1322 VLESS + SS 混合时两者都进 YAML，
+// 每个策略组都有非空 proxies。
 func TestRenderClashYAMLMixed1322(t *testing.T) {
 	out := renderClashYAML([]subLink{vlessTwin1322, ssOnly1322}, "split")
 	for _, g := range []string{"自动选择", "GLOBAL", "手动选择", "社交", "流媒体", "中转节点"} {
@@ -196,6 +205,9 @@ func TestRenderClashYAMLMixed1322(t *testing.T) {
 	}
 	if strings.Contains(out, "直连节点") {
 		t.Fatalf("混合订阅只有中转链接，不应出直连节点组，实际：\n%s", out)
+	}
+	if !strings.Contains(out, "name: \"SS节点\"") || !strings.Contains(out, "type: ss") {
+		t.Fatalf("混合订阅里 SS 节点应进 proxies，实际：\n%s", out)
 	}
 	// 每个组名后面都应跟着非空的 proxies 列表（组里至少有一条 - "名字"）。
 	// 只看 proxy-groups 一节：proxies 一节里的节点条目也以 "  - name: " 开头。

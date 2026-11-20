@@ -1951,6 +1951,8 @@ function initSettings() {
   wireListSearch('#sched-backup-search', (q) => { schedBackupSearch = q; schedBackupPage = 1; loadSchedBackups(); });
   on('#sub-copy', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, ''), e.target); });
   on('#sub-copy-clash', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'clash'), e.target); });
+  on('#sub-copy-singbox', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'singbox'), e.target); });
+  on('#sub-copy-base64', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'base64'), e.target); });
   on('#sub-copy-plain', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'plain'), e.target); });
   on('#sub-qr', 'click', async () => { await showSubQrModal('generic'); });
   on('#sub-mode', 'change', async () => { if (openQrKind === 'generic') await refreshSubQrModal('generic'); });
@@ -2711,10 +2713,12 @@ function subLinkWithMode(url, format) {
 // 行内展开，现在统一走弹窗。弹窗打开时改模式（内容三选一或 ?mode= 分流/全局）
 // 也要同步更新：改模式的 change 监听里，弹窗开着就重新拉一次写进弹窗。
 // 图片的复制/下载走页面已有的 data-copy-img / data-download-img 事件委托。
+// 二维码编的是 Clash 订阅链接（?format=clash，v1.3.23 起显式指定，不再靠
+// UA 嗅探：多数用户是 Clash 系，扫码导入直接拿 YAML）。
 let openQrKind = null; // 当前打开的设置页二维码弹窗：'generic' | 'user' | null
 async function showSubQrModal(kind) {
   openQrKind = kind;
-  const m = openModal('<h2>订阅链接二维码</h2><p class="muted small">扫码后客户端按 UA 自动识别格式，直接导入；默认不带模式参数，选了全局才带 ?mode=global；换模式后二维码跟着重新生成。</p>' +
+  const m = openModal('<h2>订阅链接二维码</h2><p class="muted small">扫码后导入的是 Clash 订阅链接，直接进 Clash 系客户端；默认不带模式参数，选了全局才带 ?mode=global；换模式后二维码跟着重新生成。</p>' +
     '<div class="qr-wrap"><figure data-qr-modal-figure><img data-qr-modal-img alt="订阅链接二维码"><figcaption>订阅链接二维码</figcaption>' +
     '<div class="btn-row"><button class="btn secondary sm" type="button" data-copy-img>复制图片</button>' +
     '<button class="btn secondary sm" type="button" data-download-img="订阅链接-二维码.png">下载图片</button></div></figure></div>');
@@ -2726,7 +2730,7 @@ async function refreshSubQrModal(kind) {
   const fig = document.querySelector('[data-qr-modal-figure]');
   if (!img) { openQrKind = null; return; } // 弹窗已经关了（或被别的弹窗顶掉），不用再拉
   const urlEl = kind === 'user' ? $('#sub-user-url-value') : $('#sub-url-value');
-  const url = subLinkWithMode(urlEl ? urlEl.textContent : '', '');
+  const url = subLinkWithMode(urlEl ? urlEl.textContent : '', 'clash');
   try {
     const r = await apiPost('/api/v1/subscription/qr', { url });
     if (!r.qr) throw new Error('后端没有返回二维码');

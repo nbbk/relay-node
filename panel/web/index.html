@@ -411,7 +411,7 @@
               <div class="card">
             <h2>订阅链接</h2>
             <p class="muted">一个链接导入节点：默认一次拿到本面板的节点（中转 + 直连），下面能选只要中转或只要直连。内容实时生成，面板里增删节点后订阅自动跟着变，不用重新导出。</p>
-            <details class="small muted"><summary>格式与模式参数说明</summary>客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表），也可以在链接后面加 ?format=clash / base64 / plain 手动指定；Clash 订阅默认不带模式参数，服务端按分流出（TikTok/社交/流媒体走节点，其他直连），想手动指定可以在链接后面加 ?mode=split（分流）/ global（全局）。?mode=global 只有一种情况才需要：规则模式下想全走代理、又保留 TikTok/社交/流媒体的分类分流——客户端切全局模式会忽略全部规则，分类分流就没了。</details>
+            <details class="small muted"><summary>格式与模式参数说明</summary>客户端按 UA 自动识别格式（Clash 系拿 YAML，sing-box 官方客户端拿 JSON，其他拿 base64 列表），也可以在链接后面加 ?format=clash / singbox / base64 / plain 手动指定；Clash 订阅默认不带模式参数，服务端按分流出（TikTok/社交/流媒体走节点，其他直连），想手动指定可以在链接后面加 ?mode=split（分流）/ global（全局）。?mode=global 只有一种情况才需要：规则模式下想全走代理、又保留 TikTok/社交/流媒体的分类分流——客户端切全局模式会忽略全部规则，分类分流就没了。</details>
             <div class="small" id="sub-status">未生成订阅链接</div>
             <div id="sub-once" class="hidden" style="margin-top:10px">
               <div class="warn-box">链接已加密存在面板里，随时能点“复制”重新拿；轮换后旧链接立即失效。</div>
@@ -419,9 +419,12 @@
               <div class="btn-row">
                 <button class="btn secondary sm" id="sub-copy" type="button">复制订阅链接</button>
                 <button class="btn secondary sm" id="sub-copy-clash" type="button">复制 Clash 链接</button>
+                <button class="btn secondary sm" id="sub-copy-singbox" type="button">复制 sing-box 链接</button>
+                <button class="btn secondary sm" id="sub-copy-base64" type="button">复制 base64 链接</button>
                 <button class="btn secondary sm" id="sub-copy-plain" type="button">复制明文链接</button>
                 <button class="btn secondary sm" id="sub-qr" type="button">二维码</button>
               </div>
+              <p class="small muted">三条链接各给一类客户端：Clash 链接给 FlClash、Clash Verge Rev、Mihomo Party、Stash、ClashX Meta、Clash Meta for Android；sing-box 链接给 sing-box 官方客户端、Hiddify、Karing、NekoBox、Streisand；base64 链接给 v2rayNG、v2rayN、Shadowrocket。FlClash、Verge 这类 Clash 系客户端不要用 base64 那条，它们的导入口不认 base64。</p>
               <div class="btn-row" style="margin-top:8px">
                 <label class="small">模式（可选）：
                   <select id="sub-mode">

@@ -105,24 +105,25 @@ func TestClashRules129(t *testing.T) {
 	if err != nil {
 		t.Fatalf("分流渲染失败：%v", err)
 	}
-	// TikTok：7 个后缀 + keyword 补网，指向手动选择
-	for _, d := range []string{"tiktok.com", "tiktokv.com", "tiktokcdn.com", "tiktokcdn-us.com", "musical.ly", "byteoversea.com", "ibytedtos.com"} {
-		if !strings.Contains(split, "DOMAIN-SUFFIX,"+d+",手动选择") {
+	// TikTok：8 个后缀 + keyword 补网，指向自动选择（1.3.23 起从手动选择改过来，
+	// 死节点自动排除；清单里多了 isnssdk.com）
+	for _, d := range []string{"tiktok.com", "tiktokv.com", "tiktokcdn.com", "tiktokcdn-us.com", "musical.ly", "byteoversea.com", "ibytedtos.com", "isnssdk.com"} {
+		if !strings.Contains(split, "DOMAIN-SUFFIX,"+d+",自动选择") {
 			t.Fatalf("缺 TikTok 规则 %s：\n%s", d, split)
 		}
 	}
-	if !strings.Contains(split, "DOMAIN-KEYWORD,tiktok,手动选择") {
+	if !strings.Contains(split, "DOMAIN-KEYWORD,tiktok,自动选择") {
 		t.Fatalf("缺 TikTok keyword 补网规则：\n%s", split)
 	}
-	// 社交：抽查关键域名，全部指向社交组
+	// 社交：抽查关键域名，全部指向自动选择（1.3.23 起从社交组改过来）
 	for _, d := range []string{"facebook.com", "fb.com", "instagram.com", "x.com", "twitter.com", "whatsapp.com", "telegram.org", "t.me", "snapchat.com", "reddit.com", "discord.com", "threads.net", "line.me"} {
-		if !strings.Contains(split, "DOMAIN-SUFFIX,"+d+",社交") {
+		if !strings.Contains(split, "DOMAIN-SUFFIX,"+d+",自动选择") {
 			t.Fatalf("缺社交规则 %s：\n%s", d, split)
 		}
 	}
-	// 流媒体：抽查关键域名，全部指向流媒体组
+	// 流媒体：抽查关键域名，全部指向自动选择（1.3.23 起从流媒体组改过来）
 	for _, d := range []string{"youtube.com", "googlevideo.com", "youtu.be", "netflix.com", "nflxvideo.net", "disneyplus.com", "hulu.com", "max.com", "primevideo.com", "tv.apple.com", "spotify.com", "twitch.tv", "jtvnw.net"} {
-		if !strings.Contains(split, "DOMAIN-SUFFIX,"+d+",流媒体") {
+		if !strings.Contains(split, "DOMAIN-SUFFIX,"+d+",自动选择") {
 			t.Fatalf("缺流媒体规则 %s：\n%s", d, split)
 		}
 	}
@@ -130,9 +131,9 @@ func TestClashRules129(t *testing.T) {
 	if strings.Contains(split, "DOMAIN-SUFFIX,apple.com,") {
 		t.Fatalf("不应出现 DOMAIN-SUFFIX,apple.com：\n%s", split)
 	}
-	// scdn.co 在社交与流媒体清单里都有，只出一次（先命中社交组）
-	if strings.Count(split, "DOMAIN-SUFFIX,scdn.co,") != 1 || !strings.Contains(split, "DOMAIN-SUFFIX,scdn.co,社交") {
-		t.Fatalf("scdn.co 应只出现一次且指向社交组：\n%s", split)
+	// scdn.co 在社交与流媒体清单里都有，只出一次（先命中社交段）
+	if strings.Count(split, "DOMAIN-SUFFIX,scdn.co,") != 1 || !strings.Contains(split, "DOMAIN-SUFFIX,scdn.co,自动选择") {
+		t.Fatalf("scdn.co 应只出现一次且指向自动选择：\n%s", split)
 	}
 	// 规则顺序：TikTok → 社交 → 流媒体 → MATCH
 	ti := strings.Index(split, "DOMAIN-SUFFIX,tiktok.com,")

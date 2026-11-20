@@ -7,12 +7,15 @@ package main
 //   - 合并订阅：主面板按勾选的落地集合（本面板 + 多台远程面板）生成，每份选择
 //     一条令牌，不同选择绝不共用一个令牌；内容同样实时生成（远程部分当场去
 //     远程面板取，取不到的那台暂时跳过，下次拉取时自动恢复）。
-//   - 格式：?format=clash|base64|plain 手动指定优先；不指定时按 User-Agent
-//     自动识别——含 clash/stash/mihomo（不区分大小写）返回 Clash YAML，
-//     其余返回 base64 节点列表。
+//   - 格式：?format=clash|base64|plain|singbox 手动指定优先；不指定时按
+//     User-Agent 自动识别——含 clash/stash/mihomo（不区分大小写）返回
+//     Clash YAML，含 sing-box/SFA/SFI/SFM 返回 sing-box JSON，
+//     其余返回 base64 节点列表。sing-box 系里 Hiddify/Karing/NekoBox
+//     的 UA 没法嗅探，靠界面上单独给的 ?format=singbox 链接。
 //   - 模式（v1.2.9，只影响 Clash YAML）：?mode=split|global，缺省 split；
 //     split 是分流（TikTok/社交/流媒体走节点，其他直连），global 是全局
 //     （全部走代理）；非法 mode 返回 400，与非法 format 的处理一致。
+//     sing-box JSON 不认 mode，始终按分流出（route final direct）。
 // 安全要点：
 //   - 订阅令牌存 SHA-256 哈希（鉴权查表）与 AES-GCM 密文（v1.3.7，
 //     密钥在 PANEL_HOME/sub_token.key，重新拼链接用）；1.3.7 之前生成的
@@ -222,9 +225,10 @@ func dedupSubLinks(links []subLink) []subLink {
 }
 
 // renderSubContent 把节点链接渲染成订阅内容：plain=明文列表，
-// base64=标准 base64 编码的列表，clash=Clash YAML（proxies + 策略组 +
-// 分流规则）。mode 只影响 clash（split 分流 / global 全局），
-// base64/plain 原样不动；format 不合法返回错误。
+// base64=标准 base64 编码的列表，clash=Clash YAML（dns 段 + proxies +
+// 策略组 + 分流规则），singbox=sing-box 完整配置 JSON。mode 只影响
+// clash（split 分流 / global 全局），base64/plain/singbox 原样不动
+// （sing-box JSON 始终按分流出）；format 不合法返回错误。
 func renderSubContent(links []subLink, format, mode string) (string, string, error) {
 	links = dedupSubLinks(links)
 	switch format {
@@ -242,9 +246,202 @@ func renderSubContent(links []subLink, format, mode string) (string, string, err
 		return base64.StdEncoding.EncodeToString([]byte(strings.Join(lines, "\n") + "\n")), "text/plain; charset=utf-8", nil
 	case "clash":
 		return renderClashYAML(links, mode), "text/yaml; charset=utf-8", nil
+	case "singbox":
+		return renderSingboxJSON(links), "application/json; charset=utf-8", nil
 	default:
-		return "", "", fmt.Errorf("format 只支持 clash/base64/plain")
+		return "", "", fmt.Errorf("format 只支持 clash/base64/plain/singbox")
 	}
+}
+
+// singboxOutboundFromLink 把一条节点链接转成 sing-box outbound
+// （map 形式，由 renderSingboxJSON 统一 Marshal）。支持 vless /
+// trojan / vmess / ss；hy2/tuic 暂不支持，跳过。
+func singboxOutboundFromLink(l subLink) (map[string]any, bool) {
+	u, err := url.Parse(strings.TrimSpace(l.Link))
+	if err != nil || u.Scheme == "" {
+		return nil, false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme == "ss" {
+		cipher, pw, h, p, ok := parseSSLink(l.Link)
+		if !ok {
+			return nil, false
+		}
+		return map[string]any{
+			"type": "shadowsocks", "tag": l.Name,
+			"server": h, "server_port": p,
+			"method": cipher, "password": pw,
+		}, true
+	}
+	q := u.Query()
+	host := u.Hostname()
+	port, _ := strconv.Atoi(u.Port())
+	if host == "" || port <= 0 {
+		return nil, false
+	}
+	tlsOn := strings.EqualFold(q.Get("security"), "tls")
+	sni := q.Get("sni")
+	if sni == "" {
+		sni = q.Get("host")
+	}
+	network := q.Get("type")
+	if network == "" {
+		network = "ws"
+	}
+	path := q.Get("path")
+	wsHost := q.Get("host")
+	var ob map[string]any
+	switch scheme {
+	case "vless":
+		uuid := ""
+		if u.User != nil {
+			uuid = u.User.Username()
+		}
+		if uuid == "" {
+			return nil, false
+		}
+		ob = map[string]any{"type": "vless", "tag": l.Name, "server": host, "server_port": port, "uuid": uuid}
+	case "trojan":
+		pw := ""
+		if u.User != nil {
+			pw = u.User.Username()
+		}
+		if pw == "" {
+			return nil, false
+		}
+		ob = map[string]any{"type": "trojan", "tag": l.Name, "server": host, "server_port": port, "password": pw}
+	case "vmess":
+		raw, jerr := decodeVmessLink(l.Link)
+		if jerr != nil {
+			return nil, false
+		}
+		p, _ := strconv.Atoi(raw["port"])
+		if raw["add"] == "" || p <= 0 || raw["id"] == "" {
+			return nil, false
+		}
+		ob = map[string]any{"type": "vmess", "tag": l.Name, "server": raw["add"], "server_port": p, "uuid": raw["id"], "alter_id": 0, "security": "auto"}
+		tlsOn = raw["tls"] == "tls"
+		if raw["sni"] != "" {
+			sni = raw["sni"]
+		} else if raw["host"] != "" {
+			sni = raw["host"]
+		}
+		network = raw["net"]
+		if network == "" {
+			network = "ws"
+		}
+		path = raw["path"]
+		wsHost = raw["host"]
+	default:
+		return nil, false
+	}
+	if tlsOn {
+		tls := map[string]any{"enabled": true}
+		if sni != "" {
+			tls["server_name"] = sni
+		}
+		ob["tls"] = tls
+	}
+	if network == "ws" {
+		tr := map[string]any{"type": "ws"}
+		if path != "" {
+			tr["path"] = path
+		}
+		if wsHost != "" {
+			tr["headers"] = map[string]any{"Host": wsHost}
+		}
+		ob["transport"] = tr
+	}
+	return ob, true
+}
+
+// renderSingboxJSON 渲染 sing-box 订阅：完整 sing-box 配置 JSON
+// （dns + mixed 入站 + 节点 outbounds + selector/urltest + route 规则）。
+// DNS 查询本身可以走 detour：国内域名走直连 DoH，TikTok 等国外域名走
+// 代理 DoH（detour: proxy），这是 sing-box 比 mihomo 优越的地方。
+// 入站只放 mixed（官方客户端自己会按需加 tun，订阅里不强加 tun，避免
+// 与客户端的 TUN 设置冲突）。route 里 TikTok/社交/流媒体走 Proxy 组，
+// .cn 直连，其余 final direct。mode 参数不影响 sing-box（始终分流）。
+// 节点为空时只出合法的空配置（dns + mixed 入站 + direct/block，route
+// 里不引用不存在的 Proxy 组），客户端能正常导入、节点数为 0。
+func renderSingboxJSON(links []subLink) string {
+	used := map[string]int{}
+	var tags []string
+	var nodeObs []map[string]any
+	directTag := ""
+	for _, l := range links {
+		name := l.Name
+		if n, ok := used[name]; ok {
+			used[name] = n + 1
+			name = fmt.Sprintf("%s (%d)", l.Name, n+1)
+		} else {
+			used[name] = 1
+		}
+		ob, ok := singboxOutboundFromLink(subLink{Name: name, Link: l.Link})
+		if !ok {
+			continue
+		}
+		tags = append(tags, name)
+		nodeObs = append(nodeObs, ob)
+		if directTag == "" && strings.HasSuffix(l.Name, "-直连") {
+			directTag = name
+		}
+	}
+	cfg := map[string]any{
+		"log": map[string]any{"level": "info"},
+		"dns": map[string]any{
+			"servers": []any{
+				map[string]any{"tag": "dns-direct", "address": "https://doh.pub/dns-query", "detour": "direct"},
+				map[string]any{"tag": "dns-proxy", "address": "https://dns.google/dns-query", "detour": "proxy"},
+			},
+			"rules": []any{
+				map[string]any{"domain_suffix": []string{".cn"}, "server": "dns-direct"},
+				map[string]any{"domain_suffix": tiktokSuffixes, "server": "dns-proxy"},
+			},
+			"final": "dns-direct",
+		},
+		"inbounds": []any{
+			map[string]any{"type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 2080},
+		},
+	}
+	outbounds := []any{}
+	routeRules := []any{}
+	if len(tags) == 0 {
+		outbounds = append(outbounds,
+			map[string]any{"type": "direct", "tag": "direct"},
+			map[string]any{"type": "block", "tag": "block"},
+		)
+		routeRules = append(routeRules,
+			map[string]any{"domain_suffix": []string{".cn"}, "outbound": "direct"},
+		)
+	} else {
+		for _, ob := range nodeObs {
+			outbounds = append(outbounds, ob)
+		}
+		def := directTag
+		if def == "" {
+			def = tags[0]
+		}
+		outbounds = append(outbounds,
+			map[string]any{"type": "selector", "tag": "Proxy", "outbounds": tags, "default": def},
+			map[string]any{"type": "urltest", "tag": "自动选择", "outbounds": tags, "url": "http://www.gstatic.com/generate_204", "interval": "5m"},
+			map[string]any{"type": "direct", "tag": "direct"},
+			map[string]any{"type": "block", "tag": "block"},
+		)
+		routeRules = append(routeRules,
+			map[string]any{"domain_suffix": tiktokSuffixes, "outbound": "Proxy"},
+			map[string]any{"domain_suffix": socialSuffixes, "outbound": "Proxy"},
+			map[string]any{"domain_suffix": streamSuffixes, "outbound": "Proxy"},
+			map[string]any{"domain_suffix": []string{".cn"}, "outbound": "direct"},
+		)
+	}
+	cfg["outbounds"] = outbounds
+	cfg["route"] = map[string]any{"rules": routeRules, "final": "direct"}
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "{}\n"
+	}
+	return string(raw) + "\n"
 }
 
 // yamlDQ 把字符串包成 YAML 双引号标量（strconv.Quote 的转义在 YAML 双引号
@@ -254,14 +451,32 @@ func yamlDQ(s string) string {
 }
 
 // clashProxyFromLink 把一条节点链接转成一个 Clash proxy 条目（YAML 行块）。
-// 支持 vless / trojan / vmess（都是 WS+TLS 的节点形态）；ss 暂不支持，
-// 在 clash 里跳过（base64/plain 订阅里还在，TUTORIAL 里写明了）。
+// 支持 vless / trojan / vmess / ss；hy2/tuic 暂不支持，在 clash 里跳过
+// （base64/plain 订阅里还在）。所有条目都写 udp: true——mihomo 的 udp
+// 默认 false，不写等于禁用 UDP 中继，TikTok 大量走的 QUIC 就不通。
 func clashProxyFromLink(l subLink) (string, bool) {
 	u, err := url.Parse(strings.TrimSpace(l.Link))
 	if err != nil || u.Scheme == "" {
 		return "", false
 	}
 	scheme := strings.ToLower(u.Scheme)
+	if scheme == "ss" {
+		// ss 链接有整体 base64 的写法（ss://<base64(method:password@host:port)>），
+		// 按 URL 解析拿不到 host/port，走 parseSSLink 单独解析。
+		cipher, pw, h, p, ok := parseSSLink(l.Link)
+		if !ok {
+			return "", false
+		}
+		var sb strings.Builder
+		sb.WriteString("  - name: " + yamlDQ(l.Name) + "\n")
+		sb.WriteString("    type: ss\n")
+		sb.WriteString("    server: " + yamlDQ(h) + "\n")
+		sb.WriteString("    port: " + strconv.Itoa(p) + "\n")
+		sb.WriteString("    cipher: " + yamlDQ(cipher) + "\n")
+		sb.WriteString("    password: " + yamlDQ(pw) + "\n")
+		sb.WriteString("    udp: true\n")
+		return sb.String(), true
+	}
 	q := u.Query()
 	host := u.Hostname()
 	port, _ := strconv.Atoi(u.Port())
@@ -337,6 +552,7 @@ func clashProxyFromLink(l subLink) (string, bool) {
 	default:
 		return "", false
 	}
+	b.WriteString("    udp: true\n")
 	if tlsOn {
 		b.WriteString("    tls: true\n")
 		if sni != "" {
@@ -384,6 +600,118 @@ func decodeVmessLink(link string) (map[string]string, error) {
 	return out, nil
 }
 
+// parseSSLink 解析 ss:// 链接，支持两种常见写法：
+// ① ss://<base64(method:password)>@host:port#name
+// ② ss://<base64(method:password@host:port)>#name
+// （以及明文的 ss://method:password@host:port）。
+// 返回 cipher、password、host、port；解析失败返回 ok=false。
+func parseSSLink(link string) (cipher, password, host string, port int, ok bool) {
+	s := strings.TrimSpace(link)
+	s = strings.TrimPrefix(s, "ss://")
+	if i := strings.Index(s, "#"); i >= 0 {
+		s = s[:i]
+	}
+	// 先试整体 base64 解码（写法 ②）：含 @ : 等字符的写法 ① 在这里解码失败，
+	// 自然落到下面的 URL 解析。
+	if dec, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(s, "=")); err == nil {
+		if c, p, h, pt, ok2 := parseSSPlain(string(dec)); ok2 {
+			return c, p, h, pt, true
+		}
+	}
+	u, err := url.Parse("ss://" + s)
+	if err != nil || u.Host == "" || u.User == nil {
+		return "", "", "", 0, false
+	}
+	host = u.Hostname()
+	port, _ = strconv.Atoi(u.Port())
+	if host == "" || port <= 0 {
+		return "", "", "", 0, false
+	}
+	ui := u.User.Username()
+	if pw, hasPw := u.User.Password(); hasPw {
+		// 明文写法 ss://method:password@host:port
+		return ui, pw, host, port, true
+	}
+	// userinfo 是 base64(method:password)
+	dec, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(ui, "="))
+	if err != nil {
+		return "", "", "", 0, false
+	}
+	if i := strings.Index(string(dec), ":"); i > 0 {
+		return string(dec)[:i], string(dec)[i+1:], host, port, true
+	}
+	return "", "", "", 0, false
+}
+
+// parseSSPlain 解析 "method:password@host:port" 明文（写法 ② 解码后的内容）。
+func parseSSPlain(s string) (cipher, password, host string, port int, ok bool) {
+	at := strings.LastIndex(s, "@")
+	if at < 0 {
+		return "", "", "", 0, false
+	}
+	up, hp := s[:at], s[at+1:]
+	i := strings.Index(up, ":")
+	if i <= 0 {
+		return "", "", "", 0, false
+	}
+	h, p, err := net.SplitHostPort(hp)
+	if err != nil {
+		return "", "", "", 0, false
+	}
+	port, _ = strconv.Atoi(p)
+	if h == "" || port <= 0 {
+		return "", "", "", 0, false
+	}
+	return up[:i], up[i+1:], h, port, true
+}
+
+// subLinkDomains 从一条节点链接里收集节点域名（servername/host）：
+// 用于 Clash YAML 的 fake-ip-filter 与 sniffer skip-domain。
+// 只收非 IP 的域名；IP 直连的节点没有域名可写，跳过。返回去重后的域名。
+func subLinkDomains(link string) []string {
+	var out []string
+	add := func(d string) {
+		d = strings.TrimSpace(strings.ToLower(d))
+		if d == "" || net.ParseIP(d) != nil {
+			return
+		}
+		if h, _, err := net.SplitHostPort(d); err == nil {
+			d = h
+		}
+		for _, e := range out {
+			if e == d {
+				return
+			}
+		}
+		out = append(out, d)
+	}
+	trimmed := strings.TrimSpace(link)
+	scheme := strings.ToLower(strings.SplitN(trimmed, "://", 2)[0])
+	switch scheme {
+	case "vmess":
+		raw, err := decodeVmessLink(link)
+		if err != nil {
+			return out
+		}
+		add(raw["add"])
+		add(raw["sni"])
+		add(raw["host"])
+	case "ss":
+		if _, _, h, _, ok := parseSSLink(link); ok {
+			add(h)
+		}
+	default:
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			return out
+		}
+		add(u.Hostname())
+		add(u.Query().Get("sni"))
+		add(u.Query().Get("host"))
+	}
+	return out
+}
+
 // ---------- Clash 策略组与分流规则（v1.2.9，v1.3.1 补 GLOBAL 组，v1.3.4 改顺序） ----------
 // Clash YAML 订阅出 7 个策略组：自动选择（url-test，全部节点，排第一，
 // 每 5 分钟测一次挑延迟最低）、GLOBAL（select，全部节点，排第二，
@@ -391,15 +719,25 @@ func decodeVmessLink(link string) (map[string]string, error) {
 // 中转节点（select，只有中转链接）、直连节点（select，只有直连链接）、
 // 社交（select，全部节点）、流媒体（select，全部节点）。中转/直连按 twin
 // 名字后缀 -中转/-直连 分组；没有中转或直连链接时对应组不出现（不出空组）。
-// 规则顺序：TikTok → 社交 → 流媒体 → MATCH；TikTok 规则指向手动选择，
-// 社交指向社交组，流媒体指向流媒体组。分流模式 MATCH,DIRECT（只有这三
-// 类走节点，其他直连），全局模式 MATCH,手动选择（全部走代理）。
+// 规则顺序：TikTok → 社交 → 流媒体 → MATCH；TikTok/社交/流媒体三组规则
+// 都直接指向自动选择（url-test 组，死节点自动排除——v1.3.23 从手动选择改过来：
+// 手动选择组的默认成员是列表第一个节点，中转节点已死时会把分流流量全拖死，
+// ?mode=global 同样落到它，也救不了）。社交/流媒体组保留（select，全部节点），
+// 供用户在客户端里手动切换，但规则不再经过它们。
+// 分流模式 MATCH,DIRECT（只有这三类走节点，其他直连），全局模式
+// MATCH,手动选择（全部走代理）。手动选择与 GLOBAL 组保留，供手动切换。
+// YAML 顶部（v1.3.23）补 dns 段（fake-ip，国内可达的 DoH）+ ipv6: false
+// + mode: rule + sniffer：没有 dns 段时 mihomo 内核 DNS 是关的，TUN 抓到
+// 的流量没有域名→IP 映射，域名规则匹配不上，全落到 MATCH,DIRECT，国外
+// 流量根本进不了代理（2026-11-20 晚 FlClash 故障的根因）。dns 段里的
+// 节点域名（fake-ip-filter 与 sniffer skip-domain）从订阅里实际的节点
+// 域名动态生成，不写死任何域名。
 
 // tiktokSuffixes TikTok 分流域名：主站、App 接口/视频流/日志上报、
 // 视频 CDN、老域名与字节海外基础设施。
 var tiktokSuffixes = []string{
 	"tiktok.com", "tiktokv.com", "tiktokcdn.com", "tiktokcdn-us.com",
-	"musical.ly", "byteoversea.com", "ibytedtos.com",
+	"musical.ly", "byteoversea.com", "ibytedtos.com", "isnssdk.com",
 }
 
 // socialSuffixes 海外社交分流域名。只用 DOMAIN-SUFFIX，不用
@@ -424,22 +762,78 @@ var streamSuffixes = []string{
 	"jtvnw.net",
 }
 
-// renderClashYAML 渲染 Clash 订阅：proxies 列表 + 7 个策略组 + 分流规则。
-// 名字去重（Clash 要求 proxy 名唯一），不支持的协议跳过；mode 是
+// renderClashHeader 渲染 Clash YAML 顶部的 dns / ipv6 / mode / sniffer 段
+// （v1.3.23）。domains 是订阅里实际的节点域名（已去重、已排序），只用来
+// 生成 fake-ip-filter 与 sniffer skip-domain 的条目，不写死任何域名。
+func renderClashHeader(domains []string) string {
+	var b strings.Builder
+	b.WriteString("dns:\n")
+	b.WriteString("  enable: true\n")
+	b.WriteString("  listen: 0.0.0.0:1053\n")
+	b.WriteString("  ipv6: false\n")
+	b.WriteString("  enhanced-mode: fake-ip\n")
+	b.WriteString("  fake-ip-range: 198.18.0.1/16\n")
+	b.WriteString("  use-hosts: true\n")
+	b.WriteString("  default-nameserver:\n")
+	b.WriteString("    - 223.5.5.5\n")
+	b.WriteString("    - 114.114.114.114\n")
+	b.WriteString("  nameserver:\n")
+	b.WriteString("    - https://doh.pub/dns-query\n")
+	b.WriteString("    - https://dns.alidns.com/dns-query\n")
+	b.WriteString("  proxy-server-nameserver:\n")
+	b.WriteString("    - https://doh.pub/dns-query\n")
+	b.WriteString("  fallback:\n")
+	b.WriteString("    - https://dns.google/dns-query\n")
+	b.WriteString("    - https://1.1.1.1/dns-query\n")
+	b.WriteString("  fallback-filter:\n")
+	b.WriteString("    geoip: true\n")
+	b.WriteString("    geoip-code: CN\n")
+	b.WriteString("    ipcidr:\n")
+	b.WriteString("      - 240.0.0.0/4\n")
+	b.WriteString("      - 0.0.0.0/32\n")
+	b.WriteString("  fake-ip-filter:\n")
+	for _, e := range []string{"*.lan", "*.local", "*.localhost", "time.windows.com", "time.apple.com", "time.asia.apple.com", "ntp.*.com"} {
+		b.WriteString("    - " + yamlDQ(e) + "\n")
+	}
+	for _, d := range domains {
+		b.WriteString("    - " + yamlDQ("*."+d) + "\n")
+		b.WriteString("    - " + yamlDQ(d) + "\n")
+	}
+	b.WriteString("ipv6: false\n")
+	b.WriteString("mode: rule\n")
+	b.WriteString("sniffer:\n")
+	b.WriteString("  enable: true\n")
+	b.WriteString("  sniff:\n")
+	b.WriteString("    TLS:\n")
+	b.WriteString("      ports: [443, 8443]\n")
+	b.WriteString("    HTTP:\n")
+	b.WriteString("      ports: [80, 8080]\n")
+	if len(domains) > 0 {
+		b.WriteString("  skip-domain:\n")
+		for _, d := range domains {
+			b.WriteString("    - " + yamlDQ("*."+d) + "\n")
+		}
+	}
+	return b.String()
+}
+
+// renderClashYAML 渲染 Clash 订阅：dns 段 + proxies 列表 + 7 个策略组 +
+// 分流规则。名字去重（Clash 要求 proxy 名唯一），不支持的协议跳过；mode 是
 // split（分流，MATCH,DIRECT）或 global（全局，MATCH,手动选择）。
 // GLOBAL 组只在客户端切全局模式时生效，规则模式下只看 rules，不走它。
 // 节点为空时（v1.3.22 修）：订阅里没有任何能进 Clash 的节点（节点为空，
-// 或全是 Clash 不支持的类型如 SS/Hysteria2/TUIC）时，不出任何策略组——
+// 或全是 Clash 不支持的类型如 Hysteria2/TUIC）时，不出任何策略组——
 // Clash 要求每个组必须有非空 proxies 或 use，空组会让导入直接报错
 // “proxy group[0]: 'use' or 'proxies' missing”。此时只出一个合法的
 // 空配置（proxies: []、proxy-groups: []、规则只留 MATCH,DIRECT，不引用
 // 不存在的组），客户端能正常导入、节点数为 0，而不是报一串看不懂的错。
+// 空配置保持 1.3.22 原样（不写 dns 段），不要动它。
 func renderClashYAML(links []subLink, mode string) string {
-	var b strings.Builder
-	b.WriteString("proxies:\n")
+	var proxies strings.Builder
 	used := map[string]int{}
 	var names []string
 	var kinds []string // 与 names 一一对应：relay / direct / ""（无后缀）
+	domainSet := map[string]bool{}
 	for _, l := range links {
 		kind := ""
 		switch {
@@ -461,11 +855,23 @@ func renderClashYAML(links []subLink, mode string) string {
 		}
 		names = append(names, name)
 		kinds = append(kinds, kind)
-		b.WriteString(proxy)
+		proxies.WriteString(proxy)
+		for _, d := range subLinkDomains(l.Link) {
+			domainSet[d] = true
+		}
 	}
 	if len(names) == 0 {
 		return "proxies: []\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n"
 	}
+	domains := make([]string, 0, len(domainSet))
+	for d := range domainSet {
+		domains = append(domains, d)
+	}
+	sort.Strings(domains)
+	var b strings.Builder
+	b.WriteString(renderClashHeader(domains))
+	b.WriteString("proxies:\n")
+	b.WriteString(proxies.String())
 	var relayNames, directNames []string
 	for i, n := range names {
 		switch kinds[i] {
@@ -514,10 +920,10 @@ func renderClashYAML(links []subLink, mode string) string {
 			b.WriteString("  - DOMAIN-SUFFIX," + d + "," + group + "\n")
 		}
 	}
-	writeSuffixRules(tiktokSuffixes, "手动选择")
-	b.WriteString("  - DOMAIN-KEYWORD,tiktok,手动选择\n")
-	writeSuffixRules(socialSuffixes, "社交")
-	writeSuffixRules(streamSuffixes, "流媒体")
+	writeSuffixRules(tiktokSuffixes, "自动选择")
+	b.WriteString("  - DOMAIN-KEYWORD,tiktok,自动选择\n")
+	writeSuffixRules(socialSuffixes, "自动选择")
+	writeSuffixRules(streamSuffixes, "自动选择")
 	if mode == "global" {
 		b.WriteString("  - MATCH,手动选择\n")
 	} else {
@@ -550,24 +956,39 @@ func wantsClashByUA(ua string) bool {
 	return strings.Contains(l, "clash") || strings.Contains(l, "stash") || strings.Contains(l, "mihomo")
 }
 
-// resolveSubFormat 定订阅返回格式：?format=clash|base64|plain 手动指定优先；
-// 不指定时按 UA 自动识别（Clash 系 → YAML，其余 → base64）。
+// wantsSingboxByUA 按 User-Agent 判断客户端是不是 sing-box 官方系：
+// 含 sing-box / SFA / SFI / SFM（不区分大小写）即认为是 sing-box 系。
+// Hiddify/Karing/NekoBox/Streisand 的 UA 没法嗅探，不靠这个，靠界面上
+// 单独给的 ?format=singbox 链接。
+func wantsSingboxByUA(ua string) bool {
+	l := strings.ToLower(ua)
+	return strings.Contains(l, "sing-box") || strings.Contains(l, "sfa") || strings.Contains(l, "sfi") || strings.Contains(l, "sfm")
+}
+
+// resolveSubFormat 定订阅返回格式：?format=clash|base64|plain|singbox
+// 手动指定优先（sing-box 接受 sing-box 别名）；不指定时按 UA 自动识别
+// （sing-box 系 → JSON，Clash 系 → YAML，其余 → base64）。
 func resolveSubFormat(r *http.Request) (string, error) {
 	f := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
 	switch f {
 	case "clash", "yaml":
 		return "clash", nil
+	case "singbox", "sing-box":
+		return "singbox", nil
 	case "base64":
 		return "base64", nil
 	case "plain":
 		return "plain", nil
 	case "":
+		if wantsSingboxByUA(r.UserAgent()) {
+			return "singbox", nil
+		}
 		if wantsClashByUA(r.UserAgent()) {
 			return "clash", nil
 		}
 		return "base64", nil
 	default:
-		return "", fmt.Errorf("format 只支持 clash/base64/plain")
+		return "", fmt.Errorf("format 只支持 clash/base64/plain/singbox")
 	}
 }
 
@@ -746,7 +1167,7 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 	}
 	w.Header().Set("Content-Type", ctype)
 	// 下载文件名（v1.3.22）：基本名 = 订阅文件名称设置，留空回落面板名；
-	// 后缀按格式加（Clash 是 .yaml，base64/plain 是 .txt）。客户端按
+	// 后缀按格式加（Clash 是 .yaml，sing-box 是 .json，base64/plain 是 .txt）。客户端按
 	// 文件名给导入的配置起名。注意：文件名会露出面板名或自定义名，
 	// 1.3.20 的通用文件名 subscription.yaml 的反特征作用就没了，这是
 	// 用户主动要求改回的（见 CHANGELOG 1.3.22）。
@@ -759,7 +1180,7 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 // 基本名：订阅文件名称设置（SubFileName）填了就用它，留空回落面板名；
 // 改面板名不影响已设的文件名。1.3.20 起曾固定用通用名 subscription.yaml，
 // 1.3.22 起改成可设置（用户主动要求：导入的配置名要能看出是自家面板）。
-// 非 ASCII 文件名按 RFC 5987 编码（filename*=UTF-8''...），同时保留
+// 非 ASCII 文件名按 RFC 5987 编码（filename*=UTF-8”...），同时保留
 // ASCII 的 filename= 兜底（老客户端不认 filename* 时用通用名）。
 func (s *Server) subFileBaseName() string {
 	if n := strings.TrimSpace(s.cfg.SubFileName); n != "" {
@@ -772,6 +1193,8 @@ func (s *Server) subContentDisposition(format string) string {
 	ext := "txt"
 	if format == "clash" {
 		ext = "yaml"
+	} else if format == "singbox" {
+		ext = "json"
 	}
 	name := s.subFileBaseName() + "." + ext
 	if isASCIIString(name) {
@@ -1170,15 +1593,15 @@ func (s *Server) handleSubPathSet(w http.ResponseWriter, r *http.Request) {
 // 有就能点复制重新拿链接，没有就是 1.3.7 之前的旧链接，复制时提示轮换）。
 func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 	type item struct {
-		ID        string `json:"id"`
-		Name      string `json:"name"`
-		Note      string `json:"note"`
-		CreatedAt string `json:"created_at"`
+		ID        string         `json:"id"`
+		Name      string         `json:"name"`
+		Note      string         `json:"note"`
+		CreatedAt string         `json:"created_at"`
 		Kind      string         `json:"kind"` // single=单面板全量，merged=合并订阅
 		Summary   string         `json:"summary"`
 		HasLink   bool           `json:"has_link"`
-		Mode      string         `json:"mode"` // both|relay|direct，老记录空 = 全部
-		Selection []SubSelection `json:"selection,omitempty"` // 编辑弹窗预选用；空 = 全部落地
+		Mode      string         `json:"mode"`                 // both|relay|direct，老记录空 = 全部
+		Selection []SubSelection `json:"selection,omitempty"`  // 编辑弹窗预选用；空 = 全部落地
 		ExpiresAt string         `json:"expires_at,omitempty"` // v1.3.20：RFC3339，空 = 永久
 	}
 	items := []item{}
@@ -1757,7 +2180,7 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 		Selection []SubSelection `json:"selection"`
 		Summary   string         `json:"summary"`
 		HasLink   bool           `json:"has_link"`
-		Mode      string         `json:"mode"` // both|relay|direct，老记录空 = 全部
+		Mode      string         `json:"mode"`                 // both|relay|direct，老记录空 = 全部
 		ExpiresAt string         `json:"expires_at,omitempty"` // v1.3.20：RFC3339，空 = 永久
 	}
 	items := []item{}

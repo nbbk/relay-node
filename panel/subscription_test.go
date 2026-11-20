@@ -245,8 +245,9 @@ func TestClashNameDedup(t *testing.T) {
 	if !strings.Contains(body, "tls: false") {
 		t.Fatalf("明文节点应 tls: false：\n%s", body)
 	}
-	if strings.Contains(body, "SS节点") {
-		t.Fatalf("ss 节点在 clash 里应跳过：\n%s", body)
+	// 1.3.23 起 SS 也进 Clash（type: ss + cipher + password + udp: true）。
+	if !strings.Contains(body, "SS节点") || !strings.Contains(body, "type: ss") || !strings.Contains(body, "cipher: \"aes-256-gcm\"") || !strings.Contains(body, "password: \"password\"") {
+		t.Fatalf("SS 节点 1.3.23 起应进 Clash：\n%s", body)
 	}
 	// 同样的链接在 base64 里都在
 	raw, _, err := renderSubContent(links, "base64", "split")

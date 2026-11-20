@@ -245,8 +245,9 @@ func TestFetchRemoteStatusTraffic134(t *testing.T) {
 }
 
 // TestClashGroupOrder134 策略组顺序（v1.3.4）：自动选择排第一，GLOBAL
-// 排第二，之后是手动选择、中转、直连、社交、流媒体；规则指向不变
-// （TikTok/社交/流媒体仍指向手动选择，MATCH 仍是分流 MATCH,DIRECT）。
+// 排第二，之后是手动选择、中转、直连、社交、流媒体；规则指向：TikTok、
+// 社交、流媒体三组都直接指向自动选择（1.3.23 起从手动选择/各自的组改过来），
+// MATCH 仍是分流 MATCH,DIRECT。
 // 单面板与合并订阅共用同一份渲染逻辑，两边都验。
 func TestClashGroupOrder134(t *testing.T) {
 	s := newTestSubServer(t)
@@ -269,10 +270,10 @@ func TestClashGroupOrder134(t *testing.T) {
 		if !strings.Contains(body, "MATCH,DIRECT") {
 			t.Fatalf("默认仍应是分流 MATCH,DIRECT：\n%s", body)
 		}
-		// 规则仍指向手动选择
-		for _, r := range []string{"DOMAIN-SUFFIX,tiktok.com,手动选择", "DOMAIN-SUFFIX,instagram.com,社交", "DOMAIN-SUFFIX,netflix.com,流媒体"} {
+		// 规则指向：TikTok、社交、流媒体三组都直接指向自动选择
+		for _, r := range []string{"DOMAIN-SUFFIX,tiktok.com,自动选择", "DOMAIN-SUFFIX,instagram.com,自动选择", "DOMAIN-SUFFIX,netflix.com,自动选择"} {
 			if !strings.Contains(body, r) {
-				t.Fatalf("规则应仍指向原组，缺 %q", r)
+				t.Fatalf("规则应指向自动选择，缺 %q", r)
 			}
 		}
 	}
