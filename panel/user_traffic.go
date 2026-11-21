@@ -838,9 +838,13 @@ func (s *Server) sampleUserTraffic() {
 		return
 	}
 	// 端口 → 订阅 key（同一订阅多落地多端口汇总到一条记录）
-	portToKey := map[int]string{}
-	for _, f := range s.cfg.UserForwards {
-		portToKey[f.ListenPort] = f.Key
+	// v1.3.30：端口 → 转发记录；agent 在线的落地的转发不采样（方案 §4.5：
+	// 同一落地、同一用户只认节点侧的数，A 的中转侧计数会 double-count，
+	// 中转流量最终也进了落地 Xray、已含在 agent 推的数里）。没 agent
+	// 的落地照常采样。
+	portToForward := map[int]*UserForward{}
+	for i := range s.cfg.UserForwards {
+		portToForward[s.cfg.UserForwards[i].ListenPort] = &s.cfg.UserForwards[i]
 	}
 	perKey := map[string]map[string][2]int64{}
 	for key, cur := range counters {
@@ -852,10 +856,14 @@ func (s *Server) sampleUserTraffic() {
 		if err != nil {
 			continue
 		}
-		subKey, ok := portToKey[port]
+		fwd, ok := portToForward[port]
 		if !ok {
 			continue
 		}
+		if s.nodeAgentLive(fwd.LandingAddr) {
+			continue
+		}
+		subKey := fwd.Key
 		_ = proto
 		if perKey[subKey] == nil {
 			perKey[subKey] = map[string][2]int64{}

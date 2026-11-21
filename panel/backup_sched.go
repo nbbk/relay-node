@@ -201,8 +201,11 @@ type subUserBackup struct {
 	TrafficWarned100  bool           `json:"traffic_warned_100,omitempty"`
 	Disabled          bool           `json:"disabled,omitempty"`
 	DisabledReason    string         `json:"disabled_reason,omitempty"`
-	TokenHash         string         `json:"token_hash,omitempty"`
-	TokenEnc          string         `json:"token_enc,omitempty"`
+	// NodeUUIDs（v1.3.30）：每落地一个 UUID；备份/恢复全量跟走，丢了它
+	// Phase 1 的用户就得重新导入。
+	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
+	TokenHash string            `json:"token_hash,omitempty"`
+	TokenEnc  string            `json:"token_enc,omitempty"`
 }
 
 type mergedSubBackup struct {
@@ -223,8 +226,10 @@ type mergedSubBackup struct {
 	TrafficWarned100  bool           `json:"traffic_warned_100,omitempty"`
 	Disabled          bool           `json:"disabled,omitempty"`
 	DisabledReason    string         `json:"disabled_reason,omitempty"`
-	TokenHash         string         `json:"token_hash,omitempty"`
-	TokenEnc          string         `json:"token_enc,omitempty"`
+	// NodeUUIDs（v1.3.30）：与 subUserBackup 同款，见上。
+	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
+	TokenHash string            `json:"token_hash,omitempty"`
+	TokenEnc  string            `json:"token_enc,omitempty"`
 }
 
 // subTokenBackup 备份文件里的通用订阅令牌（v1.3.29）：只在已设迁移口令
@@ -243,7 +248,8 @@ func sanitizeSubUsers(users []SubUser, withTokens bool) []subUserBackup {
 		b := subUserBackup{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Selection: u.Selection, Mode: u.Mode, GroupID: u.GroupID,
 			ExpiresAt: u.ExpiresAt, TrafficLimitBytes: u.TrafficLimitBytes, TrafficLimitMode: u.TrafficLimitMode,
 			ResetMode: u.ResetMode, ResetDay: u.ResetDay, NextResetAt: u.NextResetAt, LastResetAt: u.LastResetAt,
-			TrafficWarned80: u.TrafficWarned80, TrafficWarned100: u.TrafficWarned100, Disabled: u.Disabled, DisabledReason: u.DisabledReason}
+			TrafficWarned80: u.TrafficWarned80, TrafficWarned100: u.TrafficWarned100, Disabled: u.Disabled, DisabledReason: u.DisabledReason,
+			NodeUUIDs: u.NodeUUIDs}
 		if withTokens {
 			b.TokenHash, b.TokenEnc = u.TokenHash, u.TokenEnc
 		}
@@ -258,7 +264,8 @@ func sanitizeMergedSubs(subs []MergedSub, withTokens bool) []mergedSubBackup {
 		b := mergedSubBackup{ID: m.ID, Name: m.Name, CreatedAt: m.CreatedAt, Selection: m.Selection, Mode: m.Mode, GroupID: m.GroupID,
 			ExpiresAt: m.ExpiresAt, TrafficLimitBytes: m.TrafficLimitBytes, TrafficLimitMode: m.TrafficLimitMode,
 			ResetMode: m.ResetMode, ResetDay: m.ResetDay, NextResetAt: m.NextResetAt, LastResetAt: m.LastResetAt,
-			TrafficWarned80: m.TrafficWarned80, TrafficWarned100: m.TrafficWarned100, Disabled: m.Disabled, DisabledReason: m.DisabledReason}
+			TrafficWarned80: m.TrafficWarned80, TrafficWarned100: m.TrafficWarned100, Disabled: m.Disabled, DisabledReason: m.DisabledReason,
+			NodeUUIDs: m.NodeUUIDs}
 		if withTokens {
 			b.TokenHash, b.TokenEnc = m.TokenHash, m.TokenEnc
 		}
@@ -517,6 +524,14 @@ func (s *Server) exportData() map[string]any {
 			out["user_traffic"] = ut
 		}
 	}
+	// v1.3.30：推送去重表（恢复后重放仍会被挡住，否则恢复完 agent 一重推
+	// 就 double-count；老备份没有这一项时恢复后按空表处理）。
+	if b, err := os.ReadFile(filepath.Join(s.env.PanelHome, "node_push_seen.json")); err == nil {
+		var seen any
+		if json.Unmarshal(b, &seen) == nil {
+			out["node_push_seen"] = seen
+		}
+	}
 	if b, err := os.ReadFile(s.nodesFilePath()); err == nil {
 		out["nodes_txt"] = string(b)
 	}
@@ -566,6 +581,7 @@ type importPayload struct {
 	UserPortStart       int                `json:"user_port_start"`
 	UserPortEnd         int                `json:"user_port_end"`
 	UserTraffic         json.RawMessage    `json:"user_traffic"`
+	NodePushSeen        json.RawMessage    `json:"node_push_seen"`
 	NodesTxt            string             `json:"nodes_txt"`
 	LogoB64             string             `json:"logo_b64"`
 	LogoMime            string             `json:"logo_mime"`
@@ -738,6 +754,18 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 			}
 		}
 	}
+	// 推送去重表（v1.3.30）：整体写回并重载；老备份没有这一项时不动。
+	if len(p.NodePushSeen) > 0 {
+		var seen map[string]int64
+		if json.Unmarshal(p.NodePushSeen, &seen) == nil {
+			if b, err := json.MarshalIndent(seen, "", "  "); err == nil {
+				_ = writeFileAtomic(filepath.Join(s.env.PanelHome, "node_push_seen.json"), b, 0o600)
+				s.nodePushSeen.mu.Lock()
+				s.nodePushSeen.load()
+				s.nodePushSeen.mu.Unlock()
+			}
+		}
+	}
 	// 分组（v1.3.26）：备份里有分组就整体恢复（老备份没有这一项时不动）；
 	// 成员的 GroupID 在下面恢复订阅用户/合并订阅时一起带回来，恢复完再
 	// 核对指向（指向的分组不在备份里就清掉，恢复为自己勾选）。
@@ -773,7 +801,8 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 			u := SubUser{ID: bu.ID, Name: bu.Name, Note: bu.Note, CreatedAt: bu.CreatedAt, Selection: bu.Selection, Mode: bu.Mode, GroupID: bu.GroupID,
 				ExpiresAt: bu.ExpiresAt, TrafficLimitBytes: bu.TrafficLimitBytes, TrafficLimitMode: bu.TrafficLimitMode,
 				ResetMode: bu.ResetMode, ResetDay: bu.ResetDay, NextResetAt: bu.NextResetAt, LastResetAt: bu.LastResetAt,
-				TrafficWarned80: bu.TrafficWarned80, TrafficWarned100: bu.TrafficWarned100, Disabled: bu.Disabled, DisabledReason: bu.DisabledReason}
+				TrafficWarned80: bu.TrafficWarned80, TrafficWarned100: bu.TrafficWarned100, Disabled: bu.Disabled, DisabledReason: bu.DisabledReason,
+				NodeUUIDs: bu.NodeUUIDs}
 			if h, ok := keepHash[bu.ID]; ok {
 				u.TokenHash = h
 			} else if mig != nil && bu.TokenHash != "" {
@@ -809,7 +838,8 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 			m := MergedSub{ID: bm.ID, Name: bm.Name, CreatedAt: bm.CreatedAt, Selection: bm.Selection, Mode: bm.Mode, GroupID: bm.GroupID,
 				ExpiresAt: bm.ExpiresAt, TrafficLimitBytes: bm.TrafficLimitBytes, TrafficLimitMode: bm.TrafficLimitMode,
 				ResetMode: bm.ResetMode, ResetDay: bm.ResetDay, NextResetAt: bm.NextResetAt, LastResetAt: bm.LastResetAt,
-				TrafficWarned80: bm.TrafficWarned80, TrafficWarned100: bm.TrafficWarned100, Disabled: bm.Disabled, DisabledReason: bm.DisabledReason}
+				TrafficWarned80: bm.TrafficWarned80, TrafficWarned100: bm.TrafficWarned100, Disabled: bm.Disabled, DisabledReason: bm.DisabledReason,
+				NodeUUIDs: bm.NodeUUIDs}
 			if h, ok := keepHash[bm.ID]; ok {
 				m.TokenHash = h
 			} else if mig != nil && bm.TokenHash != "" {

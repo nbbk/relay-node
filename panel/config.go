@@ -217,6 +217,12 @@ type MergedSub struct {
 	TrafficWarned100  bool   `json:"traffic_warned_100,omitempty"`
 	Disabled          bool   `json:"disabled,omitempty"`
 	DisabledReason    string `json:"disabled_reason,omitempty"`
+	// NodeUUIDs（v1.3.30，节点侧按人计量）：每落地一个 UUID，键是落地
+	// 地址（relay.conf 的 LANDING，与 state.json 的落地键一致），值是
+	// 该落地给这份订阅的 UUID（明文，与节点 UUID 同款存法）。本版只留
+	// 字段、下发时原样返回，不生成（Phase 1 试点时生成）；备份/恢复
+	// 全量跟走，丢了它用户就得重新导入。
+	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
 }
 
 // SubGroup 分组（v1.3.26，权限组）：一组 = 一组落地 + 一组用户，组里的人
@@ -271,6 +277,8 @@ type SubUser struct {
 	TrafficWarned100  bool   `json:"traffic_warned_100,omitempty"`
 	Disabled          bool   `json:"disabled,omitempty"`
 	DisabledReason    string `json:"disabled_reason,omitempty"`
+	// NodeUUIDs（v1.3.30，节点侧按人计量）：与 SubUser 同款，见上。
+	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
 }
 
 // UserForward 一条按人转发（v1.3.25，按订阅限流量 A）：一个订阅在
@@ -334,6 +342,14 @@ type LandingExt struct {
 	// OrigLinkName 生成 twin 链接时用的节点名称（选填）：直连备注是
 	// “<名称>-直连”、中转备注是“<名称>-中转”；空着就用原始链接自己的备注名。
 	OrigLinkName string `json:"orig_link_name,omitempty"`
+	// MeteringSource / AgentVersion / AgentLastPushAt（v1.3.30，节点侧
+	// agent 计量）：计量来源 ""=未定（按 A 采样）/"agent"=agent 在报数/
+	// "relay"=只认 A 的数/"none"=不计量；agent 版本与最后推送时间
+	// （RFC3339），5 分钟内有推送算在线（nodeAgentLive）。随 state.json
+	// 持久化，备份/恢复跟走。
+	MeteringSource  string `json:"metering_source,omitempty"`
+	AgentVersion    string `json:"agent_version,omitempty"`
+	AgentLastPushAt string `json:"agent_last_push_at,omitempty"`
 }
 
 type RecycleItem struct {
@@ -542,9 +558,10 @@ type Server struct {
 	sessions           *sessionStore
 	opMu               sync.Mutex // 写操作锁（TryLock，占用时返回 409）
 	traffic            *trafficStore
-	userTraffic        *userTrafficStore // 每订阅流量累计（v1.3.25，PANEL_HOME/user_traffic.json）
-	trafficErrMu       sync.Mutex        // 流量采样失败记录锁（v1.3.27：失败不再静默）
-	trafficErrMsg      string            // 最近一次流量采样/建链失败原因（空 = 正常）
+	userTraffic        *userTrafficStore  // 每订阅流量累计（v1.3.25，PANEL_HOME/user_traffic.json）
+	nodePushSeen       *nodePushSeenStore // 节点侧推送去重（v1.3.30，PANEL_HOME/node_push_seen.json）
+	trafficErrMu       sync.Mutex         // 流量采样失败记录锁（v1.3.27：失败不再静默）
+	trafficErrMsg      string             // 最近一次流量采样/建链失败原因（空 = 正常）
 	trafficErrAt       time.Time
 	auditMu            sync.Mutex
 	healthMu           sync.Mutex // 健康基线锁（lastHealthOK/lastHealthAt：healthTick 与模式切换共用）
@@ -586,7 +603,7 @@ func newServer(env Env) (*Server, error) {
 		// 测试环境 REALM_DIR 可能不可写目录已存在则忽略
 		_ = os.MkdirAll(env.RealmDir, 0o755)
 	}
-	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), userTraffic: newUserTrafficStore(filepath.Join(env.PanelHome, "user_traffic.json")), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}, centralUserUsage: map[string]*centralUserUsage{}, subFails: map[string]*subFailState{}}
+	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), userTraffic: newUserTrafficStore(filepath.Join(env.PanelHome, "user_traffic.json")), nodePushSeen: newNodePushSeenStore(filepath.Join(env.PanelHome, "node_push_seen.json")), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}, centralUserUsage: map[string]*centralUserUsage{}, subFails: map[string]*subFailState{}}
 	if err := s.loadConfig(); err != nil {
 		return nil, err
 	}
@@ -595,6 +612,7 @@ func newServer(env Env) (*Server, error) {
 	}
 	s.traffic.load()
 	s.userTraffic.load()
+	s.nodePushSeen.load()
 	s.latency.load()
 	return s, nil
 }

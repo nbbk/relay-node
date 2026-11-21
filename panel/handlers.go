@@ -148,6 +148,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/central/check", s.requireCentralToken(s.handleCheck))
 	mux.HandleFunc("POST /api/v1/central/fix", s.requireCentralToken(s.handleFix))
 	mux.HandleFunc("POST /api/v1/central/service/{action}", s.requireCentralToken(s.handleService))
+	// 节点侧 agent（v1.3.30，D10）：rpt_ 令牌认证，与 central/* 同一套。
+	mux.HandleFunc("GET /api/v1/node/users", s.requireCentralToken(s.handleNodeUsers))
+	mux.HandleFunc("POST /api/v1/node/push", s.requireCentralToken(s.handleNodePush))
+	mux.HandleFunc("GET /api/v1/node/config", s.requireCentralToken(s.handleNodeConfig))
 	mux.HandleFunc("GET /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesList))
 	mux.HandleFunc("POST /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesAdd))
 	mux.HandleFunc("DELETE /api/v1/central/remotes/{id}", s.requireAuth(s.handleCentralRemotesDelete))
