@@ -1203,21 +1203,24 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 		contentMode = s.cfg.SubTokenMode
 	} else if u, ok := s.findSubUser(tok); ok {
 		// 一人一条（v1.3.0）：没勾选 = 单面板全量订阅，有勾选 = 合并订阅
+		// 分组（v1.3.26）：进了组的用组的落地集合，自己的勾选保留在记录里
+		// （出组/删组后恢复）；没进组按自己的勾选。
 		contentMode = u.Mode
 		if u.TrafficLimitBytes > 0 {
 			userKey, userLimit, userLimitMode = userSubKey("subuser", u.ID), u.TrafficLimitBytes, u.TrafficLimitMode
 		}
-		if len(u.Selection) == 0 {
+		if sel := s.effectiveSelectionForSubUser(u); len(sel) == 0 {
 			links = s.collectSubLinks(nil)
 		} else {
-			links, localIndices = s.collectMergedSubLinks(&MergedSub{Selection: u.Selection}, userKey)
+			links, localIndices = s.collectMergedSubLinks(&MergedSub{Selection: sel}, userKey)
 		}
 	} else if ms, ok := s.findMergedSub(tok); ok {
 		contentMode = ms.Mode
 		if ms.TrafficLimitBytes > 0 {
 			userKey, userLimit, userLimitMode = userSubKey("merged", ms.ID), ms.TrafficLimitBytes, ms.TrafficLimitMode
 		}
-		links, localIndices = s.collectMergedSubLinks(ms, userKey)
+		// 分组（v1.3.26）：进了组的用组的落地集合。
+		links, localIndices = s.collectMergedSubLinks(&MergedSub{Selection: s.effectiveSelectionForMerged(ms)}, userKey)
 	} else {
 		http.NotFound(w, r)
 		return
@@ -1699,6 +1702,10 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 		HasUsed       bool   `json:"has_used"`
 		Disabled      bool   `json:"traffic_disabled"`
 		ForwardCount  int    `json:"forward_count"`
+		// 分组（v1.3.26）：GroupID 空 = 不分组；GroupName 是分组显示名
+		// （列表徽章用）；进了组时 Summary 是组的落地摘要。
+		GroupID   string `json:"group_id,omitempty"`
+		GroupName string `json:"group_name,omitempty"`
 	}
 	items := []item{}
 	for _, u := range s.cfg.SubUsers {
@@ -1708,8 +1715,12 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 			kind = "merged"
 			summary = s.selectionSummary(u.Selection)
 		}
+		if u.GroupID != "" {
+			kind = "merged"
+			summary = "分组「" + s.groupNameOf(u.GroupID) + "」：" + s.selectionSummary(s.effectiveSelectionForSubUser(&u))
+		}
 		used, _, hasUsed := s.userUsageSummary(userSubKey("subuser", u.ID), u.TrafficLimitBytes, u.TrafficLimitMode)
-		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode, Selection: u.Selection, ExpiresAt: u.ExpiresAt, LimitMB: u.TrafficLimitBytes / 1024 / 1024, LimitMode: u.TrafficLimitMode, ResetMode: u.ResetMode, ResetDay: u.ResetDay, NextResetAt: u.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: u.Disabled, ForwardCount: len(s.userForwardsFor(userSubKey("subuser", u.ID)))})
+		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode, Selection: u.Selection, ExpiresAt: u.ExpiresAt, LimitMB: u.TrafficLimitBytes / 1024 / 1024, LimitMode: u.TrafficLimitMode, ResetMode: u.ResetMode, ResetDay: u.ResetDay, NextResetAt: u.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: u.Disabled, ForwardCount: len(s.userForwardsFor(userSubKey("subuser", u.ID))), GroupID: u.GroupID, GroupName: s.groupNameOf(u.GroupID)})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"users": items}))
 }
@@ -1726,6 +1737,9 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 		Selection []SubSelection `json:"selection"`
 		Mode      string         `json:"mode"`
 		ExpiresAt *string        `json:"expires_at"`
+		// 分组（v1.3.26）：group_id 空 = 不分组；进了组，订阅按组的落地
+		// 集合出内容，自己的 Selection 保留在记录里（出组后恢复）。
+		GroupID string `json:"group_id"`
 		// 流量上限（v1.3.25）：limit_mb 0/不给 = 不限流（走共享端口）；
 		// limit_mode total=累计 monthly=按月；reset_mode 只在 monthly
 		// 下有效（monthly=每月 1 号，anniversary=跟随生成日，
@@ -1764,6 +1778,11 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	groupID, err := s.validateGroupID(req.GroupID)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
 	subMode, err := normalizeSubMode(req.Mode)
 	if err != nil {
 		writeJSON(w, 400, errResp(err.Error()))
@@ -1791,7 +1810,7 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	now := nowTime.Format(time.RFC3339)
 	id := "su-" + randomTokenHex(6)
-	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: id, Name: name, Note: note, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt, TrafficLimitBytes: limitBytes, TrafficLimitMode: limitMode, ResetMode: resetMode, ResetDay: resetDay, NextResetAt: nextResetAt})
+	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: id, Name: name, Note: note, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt, GroupID: groupID, TrafficLimitBytes: limitBytes, TrafficLimitMode: limitMode, ResetMode: resetMode, ResetDay: resetDay, NextResetAt: nextResetAt})
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
@@ -1799,8 +1818,15 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 	// 按人限流（v1.3.25）：订阅已保存，再核对本机转发并同步到各远程
 	// 面板。建不起来也不撤订阅——没建起来的那部分暂时走共享端口、
 	// 不限流，warning 让前端提示用户重新保存一次。
-	resp := map[string]any{"id": id, "url": s.subURL(r, tok), "name": name, "mode": subMode, "expires_at": expiresAt, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
-	if warn := s.syncUserForwardsWarning("subuser", id, name, sel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
+	// 分组（v1.3.26）：进了组的按组的落地集合建转发。
+	effSel := sel
+	if groupID != "" {
+		if g := s.findSubGroup(groupID); g != nil {
+			effSel = g.Selection
+		}
+	}
+	resp := map[string]any{"id": id, "url": s.subURL(r, tok), "name": name, "mode": subMode, "expires_at": expiresAt, "group_id": groupID, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
+	if warn := s.syncUserForwardsWarning("subuser", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
 		resp["warning"] = warn
 		s.audit(s.currentUser(r), "新建订阅用户", name, "部分成功", warn)
 	} else {
@@ -1846,7 +1872,8 @@ func (s *Server) handleSubUsersDelete(w http.ResponseWriter, r *http.Request) {
 	for i := range s.cfg.SubUsers {
 		if s.cfg.SubUsers[i].ID == id {
 			name := s.cfg.SubUsers[i].Name
-			sel := s.cfg.SubUsers[i].Selection
+			// 分组（v1.3.26）：进了组的按组的落地集合回收远程转发。
+			sel := s.effectiveSelectionForSubUser(&s.cfg.SubUsers[i])
 			s.cfg.SubUsers = append(s.cfg.SubUsers[:i], s.cfg.SubUsers[i+1:]...)
 			if err := s.saveConfig(); err != nil {
 				writeJSON(w, 500, errResp("保存失败："+err.Error()))
@@ -1890,6 +1917,10 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		Selection []SubSelection `json:"selection"`
 		Mode      string         `json:"mode"`
 		ExpiresAt *string        `json:"expires_at"`
+		// 分组（v1.3.26）：指针 = 没给保持原分组；给了 "" = 出组（恢复自己
+		// 勾选），给了 "sg-…" = 进组（订阅按组的落地出，自己的勾选保留在
+		// 记录里不动）。进组时请求里的 selection 不动自己的勾选。
+		GroupID *string `json:"group_id"`
 		// 流量上限（v1.3.25）：指针 = 没给保持原值，给了按新值
 		// （limit_mb 给 0 = 取消限流，回共享端口）。
 		TrafficLimitMB   *int64  `json:"traffic_limit_mb"`
@@ -1921,6 +1952,19 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	if len(req.Selection) > 0 {
 		var err error
 		sel, _, err = s.validateMergedSelection(req.Selection)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+	}
+	// 分组（v1.3.26）：没给 group_id = 保持原分组；给了 "" = 出组；
+	// 给了 "sg-…" = 进组（校验存在）。
+	groupGiven := false
+	groupID := ""
+	if req.GroupID != nil {
+		groupGiven = true
+		var err error
+		groupID, err = s.validateGroupID(*req.GroupID)
 		if err != nil {
 			writeJSON(w, 400, errResp(err.Error()))
 			return
@@ -1972,9 +2016,18 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		// 调高上限后不再超量就自动恢复（清停用标志，让 reconcile 把
 		// endpoints 加回去）；仍超量就继续停用。
 		s.maybeResumeUser(userSubKey("subuser", id), limitBytes, limitMode)
+		// 分组（v1.3.26）：给了 group_id 就改归属；进了组，自己的
+		// Selection 不动（保留在记录里，出组后恢复），订阅按组的落地出；
+		// 出组后按请求里的新勾选出。
+		if groupGiven {
+			u.GroupID = groupID
+		}
+		if u.GroupID == "" {
+			u.Selection = sel
+		}
+		effSel := s.effectiveSelectionForSubUser(u)
 		u.Name = name
 		u.Note = note
-		u.Selection = sel
 		u.Mode = subMode
 		u.TrafficLimitBytes = limitBytes
 		u.TrafficLimitMode = limitMode
@@ -1990,16 +2043,19 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		kind := "single"
 		summary := "单面板全量订阅（全部落地）"
-		if len(sel) > 0 {
+		if len(effSel) > 0 {
 			kind = "merged"
-			summary = s.selectionSummary(sel)
+			summary = s.selectionSummary(effSel)
+			if u.GroupID != "" {
+				summary = "分组「" + s.groupNameOf(u.GroupID) + "」：" + summary
+			}
 		}
-		selOut := sel
+		selOut := u.Selection
 		if selOut == nil {
 			selOut = []SubSelection{}
 		}
-		resp := map[string]any{"id": id, "name": name, "kind": kind, "summary": summary, "mode": subMode, "selection": selOut, "expires_at": u.ExpiresAt, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
-		if warn := s.syncUserForwardsWarning("subuser", id, name, sel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
+		resp := map[string]any{"id": id, "name": name, "kind": kind, "summary": summary, "mode": subMode, "selection": selOut, "expires_at": u.ExpiresAt, "group_id": u.GroupID, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
+		if warn := s.syncUserForwardsWarning("subuser", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
 			resp["warning"] = warn
 			s.audit(s.currentUser(r), "编辑订阅用户", name+"（"+summary+"）", "部分成功", warn)
 		} else {
@@ -2373,14 +2429,22 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 		HasUsed      bool   `json:"has_used"`
 		Disabled     bool   `json:"traffic_disabled"`
 		ForwardCount int    `json:"forward_count"`
+		// 分组（v1.3.26）：GroupID 空 = 不分组；GroupName 是分组显示名
+		// （列表徽章用）；进了组时 Summary 是组的落地摘要。
+		GroupID   string `json:"group_id,omitempty"`
+		GroupName string `json:"group_name,omitempty"`
 	}
 	items := []item{}
 	for _, ms := range s.cfg.MergedSubs {
 		if ms.Selection == nil {
 			ms.Selection = []SubSelection{}
 		}
+		summary := s.selectionSummary(ms.Selection)
+		if ms.GroupID != "" {
+			summary = "分组「" + s.groupNameOf(ms.GroupID) + "」：" + s.selectionSummary(s.effectiveSelectionForMerged(&ms))
+		}
 		used, _, hasUsed := s.userUsageSummary(userSubKey("merged", ms.ID), ms.TrafficLimitBytes, ms.TrafficLimitMode)
-		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: s.selectionSummary(ms.Selection), HasLink: ms.TokenEnc != "", Mode: ms.Mode, ExpiresAt: ms.ExpiresAt, LimitMB: ms.TrafficLimitBytes / 1024 / 1024, LimitMode: ms.TrafficLimitMode, ResetMode: ms.ResetMode, ResetDay: ms.ResetDay, NextResetAt: ms.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: ms.Disabled, ForwardCount: len(s.userForwardsFor(userSubKey("merged", ms.ID)))})
+		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: summary, HasLink: ms.TokenEnc != "", Mode: ms.Mode, ExpiresAt: ms.ExpiresAt, LimitMB: ms.TrafficLimitBytes / 1024 / 1024, LimitMode: ms.TrafficLimitMode, ResetMode: ms.ResetMode, ResetDay: ms.ResetDay, NextResetAt: ms.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: ms.Disabled, ForwardCount: len(s.userForwardsFor(userSubKey("merged", ms.ID))), GroupID: ms.GroupID, GroupName: s.groupNameOf(ms.GroupID)})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"subs": items}))
 }
@@ -2400,6 +2464,9 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 		Name      string         `json:"name"`
 		Mode      string         `json:"mode"`
 		ExpiresAt *string        `json:"expires_at"`
+		// 分组（v1.3.26）：指针 = 没给保持原分组（轮换那条的）；给了 "" =
+		// 不分组，给了 "sg-…" = 进组（订阅按组的落地出，自己的勾选保留）。
+		GroupID *string `json:"group_id"`
 		// 流量上限（v1.3.25）：指针 = 没给保持原值（轮换时）或不限流
 		// （新建时），给了按新值（给 0 = 取消限流）。
 		TrafficLimitMB   *int64  `json:"traffic_limit_mb"`
@@ -2422,6 +2489,18 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
+	}
+	// 分组（v1.3.26）：没给 group_id = 保持原分组（轮换那条的）；给了就校验。
+	groupGiven := false
+	groupID := ""
+	if req.GroupID != nil {
+		groupGiven = true
+		var err error
+		groupID, err = s.validateGroupID(*req.GroupID)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
 	}
 	subMode, err := normalizeSubMode(req.Mode)
 	if err != nil {
@@ -2528,6 +2607,21 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 			s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt, TrafficLimitBytes: limitBytes, TrafficLimitMode: limitMode, ResetMode: resetMode, ResetDay: resetDay, NextResetAt: nextResetAt})
 		}
 	}
+	// 分组（v1.3.26）：新建与轮换都按请求里的 group_id 归属；没给就保持
+	// 轮换那条的原分组。生效勾选 = 组的落地集合（进了组）或自己的勾选。
+	finalGroupID := ""
+	if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
+		if groupGiven {
+			ms.GroupID = groupID
+		}
+		finalGroupID = ms.GroupID
+	}
+	effSel := sel
+	if finalGroupID != "" {
+		if g := s.findSubGroup(finalGroupID); g != nil {
+			effSel = g.Selection
+		}
+	}
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
@@ -2536,12 +2630,15 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 	if rotated {
 		action = "轮换合并订阅"
 	}
-	target := s.selectionSummary(sel)
+	target := s.selectionSummary(effSel)
+	if finalGroupID != "" {
+		target = "分组「" + s.groupNameOf(finalGroupID) + "」：" + target
+	}
 	if name != "" {
 		target = name + "（" + target + "）"
 	}
-	resp := map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": rotated, "selection": sel, "summary": s.selectionSummary(sel), "mode": subMode, "expires_at": expiresAt, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
-	if warn := s.syncUserForwardsWarning("merged", id, name, sel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
+	resp := map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": rotated, "selection": sel, "summary": s.selectionSummary(effSel), "mode": subMode, "expires_at": expiresAt, "group_id": finalGroupID, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
+	if warn := s.syncUserForwardsWarning("merged", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
 		resp["warning"] = warn
 		s.audit(s.currentUser(r), action, target, "部分成功", warn)
 	} else {
@@ -2594,8 +2691,9 @@ func (s *Server) handleMergedSubsDelete(w http.ResponseWriter, r *http.Request) 
 	id := r.PathValue("id")
 	for i := range s.cfg.MergedSubs {
 		if s.cfg.MergedSubs[i].ID == id {
-			summary := s.selectionSummary(s.cfg.MergedSubs[i].Selection)
-			sel := s.cfg.MergedSubs[i].Selection
+			summary := s.selectionSummary(s.effectiveSelectionForMerged(&s.cfg.MergedSubs[i]))
+			// 分组（v1.3.26）：进了组的按组的落地集合回收远程转发。
+			sel := s.effectiveSelectionForMerged(&s.cfg.MergedSubs[i])
 			s.cfg.MergedSubs = append(s.cfg.MergedSubs[:i], s.cfg.MergedSubs[i+1:]...)
 			if err := s.saveConfig(); err != nil {
 				writeJSON(w, 500, errResp("保存失败："+err.Error()))
@@ -2638,6 +2736,10 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 		Name      string         `json:"name"`
 		Mode      string         `json:"mode"`
 		ExpiresAt *string        `json:"expires_at"`
+		// 分组（v1.3.26）：指针 = 没给保持原分组；给了 "" = 出组（恢复自己
+		// 勾选），给了 "sg-…" = 进组（订阅按组的落地出，自己的勾选保留在
+		// 记录里不动）。进组时请求里的 selection 不动自己的勾选。
+		GroupID *string `json:"group_id"`
 		// 流量上限（v1.3.25）：指针 = 没给保持原值，给了按新值
 		// （limit_mb 给 0 = 取消限流，回共享端口）。
 		TrafficLimitMB   *int64  `json:"traffic_limit_mb"`
@@ -2660,6 +2762,19 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
+	}
+	// 分组（v1.3.26）：没给 group_id = 保持原分组；给了 "" = 出组；
+	// 给了 "sg-…" = 进组（校验存在）。
+	groupGiven := false
+	groupID := ""
+	if req.GroupID != nil {
+		groupGiven = true
+		var err error
+		groupID, err = s.validateGroupID(*req.GroupID)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
 	}
 	subMode, err := normalizeSubMode(req.Mode)
 	if err != nil {
@@ -2707,7 +2822,16 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 		// 调高上限后不再超量就自动恢复（清停用标志，让 reconcile 把
 		// endpoints 加回去）；仍超量就继续停用。
 		s.maybeResumeUser(userSubKey("merged", id), limitBytes, limitMode)
-		ms.Selection = sel
+		// 分组（v1.3.26）：给了 group_id 就改归属；进了组，自己的
+		// Selection 不动（保留在记录里，出组后恢复），订阅按组的落地出；
+		// 出组后按请求里的新勾选出。
+		if groupGiven {
+			ms.GroupID = groupID
+		}
+		if ms.GroupID == "" {
+			ms.Selection = sel
+		}
+		effSel := s.effectiveSelectionForMerged(ms)
 		ms.Mode = subMode
 		ms.Name = name
 		ms.TrafficLimitBytes = limitBytes
@@ -2722,13 +2846,16 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, 500, errResp("保存失败："+err.Error()))
 			return
 		}
-		summary := s.selectionSummary(sel)
+		summary := s.selectionSummary(effSel)
+		if ms.GroupID != "" {
+			summary = "分组「" + s.groupNameOf(ms.GroupID) + "」：" + summary
+		}
 		target := summary
 		if name != "" {
 			target = name + "（" + summary + "）"
 		}
-		resp := map[string]any{"id": id, "name": name, "summary": summary, "mode": subMode, "selection": sel, "expires_at": ms.ExpiresAt, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
-		if warn := s.syncUserForwardsWarning("merged", id, name, sel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
+		resp := map[string]any{"id": id, "name": name, "summary": summary, "mode": subMode, "selection": ms.Selection, "expires_at": ms.ExpiresAt, "group_id": ms.GroupID, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
+		if warn := s.syncUserForwardsWarning("merged", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
 			resp["warning"] = warn
 			s.audit(s.currentUser(r), "编辑合并订阅", target, "部分成功", warn)
 		} else {

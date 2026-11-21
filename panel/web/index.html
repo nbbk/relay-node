@@ -509,6 +509,13 @@
             </div>
             <p class="small muted">开了限流才给这个人建独立转发（独立端口 → 同一落地），不开限流的继续走共享端口；超量时 80% 发 Telegram 提醒、100% 自动停用，续量或等下个周期恢复。统计是上行 + 下行合计、按 L3 字节计（含包头，比客户端显示的多几个百分点），分钟级采样、超一点正常，配额留点余量。</p>
             <p class="small muted">新建默认是全量订阅（全部落地）；想按人分落地，建完去下面列表点“编辑”勾选。</p>
+            <div class="setting-row">
+              <label class="small" for="sub-user-group">所属分组：</label>
+              <select id="sub-user-group" style="width:160px">
+                <option value="" selected>不分组</option>
+              </select>
+              <span class="small muted">进了组，订阅按组的落地出内容；自己的勾选保留着，出组后恢复。</span>
+            </div>
             <div class="btn-row">
               <button class="btn" id="sub-user-create" type="button">新建订阅用户</button>
             </div>
@@ -524,6 +531,16 @@
             </div>
             <div class="list-toolbar"><input id="sub-user-search" class="list-search" type="search" placeholder="搜索订阅用户：名字、备注…" aria-label="搜索订阅用户"></div>
             <div id="sub-user-list" style="margin-top:12px">加载中…</div>
+          </div>
+              <div class="card">
+            <h2>分组（权限组）</h2>
+            <p class="muted">一组 = 一组落地 + 一组用户，组里的人用组里的节点。建一次组、加用户就行，不用每人重复勾落地；通用共享节点放一个组，美国/英国/法国等定制用户各放各的组。改组的落地，组里所有人的订阅下次更新立即同步，链接不变；删组后成员恢复自己原来勾的落地，链接也不变。</p>
+            <p class="small muted">通用订阅（所有人共用一条链接）不进分组；分组只决定用户能看到哪些落地，限流还是按人单独算（组里开了限流的人各走自己的独立转发端口，互不干扰）。</p>
+            <div class="btn-row">
+              <button class="btn" id="sub-group-create" type="button">新建分组</button>
+            </div>
+            <div class="list-toolbar"><input id="sub-group-search" class="list-search" type="search" placeholder="搜索分组：名字、备注…" aria-label="搜索分组"></div>
+            <div id="sub-group-list" style="margin-top:12px">加载中…</div>
           </div>
               <div class="card">
             <h2>每用户端口段</h2>
@@ -857,6 +874,13 @@
                 <option value="direct">仅直连</option>
               </select>
               <span class="small muted">全部：中转和直连的节点都进订阅；仅中转：只要走中转机的节点；仅直连：只要直连落地机的节点。</span>
+            </div>
+            <div class="setting-row">
+              <label class="small" for="central-sub-group">所属分组：</label>
+              <select id="central-sub-group" style="width:160px">
+                <option value="" selected>不分组</option>
+              </select>
+              <span class="small muted">进了组，订阅按组的落地出内容；自己的勾选保留着，出组后恢复。</span>
             </div>
             <div class="btn-row"><label class="small">归属到人（选填）：<input id="central-sub-name" type="text" placeholder="例如：张三的手机" style="width:160px"></label><label class="small">到期（选填）：<input id="central-sub-expiry-date" type="date"></label><button class="btn" id="central-sub-generate" type="button" disabled>生成合并订阅</button></div>
             <div class="btn-row" id="central-sub-traffic-row"><label class="small">流量上限（GB，0 = 不限流）：<input data-tl-gb type="number" min="0" step="1" value="0" style="width:90px"></label><label class="small">算法：<select data-tl-mode style="width:130px"><option value="total" selected>累计（整个生命周期）</option><option value="monthly">按月（每月重置）</option></select></label><label class="small">重置：<select data-tl-reset style="width:130px"><option value="monthly" selected>每月 1 号</option><option value="anniversary">跟随生成日</option><option value="custom">自定义每月几号</option></select></label><label class="small">几号：<input data-tl-day type="number" min="1" max="31" value="1" style="width:60px"></label></div>

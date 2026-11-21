@@ -94,6 +94,10 @@ type PanelConfig struct {
 	// 旧的面板级通用订阅令牌（SubTokenHash）保留不动，向后兼容，
 	// 已发出去的通用链接继续能用。
 	SubUsers []SubUser `json:"sub_users"`
+	// 分组（v1.3.26，权限组）：一组 = 一组落地 + 一组用户，组里的人用组里
+	// 的节点；成员归属存在 SubUser/MergedSub 的 GroupID 上（单字段，一人
+	// 最多一个组），这里只存组的落地集合与名称。通用订阅（全量）不进分组。
+	SubGroups []SubGroup `json:"sub_groups,omitempty"`
 	// 按人转发（v1.3.25，按订阅限流量 A）：本面板上的每用户转发记录。
 	// 只给开了限流的订阅建；每条是一条独立监听端口 → 同一落地端口的
 	// 转发，端口就是用户身份。管理面板模式下本机没有转发，这里是空的；
@@ -190,6 +194,8 @@ type SubSelection struct {
 // （自然月，每月 1 号）/ "anniversary"（跟随生成日）/ "custom"
 // （自定义每月几号，ResetDay 1–31，31 号钳制到月末）；NextResetAt /
 // LastResetAt 是 RFC3339；Disabled 是超量停用（转发已撤）。
+// GroupID（v1.3.26，分组）：所属分组的 ID，空 = 不分组；非空时订阅按
+// 组的落地集合出内容，自己的 Selection 保留在记录里（出组/删组后恢复）。
 type MergedSub struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name,omitempty"`
@@ -199,6 +205,7 @@ type MergedSub struct {
 	Selection []SubSelection `json:"selection"`
 	Mode      string         `json:"mode,omitempty"`
 	ExpiresAt string         `json:"expires_at,omitempty"`
+	GroupID   string         `json:"group_id,omitempty"`
 	// 流量上限（v1.3.25，A 方案）：见 MergedSub 头注释。
 	TrafficLimitBytes int64  `json:"traffic_limit_bytes,omitempty"`
 	TrafficLimitMode  string `json:"traffic_limit_mode,omitempty"`
@@ -212,6 +219,23 @@ type MergedSub struct {
 	DisabledReason    string `json:"disabled_reason,omitempty"`
 }
 
+// SubGroup 分组（v1.3.26，权限组）：一组 = 一组落地 + 一组用户，组里的人
+// 用组里的节点。建一次组、加用户就行，不用每人重复勾落地；通用共享节点
+// 放一个组，美国/英国/法国等定制用户各放各的组。
+// Selection 是组的落地集合（本面板 + 远程落地，与合并订阅同一套勾选）；
+// 成员不另存列表——成员归属的唯一事实来源是 SubUser/MergedSub 上的
+// GroupID（groupMembers() 现算），一个订阅最多属于一个组（单字段天然
+// 保证，不会有两个组的落地集合冲突）；换组直接改成员的 GroupID。
+// 成员自己的 Selection 保留在记录里（进组后订阅按组的落地出，自己的勾选
+// 不用、出组/删组后自动恢复，不用重勾）。
+type SubGroup struct {
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Note      string         `json:"note,omitempty"`
+	Selection []SubSelection `json:"selection"`
+	CreatedAt string         `json:"created_at"`
+}
+
 // SubUser 一人一条订阅链接（v1.3.0）：TokenHash 是订阅令牌的 SHA-256
 // 哈希（鉴权查表），TokenEnc 是同一令牌的 AES-GCM 密文（v1.3.7，
 // 用来重新拼链接；旧链接没有密文，复制时提示轮换一次）。Name 是人名/备注
@@ -223,6 +247,8 @@ type MergedSub struct {
 // 返回 410；轮换不改它，编辑时可改。
 // 流量上限（v1.3.25，按订阅限流量 A）：与 MergedSub 同一套字段（见上），
 // > 0 才限流，0 = 不限流（走共享端口）。
+// GroupID（v1.3.26，分组）：所属分组的 ID，空 = 不分组；非空时订阅按
+// 组的落地集合出内容，自己的 Selection 保留在记录里（出组/删组后恢复）。
 type SubUser struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
@@ -233,6 +259,7 @@ type SubUser struct {
 	Selection []SubSelection `json:"selection,omitempty"`
 	Mode      string         `json:"mode,omitempty"`
 	ExpiresAt string         `json:"expires_at,omitempty"`
+	GroupID   string         `json:"group_id,omitempty"`
 	// 流量上限（v1.3.25，A 方案）：见 MergedSub 头注释。
 	TrafficLimitBytes int64  `json:"traffic_limit_bytes,omitempty"`
 	TrafficLimitMode  string `json:"traffic_limit_mode,omitempty"`

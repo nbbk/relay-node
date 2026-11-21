@@ -1740,7 +1740,7 @@ async function loadSettingsPage() {
       '<div class="kv"><span>状态</span><b>' + (st.update_available ? '<span class="badge yellow">有更新</span>' : '<span class="badge green">已是最新</span>') + '</b></div>' +
       '<div class="kv"><span>仓库</span><b><a href="https://github.com/nbbk/relay-node" target="_blank" rel="noopener">relay-node</a></b></div>';
   } catch (e) { toast('设置加载失败：' + e.message, 'err'); }
-  loadAudit(); loadSubUsers(); loadSchedBackups();
+  loadAudit(); loadSubUsers(); loadSubGroups(); loadSchedBackups();
 }
 // 切换面板模式（v1.2.8）：只改 manager_only 开关，数据保留；切完刷新页面重建导航。
 async function switchPanelMode(toManager) {
@@ -3006,14 +3006,14 @@ async function loadSubUsers() {
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的订阅用户，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, subUserPage);
     subUserPage = pg.cur;
-    list.innerHTML = '<h3>订阅用户</h3>' + pg.slice.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 内容' + esc(subModeLabel(u.mode)) + ' · ' + expiryBadge(u.expires_at) + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span><br><span class="small">' + userTrafficText(u) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-edit="' + esc(u.id) + '">编辑</button> ' + (u.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-user-resume="' + esc(u.id) + '">恢复</button> ' : '') + '<button class="btn secondary sm" type="button" data-sub-user-copy="' + esc(u.id) + '">复制</button> <button class="btn secondary sm" type="button" data-sub-user-qr="' + esc(u.id) + '">二维码</button> <button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
+    list.innerHTML = '<h3>订阅用户</h3>' + pg.slice.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.group_name ? ' <span class="badge">分组：' + esc(u.group_name) + '</span>' : '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 内容' + esc(subModeLabel(u.mode)) + ' · ' + expiryBadge(u.expires_at) + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span><br><span class="small">' + userTrafficText(u) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-edit="' + esc(u.id) + '">编辑</button> ' + (u.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-user-resume="' + esc(u.id) + '">恢复</button> ' : '') + '<button class="btn secondary sm" type="button" data-sub-user-copy="' + esc(u.id) + '">复制</button> <button class="btn secondary sm" type="button" data-sub-user-qr="' + esc(u.id) + '">二维码</button> <button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'subuser') +
       '<p class="muted small">编辑只改勾选与内容，链接不变；撤销只影响那个人，其他人的链接照常；轮换后旧链接立即失效。</p>';
     if (pg.totalPages > 1) wirePager(list, 'subuser', pg.cur, pg.totalPages, (p) => { subUserPage = p; loadSubUsers(); });
     $$('[data-sub-user-edit]', list).forEach((b) => b.addEventListener('click', () => {
       const u = users.find((x) => x.id === b.dataset.subUserEdit);
       if (!u) return;
-      openSubEditModal({ kind: 'user', id: u.id, name: u.name, note: u.note, selection: u.selection || [], mode: u.mode, expires_at: u.expires_at, traffic_limit_mb: u.traffic_limit_mb, traffic_limit_mode: u.traffic_limit_mode, reset_mode: u.reset_mode, reset_day: u.reset_day });
+      openSubEditModal({ kind: 'user', id: u.id, name: u.name, note: u.note, selection: u.selection || [], mode: u.mode, expires_at: u.expires_at, traffic_limit_mb: u.traffic_limit_mb, traffic_limit_mode: u.traffic_limit_mode, reset_mode: u.reset_mode, reset_day: u.reset_day, group_id: u.group_id || '' });
     }));
     $$('[data-sub-user-resume]', list).forEach((b) => b.addEventListener('click', () => resumeSubTraffic('users', b.dataset.subUserResume)));
     $$('[data-sub-user-copy]', list).forEach((b) => b.addEventListener('click', async () => {
@@ -3067,7 +3067,7 @@ async function subUserCreate() {
   try {
     const scope = $('#sub-user-name').closest('.card');
     const tl = readTrafficLimit(scope);
-    const r = await apiPost('/api/v1/subscriptions/users', { name, note: $('#sub-user-note').value.trim(), mode: subModeOf('sub-user-mode'), expires_at: ($('#sub-user-expiry-date') || {}).value || '', traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day });
+    const r = await apiPost('/api/v1/subscriptions/users', { name, note: $('#sub-user-note').value.trim(), mode: subModeOf('sub-user-mode'), expires_at: ($('#sub-user-expiry-date') || {}).value || '', traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day, group_id: ($('#sub-user-group') || {}).value || '' });
     $('#sub-user-url-value').textContent = r.url || '';
     const box = $('#sub-user-once');
     if (box) { box.classList.remove('hidden'); box.hidden = false; }
@@ -3080,6 +3080,119 @@ async function subUserCreate() {
     else toast('订阅用户已新建，链接显示在下面，随时能复制', 'ok');
     loadSubUsers();
   } catch (err) { toast('新建失败：' + err.message, 'err'); }
+}
+// ---------- 分组（权限组，v1.3.26） ----------
+// 一组 = 一组落地 + 一组用户，组里的人用组里的节点。建一次组、加用户就行，
+// 不用每人重复勾落地；改组的落地，组里所有人的订阅下次更新立即同步。
+let subGroupsCache = []; // 最近一次拉到的分组列表（下拉与弹窗共用）
+let subGroupSearch = ''; // 分组列表搜索词
+let subGroupPage = 1;
+function populateSubGroupSelect(sel, selectedId) {
+  if (!sel) return;
+  const cur = selectedId !== undefined ? selectedId : sel.value;
+  sel.innerHTML = '<option value="">不分组</option>' + (subGroupsCache || []).map((g) => '<option value="' + esc(g.id) + '"' + (g.id === cur ? ' selected' : '') + '>' + esc(g.name) + '</option>').join('');
+  sel.value = cur || '';
+}
+async function loadSubGroups() {
+  const list = $('#sub-group-list');
+  populateSubGroupSelect($('#sub-user-group'));
+  populateSubGroupSelect($('#central-sub-group'));
+  if (!list) return;
+  try {
+    const r = await api('/api/v1/subscriptions/groups');
+    subGroupsCache = r.groups || [];
+    populateSubGroupSelect($('#sub-user-group'));
+    populateSubGroupSelect($('#central-sub-group'));
+    const filtered = subGroupsCache.filter((g) => matchSubText(subGroupSearch, [g.name, g.note, g.summary]));
+    if (!subGroupsCache.length) { list.innerHTML = '<p class="muted small">还没有分组：点“新建分组”，先勾落地、再勾成员，一次建好。</p>'; return; }
+    if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的分组，换个关键词试试。</p>'; return; }
+    const pg = paginate(filtered, subGroupPage);
+    subGroupPage = pg.cur;
+    list.innerHTML = '<h3>分组</h3>' + pg.slice.map((g) => '<div class="kv"><span>' + esc(g.name || '') + (g.note ? ' <span class="small muted">（' + esc(g.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(g.summary || '') + ' · ' + (g.members || []).length + ' 个成员 · 建于 ' + esc(fmtDate(g.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-group-edit="' + esc(g.id) + '">编辑</button> <button class="btn danger sm" type="button" data-sub-group-delete="' + esc(g.id) + '">删除</button></span></div>').join('') +
+      pagerHtml(pg.total, pg.cur, pg.totalPages, 'subgroup') +
+      '<p class="muted small">删组不删用户、不换令牌：成员恢复自己原来勾的落地，链接不变。</p>';
+    if (pg.totalPages > 1) wirePager(list, 'subgroup', pg.cur, pg.totalPages, (p) => { subGroupPage = p; loadSubGroups(); });
+    $$('[data-sub-group-edit]', list).forEach((b) => b.addEventListener('click', () => {
+      const g = subGroupsCache.find((x) => x.id === b.dataset.subGroupEdit);
+      if (g) openSubGroupModal(g);
+    }));
+    $$('[data-sub-group-delete]', list).forEach((b) => b.addEventListener('click', async () => {
+      const g = subGroupsCache.find((x) => x.id === b.dataset.subGroupDelete);
+      const ok = await confirmModal('删除分组', '<p>删掉分组「' + esc(g ? g.name : '') + '」？成员恢复自己原来勾的落地，不删用户、不换令牌、链接不变。确定吗？</p>', '删除', true);
+      if (!ok) return;
+      try { await api('/api/v1/subscriptions/groups/' + encodeURIComponent(b.dataset.subGroupDelete), { method: 'DELETE' }); toast('分组已删除，成员已恢复自己勾选', 'ok'); loadSubGroups(); loadSubUsers(); loadMergedSubsList(); }
+      catch (e) { toast('删除失败：' + e.message, 'err'); }
+    }));
+  } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
+}
+// 新建/编辑分组弹窗：名字 + 落地勾选树（复用编辑弹窗那棵树，本机与远程
+// 分层）+ 成员多选（订阅用户与合并订阅分两组列出）。
+async function openSubGroupModal(group) {
+  const isEdit = !!group;
+  const m = openModal('<h2>' + esc(isEdit ? '编辑分组' : '新建分组') + '</h2>' +
+    '<p class="muted small">一组 = 一组落地 + 一组用户，组里的人用组里的节点。改组的落地，组里所有人的订阅下次更新立即同步，链接不变。</p>' +
+    '<label class="small">名字：<input type="text" data-group-name style="width:200px" value="' + esc(group ? group.name || '' : '') + '" placeholder="如 美国组"></label>' +
+    '<label class="small" style="margin-left:8px">备注：<input type="text" data-group-note style="width:160px" value="' + esc(group ? group.note || '' : '') + '" placeholder="选填"></label>' +
+    '<div data-group-tree style="margin-top:12px">加载中…</div>' +
+    '<p class="muted small">至少勾一个落地。</p>' +
+    '<div data-group-members style="margin-top:12px">加载中…</div>' +
+    '<p class="muted small">成员一人只能进一个组：勾了这里的人，会自动从原来那个组里出来。</p>' +
+    '<div class="btn-row" style="margin-top:12px"><button class="btn" type="button" data-group-save>保存</button>' +
+    '<button class="btn secondary" type="button" data-group-cancel>取消</button></div>', true);
+  if (!m) return;
+  const checked = {};
+  (group ? group.selection || [] : []).forEach((e) => { checked[subTreeKey(e.panel, e.landing)] = true; });
+  const treeBox = m.querySelector('[data-group-tree]');
+  try {
+    const panels = await fetchSubTreePanels();
+    renderSubEditTree(treeBox, panels, checked);
+  } catch (e) {
+    if (treeBox) treeBox.innerHTML = '<div class="error-box">勾选树加载失败：' + esc(e.message) + '</div>';
+  }
+  // 成员多选：订阅用户与合并订阅分两组列出，当前成员预选；已在别的组里
+  // 的人会标注出来，勾过来即换组。
+  const memBox = m.querySelector('[data-group-members]');
+  let members = { users: [], merged: [] };
+  try {
+    const [ru, rm] = await Promise.all([api('/api/v1/subscriptions/users'), api('/api/v1/subscriptions/merged')]);
+    members.users = ru.users || [];
+    members.merged = rm.subs || [];
+  } catch (e) {
+    if (memBox) memBox.innerHTML = '<div class="error-box">成员列表加载失败：' + esc(e.message) + '</div>';
+  }
+  const renderMembers = () => {
+    if (!memBox) return;
+    const curUserIds = new Set((group ? group.members || [] : []).filter((x) => x.kind === 'user').map((x) => x.id));
+    const curMergedIds = new Set((group ? group.members || [] : []).filter((x) => x.kind === 'merged').map((x) => x.id));
+    let h = '<p class="small"><b>成员</b></p>';
+    h += '<p class="small" style="margin-top:8px"><b>订阅用户</b></p>';
+    h += members.users.length ? members.users.map((u) => '<label class="checkbox-row"><input type="checkbox" data-group-member-user="' + esc(u.id) + '"' + (curUserIds.has(u.id) ? ' checked' : '') + '><span>' + esc(u.name || '') + (u.group_id && u.group_id !== (group ? group.id : '') ? ' <span class="muted small">（在分组「' + esc(u.group_name || '') + '」里）</span>' : '') + '</span></label>').join('') : '<p class="muted small">还没有订阅用户。</p>';
+    h += '<p class="small" style="margin-top:8px"><b>合并订阅</b></p>';
+    h += members.merged.length ? members.merged.map((s) => '<label class="checkbox-row"><input type="checkbox" data-group-member-merged="' + esc(s.id) + '"' + (curMergedIds.has(s.id) ? ' checked' : '') + '><span>' + esc(s.name || '未命名合并订阅') + (s.group_id && s.group_id !== (group ? group.id : '') ? ' <span class="muted small">（在分组「' + esc(s.group_name || '') + '」里）</span>' : '') + '</span></label>').join('') : '<p class="muted small">还没有合并订阅。</p>';
+    memBox.innerHTML = h;
+  };
+  renderMembers();
+  onIn(m, '[data-group-cancel]', 'click', closeModal);
+  onIn(m, '[data-group-save]', 'click', async () => {
+    const name = ((m.querySelector('[data-group-name]') || {}).value || '').trim();
+    if (!name) { toast('请先填分组名字', 'err'); return; }
+    const selection = subEditTreeSelection(checked);
+    if (!selection.length) { toast('至少勾一个落地', 'err'); return; }
+    const members = $$('[data-group-member-user]', m).filter((cb) => cb.checked).map((cb) => ({ kind: 'user', id: cb.dataset.groupMemberUser }))
+      .concat($$('[data-group-member-merged]', m).filter((cb) => cb.checked).map((cb) => ({ kind: 'merged', id: cb.dataset.groupMemberMerged })));
+    try {
+      const body = { name, note: ((m.querySelector('[data-group-note]') || {}).value || '').trim(), selection, members };
+      if (isEdit) await api('/api/v1/subscriptions/groups/' + encodeURIComponent(group.id), { method: 'PUT', body: JSON.stringify(body) });
+      else await apiPost('/api/v1/subscriptions/groups', body);
+      closeModal();
+      toast(isEdit ? '分组已保存，成员订阅下次更新即同步' : '分组已新建', 'ok');
+      loadSubGroups(); loadSubUsers(); loadMergedSubsList();
+    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+  });
+}
+function initSubGroups() {
+  on('#sub-group-create', 'click', () => openSubGroupModal(null));
+  wireListSearch('#sub-group-search', (q) => { subGroupSearch = q; subGroupPage = 1; loadSubGroups(); });
 }
 // ---------- 编辑订阅用户 / 合并订阅（v1.3.19） ----------
 // 把面板数据渲染成勾选树（面板框 + 落地行，半选态与全选框与集中管理页同一套）：
@@ -3154,14 +3267,19 @@ function subEditTreeSelection(checked) {
 }
 // 编辑订阅用户 / 合并订阅：改勾选集合与内容模式，不换令牌、不换链接——
 // 保存后旧链接继续能用，下次取订阅即按新勾选出内容。
-// opts: {kind:'user'|'merged', id, name, note, selection, mode}
+// opts: {kind:'user'|'merged', id, name, note, selection, mode, group_id}
+// 分组（v1.3.26）：选了组后勾选树变只读、显示组的落地（写明“由分组决定”）；
+// 保存时 group_id 一起发，进组不改自己的勾选，出组恢复自己勾选。
 async function openSubEditModal(opts) {
   const isMerged = opts.kind === 'merged';
   const m = openModal('<h2>' + esc(isMerged ? '编辑合并订阅' : '编辑订阅用户') + '</h2>' +
     '<p class="muted small">改勾选、改内容，链接不变：保存后旧订阅链接继续能用，下次更新订阅即按新勾选同步。</p>' +
     '<label class="small">' + esc(isMerged ? '归属到人（选填）：' : '名字：') + '<input type="text" data-edit-name style="width:200px" value="' + esc(opts.name || '') + '"></label>' +
     (isMerged ? '' : '<label class="small" style="margin-left:8px">备注：<input type="text" data-edit-note style="width:160px" value="' + esc(opts.note || '') + '" placeholder="选填"></label>') +
+    '<div style="margin-top:12px"><label class="small">所属分组：<select data-edit-group style="width:160px"><option value="">不分组</option></select></label>' +
+    '<span class="muted small">进了组，订阅按组的落地出内容；自己的勾选保留着，出组后恢复。</span></div>' +
     '<div data-edit-tree style="margin-top:12px">加载中…</div>' +
+    '<p class="muted small hidden" data-edit-group-note hidden></p>' +
     '<p class="muted small">' + esc(isMerged ? '合并订阅至少要勾一个落地。' : '全部不勾 = 全部落地（单面板全量订阅）。') + '</p>' +
     '<div style="margin-top:12px">' + subModeSelectHTML('sub-edit-mode', '') + '</div>' +
     '<div class="btn-row" style="margin-top:12px"><label class="small">到期时间：<input type="date" data-edit-expiry value="' + esc(dateInputOfExpiry(opts.expires_at)) + '"' + (opts.expires_at ? '' : ' disabled') + '></label>' +
@@ -3179,15 +3297,37 @@ async function openSubEditModal(opts) {
   });
   // 三选一下拉按当前值预选（只改弹窗里这一个下拉，不动页面上其他表单与上次选择）。
   syncSubModeSelect(m.querySelector('select[name="sub-edit-mode"]'), subModeValid(opts.mode || 'both'));
+  // 分组（v1.3.26）：下拉按当前归属预选；切分组时重绘勾选树——进了组
+  // 显示组的落地且只读（由分组决定），切回不分组恢复自己的勾选且可编辑。
+  // checked 对象保持同一个引用（保存时 subEditTreeSelection 读它）。
   const checked = {};
-  (opts.selection || []).forEach((e) => { checked[subTreeKey(e.panel, e.landing)] = true; });
   const treeBox = m.querySelector('[data-edit-tree]');
+  const groupSel = m.querySelector('[data-edit-group]');
+  populateSubGroupSelect(groupSel, opts.group_id || '');
+  let editPanels = null;
+  const applyEditGroup = (groupId) => {
+    const note = m.querySelector('[data-edit-group-note]');
+    if (!editPanels) return;
+    for (const k in checked) delete checked[k];
+    if (groupId) {
+      const g = (subGroupsCache || []).find((x) => x.id === groupId);
+      (g ? g.selection || [] : []).forEach((e) => { checked[subTreeKey(e.panel, e.landing)] = true; });
+      renderSubEditTree(treeBox, editPanels, checked);
+      if (treeBox) treeBox.querySelectorAll('input').forEach((cb) => { cb.disabled = true; });
+      if (note) { note.textContent = '由分组决定：订阅按分组的落地出内容，自己的勾选保留着；改落地去分组里改。'; note.classList.remove('hidden'); note.hidden = false; }
+    } else {
+      (opts.selection || []).forEach((e) => { checked[subTreeKey(e.panel, e.landing)] = true; });
+      renderSubEditTree(treeBox, editPanels, checked);
+      if (note) { note.classList.add('hidden'); note.hidden = true; }
+    }
+  };
   try {
-    const panels = await fetchSubTreePanels();
-    renderSubEditTree(treeBox, panels, checked);
+    editPanels = await fetchSubTreePanels();
+    applyEditGroup(groupSel ? groupSel.value : '');
   } catch (e) {
     if (treeBox) treeBox.innerHTML = '<div class="error-box">勾选树加载失败：' + esc(e.message) + '</div>';
   }
+  onIn(m, '[data-edit-group]', 'change', () => { applyEditGroup(groupSel ? groupSel.value : ''); });
   onIn(m, '[data-edit-cancel]', 'click', closeModal);
   onIn(m, '[data-edit-save]', 'click', async () => {
     const name = ((m.querySelector('[data-edit-name]') || {}).value || '').trim();
@@ -3199,14 +3339,15 @@ async function openSubEditModal(opts) {
     const permEl = m.querySelector('[data-edit-permanent]');
     const expEl = m.querySelector('[data-edit-expiry]');
     const expiresAt = (permEl && permEl.checked) ? '' : (expEl ? expEl.value : '');
+    const groupId = (m.querySelector('[data-edit-group]') || {}).value || '';
     try {
       const url = isMerged
         ? '/api/v1/subscriptions/merged/' + encodeURIComponent(opts.id)
         : '/api/v1/subscriptions/users/' + encodeURIComponent(opts.id);
       const tl = readTrafficLimit(m);
       const body = isMerged
-        ? { selection, name, mode, expires_at: expiresAt, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day }
-        : { name, note: ((m.querySelector('[data-edit-note]') || {}).value || '').trim(), selection, mode, expires_at: expiresAt, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day };
+        ? { selection, name, mode, expires_at: expiresAt, group_id: groupId, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day }
+        : { name, note: ((m.querySelector('[data-edit-note]') || {}).value || '').trim(), selection, mode, expires_at: expiresAt, group_id: groupId, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day };
       const r = await api(url, { method: 'PUT', body: JSON.stringify(body) });
       closeModal();
       if (r && r.warning) toast(r.warning, 'err');
@@ -3317,10 +3458,10 @@ function openMergedSubModal(url, opts) {
 // selection: [{panel:'local'|远程面板 id, landing:编号}]；name 选填（归属到人，
 // 只在合并订阅生成时传，填了就新起一条、不走轮换）；mode 是内容范围
 // （both|relay|direct），不传默认全部；expiresAt 选填（日期，空 = 永久）。
-async function showSubForSelection(selection, title, name, mode, expiresAt, traffic) {
+async function showSubForSelection(selection, title, name, mode, expiresAt, traffic, groupId) {
   try {
     const tl = traffic || { limit_mb: 0, limit_mode: 'total', reset_mode: 'monthly', reset_day: 1 };
-    const r = await apiPost('/api/v1/subscriptions/merged', { selection, name: name || undefined, mode: subModeValid(mode || 'both'), expires_at: expiresAt || '', traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day });
+    const r = await apiPost('/api/v1/subscriptions/merged', { selection, name: name || undefined, mode: subModeValid(mode || 'both'), expires_at: expiresAt || '', traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day, group_id: groupId || '' });
     openMergedSubModal(r.url || '', { title, rotated: r.rotated, name, mergedId: r.id, mode: r.mode || mode || 'both', expires_at: r.expires_at });
     if (r.warning) toast(r.warning, 'err');
     loadMergedSubsList();
@@ -3546,6 +3687,7 @@ function centralRemoteCardHtml(rm) {
 async function loadCentral() {
   centralDetailId = null;
   loadCentralSubTree();
+  loadSubGroups(); // v1.3.26：集中管理页生成表单的“所属分组”下拉也要有数据
   try {
     const r = await api('/api/v1/central/remotes');
     centralRemotes = r.remotes || [];
@@ -3751,14 +3893,14 @@ async function loadMergedSubsList() {
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的合并订阅，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, mergedSubPage);
     mergedSubPage = pg.cur;
-    list.innerHTML = '<h3>已生成的合并订阅</h3>' + pg.slice.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span><br><span class="small">' + userTrafficText(s) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-edit-merged="' + esc(s.id) + '">编辑</button> ' + (s.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-resume-merged="' + esc(s.id) + '">恢复</button> ' : '') + '<button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-mode-merged="' + esc(s.mode || '') + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
+    list.innerHTML = '<h3>已生成的合并订阅</h3>' + pg.slice.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + (s.group_name ? '<span class="badge">分组：' + esc(s.group_name) + '</span> ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span><br><span class="small">' + userTrafficText(s) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-edit-merged="' + esc(s.id) + '">编辑</button> ' + (s.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-resume-merged="' + esc(s.id) + '">恢复</button> ' : '') + '<button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-mode-merged="' + esc(s.mode || '') + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'mergedsub') +
       '<p class="muted small">编辑只改勾选与内容，链接不变；每条订阅都有“复制”按钮，链接加密存在面板里，随时能重新复制；重新勾选生成（不填名称时同一选择重新生成会轮换；填了名称是新起一条，各归各人）。</p>';
     if (pg.totalPages > 1) wirePager(list, 'mergedsub', pg.cur, pg.totalPages, (p) => { mergedSubPage = p; loadMergedSubsList(); });
     $$('[data-sub-edit-merged]', list).forEach((b) => b.addEventListener('click', () => {
       const s = subs.find((x) => x.id === b.dataset.subEditMerged);
       if (!s) return;
-      openSubEditModal({ kind: 'merged', id: s.id, name: s.name, selection: s.selection || [], mode: s.mode, expires_at: s.expires_at, traffic_limit_mb: s.traffic_limit_mb, traffic_limit_mode: s.traffic_limit_mode, reset_mode: s.reset_mode, reset_day: s.reset_day });
+      openSubEditModal({ kind: 'merged', id: s.id, name: s.name, selection: s.selection || [], mode: s.mode, expires_at: s.expires_at, traffic_limit_mb: s.traffic_limit_mb, traffic_limit_mode: s.traffic_limit_mode, reset_mode: s.reset_mode, reset_day: s.reset_day, group_id: s.group_id || '' });
     }));
     $$('[data-sub-resume-merged]', list).forEach((b) => b.addEventListener('click', () => resumeSubTraffic('merged', b.dataset.subResumeMerged)));
     $$('[data-sub-copy-merged]', list).forEach((b) => b.addEventListener('click', async () => {
@@ -4497,7 +4639,8 @@ function initCentral() {
     const nameEl = $('#central-sub-name');
     const expEl = $('#central-sub-expiry-date');
     const tl = readTrafficLimit($('#central-sub-traffic-row'));
-    await showSubForSelection(selection, '合并订阅', nameEl ? nameEl.value.trim() : '', subModeOf('central-sub-mode'), expEl ? expEl.value : '', tl);
+    const groupEl = $('#central-sub-group');
+    await showSubForSelection(selection, '合并订阅', nameEl ? nameEl.value.trim() : '', subModeOf('central-sub-mode'), expEl ? expEl.value : '', tl, groupEl ? groupEl.value : '');
     if (expEl) expEl.value = '';
   });
   // 合并订阅列表搜索（v1.3.20）：输入即过滤，回到第 1 页。
@@ -4541,6 +4684,7 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initSubMode); // v1.3.17：订阅内容三选一绑定 + 恢复上次选择
   safeInit(initService);
   safeInit(initSettings);
+  safeInit(initSubGroups); // v1.3.26：分组卡片新建按钮 + 搜索框绑定
   safeInit(initMonitorSettings);
   safeInit(initLatencySettings);
   safeInit(initUpdatePoll);

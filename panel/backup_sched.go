@@ -153,6 +153,8 @@ func (s *Server) buildScheduledBackupData(label string) map[string]any {
 // subUserBackup / mergedSubBackup 备份文件里的订阅用户（脱敏：不含 token 哈希与 token 密文）。
 // Mode（v1.3.17）是内容范围（both|relay|direct），跟着记录走，恢复时不丢；
 // 老备份里没有该字段时按空处理（= 全部）。
+// GroupID（v1.3.26，分组）：跟着记录走；恢复时指向的分组在备份里没有
+// 就清掉（恢复为自己勾选），并在导入结果里写明。
 type subUserBackup struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
@@ -160,6 +162,7 @@ type subUserBackup struct {
 	CreatedAt string         `json:"created_at,omitempty"`
 	Selection []SubSelection `json:"selection,omitempty"`
 	Mode      string         `json:"mode,omitempty"`
+	GroupID   string         `json:"group_id,omitempty"`
 }
 
 type mergedSubBackup struct {
@@ -168,12 +171,13 @@ type mergedSubBackup struct {
 	CreatedAt string         `json:"created_at,omitempty"`
 	Selection []SubSelection `json:"selection"`
 	Mode      string         `json:"mode,omitempty"`
+	GroupID   string         `json:"group_id,omitempty"`
 }
 
 func sanitizeSubUsers(users []SubUser) []subUserBackup {
 	out := make([]subUserBackup, 0, len(users))
 	for _, u := range users {
-		out = append(out, subUserBackup{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Selection: u.Selection, Mode: u.Mode})
+		out = append(out, subUserBackup{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Selection: u.Selection, Mode: u.Mode, GroupID: u.GroupID})
 	}
 	return out
 }
@@ -181,7 +185,7 @@ func sanitizeSubUsers(users []SubUser) []subUserBackup {
 func sanitizeMergedSubs(subs []MergedSub) []mergedSubBackup {
 	out := make([]mergedSubBackup, 0, len(subs))
 	for _, m := range subs {
-		out = append(out, mergedSubBackup{ID: m.ID, Name: m.Name, CreatedAt: m.CreatedAt, Selection: m.Selection, Mode: m.Mode})
+		out = append(out, mergedSubBackup{ID: m.ID, Name: m.Name, CreatedAt: m.CreatedAt, Selection: m.Selection, Mode: m.Mode, GroupID: m.GroupID})
 	}
 	return out
 }
@@ -325,6 +329,9 @@ func (s *Server) exportData() map[string]any {
 		"version": Version, "exported_at": time.Now().UTC().Format(time.RFC3339),
 		"relay_conf": string(relayConf), "config_toml": string(toml),
 		"state": stateJSON, "panel_config": panelCfg,
+		// 分组（v1.3.26）：随整机配置一起导出/导入（不含令牌与密码哈希，
+		// 与订阅用户同一口径）；手动导出与定时备份都带。
+		"sub_groups": s.cfg.SubGroups,
 	}
 }
 
@@ -339,6 +346,7 @@ type importPayload struct {
 	Traffic     json.RawMessage   `json:"traffic"`
 	SubUsers    []subUserBackup   `json:"sub_users"`
 	MergedSubs  []mergedSubBackup `json:"merged_subs"`
+	SubGroups   []SubGroup        `json:"sub_groups"`
 	PanelConfig *struct {
 		Backup *BackupCfg `json:"backup"`
 	} `json:"panel_config"`
@@ -414,11 +422,19 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 			}
 		}
 	}
+	// 分组（v1.3.26）：备份里有分组就整体恢复（老备份没有这一项时不动）；
+	// 成员的 GroupID 在下面恢复订阅用户/合并订阅时一起带回来，恢复完再
+	// 核对指向（指向的分组不在备份里就清掉，恢复为自己勾选）。
+	var groupWarns []string
+	cfgChanged := false
+	if p.SubGroups != nil {
+		s.cfg.SubGroups = p.SubGroups
+		cfgChanged = true
+	}
 	// 订阅用户：快照整体替换；同 ID 的保留本机现有 token 哈希与 token 密文
 	// （同面板恢复不丢链接、恢复后仍能重新复制），备份里没有的（恢复后
 	// 新增的）以空哈希/空密文插入，须经“轮换”重新生成令牌；备份快照里
 	// 没有的用户会被移除（快照语义）。
-	cfgChanged := false
 	if p.SubUsers != nil {
 		keepHash := map[string]string{}
 		keepEnc := map[string]string{}
@@ -432,7 +448,7 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 		}
 		users := make([]SubUser, 0, len(p.SubUsers))
 		for _, bu := range p.SubUsers {
-			u := SubUser{ID: bu.ID, Name: bu.Name, Note: bu.Note, CreatedAt: bu.CreatedAt, Selection: bu.Selection, Mode: bu.Mode}
+			u := SubUser{ID: bu.ID, Name: bu.Name, Note: bu.Note, CreatedAt: bu.CreatedAt, Selection: bu.Selection, Mode: bu.Mode, GroupID: bu.GroupID}
 			if h, ok := keepHash[bu.ID]; ok {
 				u.TokenHash = h
 			}
@@ -457,7 +473,7 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 		}
 		subs := make([]MergedSub, 0, len(p.MergedSubs))
 		for _, bm := range p.MergedSubs {
-			m := MergedSub{ID: bm.ID, Name: bm.Name, CreatedAt: bm.CreatedAt, Selection: bm.Selection, Mode: bm.Mode}
+			m := MergedSub{ID: bm.ID, Name: bm.Name, CreatedAt: bm.CreatedAt, Selection: bm.Selection, Mode: bm.Mode, GroupID: bm.GroupID}
 			if h, ok := keepHash[bm.ID]; ok {
 				m.TokenHash = h
 			}
@@ -468,6 +484,28 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 		}
 		s.cfg.MergedSubs = subs
 		cfgChanged = true
+	}
+	// 分组指向核对（v1.3.26）：成员的 GroupID 指向的分组不在恢复后的分组
+	// 列表里时，清掉该成员的分组（恢复为自己勾选），并在导入结果里写明。
+	if p.SubGroups != nil || p.SubUsers != nil || p.MergedSubs != nil {
+		for i := range s.cfg.SubUsers {
+			if s.cfg.SubUsers[i].GroupID != "" && s.findSubGroup(s.cfg.SubUsers[i].GroupID) == nil {
+				groupWarns = append(groupWarns, "订阅用户「"+s.cfg.SubUsers[i].Name+"」的分组在备份里没有，已恢复为自己勾选")
+				s.cfg.SubUsers[i].GroupID = ""
+				cfgChanged = true
+			}
+		}
+		for i := range s.cfg.MergedSubs {
+			if s.cfg.MergedSubs[i].GroupID != "" && s.findSubGroup(s.cfg.MergedSubs[i].GroupID) == nil {
+				name := s.cfg.MergedSubs[i].Name
+				if name == "" {
+					name = "未命名合并订阅"
+				}
+				groupWarns = append(groupWarns, "合并订阅「"+name+"」的分组在备份里没有，已恢复为自己勾选")
+				s.cfg.MergedSubs[i].GroupID = ""
+				cfgChanged = true
+			}
+		}
 	}
 	// 备份排程：文件里有就恢复（老导出没有这一项时不动）。
 	if p.PanelConfig != nil && p.PanelConfig.Backup != nil {
@@ -482,8 +520,14 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 		_ = s.saveConfig()
 	}
 	_ = s.regenProxies()
+	// 分组指向核对的结果也带回给调用方（导入已生效，只是提醒）。
+	groupWarn := strings.Join(groupWarns, "；")
 	if err := s.restartRealm(); err != nil {
-		return o.restartWarnPrefix + err.Error(), nil
+		w := o.restartWarnPrefix + err.Error()
+		if groupWarn != "" {
+			w += "；" + groupWarn
+		}
+		return w, nil
 	}
 	if o.verifyWarnPrefix != "" {
 		if rc, _, err := s.readRelayConf(); err == nil {
@@ -492,12 +536,16 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 				ports = append(ports, l.Ports...)
 			}
 			if err := verifyPorts(ports); err != nil {
-				return o.verifyWarnPrefix + err.Error(), nil
+				w := o.verifyWarnPrefix + err.Error()
+				if groupWarn != "" {
+					w += "；" + groupWarn
+				}
+				return w, nil
 			}
 		}
 	}
 	s.audit(o.user, o.auditAction, "", "成功", o.auditDetail)
-	return "", nil
+	return groupWarn, nil
 }
 
 // ---------- 自动备份设置与定时备份接口 ----------
