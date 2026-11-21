@@ -222,25 +222,26 @@ func TestParseIptablesSave(t *testing.T) {
 
 func TestTrafficDeltaAndCounterReset(t *testing.T) {
 	ts := newTrafficStore(t.TempDir() + "/traffic.json")
-	// 第一轮只记基数，不产生增量
+	// 第一轮按 0 起算计入（v1.3.27：首见不再只记基线，建链后第一个
+	// 采样周期内的流量要计上，否则新建限流订阅第一分钟用量永远是 0）
 	ts.addDelta("203.0.113.1", map[string][2]int64{"tcp:443": {1000, 2000}})
 	lt := ts.get("203.0.113.1")
-	if lt.UpTotal != 0 || lt.DownTotal != 0 {
-		t.Fatalf("first sample should only set baseline, got up=%d down=%d", lt.UpTotal, lt.DownTotal)
+	if lt.UpTotal != 1000 || lt.DownTotal != 2000 {
+		t.Fatalf("first sample should count from zero, got up=%d down=%d", lt.UpTotal, lt.DownTotal)
 	}
 	// 第二轮增量
 	ts.addDelta("203.0.113.1", map[string][2]int64{"tcp:443": {1500, 3000}})
-	if lt.UpTotal != 500 || lt.DownTotal != 1000 {
+	if lt.UpTotal != 1500 || lt.DownTotal != 3000 {
 		t.Fatalf("delta wrong: up=%d down=%d", lt.UpTotal, lt.DownTotal)
 	}
 	// 计数器清零（快照比上次小）：不算负增量
 	ts.addDelta("203.0.113.1", map[string][2]int64{"tcp:443": {100, 200}})
-	if lt.UpTotal != 500 || lt.DownTotal != 1000 {
+	if lt.UpTotal != 1500 || lt.DownTotal != 3000 {
 		t.Fatalf("counter reset produced negative delta: up=%d down=%d", lt.UpTotal, lt.DownTotal)
 	}
 	// 清零后继续增长：按新基数算
 	ts.addDelta("203.0.113.1", map[string][2]int64{"tcp:443": {300, 400}})
-	if lt.UpTotal != 700 || lt.DownTotal != 1200 {
+	if lt.UpTotal != 1700 || lt.DownTotal != 3200 {
 		t.Fatalf("after reset delta wrong: up=%d down=%d", lt.UpTotal, lt.DownTotal)
 	}
 }

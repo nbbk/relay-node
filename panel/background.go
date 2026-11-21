@@ -21,8 +21,11 @@ func (s *Server) startBackground() {
 	go s.centralUserTrafficLoop() // 按订阅限流聚合（v1.3.25，每 60 秒）
 }
 
-// 流量采样每 60 秒；采样后检查限量（剩余变化大时重建 quota）。
-// 管理面板模式不跑：本地流量、限量停用都依赖本地中转，管理面板不管本地。
+// 流量采样每 60 秒；先采样再执法：enforceTrafficLimits 末尾调
+// ensureTrafficChains 会把链 -F 清掉重建（计数器归零），按人采样
+// 若跑在清链之后，读到的永远是刚重建的 ≈0（v1.3.25 的采样 bug：
+// 用户用量一直是 0 / 1.69 KB）。管理面板模式不跑：本地流量、限量
+// 停用都依赖本地中转，管理面板不管本地。
 func (s *Server) trafficLoop() {
 	t := time.NewTicker(60 * time.Second)
 	defer t.Stop()
@@ -30,10 +33,12 @@ func (s *Server) trafficLoop() {
 		if !s.managesLocalRelay() {
 			continue
 		}
+		// 顺序是关键：先把落地与按人两路采样都读完，再执法（清链重建）。
+		// ensureTrafficChains 重建后会把两路采样基线清零（resetBaselines），
+		// 下一分钟从 0 起算，不丢数。
 		s.sampleTraffic()
-		s.enforceTrafficLimits()
-		// 按订阅限流（v1.3.25）：先采样再执法，与落地级同一节拍。
 		s.sampleUserTraffic()
+		s.enforceTrafficLimits()
 		s.enforceUserTrafficLimits()
 	}
 }
@@ -74,7 +79,8 @@ func (s *Server) enforceTrafficLimits() {
 	if changed {
 		_ = s.saveState()
 	}
-	// quota 重建：每次采样后按剩余量重建（ensureTrafficChains 是幂等的）
+	// quota 重建：每次采样后按剩余量重建（ensureTrafficChains 是幂等的）；
+	// 重建会把链清掉（计数器归零），函数末尾把两路采样基线清零，下分钟从 0 起算。
 	_ = s.ensureTrafficChains(rc.Landings)
 }
 

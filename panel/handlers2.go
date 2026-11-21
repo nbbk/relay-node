@@ -54,8 +54,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			start, end := s.userPortRange()
 			return map[string]any{"start": start, "end": end}
 		}(),
-		"panel_cert":    s.panelCertStatus(),
-		"version":       Version, "latest_version": latest, "update_available": update,
+		"panel_cert": s.panelCertStatus(),
+		"version":    Version, "latest_version": latest, "update_available": update,
 	}))
 }
 
@@ -886,7 +886,13 @@ func (s *Server) handleTrafficGet(w http.ResponseWriter, r *http.Request) {
 		pct = float64(used) / float64(ext.TrafficLimitBytes) * 100
 	}
 	note := ""
-	if !available {
+	if terr := s.trafficErr(); terr != "" {
+		// 最近一次采样/建链失败：用量不会涨，明确告诉用户原因（v1.3.27；
+		// 以前 available 只看二进制在不在，有二进制却读不到数时仍显示
+		// 可用，用量静默为 0）。
+		available = false
+		note = terr
+	} else if !available {
 		note = "本机无 iptables/nftables，流量统计不可用"
 	}
 	writeJSON(w, 200, okResp(map[string]any{

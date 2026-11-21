@@ -175,11 +175,11 @@ func resetDayForMode(resetMode string, resetDay int, anchor time.Time) int {
 // PeriodID 是周期号（重置时 +1，推送带上防串周期），LastCounters 是
 // 采样基数（key 是 "proto:port"，只对本订阅的用户端口采样）。
 type userTrafficRec struct {
-	UpTotal      int64             `json:"up_total"`
-	DownTotal    int64             `json:"down_total"`
-	UpPeriod     int64             `json:"up_period"`
-	DownPeriod   int64             `json:"down_period"`
-	PeriodID     int               `json:"period_id"`
+	UpTotal      int64               `json:"up_total"`
+	DownTotal    int64               `json:"down_total"`
+	UpPeriod     int64               `json:"up_period"`
+	DownPeriod   int64               `json:"down_period"`
+	PeriodID     int                 `json:"period_id"`
 	LastCounters map[string][2]int64 `json:"last_counters"`
 }
 
@@ -207,6 +207,27 @@ func (t *userTrafficStore) load() {
 func (t *userTrafficStore) saveLocked() {
 	b, _ := json.MarshalIndent(t.data, "", "  ")
 	_ = writeFileAtomic(t.path, b, 0o600)
+}
+
+// resetBaselines 清零全部订阅记录的采样基线（v1.3.27）：与 trafficStore
+// 同理，iptables 链被 -F 清掉后计数器归零，基线不清零下次采样就丢数。
+// 由 ensureTrafficChains 在重建链后调用。
+func (t *userTrafficStore) resetBaselines() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, rec := range t.data {
+		if rec == nil {
+			continue
+		}
+		if rec.LastCounters == nil {
+			rec.LastCounters = map[string][2]int64{}
+			continue
+		}
+		for k := range rec.LastCounters {
+			rec.LastCounters[k] = [2]int64{0, 0}
+		}
+	}
+	t.saveLocked()
 }
 
 func (t *userTrafficStore) get(key string) *userTrafficRec {
@@ -250,8 +271,12 @@ func (t *userTrafficStore) addDelta(key string, counters map[string][2]int64) {
 	for k, cur := range counters {
 		prev, seen := rec.LastCounters[k]
 		if !seen {
-			rec.LastCounters[k] = cur
-			continue
+			// v1.3.27：首见按 0 起算——用户端口的规则是本面板建的，
+			// 计数器从 0 开始，首见时 cur 就是建链以来流过的字节，
+			// 应当计入；旧做法把 cur 当基线，建链后第一个采样周期
+			// （60 秒）内的流量全丢了，新建限流订阅立即使用时第一
+			// 分钟用量永远是 0（见 trafficStore.addDelta 同款修法）。
+			prev = [2]int64{0, 0}
 		}
 		upDelta += deltaCounter(prev[0], cur[0])
 		downDelta += deltaCounter(prev[1], cur[1])
@@ -515,7 +540,7 @@ func (s *Server) reconcileUserForwards(subKind, subID, subName string, sel []Sub
 			continue
 		}
 		// 已有：更新配额字段（限流改了就同步下去）；停用状态不动，
-// 恢复走 resume（不在这里自动恢复，避免改个上限就把已停用的放行）。
+		// 恢复走 resume（不在这里自动恢复，避免改个上限就把已停用的放行）。
 		if f.LimitBytes != limitBytes || f.LimitMode != limitMode || f.ResetMode != resetMode || f.ResetDay != resetDay || f.NextResetAt != nextResetAt {
 			f.LimitBytes = limitBytes
 			f.LimitMode = limitMode
@@ -734,7 +759,12 @@ func (s *Server) sampleUserTraffic() {
 	if len(s.cfg.UserForwards) == 0 {
 		return
 	}
-	counters := readTrafficCounters()
+	counters, err := readTrafficCounters()
+	if err != nil {
+		s.setTrafficErr(err)
+		return
+	}
+	s.setTrafficErr(nil)
 	if len(counters) == 0 {
 		return
 	}
@@ -1129,11 +1159,24 @@ func (s *Server) disableUserForwardsLocked(key, reason string) {
 // userUsageSummary 给列表行用的用量摘要：used 是按模式算的已用字节
 // （monthly 用本期，total 用累计），limit 是上限字节；ok 表示本面板
 // 上有该订阅的用量记录（没有时列表不显示用量，只显示上限）。
-// 管理面板模式：本地没有用量时用聚合循环汇总的各面板用量（缓存，
-// 每分钟刷新）；缓存也没有时只显示上限。
+// v1.3.27：带远程落地的订阅以聚合缓存（本地+远程之和）为准——
+// 管理面板上 enforceUserTrafficLimits 每分钟会对每条限流转发调
+// get()，远程专属转发也在本机建出一条全 0 的空壳记录；旧的本地
+// 优先会把空壳当成真 0 直接返回，中央缓存永远查不到，远程用量
+// 再多列表也显示 0 B。本机落地订阅不在聚合目标里（无缓存条目），
+// 仍走本地记录，不受影响。
 func (s *Server) userUsageSummary(key string, limitBytes int64, limitMode string) (used, limit int64, ok bool) {
 	if limitBytes <= 0 {
 		return 0, 0, false
+	}
+	s.centralUserUsageMu.Lock()
+	cu := s.centralUserUsage[key]
+	s.centralUserUsageMu.Unlock()
+	if cu != nil {
+		if limitMode == "monthly" {
+			return cu.UpPeriod + cu.DownPeriod, limitBytes, true
+		}
+		return cu.UpTotal + cu.DownTotal, limitBytes, true
 	}
 	up, down, upPeriod, downPeriod, has := s.userTraffic.totals(key)
 	if has {
@@ -1142,16 +1185,52 @@ func (s *Server) userUsageSummary(key string, limitBytes int64, limitMode string
 		}
 		return up + down, limitBytes, true
 	}
+	return 0, limitBytes, false
+}
+
+// userLimitVersionWarn 限流的远程版本警告（v1.3.27）：订阅开了限流但勾选
+// 里有远程面板版本低于 1.3.25 时，转发下发会被版本门拦住、走共享端口
+// 不限流，创建/编辑时的瞬时警告一闪而过，列表行里要常驻提示。空 = 没问题。
+func (s *Server) userLimitVersionWarn(sel []SubSelection) string {
+	for _, e := range sel {
+		if e.Panel == "local" || e.Panel == "" {
+			continue
+		}
+		if ok, msg := s.remoteVersionOK(e.Panel, "1.3.25"); !ok {
+			rem := s.remoteByID(e.Panel)
+			name := e.Panel
+			if rem != nil {
+				name = rem.Name
+			}
+			return "远程面板 " + name + " " + msg + "，限流不生效（走共享端口）"
+		}
+	}
+	return ""
+}
+
+// userTrafficWarnFor 该订阅的流量采样失败提示（v1.3.27）：勾选里有本机
+// 落地（或空勾选 = 全部本机落地）时看本机采样错误，否则看聚合缓存里
+// 的远程采样错误；都没有返回 ""。有它时列表用量不可信（可能是 0），
+// 要在行里提示，而不是让用户对着 0 B 干着急。
+func (s *Server) userTrafficWarnFor(key string, sel []SubSelection) string {
+	hasLocal := len(sel) == 0
+	for _, e := range sel {
+		if e.Panel == "local" {
+			hasLocal = true
+			break
+		}
+	}
+	if hasLocal {
+		if terr := s.trafficErr(); terr != "" {
+			return terr
+		}
+	}
 	s.centralUserUsageMu.Lock()
-	cu := s.centralUserUsage[key]
-	s.centralUserUsageMu.Unlock()
-	if cu == nil {
-		return 0, limitBytes, false
+	defer s.centralUserUsageMu.Unlock()
+	if cu := s.centralUserUsage[key]; cu != nil {
+		return cu.TrafficError
 	}
-	if limitMode == "monthly" {
-		return cu.UpPeriod + cu.DownPeriod, limitBytes, true
-	}
-	return cu.UpTotal + cu.DownTotal, limitBytes, true
+	return ""
 }
 
 // syncUserForwardsWarning 创建/编辑订阅后调：先核对本机转发，再同步
@@ -1310,22 +1389,41 @@ func rewriteSubLinksForUser(links []subLink, portByAddr map[string]int) []subLin
 // subUserinfoHeaderForUser 给开了限流的订阅拼 subscription-userinfo：
 // upload/download 是该订阅本面板上的用量（monthly 用本期，total 用
 // 累计），total 是该订阅的流量上限，expire 取令牌到期与落地到期中
-// 更早的。本面板上没有该订阅的用量记录（例如管理面板模式）时返回
-// ""，调用方回落到原来的落地汇总头。
+// 更早的。本面板上没有该订阅的用量记录时先看管理面板的聚合缓存
+// （centralUserUsage，远程面板每 60 秒汇总上来的用量）；还没有用量
+// 记录时也不返回空头——仍拼 total（上限）与 expire（令牌到期），只
+// 是不含 upload/download（不编用量数据）。三项全无时才返回 ""。
+// v1.3.27：以前没有用量记录就直接 return ""，管理面板模式下本机永远
+// 没有用量记录，开了限流的订阅在小火箭里看不到上限与到期时间。
 func (s *Server) subUserinfoHeaderForUser(key string, limitBytes int64, limitMode, tokenExpiry string, localIndices map[int]bool) string {
-	up, down, upPeriod, downPeriod, ok := s.userTraffic.totals(key)
-	if !ok {
-		return ""
+	// v1.3.27：带远程落地的订阅以聚合缓存（本地+远程之和）为准；
+	// 本地可能只有一条全 0 的空壳记录（enforceUserTrafficLimits
+	// 每分钟建的），本地优先会把它当成真 0，远程用量再多头里
+	// 也是 upload=0; download=0。本机落地订阅无缓存条目，仍走本地。
+	s.centralUserUsageMu.Lock()
+	cu := s.centralUserUsage[key]
+	s.centralUserUsageMu.Unlock()
+	var up, down, upPeriod, downPeriod int64
+	var ok bool
+	if cu != nil {
+		up, down, upPeriod, downPeriod = cu.UpTotal, cu.DownTotal, cu.UpPeriod, cu.DownPeriod
+		ok = true
+	} else {
+		up, down, upPeriod, downPeriod, ok = s.userTraffic.totals(key)
 	}
 	var usedUp, usedDown int64
-	if limitMode == "monthly" {
-		usedUp, usedDown = upPeriod, downPeriod
-	} else {
-		usedUp, usedDown = up, down
+	if ok {
+		if limitMode == "monthly" {
+			usedUp, usedDown = upPeriod, downPeriod
+		} else {
+			usedUp, usedDown = up, down
+		}
 	}
 	earliest := s.earliestExpiry(localIndices, tokenExpiry)
 	var parts []string
-	parts = append(parts, "upload="+strconv.FormatInt(usedUp, 10), "download="+strconv.FormatInt(usedDown, 10))
+	if ok {
+		parts = append(parts, "upload="+strconv.FormatInt(usedUp, 10), "download="+strconv.FormatInt(usedDown, 10))
+	}
 	if limitBytes > 0 {
 		parts = append(parts, "total="+strconv.FormatInt(limitBytes, 10))
 	}

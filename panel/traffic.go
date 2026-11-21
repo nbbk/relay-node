@@ -64,6 +64,28 @@ func (t *trafficStore) saveLocked() {
 	_ = writeFileAtomic(t.path, b, 0o600)
 }
 
+// resetBaselines 清零全部落地记录的采样基线（v1.3.27）：iptables 链被
+// -F 清掉后计数器归零，下一次采样必须从 0 起算；不清零的话新计数小于
+// 旧基线，deltaCounter 会当成计数器回绕返回 0，整整一分钟的流量就丢了。
+// 由 ensureTrafficChains 在重建链后调用。
+func (t *trafficStore) resetBaselines() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, lt := range t.data {
+		if lt == nil {
+			continue
+		}
+		if lt.LastCounters == nil {
+			lt.LastCounters = map[string][2]int64{}
+			continue
+		}
+		for k := range lt.LastCounters {
+			lt.LastCounters[k] = [2]int64{0, 0}
+		}
+	}
+	t.saveLocked()
+}
+
 func (t *trafficStore) get(landing string) *landingTraffic {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -131,8 +153,13 @@ func (t *trafficStore) addDelta(landing string, counters map[string][2]int64) {
 	for key, cur := range counters {
 		prev, seen := lt.LastCounters[key]
 		if !seen {
-			lt.LastCounters[key] = cur
-			continue
+			// v1.3.27：首见按 0 起算——规则是本面板建的，计数器从 0 开始，
+			// 首见时 cur 就是建链以来流过的字节，应当计入；旧做法把 cur
+			// 当基线，建链后第一个采样周期（60 秒）内的流量全丢了：
+			// 新建限流订阅立即使用时第一分钟用量永远是 0。注意：面板
+			// 重启且用量文件丢失时，残留规则上已有的旧计数会在首采时
+			// 被一次性计入（一次性多算），比每条新转发都丢第一分钟要轻。
+			prev = [2]int64{0, 0}
 		}
 		// key 形如 "tcp:443:in" / "tcp:443:out"；in=上行，out=下行
 		var du, dd int64
@@ -316,7 +343,9 @@ func detectTrafficBackend() trafficBackend {
 func (s *Server) ensureTrafficChains(landings []Landing) error {
 	be := detectTrafficBackend()
 	if be.Kind != "iptables" {
-		return fmt.Errorf("本机无 iptables，流量统计不可用")
+		err := fmt.Errorf("本机无 iptables，流量统计不可用")
+		s.setTrafficErr(err)
+		return err
 	}
 	run := func(args ...string) { _, _ = runCmdOut(nil, 10*time.Second, "iptables", args...) }
 	// 建链（已存在则忽略错误）
@@ -355,9 +384,9 @@ func (s *Server) ensureTrafficChains(landings []Landing) error {
 			}
 		}
 		// 每用户转发端口（v1.3.25）：按订阅剩余量加 quota（即时断流，
-// 停用的转发没有 endpoint，规则也跳过）。quota 与落地级一样按
-// （协议，端口）单条规则计，tcp/udp 各一份；权威停用靠
-// disableUserForwards 撤 endpoints。
+		// 停用的转发没有 endpoint，规则也跳过）。quota 与落地级一样按
+		// （协议，端口）单条规则计，tcp/udp 各一份；权威停用靠
+		// disableUserForwards 撤 endpoints。
 		byAddr := map[string]Landing{}
 		for _, l := range landings {
 			byAddr[l.Landing] = l
@@ -389,30 +418,56 @@ func (s *Server) ensureTrafficChains(landings []Landing) error {
 	}
 	run("-A", "RELAY-PANEL-IN", "-j", "RETURN")
 	run("-A", "RELAY-PANEL-OUT", "-j", "RETURN")
+	// 链被 -F 清掉后计数器归零，采样基线必须跟着清零：不清零的话下次
+	// 采样读到的新计数小于旧基线，deltaCounter 会当成计数器回绕返回 0，
+	// 整整一分钟的流量就丢了（v1.3.25 的采样 bug 根因之一）。
+	s.traffic.resetBaselines()
+	s.userTraffic.resetBaselines()
+	s.setTrafficErr(nil)
 	return nil
 }
 
 // readTrafficCounters 读一次本机流量计数（iptables-save -c 或 nft -j），
-// 返回 map["proto:port"]=[inBytes,outBytes]；无后端或读失败返回 nil。
-// 落地采样与按人采样共用。
-func readTrafficCounters() map[string][2]int64 {
+// 返回 map["proto:port"]=[inBytes,outBytes]；无后端或读失败返回错误
+// （以前只返回 nil，调用方分不清“还没数据”还是“采样坏了”，失败被静默
+// 吞掉，用量一直 0 也看不出原因）。落地采样与按人采样共用。
+func readTrafficCounters() (map[string][2]int64, error) {
 	be := detectTrafficBackend()
 	switch be.Kind {
 	case "iptables":
 		r, err := runCmdOut(nil, 10*time.Second, "iptables-save", "-c")
 		if err != nil {
-			return nil
+			return nil, fmt.Errorf("iptables-save 读不到计数（%v），请确认面板以 root 运行且 iptables 可用", err)
 		}
-		return parseIptablesSave(r.Stdout)
+		return parseIptablesSave(r.Stdout), nil
 	case "nftables":
 		r, err := runCmdOut(nil, 10*time.Second, "nft", "-j", "list", "ruleset")
 		if err != nil {
-			return nil
+			return nil, fmt.Errorf("nft 读不到计数（%v），请确认面板以 root 运行且 nftables 可用", err)
 		}
-		return parseNftCounters(r.Stdout)
+		return parseNftCounters(r.Stdout), nil
 	default:
-		return nil
+		return nil, fmt.Errorf("本机无 iptables/nftables，流量统计不可用")
 	}
+}
+
+// setTrafficErr 记录一次流量采样/建链失败（nil = 清掉）；trafficErr
+// 取最近一次的失败原因（空 = 正常），供流量页与集中管理上报用。
+func (s *Server) setTrafficErr(err error) {
+	s.trafficErrMu.Lock()
+	defer s.trafficErrMu.Unlock()
+	if err == nil {
+		s.trafficErrMsg = ""
+		return
+	}
+	s.trafficErrMsg = err.Error()
+	s.trafficErrAt = time.Now()
+}
+
+func (s *Server) trafficErr() string {
+	s.trafficErrMu.Lock()
+	defer s.trafficErrMu.Unlock()
+	return s.trafficErrMsg
 }
 
 // sampleTraffic 一次采样：iptables-save -c 解析增量累加到 traffic.json。
@@ -424,7 +479,14 @@ func (s *Server) sampleTraffic() {
 	if err != nil || rc == nil {
 		return
 	}
-	counters := readTrafficCounters()
+	counters, err := readTrafficCounters()
+	if err != nil {
+		// 采样失败要记下来（流量页会显示），不能静默返回，否则用量一直 0
+		// 也看不出原因（v1.3.27）。
+		s.setTrafficErr(err)
+		return
+	}
+	s.setTrafficErr(nil)
 	if len(counters) == 0 {
 		return
 	}

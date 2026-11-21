@@ -340,8 +340,8 @@ func TestTrafficManagerOnlySkipped(t *testing.T) {
 	s := newTestAddLandingServer(t, t.TempDir(), realmDir)
 	writeRelayConf140(t, realmDir, conf)
 	s.state.ext("203.0.113.1").TrafficLimitBytes = 1000
-	s.traffic.addDelta("203.0.113.1", map[string][2]int64{"tcp:30080": {425, 425}}) // 第一轮只记基数
-	s.traffic.addDelta("203.0.113.1", map[string][2]int64{"tcp:30080": {850, 850}}) // 第二轮增量 425+425=850
+	// v1.3.27：首采按 0 起算，一次 addDelta {425,425} 即计入 850（85%）。
+	s.traffic.addDelta("203.0.113.1", map[string][2]int64{"tcp:30080": {425, 425}})
 	enableTelegram140(s)
 	msgs := captureTelegram140(t)
 	s.enforceTrafficLimits()
@@ -353,8 +353,8 @@ func TestTrafficManagerOnlySkipped(t *testing.T) {
 	s2 := newTestAddLandingServer(t, t.TempDir(), realmDir2)
 	writeRelayConf140(t, realmDir2, conf)
 	s2.state.ext("203.0.113.1").TrafficLimitBytes = 1000
+	// v1.3.27：首采按 0 起算，一次 addDelta {425,425} 即计入 850（85%）。
 	s2.traffic.addDelta("203.0.113.1", map[string][2]int64{"tcp:30080": {425, 425}})
-	s2.traffic.addDelta("203.0.113.1", map[string][2]int64{"tcp:30080": {850, 850}})
 	s2.cfg.ManagerOnly = true
 	enableTelegram140(s2)
 	msgs2 := captureTelegram140(t)

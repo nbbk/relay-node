@@ -171,6 +171,8 @@ func (s *Server) handleCentralUserTraffic(w http.ResponseWriter, r *http.Request
 		"limit_bytes": limit, "limit_mode": mode, "limit_ok": ok,
 		"disabled": disabled, "name": name, "forwards": forwards,
 		"panel_version": Version,
+		// v1.3.27：本面板流量采样失败时告诉管理面板（用量不可信，别静默显示 0）。
+		"traffic_error": s.trafficErr(),
 	}))
 }
 
@@ -233,14 +235,16 @@ func (s *Server) handleCentralUserForwardResume(w http.ResponseWriter, r *http.R
 // ---------- 管理面板侧：下发与汇总 ----------
 
 // centralUserUsage 管理面板汇总的一条订阅在各面板上的用量（内存缓存，
-// 聚合循环每分钟刷新；列表显示用）。
+// 聚合循环每分钟刷新；列表显示用）。TrafficError 是某台远程面板上报
+// 的流量采样失败原因（v1.3.27）：有它时列表用量不可信，要在行里提示。
 type centralUserUsage struct {
-	UpTotal    int64
-	DownTotal  int64
-	UpPeriod   int64
-	DownPeriod int64
-	Disabled   bool
-	UpdatedAt  time.Time
+	UpTotal      int64
+	DownTotal    int64
+	UpPeriod     int64
+	DownPeriod   int64
+	Disabled     bool
+	UpdatedAt    time.Time
+	TrafficError string
 }
 
 // remoteLandingAddr 把远程落地的编号解析成地址（快照缓存里找）。
@@ -523,6 +527,7 @@ type remoteUserTraffic struct {
 	LimitMode                                string
 	Disabled                                 bool
 	HasData                                  bool
+	TrafficError                             string // 远程面板的流量采样失败原因（v1.3.27）
 }
 
 // fetchRemoteUserTraffic 拉一台远程面板上一个订阅的用量。
@@ -533,27 +538,28 @@ func (s *Server) fetchRemoteUserTraffic(rem RemotePanel, key string) (remoteUser
 		return out, err
 	}
 	var resp struct {
-		OK         bool   `json:"ok"`
-		UpTotal    int64  `json:"up_total"`
-		DownTotal  int64  `json:"down_total"`
-		UpPeriod   int64  `json:"up_period"`
-		DownPeriod int64  `json:"down_period"`
-		LimitBytes int64  `json:"limit_bytes"`
-		LimitMode  string `json:"limit_mode"`
-		Disabled   bool   `json:"disabled"`
-		HasData    bool   `json:"has_data"`
+		OK           bool   `json:"ok"`
+		UpTotal      int64  `json:"up_total"`
+		DownTotal    int64  `json:"down_total"`
+		UpPeriod     int64  `json:"up_period"`
+		DownPeriod   int64  `json:"down_period"`
+		LimitBytes   int64  `json:"limit_bytes"`
+		LimitMode    string `json:"limit_mode"`
+		Disabled     bool   `json:"disabled"`
+		HasData      bool   `json:"has_data"`
+		TrafficError string `json:"traffic_error"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil || !resp.OK {
 		return out, fmt.Errorf("远程面板返回的内容解析失败")
 	}
-	return remoteUserTraffic{UpTotal: resp.UpTotal, DownTotal: resp.DownTotal, UpPeriod: resp.UpPeriod, DownPeriod: resp.DownPeriod, LimitBytes: resp.LimitBytes, LimitMode: resp.LimitMode, Disabled: resp.Disabled, HasData: resp.HasData}, nil
+	return remoteUserTraffic{UpTotal: resp.UpTotal, DownTotal: resp.DownTotal, UpPeriod: resp.UpPeriod, DownPeriod: resp.DownPeriod, LimitBytes: resp.LimitBytes, LimitMode: resp.LimitMode, Disabled: resp.Disabled, HasData: resp.HasData, TrafficError: resp.TrafficError}, nil
 }
 
 // centralUserTarget 聚合循环里一个带远程落地的限流订阅。
 type centralUserTarget struct {
 	key, kind, id, name, mode string
-	limit                      int64
-	sel                        []SubSelection
+	limit                     int64
+	sel                       []SubSelection
 }
 
 // centralUserTargets 收集带远程落地的限流订阅（纯本机订阅走
@@ -640,9 +646,13 @@ func (s *Server) enforceCentralUserTraffic() {
 	}
 	for _, t := range targets {
 		var up, down, upPeriod, downPeriod int64
+		var trafficErr string
 		anyDisabled := false
 		if lUp, lDown, lUpP, lDownP, ok := s.userTraffic.totals(t.key); ok {
 			up, down, upPeriod, downPeriod = lUp, lDown, lUpP, lDownP
+		}
+		if terr := s.trafficErr(); terr != "" {
+			trafficErr = terr
 		}
 		for _, f := range s.userForwardsFor(t.key) {
 			if f.Disabled {
@@ -668,13 +678,16 @@ func (s *Server) enforceCentralUserTraffic() {
 			if ut.Disabled {
 				anyDisabled = true
 			}
+			if trafficErr == "" && ut.TrafficError != "" {
+				trafficErr = "远程面板 " + rem.Name + "：" + ut.TrafficError
+			}
 		}
 		used := up + down
 		if t.mode == "monthly" {
 			used = upPeriod + downPeriod
 		}
 		s.centralUserUsageMu.Lock()
-		s.centralUserUsage[t.key] = &centralUserUsage{UpTotal: up, DownTotal: down, UpPeriod: upPeriod, DownPeriod: downPeriod, Disabled: anyDisabled, UpdatedAt: time.Now()}
+		s.centralUserUsage[t.key] = &centralUserUsage{UpTotal: up, DownTotal: down, UpPeriod: upPeriod, DownPeriod: downPeriod, Disabled: anyDisabled, UpdatedAt: time.Now(), TrafficError: trafficErr}
 		s.centralUserUsageMu.Unlock()
 		pct := float64(used) / float64(t.limit) * 100
 		display := t.name

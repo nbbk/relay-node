@@ -534,39 +534,42 @@ func (rc *RelayConf) fieldKeys(index int) []string {
 // ---------- 服务器 ----------
 
 type Server struct {
-	env             Env
-	cfg             PanelConfig
-	cfgPath         string
-	state           PanelState
-	stateMu         sync.Mutex
-	sessions        *sessionStore
-	opMu            sync.Mutex // 写操作锁（TryLock，占用时返回 409）
-	traffic         *trafficStore
-	userTraffic     *userTrafficStore // 每订阅流量累计（v1.3.25，PANEL_HOME/user_traffic.json）
-	auditMu         sync.Mutex
-	healthMu        sync.Mutex // 健康基线锁（lastHealthOK/lastHealthAt：healthTick 与模式切换共用）
-	lastHealthOK    bool
-	lastHealthAt    time.Time
-	monitorMu       sync.Mutex
-	monitorAlerts   map[string]*monitorAlertState
-	latestMonitor   *SystemStats
-	latency         *latencyStore
-	latencyMu       sync.Mutex
-	latencyAlerts   map[string]*latencyAlertState
-	latencyRoundMu  sync.Mutex // 一轮探测的锁（后台循环与总览兜底互斥）
-	centralMu       sync.Mutex // 集中管理缓存锁
-	centralCache    map[string]*RemoteStatusSnapshot
-	centralAlert    map[string]*centralAlertState
+	env                Env
+	cfg                PanelConfig
+	cfgPath            string
+	state              PanelState
+	stateMu            sync.Mutex
+	sessions           *sessionStore
+	opMu               sync.Mutex // 写操作锁（TryLock，占用时返回 409）
+	traffic            *trafficStore
+	userTraffic        *userTrafficStore // 每订阅流量累计（v1.3.25，PANEL_HOME/user_traffic.json）
+	trafficErrMu       sync.Mutex        // 流量采样失败记录锁（v1.3.27：失败不再静默）
+	trafficErrMsg      string            // 最近一次流量采样/建链失败原因（空 = 正常）
+	trafficErrAt       time.Time
+	auditMu            sync.Mutex
+	healthMu           sync.Mutex // 健康基线锁（lastHealthOK/lastHealthAt：healthTick 与模式切换共用）
+	lastHealthOK       bool
+	lastHealthAt       time.Time
+	monitorMu          sync.Mutex
+	monitorAlerts      map[string]*monitorAlertState
+	latestMonitor      *SystemStats
+	latency            *latencyStore
+	latencyMu          sync.Mutex
+	latencyAlerts      map[string]*latencyAlertState
+	latencyRoundMu     sync.Mutex // 一轮探测的锁（后台循环与总览兜底互斥）
+	centralMu          sync.Mutex // 集中管理缓存锁
+	centralCache       map[string]*RemoteStatusSnapshot
+	centralAlert       map[string]*centralAlertState
 	centralUserUsageMu sync.Mutex // 按订阅聚合用量缓存锁（v1.3.25）
 	centralUserUsage   map[string]*centralUserUsage
-	centralPollWG   sync.WaitGroup // 后台轮询计数（代理写成功后异步刷新一次；测试等它跑完再清理，避免轮询撞上 TempDir 删除）
-	subKey          []byte         // 订阅令牌加密密钥（v1.3.7，PANEL_HOME/sub_token.key 的内容，懒加载）
-	subKeyMu        sync.Mutex
-	subFailMu       sync.Mutex // /sub/ 限流锁（v1.3.7）
-	subFails        map[string]*subFailState
-	remoteUploadMu  sync.Mutex // 异地备份上传去重锁（v1.3.11）
-	remoteUploading map[string]bool
-	certMu          sync.Mutex // 面板自身证书 ACME 操作锁（手动签发与后台续签互斥）
+	centralPollWG      sync.WaitGroup // 后台轮询计数（代理写成功后异步刷新一次；测试等它跑完再清理，避免轮询撞上 TempDir 删除）
+	subKey             []byte         // 订阅令牌加密密钥（v1.3.7，PANEL_HOME/sub_token.key 的内容，懒加载）
+	subKeyMu           sync.Mutex
+	subFailMu          sync.Mutex // /sub/ 限流锁（v1.3.7）
+	subFails           map[string]*subFailState
+	remoteUploadMu     sync.Mutex // 异地备份上传去重锁（v1.3.11）
+	remoteUploading    map[string]bool
+	certMu             sync.Mutex // 面板自身证书 ACME 操作锁（手动签发与后台续签互斥）
 }
 
 func newServer(env Env) (*Server, error) {

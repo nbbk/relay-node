@@ -2955,7 +2955,7 @@ function trafficLimitHTML(u) {
   const mode = u.traffic_limit_mode || 'total';
   const reset = u.reset_mode || 'monthly';
   const day = u.reset_day || 1;
-  return '<div class="btn-row" style="margin-top:12px"><label class="small">流量上限（GB，0 = 不限流）：<input data-tl-gb type="number" min="0" step="1" value="' + gb + '" style="width:90px"></label>' +
+  return '<div class="form-row"><label class="small">流量上限（GB，0 = 不限流）：<input data-tl-gb type="number" min="0" step="1" value="' + gb + '" style="width:90px"></label>' +
     '<label class="small">算法：<select data-tl-mode style="width:130px"><option value="total"' + (mode !== 'monthly' ? ' selected' : '') + '>累计（整个生命周期）</option><option value="monthly"' + (mode === 'monthly' ? ' selected' : '') + '>按月（每月重置）</option></select></label>' +
     '<label class="small">重置：<select data-tl-reset style="width:130px"><option value="monthly"' + (reset !== 'anniversary' && reset !== 'custom' ? ' selected' : '') + '>每月 1 号</option><option value="anniversary"' + (reset === 'anniversary' ? ' selected' : '') + '>跟随生成日</option><option value="custom"' + (reset === 'custom' ? ' selected' : '') + '>自定义每月几号</option></select></label>' +
     '<label class="small">几号：<input data-tl-day type="number" min="1" max="31" value="' + day + '" style="width:60px"></label></div>' +
@@ -2981,7 +2981,11 @@ function userTrafficText(u) {
   if (u.traffic_disabled) tag += ' <span class="badge red">已停用（流量用完）</span>';
   else if (pct >= 80) tag += ' <span class="badge">已用 ' + pct + '%</span>';
   if (u.forward_count === 0) tag += ' <span class="badge red">转发未建，重新保存一次</span>';
-  return '流量：' + mode + ' ' + usedTxt + reset + tag;
+  // v1.3.27：限流版本警告与采样失败警告（有值时用量不可信，另起一行红字提示）。
+  let warn = '';
+  if (u.limit_warn) warn += '<br><span class="warn">' + esc(u.limit_warn) + '</span>';
+  if (u.traffic_warn) warn += '<br><span class="warn">用量可能不准：' + esc(u.traffic_warn) + '</span>';
+  return '流量：' + mode + ' ' + usedTxt + reset + tag + warn;
 }
 // 手动恢复一条超量停用的订阅（订阅用户或合并订阅共用）：
 // kind 是 'users' 或 'merged'，恢复后刷新对应列表。
@@ -3282,8 +3286,8 @@ async function openSubEditModal(opts) {
     '<p class="muted small hidden" data-edit-group-note hidden></p>' +
     '<p class="muted small">' + esc(isMerged ? '合并订阅至少要勾一个落地。' : '全部不勾 = 全部落地（单面板全量订阅）。') + '</p>' +
     '<div style="margin-top:12px">' + subModeSelectHTML('sub-edit-mode', '') + '</div>' +
-    '<div class="btn-row" style="margin-top:12px"><label class="small">到期时间：<input type="date" data-edit-expiry value="' + esc(dateInputOfExpiry(opts.expires_at)) + '"' + (opts.expires_at ? '' : ' disabled') + '></label>' +
-    '<label class="small"><input type="checkbox" data-edit-permanent' + (opts.expires_at ? '' : ' checked') + '> 永久</label></div>' +
+    '<div class="form-row"><label class="small">到期时间：<input type="date" data-edit-expiry value="' + esc(dateInputOfExpiry(opts.expires_at)) + '"' + (opts.expires_at ? '' : ' disabled') + '></label>' +
+    '<label class="small check"><input type="checkbox" data-edit-permanent' + (opts.expires_at ? '' : ' checked') + '> 永久</label></div>' +
     '<p class="muted small">到期时间到了，这条订阅就打不开；改到期时间不换令牌，链接不变。勾永久 = 永不过期；填日期 = 当天 23:59:59 到期。</p>' +
     trafficLimitHTML(opts) +
     '<div class="btn-row" style="margin-top:12px"><button class="btn" type="button" data-edit-save>保存</button>' +

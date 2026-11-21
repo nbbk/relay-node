@@ -786,6 +786,7 @@ var streamSuffixes = []string{
 //     订阅规则解决不了。
 //   - 补 3 个（v1.3.25）：ifconfig.co（Hiddify 当前 main 第 5 个源）、
 //     api.myip.com 与 ip-api.com（FlClash 旧版 v0.8.88–0.8.93 旧表独有）。
+//
 // 未确认的不写进规则：Stash、Shadowrocket、Surge、Quantumult X、Loon、
 // Clash 官方 iOS 客户端（ProjectClash/Clash-Client）、Karing、SFA、
 // NekoBox——官方文档/源码里没找到内置查 IP 服务的域名；v2rayNG 吃
@@ -1047,10 +1048,16 @@ func resolveSubFormat(r *http.Request) (string, error) {
 // （如小火箭）显示到期时间，否则客户端只能显示更新/生成时间。
 // 调用方保证令牌未过期（已过期的令牌在 handleSub 里直接 410），这里
 // 不用再判过期。
+// v1.3.27：relay.conf 读不到（管理面板模式本机没有中转、没有 relay.conf）
+// 时不要整个返回空头——落地集合按空算，仍按 tokenExpiry 与已有数据拼头
+// （只有令牌到期时头里就只有 expire 一项）。三项全都没有时才返回空
+// （不编数据口径不变）。1.3.24 的 tokenExpiry 修法本意就是让管理面板
+// 只靠令牌到期也能显示，但这个 early return 把它全堵死了。
 func (s *Server) subUserinfoHeader(localIndices map[int]bool, tokenExpiry string) string {
 	rc, _, err := s.readRelayConf()
-	if err != nil {
-		return ""
+	var landings []Landing
+	if err == nil && rc != nil {
+		landings = rc.Landings
 	}
 	var up, down, total int64
 	var hasTraffic, hasLimit bool
@@ -1066,7 +1073,7 @@ func (s *Server) subUserinfoHeader(localIndices map[int]bool, tokenExpiry string
 		exts[k] = v
 	}
 	s.stateMu.Unlock()
-	for _, l := range rc.Landings {
+	for _, l := range landings {
 		if localIndices != nil && !localIndices[l.Index] {
 			continue
 		}
@@ -1693,15 +1700,19 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 		// 本面板上还没该订阅的用量（例如管理面板模式）；disabled 是
 		// 超量停用；forward_count 是本面板上的转发条数（有限流但
 		// 0 条 = 转发没建起来，重新保存一次）。
-		LimitMB       int64  `json:"traffic_limit_mb"`
-		LimitMode     string `json:"traffic_limit_mode,omitempty"`
-		ResetMode     string `json:"reset_mode,omitempty"`
-		ResetDay      int    `json:"reset_day,omitempty"`
-		NextResetAt   string `json:"next_reset_at,omitempty"`
-		Used          int64  `json:"traffic_used"`
-		HasUsed       bool   `json:"has_used"`
-		Disabled      bool   `json:"traffic_disabled"`
-		ForwardCount  int    `json:"forward_count"`
+		LimitMB      int64  `json:"traffic_limit_mb"`
+		LimitMode    string `json:"traffic_limit_mode,omitempty"`
+		ResetMode    string `json:"reset_mode,omitempty"`
+		ResetDay     int    `json:"reset_day,omitempty"`
+		NextResetAt  string `json:"next_reset_at,omitempty"`
+		Used         int64  `json:"traffic_used"`
+		HasUsed      bool   `json:"has_used"`
+		Disabled     bool   `json:"traffic_disabled"`
+		ForwardCount int    `json:"forward_count"`
+		// v1.3.27：流量采样失败提示（空 = 正常；有值时列表用量不可信）。
+		TrafficWarn string `json:"traffic_warn,omitempty"`
+		// v1.3.27：限流的远程版本警告（远程面板低于 1.3.25 时限流不生效）。
+		LimitWarn string `json:"limit_warn,omitempty"`
 		// 分组（v1.3.26）：GroupID 空 = 不分组；GroupName 是分组显示名
 		// （列表徽章用）；进了组时 Summary 是组的落地摘要。
 		GroupID   string `json:"group_id,omitempty"`
@@ -1720,7 +1731,11 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 			summary = "分组「" + s.groupNameOf(u.GroupID) + "」：" + s.selectionSummary(s.effectiveSelectionForSubUser(&u))
 		}
 		used, _, hasUsed := s.userUsageSummary(userSubKey("subuser", u.ID), u.TrafficLimitBytes, u.TrafficLimitMode)
-		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode, Selection: u.Selection, ExpiresAt: u.ExpiresAt, LimitMB: u.TrafficLimitBytes / 1024 / 1024, LimitMode: u.TrafficLimitMode, ResetMode: u.ResetMode, ResetDay: u.ResetDay, NextResetAt: u.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: u.Disabled, ForwardCount: len(s.userForwardsFor(userSubKey("subuser", u.ID))), GroupID: u.GroupID, GroupName: s.groupNameOf(u.GroupID)})
+		limitWarn := ""
+		if u.TrafficLimitBytes > 0 {
+			limitWarn = s.userLimitVersionWarn(s.effectiveSelectionForSubUser(&u))
+		}
+		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode, Selection: u.Selection, ExpiresAt: u.ExpiresAt, LimitMB: u.TrafficLimitBytes / 1024 / 1024, LimitMode: u.TrafficLimitMode, ResetMode: u.ResetMode, ResetDay: u.ResetDay, NextResetAt: u.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: u.Disabled, ForwardCount: len(s.userForwardsFor(userSubKey("subuser", u.ID))), TrafficWarn: s.userTrafficWarnFor(userSubKey("subuser", u.ID), s.effectiveSelectionForSubUser(&u)), LimitWarn: limitWarn, GroupID: u.GroupID, GroupName: s.groupNameOf(u.GroupID)})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"users": items}))
 }
@@ -2429,6 +2444,10 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 		HasUsed      bool   `json:"has_used"`
 		Disabled     bool   `json:"traffic_disabled"`
 		ForwardCount int    `json:"forward_count"`
+		// v1.3.27：流量采样失败提示（空 = 正常；有值时列表用量不可信）。
+		TrafficWarn string `json:"traffic_warn,omitempty"`
+		// v1.3.27：限流的远程版本警告（远程面板低于 1.3.25 时限流不生效）。
+		LimitWarn string `json:"limit_warn,omitempty"`
 		// 分组（v1.3.26）：GroupID 空 = 不分组；GroupName 是分组显示名
 		// （列表徽章用）；进了组时 Summary 是组的落地摘要。
 		GroupID   string `json:"group_id,omitempty"`
@@ -2444,7 +2463,11 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 			summary = "分组「" + s.groupNameOf(ms.GroupID) + "」：" + s.selectionSummary(s.effectiveSelectionForMerged(&ms))
 		}
 		used, _, hasUsed := s.userUsageSummary(userSubKey("merged", ms.ID), ms.TrafficLimitBytes, ms.TrafficLimitMode)
-		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: summary, HasLink: ms.TokenEnc != "", Mode: ms.Mode, ExpiresAt: ms.ExpiresAt, LimitMB: ms.TrafficLimitBytes / 1024 / 1024, LimitMode: ms.TrafficLimitMode, ResetMode: ms.ResetMode, ResetDay: ms.ResetDay, NextResetAt: ms.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: ms.Disabled, ForwardCount: len(s.userForwardsFor(userSubKey("merged", ms.ID))), GroupID: ms.GroupID, GroupName: s.groupNameOf(ms.GroupID)})
+		limitWarn := ""
+		if ms.TrafficLimitBytes > 0 {
+			limitWarn = s.userLimitVersionWarn(s.effectiveSelectionForMerged(&ms))
+		}
+		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: summary, HasLink: ms.TokenEnc != "", Mode: ms.Mode, ExpiresAt: ms.ExpiresAt, LimitMB: ms.TrafficLimitBytes / 1024 / 1024, LimitMode: ms.TrafficLimitMode, ResetMode: ms.ResetMode, ResetDay: ms.ResetDay, NextResetAt: ms.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: ms.Disabled, ForwardCount: len(s.userForwardsFor(userSubKey("merged", ms.ID))), TrafficWarn: s.userTrafficWarnFor(userSubKey("merged", ms.ID), s.effectiveSelectionForMerged(&ms)), LimitWarn: limitWarn, GroupID: ms.GroupID, GroupName: s.groupNameOf(ms.GroupID)})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"subs": items}))
 }
