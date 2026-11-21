@@ -18,6 +18,7 @@ func (s *Server) startBackground() {
 	go s.monitorLoop()
 	go s.latencyLoop()
 	go s.centralLoop()
+	go s.centralUserTrafficLoop() // 按订阅限流聚合（v1.3.25，每 60 秒）
 }
 
 // 流量采样每 60 秒；采样后检查限量（剩余变化大时重建 quota）。
@@ -31,6 +32,9 @@ func (s *Server) trafficLoop() {
 		}
 		s.sampleTraffic()
 		s.enforceTrafficLimits()
+		// 按订阅限流（v1.3.25）：先采样再执法，与落地级同一节拍。
+		s.sampleUserTraffic()
+		s.enforceUserTrafficLimits()
 	}
 }
 

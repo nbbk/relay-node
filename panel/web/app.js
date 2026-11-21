@@ -1615,6 +1615,10 @@ async function loadSettingsPage() {
     if (toMgr) toMgr.disabled = modeOn;
     if (toFull) toFull.disabled = !modeOn;
     $('#panel-port').value = st.port || 11111;
+    // 每用户端口段（v1.3.25）：没设过 = 默认 30000–39999。
+    const up = st.user_ports || {};
+    $('#user-port-start').value = up.start || 30000;
+    $('#user-port-end').value = up.end || 39999;
     $('#whitelist-input').value = (st.ip_whitelist || []).join('\n');
     $('#https-domain').value = st.https_domain || '';
     $('#https-status').textContent = st.https_enabled ? 'HTTPS 已开启' + (st.https_domain ? '（域名：' + st.https_domain + '）' : '（自签证书）') : '当前为 HTTP，未开启 HTTPS。';
@@ -1938,6 +1942,19 @@ function initSettings() {
   on('#sub-expiry-permanent', 'change', () => { const d = $('#sub-expiry-date'); if (d) d.disabled = $('#sub-expiry-permanent').checked; });
   on('#sub-expiry-save', 'click', async () => { await saveSubExpiry(); });
   on('#sub-path-save', 'click', async () => { await saveSubPath(); });
+  // 每用户端口段（v1.3.25）：限流订阅的独立转发从这里分配。
+  on('#user-port-save', 'click', async () => {
+    const start = Number($('#user-port-start').value) || 0;
+    const end = Number($('#user-port-end').value) || 0;
+    try {
+      const r = await apiPost('/api/v1/settings/user-ports', { start, end });
+      toast('已保存：' + (r.start || '') + '–' + (r.end || '') + '（已分配的转发不受影响，新分配才用新段）', 'ok');
+      loadSettingsPage();
+    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+  });
+  // 限流表单联动（v1.3.25）：静态表单里的重置字段按算法与重置模式启用/置灰。
+  wireTrafficLimitUI($('#sub-user-name') ? $('#sub-user-name').closest('.card') : null);
+  wireTrafficLimitUI($('#central-sub-traffic-row'));
   // 面板 Logo（v1.3.20）
   on('#btn-logo-upload', 'click', async () => { await uploadLogo(); });
   on('#btn-logo-delete', 'click', async () => { await deleteLogo(); });
@@ -2904,6 +2921,80 @@ function updateWorkerExampleLink(domain) {
 // v1.3.20：列表搜索（名字/备注/勾选摘要）+ 分页（每页 20 条）+ 到期徽章 +
 // 每行“二维码”按钮（扫码导入，编的是这条订阅的链接）。
 let subUserPage = 1, subUserSearch = '';
+// ---------- 按订阅限流量（v1.3.25） ----------
+// 限流表单共用：data-tl-gb（上限 GB，0=不限流）、data-tl-mode（total|monthly）、
+// data-tl-reset（monthly|anniversary|custom）、data-tl-day（custom 时 1–31）。
+// scope 是包含这组字段的容器（卡片、行或弹窗）。
+function wireTrafficLimitUI(scope) {
+  if (!scope || !scope.querySelector) return;
+  const mode = scope.querySelector('[data-tl-mode]');
+  const reset = scope.querySelector('[data-tl-reset]');
+  const day = scope.querySelector('[data-tl-day]');
+  const sync = () => {
+    const monthly = mode && mode.value === 'monthly';
+    if (reset) reset.disabled = !monthly;
+    if (day) day.disabled = !(monthly && reset && reset.value === 'custom');
+  };
+  if (mode) mode.addEventListener('change', sync);
+  if (reset) reset.addEventListener('change', sync);
+  sync();
+}
+// 读一组限流字段：返回 {limit_mb, limit_mode, reset_mode, reset_day}。
+// limit_mb 是 MB（GB×1024），0 = 不限流。
+function readTrafficLimit(scope) {
+  if (!scope || !scope.querySelector) return { limit_mb: 0, limit_mode: 'total', reset_mode: 'monthly', reset_day: 1 };
+  const gb = Number((scope.querySelector('[data-tl-gb]') || {}).value) || 0;
+  const mode = ((scope.querySelector('[data-tl-mode]') || {}).value) || 'total';
+  const reset = ((scope.querySelector('[data-tl-reset]') || {}).value) || 'monthly';
+  const day = Number((scope.querySelector('[data-tl-day]') || {}).value) || 1;
+  return { limit_mb: Math.max(0, Math.round(gb * 1024)), limit_mode: mode, reset_mode: reset, reset_day: Math.min(31, Math.max(1, day)) };
+}
+// 限流表单 HTML（编辑弹窗用，动态生成；u 是列表行对象，预填用）。
+function trafficLimitHTML(u) {
+  const gb = Math.round((u.traffic_limit_mb || 0) / 1024);
+  const mode = u.traffic_limit_mode || 'total';
+  const reset = u.reset_mode || 'monthly';
+  const day = u.reset_day || 1;
+  return '<div class="btn-row" style="margin-top:12px"><label class="small">流量上限（GB，0 = 不限流）：<input data-tl-gb type="number" min="0" step="1" value="' + gb + '" style="width:90px"></label>' +
+    '<label class="small">算法：<select data-tl-mode style="width:130px"><option value="total"' + (mode !== 'monthly' ? ' selected' : '') + '>累计（整个生命周期）</option><option value="monthly"' + (mode === 'monthly' ? ' selected' : '') + '>按月（每月重置）</option></select></label>' +
+    '<label class="small">重置：<select data-tl-reset style="width:130px"><option value="monthly"' + (reset !== 'anniversary' && reset !== 'custom' ? ' selected' : '') + '>每月 1 号</option><option value="anniversary"' + (reset === 'anniversary' ? ' selected' : '') + '>跟随生成日</option><option value="custom"' + (reset === 'custom' ? ' selected' : '') + '>自定义每月几号</option></select></label>' +
+    '<label class="small">几号：<input data-tl-day type="number" min="1" max="31" value="' + day + '" style="width:60px"></label></div>' +
+    '<p class="muted small">开了限流才给这条订阅建独立转发（独立端口 → 同一落地），不开限流的继续走共享端口；超量时 80% 发 Telegram 提醒、100% 自动停用。统计是上行 + 下行合计、按 L3 字节计，分钟级采样。</p>';
+}
+// 重置模式写成人话。
+function resetModeLabel(m) {
+  return m === 'anniversary' ? '跟随生成日' : m === 'custom' ? '自定义每月几号' : '每月 1 号';
+}
+// 列表行里的用量文本：用量/上限、重置日、超量标红、转发未建提醒。
+function userTrafficText(u) {
+  const mb = u.traffic_limit_mb || 0;
+  if (!mb) return '流量：不限流（走共享端口）';
+  const limit = mb * 1048576;
+  const used = u.traffic_used || 0;
+  const pct = limit > 0 ? Math.round(used / limit * 100) : 0;
+  const mode = u.traffic_limit_mode === 'monthly' ? '按月' : '累计';
+  const reset = u.traffic_limit_mode === 'monthly'
+    ? '，重置：' + resetModeLabel(u.reset_mode) + (u.next_reset_at ? '（下次 ' + fmtDate(u.next_reset_at) + '）' : '')
+    : '';
+  const usedTxt = u.has_used ? fmtBytes(used) + ' / ' + fmtBytes(limit) + '（' + pct + '%）' : '上限 ' + fmtBytes(limit) + '（用量未同步）';
+  let tag = '';
+  if (u.traffic_disabled) tag += ' <span class="badge red">已停用（流量用完）</span>';
+  else if (pct >= 80) tag += ' <span class="badge">已用 ' + pct + '%</span>';
+  if (u.forward_count === 0) tag += ' <span class="badge red">转发未建，重新保存一次</span>';
+  return '流量：' + mode + ' ' + usedTxt + reset + tag;
+}
+// 手动恢复一条超量停用的订阅（订阅用户或合并订阅共用）：
+// kind 是 'users' 或 'merged'，恢复后刷新对应列表。
+async function resumeSubTraffic(kind, id) {
+  const ok = await confirmModal('恢复订阅', '<p>流量回到上限以下才能恢复（已调高上限或到了下个周期）。确定恢复这条订阅的转发吗？</p>', '恢复', true);
+  if (!ok) return;
+  try {
+    await apiPost('/api/v1/subscriptions/' + kind + '/' + encodeURIComponent(id) + '/resume', {});
+    toast('已恢复，转发已加回去', 'ok');
+    if (kind === 'merged') loadMergedSubsList(); else loadSubUsers();
+  } catch (e) { toast('恢复失败：' + e.message, 'err'); }
+}
+
 async function loadSubUsers() {
   const list = $('#sub-user-list');
   if (!list) return;
@@ -2915,15 +3006,16 @@ async function loadSubUsers() {
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的订阅用户，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, subUserPage);
     subUserPage = pg.cur;
-    list.innerHTML = '<h3>订阅用户</h3>' + pg.slice.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 内容' + esc(subModeLabel(u.mode)) + ' · ' + expiryBadge(u.expires_at) + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-edit="' + esc(u.id) + '">编辑</button> <button class="btn secondary sm" type="button" data-sub-user-copy="' + esc(u.id) + '">复制</button> <button class="btn secondary sm" type="button" data-sub-user-qr="' + esc(u.id) + '">二维码</button> <button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
+    list.innerHTML = '<h3>订阅用户</h3>' + pg.slice.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 内容' + esc(subModeLabel(u.mode)) + ' · ' + expiryBadge(u.expires_at) + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span><br><span class="small">' + userTrafficText(u) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-edit="' + esc(u.id) + '">编辑</button> ' + (u.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-user-resume="' + esc(u.id) + '">恢复</button> ' : '') + '<button class="btn secondary sm" type="button" data-sub-user-copy="' + esc(u.id) + '">复制</button> <button class="btn secondary sm" type="button" data-sub-user-qr="' + esc(u.id) + '">二维码</button> <button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'subuser') +
       '<p class="muted small">编辑只改勾选与内容，链接不变；撤销只影响那个人，其他人的链接照常；轮换后旧链接立即失效。</p>';
     if (pg.totalPages > 1) wirePager(list, 'subuser', pg.cur, pg.totalPages, (p) => { subUserPage = p; loadSubUsers(); });
     $$('[data-sub-user-edit]', list).forEach((b) => b.addEventListener('click', () => {
       const u = users.find((x) => x.id === b.dataset.subUserEdit);
       if (!u) return;
-      openSubEditModal({ kind: 'user', id: u.id, name: u.name, note: u.note, selection: u.selection || [], mode: u.mode, expires_at: u.expires_at });
+      openSubEditModal({ kind: 'user', id: u.id, name: u.name, note: u.note, selection: u.selection || [], mode: u.mode, expires_at: u.expires_at, traffic_limit_mb: u.traffic_limit_mb, traffic_limit_mode: u.traffic_limit_mode, reset_mode: u.reset_mode, reset_day: u.reset_day });
     }));
+    $$('[data-sub-user-resume]', list).forEach((b) => b.addEventListener('click', () => resumeSubTraffic('users', b.dataset.subUserResume)));
     $$('[data-sub-user-copy]', list).forEach((b) => b.addEventListener('click', async () => {
       try {
         const r = await fetchSubLink('user', b.dataset.subUserCopy);
@@ -2973,14 +3065,19 @@ async function subUserCreate() {
   const name = $('#sub-user-name').value.trim();
   if (!name) { toast('请先填名字（用来认人）', 'err'); return; }
   try {
-    const r = await apiPost('/api/v1/subscriptions/users', { name, note: $('#sub-user-note').value.trim(), mode: subModeOf('sub-user-mode'), expires_at: ($('#sub-user-expiry-date') || {}).value || '' });
+    const scope = $('#sub-user-name').closest('.card');
+    const tl = readTrafficLimit(scope);
+    const r = await apiPost('/api/v1/subscriptions/users', { name, note: $('#sub-user-note').value.trim(), mode: subModeOf('sub-user-mode'), expires_at: ($('#sub-user-expiry-date') || {}).value || '', traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day });
     $('#sub-user-url-value').textContent = r.url || '';
     const box = $('#sub-user-once');
     if (box) { box.classList.remove('hidden'); box.hidden = false; }
     $('#sub-user-name').value = ''; $('#sub-user-note').value = '';
     const expEl = $('#sub-user-expiry-date');
     if (expEl) expEl.value = '';
-    toast('订阅用户已新建，链接显示在下面，随时能复制', 'ok');
+    const gbEl = scope ? scope.querySelector('[data-tl-gb]') : null;
+    if (gbEl) gbEl.value = 0;
+    if (r.warning) toast(r.warning, 'err');
+    else toast('订阅用户已新建，链接显示在下面，随时能复制', 'ok');
     loadSubUsers();
   } catch (err) { toast('新建失败：' + err.message, 'err'); }
 }
@@ -3070,9 +3167,11 @@ async function openSubEditModal(opts) {
     '<div class="btn-row" style="margin-top:12px"><label class="small">到期时间：<input type="date" data-edit-expiry value="' + esc(dateInputOfExpiry(opts.expires_at)) + '"' + (opts.expires_at ? '' : ' disabled') + '></label>' +
     '<label class="small"><input type="checkbox" data-edit-permanent' + (opts.expires_at ? '' : ' checked') + '> 永久</label></div>' +
     '<p class="muted small">到期时间到了，这条订阅就打不开；改到期时间不换令牌，链接不变。勾永久 = 永不过期；填日期 = 当天 23:59:59 到期。</p>' +
+    trafficLimitHTML(opts) +
     '<div class="btn-row" style="margin-top:12px"><button class="btn" type="button" data-edit-save>保存</button>' +
     '<button class="btn secondary" type="button" data-edit-cancel>取消</button></div>', true);
   if (!m) return;
+  wireTrafficLimitUI(m);
   // 永久勾选与日期框联动：勾永久时日期框置灰。
   onIn(m, '[data-edit-permanent]', 'change', () => {
     const d = m.querySelector('[data-edit-expiry]'), p = m.querySelector('[data-edit-permanent]');
@@ -3104,12 +3203,14 @@ async function openSubEditModal(opts) {
       const url = isMerged
         ? '/api/v1/subscriptions/merged/' + encodeURIComponent(opts.id)
         : '/api/v1/subscriptions/users/' + encodeURIComponent(opts.id);
+      const tl = readTrafficLimit(m);
       const body = isMerged
-        ? { selection, name, mode, expires_at: expiresAt }
-        : { name, note: ((m.querySelector('[data-edit-note]') || {}).value || '').trim(), selection, mode, expires_at: expiresAt };
-      await api(url, { method: 'PUT', body: JSON.stringify(body) });
+        ? { selection, name, mode, expires_at: expiresAt, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day }
+        : { name, note: ((m.querySelector('[data-edit-note]') || {}).value || '').trim(), selection, mode, expires_at: expiresAt, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day };
+      const r = await api(url, { method: 'PUT', body: JSON.stringify(body) });
       closeModal();
-      toast('已保存，订阅链接不变，下次更新即按新勾选同步', 'ok');
+      if (r && r.warning) toast(r.warning, 'err');
+      else toast('已保存，订阅链接不变，下次更新即按新勾选同步', 'ok');
       if (isMerged) loadMergedSubsList(); else loadSubUsers();
     } catch (err) { toast('保存失败：' + err.message, 'err'); }
   });
@@ -3216,10 +3317,12 @@ function openMergedSubModal(url, opts) {
 // selection: [{panel:'local'|远程面板 id, landing:编号}]；name 选填（归属到人，
 // 只在合并订阅生成时传，填了就新起一条、不走轮换）；mode 是内容范围
 // （both|relay|direct），不传默认全部；expiresAt 选填（日期，空 = 永久）。
-async function showSubForSelection(selection, title, name, mode, expiresAt) {
+async function showSubForSelection(selection, title, name, mode, expiresAt, traffic) {
   try {
-    const r = await apiPost('/api/v1/subscriptions/merged', { selection, name: name || undefined, mode: subModeValid(mode || 'both'), expires_at: expiresAt || '' });
+    const tl = traffic || { limit_mb: 0, limit_mode: 'total', reset_mode: 'monthly', reset_day: 1 };
+    const r = await apiPost('/api/v1/subscriptions/merged', { selection, name: name || undefined, mode: subModeValid(mode || 'both'), expires_at: expiresAt || '', traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day });
     openMergedSubModal(r.url || '', { title, rotated: r.rotated, name, mergedId: r.id, mode: r.mode || mode || 'both', expires_at: r.expires_at });
+    if (r.warning) toast(r.warning, 'err');
     loadMergedSubsList();
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
@@ -3648,15 +3751,16 @@ async function loadMergedSubsList() {
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的合并订阅，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, mergedSubPage);
     mergedSubPage = pg.cur;
-    list.innerHTML = '<h3>已生成的合并订阅</h3>' + pg.slice.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-edit-merged="' + esc(s.id) + '">编辑</button> <button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-mode-merged="' + esc(s.mode || '') + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
+    list.innerHTML = '<h3>已生成的合并订阅</h3>' + pg.slice.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span><br><span class="small">' + userTrafficText(s) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-edit-merged="' + esc(s.id) + '">编辑</button> ' + (s.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-resume-merged="' + esc(s.id) + '">恢复</button> ' : '') + '<button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-mode-merged="' + esc(s.mode || '') + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'mergedsub') +
       '<p class="muted small">编辑只改勾选与内容，链接不变；每条订阅都有“复制”按钮，链接加密存在面板里，随时能重新复制；重新勾选生成（不填名称时同一选择重新生成会轮换；填了名称是新起一条，各归各人）。</p>';
     if (pg.totalPages > 1) wirePager(list, 'mergedsub', pg.cur, pg.totalPages, (p) => { mergedSubPage = p; loadMergedSubsList(); });
     $$('[data-sub-edit-merged]', list).forEach((b) => b.addEventListener('click', () => {
       const s = subs.find((x) => x.id === b.dataset.subEditMerged);
       if (!s) return;
-      openSubEditModal({ kind: 'merged', id: s.id, name: s.name, selection: s.selection || [], mode: s.mode, expires_at: s.expires_at });
+      openSubEditModal({ kind: 'merged', id: s.id, name: s.name, selection: s.selection || [], mode: s.mode, expires_at: s.expires_at, traffic_limit_mb: s.traffic_limit_mb, traffic_limit_mode: s.traffic_limit_mode, reset_mode: s.reset_mode, reset_day: s.reset_day });
     }));
+    $$('[data-sub-resume-merged]', list).forEach((b) => b.addEventListener('click', () => resumeSubTraffic('merged', b.dataset.subResumeMerged)));
     $$('[data-sub-copy-merged]', list).forEach((b) => b.addEventListener('click', async () => {
       try {
         const r = await fetchSubLink('merged', b.dataset.subCopyMerged);
@@ -4392,7 +4496,8 @@ function initCentral() {
     if (!selection.length) { toast('请先勾选至少一个落地', 'err'); return; }
     const nameEl = $('#central-sub-name');
     const expEl = $('#central-sub-expiry-date');
-    await showSubForSelection(selection, '合并订阅', nameEl ? nameEl.value.trim() : '', subModeOf('central-sub-mode'), expEl ? expEl.value : '');
+    const tl = readTrafficLimit($('#central-sub-traffic-row'));
+    await showSubForSelection(selection, '合并订阅', nameEl ? nameEl.value.trim() : '', subModeOf('central-sub-mode'), expEl ? expEl.value : '', tl);
     if (expEl) expEl.value = '';
   });
   // 合并订阅列表搜索（v1.3.20）：输入即过滤，回到第 1 页。

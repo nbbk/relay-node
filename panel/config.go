@@ -94,6 +94,16 @@ type PanelConfig struct {
 	// 旧的面板级通用订阅令牌（SubTokenHash）保留不动，向后兼容，
 	// 已发出去的通用链接继续能用。
 	SubUsers []SubUser `json:"sub_users"`
+	// 按人转发（v1.3.25，按订阅限流量 A）：本面板上的每用户转发记录。
+	// 只给开了限流的订阅建；每条是一条独立监听端口 → 同一落地端口的
+	// 转发，端口就是用户身份。管理面板模式下本机没有转发，这里是空的；
+	// 远程面板上的转发存在远程面板自己的 config.json 里。
+	UserForwards []UserForward `json:"user_forwards,omitempty"`
+	// 每用户端口段（v1.3.25）：分配用户端口的范围，默认 30000–39999，
+	// 设置页可改；0（老配置）= 用默认值。分配时避让已有落地端口与
+	// 已分配的用户端口；用户/订阅删除时回收。
+	UserPortStart int `json:"user_port_start,omitempty"`
+	UserPortEnd   int `json:"user_port_end,omitempty"`
 	// 登记的远程面板（v1.2.0，主面板端）：Token 是明文（必须拿原文去调远程接口），
 	// 与 Telegram Token、Cloudflare 令牌同等待遇，只存在 600 权限的 config.json 里。
 	Remotes []RemotePanel `json:"remotes"`
@@ -174,6 +184,12 @@ type SubSelection struct {
 // 返回 410；轮换不改它，编辑时可改。
 // Name 是归属到人（v1.3.0，选填）：填了就新起一条，同一勾选集合可有
 // 多个不同名称的令牌，各归各人；不填走老逻辑（同一选择重新生成会轮换）。
+// 流量上限（v1.3.25，按订阅限流量 A）：TrafficLimitBytes > 0 才限流，
+// 0 = 不限流（走共享端口）；TrafficLimitMode 是 "total"（累计）或
+// "monthly"（按月）；ResetMode 只在 monthly 下有效，是 "monthly"
+// （自然月，每月 1 号）/ "anniversary"（跟随生成日）/ "custom"
+// （自定义每月几号，ResetDay 1–31，31 号钳制到月末）；NextResetAt /
+// LastResetAt 是 RFC3339；Disabled 是超量停用（转发已撤）。
 type MergedSub struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name,omitempty"`
@@ -183,6 +199,17 @@ type MergedSub struct {
 	Selection []SubSelection `json:"selection"`
 	Mode      string         `json:"mode,omitempty"`
 	ExpiresAt string         `json:"expires_at,omitempty"`
+	// 流量上限（v1.3.25，A 方案）：见 MergedSub 头注释。
+	TrafficLimitBytes int64  `json:"traffic_limit_bytes,omitempty"`
+	TrafficLimitMode  string `json:"traffic_limit_mode,omitempty"`
+	ResetMode         string `json:"reset_mode,omitempty"`
+	ResetDay          int    `json:"reset_day,omitempty"`
+	NextResetAt       string `json:"next_reset_at,omitempty"`
+	LastResetAt       string `json:"last_reset_at,omitempty"`
+	TrafficWarned80   bool   `json:"traffic_warned_80,omitempty"`
+	TrafficWarned100  bool   `json:"traffic_warned_100,omitempty"`
+	Disabled          bool   `json:"disabled,omitempty"`
+	DisabledReason    string `json:"disabled_reason,omitempty"`
 }
 
 // SubUser 一人一条订阅链接（v1.3.0）：TokenHash 是订阅令牌的 SHA-256
@@ -194,6 +221,8 @@ type MergedSub struct {
 // /sub/ 服务时按它过滤链接；轮换令牌时保持不变（专用轮换接口不带 mode）。
 // ExpiresAt（v1.3.20）：到期时间，RFC3339，空 = 永久；到期后 /sub/{token}
 // 返回 410；轮换不改它，编辑时可改。
+// 流量上限（v1.3.25，按订阅限流量 A）：与 MergedSub 同一套字段（见上），
+// > 0 才限流，0 = 不限流（走共享端口）。
 type SubUser struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
@@ -204,6 +233,44 @@ type SubUser struct {
 	Selection []SubSelection `json:"selection,omitempty"`
 	Mode      string         `json:"mode,omitempty"`
 	ExpiresAt string         `json:"expires_at,omitempty"`
+	// 流量上限（v1.3.25，A 方案）：见 MergedSub 头注释。
+	TrafficLimitBytes int64  `json:"traffic_limit_bytes,omitempty"`
+	TrafficLimitMode  string `json:"traffic_limit_mode,omitempty"`
+	ResetMode         string `json:"reset_mode,omitempty"`
+	ResetDay          int    `json:"reset_day,omitempty"`
+	NextResetAt       string `json:"next_reset_at,omitempty"`
+	LastResetAt       string `json:"last_reset_at,omitempty"`
+	TrafficWarned80   bool   `json:"traffic_warned_80,omitempty"`
+	TrafficWarned100  bool   `json:"traffic_warned_100,omitempty"`
+	Disabled          bool   `json:"disabled,omitempty"`
+	DisabledReason    string `json:"disabled_reason,omitempty"`
+}
+
+// UserForward 一条按人转发（v1.3.25，按订阅限流量 A）：一个订阅在
+// 一台中转机上的独立转发。Key 是订阅标识（"subuser:<id>" 或
+// "merged:<id>"，id 自带 su-/ms- 前缀）；Panel 是 "local" 或远程面板
+// id（本面板上的记录永远是 "local"）；LandingAddr 是该面板上的落地
+// 地址（按地址存，不按编号——删落地会让编号前移，地址才是稳定标识）；
+// ListenPort 是这条转发在本机监听的端口（用户端口段内分配）；
+// Disabled 是超量停用（转发已从 config.toml 撤掉，quota 也已封死）。
+// Limit* / Reset* / NextResetAt 是这条转发在本机执法的配额依据
+// （管理面板下发时一起带来，离线也能按最后同步的配额继续执法）；
+// SubName 是订阅显示名，只用来写 Telegram 提醒。
+// 订阅删除、限流取消、落地从勾选里去掉时回收（删记录、撤转发、放端口）。
+type UserForward struct {
+	Key         string `json:"key"`
+	SubKind     string `json:"sub_kind"`
+	SubID       string `json:"sub_id"`
+	SubName     string `json:"sub_name,omitempty"`
+	Panel       string `json:"panel"`
+	LandingAddr string `json:"landing_addr"`
+	ListenPort  int    `json:"listen_port"`
+	Disabled    bool   `json:"disabled"`
+	LimitBytes  int64  `json:"limit_bytes"`
+	LimitMode   string `json:"limit_mode,omitempty"`
+	ResetMode   string `json:"reset_mode,omitempty"`
+	ResetDay    int    `json:"reset_day,omitempty"`
+	NextResetAt string `json:"next_reset_at,omitempty"`
 }
 
 // ---------- 面板扩展状态（PANEL_HOME/state.json） ----------
@@ -448,6 +515,7 @@ type Server struct {
 	sessions        *sessionStore
 	opMu            sync.Mutex // 写操作锁（TryLock，占用时返回 409）
 	traffic         *trafficStore
+	userTraffic     *userTrafficStore // 每订阅流量累计（v1.3.25，PANEL_HOME/user_traffic.json）
 	auditMu         sync.Mutex
 	healthMu        sync.Mutex // 健康基线锁（lastHealthOK/lastHealthAt：healthTick 与模式切换共用）
 	lastHealthOK    bool
@@ -462,6 +530,8 @@ type Server struct {
 	centralMu       sync.Mutex // 集中管理缓存锁
 	centralCache    map[string]*RemoteStatusSnapshot
 	centralAlert    map[string]*centralAlertState
+	centralUserUsageMu sync.Mutex // 按订阅聚合用量缓存锁（v1.3.25）
+	centralUserUsage   map[string]*centralUserUsage
 	centralPollWG   sync.WaitGroup // 后台轮询计数（代理写成功后异步刷新一次；测试等它跑完再清理，避免轮询撞上 TempDir 删除）
 	subKey          []byte         // 订阅令牌加密密钥（v1.3.7，PANEL_HOME/sub_token.key 的内容，懒加载）
 	subKeyMu        sync.Mutex
@@ -486,7 +556,7 @@ func newServer(env Env) (*Server, error) {
 		// 测试环境 REALM_DIR 可能不可写目录已存在则忽略
 		_ = os.MkdirAll(env.RealmDir, 0o755)
 	}
-	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}, subFails: map[string]*subFailState{}}
+	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), userTraffic: newUserTrafficStore(filepath.Join(env.PanelHome, "user_traffic.json")), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}, centralUserUsage: map[string]*centralUserUsage{}, subFails: map[string]*subFailState{}}
 	if err := s.loadConfig(); err != nil {
 		return nil, err
 	}
@@ -494,6 +564,7 @@ func newServer(env Env) (*Server, error) {
 		return nil, err
 	}
 	s.traffic.load()
+	s.userTraffic.load()
 	s.latency.load()
 	return s, nil
 }

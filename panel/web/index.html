@@ -424,7 +424,7 @@
                 <button class="btn secondary sm" id="sub-copy-plain" type="button">复制明文链接</button>
                 <button class="btn secondary sm" id="sub-qr" type="button">二维码</button>
               </div>
-              <p class="small muted">三条链接各给一类客户端：Clash 链接给 FlClash、Clash Verge Rev、Mihomo Party、Stash、ClashX Meta、Clash Meta for Android；sing-box 链接给 sing-box 官方客户端、Hiddify、Karing、NekoBox、Streisand；base64 链接给 v2rayNG、v2rayN、Shadowrocket。FlClash、Verge 这类 Clash 系客户端不要用 base64 那条，它们的导入口不认 base64。</p>
+              <p class="small muted">三条链接各给一类客户端：Clash 链接给 FlClash、Clash Verge Rev、Clash Party、Stash、ClashX Meta、Clash Meta for Android；sing-box 链接给 sing-box 官方客户端、Hiddify、Karing、NekoBox、Streisand；base64 链接给 v2rayNG、v2rayN、Shadowrocket。FlClash、Verge 这类 Clash 系客户端不要用 base64 那条，它们的导入口不认 base64。</p>
               <div class="btn-row" style="margin-top:8px">
                 <label class="small">模式（可选）：
                   <select id="sub-mode">
@@ -465,6 +465,7 @@
               <button class="btn danger" id="sub-revoke" type="button">撤销订阅链接</button>
             </div>
             <p class="small">链接泄露可一键轮换，旧链接立即失效；撤销后订阅立即打不开。</p>
+            <p class="small muted">通用订阅是所有人共用一条链接，不做按人限流；想按人限流量，用下面的一人一条或合并订阅。</p>
           </div>
               <div class="card">
             <h2>订阅用户（一人一条）</h2>
@@ -489,6 +490,24 @@
               </select>
               <span class="small muted">全部：中转和直连的节点都进订阅；仅中转：只要走中转机的节点；仅直连：只要直连落地机的节点。</span>
             </div>
+            <div class="setting-row">
+              <label class="small">流量上限（GB，0 = 不限流）：</label>
+              <input data-tl-gb type="number" min="0" step="1" value="0" style="width:90px">
+              <label class="small">算法：</label>
+              <select data-tl-mode style="width:130px">
+                <option value="total" selected>累计（整个生命周期）</option>
+                <option value="monthly">按月（每月重置）</option>
+              </select>
+              <label class="small">重置：</label>
+              <select data-tl-reset style="width:130px">
+                <option value="monthly" selected>每月 1 号</option>
+                <option value="anniversary">跟随生成日</option>
+                <option value="custom">自定义每月几号</option>
+              </select>
+              <label class="small">几号：</label>
+              <input data-tl-day type="number" min="1" max="31" value="1" style="width:60px">
+            </div>
+            <p class="small muted">开了限流才给这个人建独立转发（独立端口 → 同一落地），不开限流的继续走共享端口；超量时 80% 发 Telegram 提醒、100% 自动停用，续量或等下个周期恢复。统计是上行 + 下行合计、按 L3 字节计（含包头，比客户端显示的多几个百分点），分钟级采样、超一点正常，配额留点余量。</p>
             <p class="small muted">新建默认是全量订阅（全部落地）；想按人分落地，建完去下面列表点“编辑”勾选。</p>
             <div class="btn-row">
               <button class="btn" id="sub-user-create" type="button">新建订阅用户</button>
@@ -505,6 +524,18 @@
             </div>
             <div class="list-toolbar"><input id="sub-user-search" class="list-search" type="search" placeholder="搜索订阅用户：名字、备注…" aria-label="搜索订阅用户"></div>
             <div id="sub-user-list" style="margin-top:12px">加载中…</div>
+          </div>
+              <div class="card">
+            <h2>每用户端口段</h2>
+            <p class="muted">开了限流的订阅，每人每台中转机上占一个独立监听端口（从这个段里分配）。默认 30000–39999。</p>
+            <div class="setting-row">
+              <label class="small" for="user-port-start">起始端口：</label>
+              <input id="user-port-start" type="number" min="1" max="65535" style="width:100px">
+              <label class="small" for="user-port-end">结束端口：</label>
+              <input id="user-port-end" type="number" min="1" max="65535" style="width:100px">
+              <button class="btn secondary" id="user-port-save" type="button">保存端口段</button>
+            </div>
+            <p class="small muted">已分配的转发不受影响（端口照常工作，新分配才用新段）；段里撞上落地监听端口或面板端口时分配会自动避让。段满了会建不出新转发，报错里会提示扩段。</p>
           </div>
             </div>
           </div>
@@ -828,6 +859,8 @@
               <span class="small muted">全部：中转和直连的节点都进订阅；仅中转：只要走中转机的节点；仅直连：只要直连落地机的节点。</span>
             </div>
             <div class="btn-row"><label class="small">归属到人（选填）：<input id="central-sub-name" type="text" placeholder="例如：张三的手机" style="width:160px"></label><label class="small">到期（选填）：<input id="central-sub-expiry-date" type="date"></label><button class="btn" id="central-sub-generate" type="button" disabled>生成合并订阅</button></div>
+            <div class="btn-row" id="central-sub-traffic-row"><label class="small">流量上限（GB，0 = 不限流）：<input data-tl-gb type="number" min="0" step="1" value="0" style="width:90px"></label><label class="small">算法：<select data-tl-mode style="width:130px"><option value="total" selected>累计（整个生命周期）</option><option value="monthly">按月（每月重置）</option></select></label><label class="small">重置：<select data-tl-reset style="width:130px"><option value="monthly" selected>每月 1 号</option><option value="anniversary">跟随生成日</option><option value="custom">自定义每月几号</option></select></label><label class="small">几号：<input data-tl-day type="number" min="1" max="31" value="1" style="width:60px"></label></div>
+            <p class="small muted">开了限流才给这条订阅建独立转发（每台中转机上一个独立端口 → 同一落地），不开限流的继续走共享端口；超量时 80% 发 Telegram 提醒、100% 自动停用。统计是上行 + 下行合计、按 L3 字节计，分钟级采样。</p>
             <p class="small muted">到期留空 = 永久；填日期 = 当天 23:59:59 到期，到期后这条订阅打不开。</p>
             <div class="list-toolbar"><input id="central-sub-search" class="list-search" type="search" placeholder="搜索合并订阅：名字、勾选…" aria-label="搜索合并订阅"></div>
             <div id="central-sub-list" style="margin-top:12px"></div>

@@ -75,10 +75,12 @@ func verifySubToken(tok, hash string) bool {
 }
 
 // subLink 订阅里的一条节点：Name 是客户端里显示的名字（沿用 twin 备注），
-// Link 是完整的节点链接。
+// Link 是完整的节点链接。LandingAddr 是这条节点所属落地的地址（内部用，
+// 按人转发改写端口时定位，不序列化进 JSON）。
 type subLink struct {
-	Name string `json:"name"`
-	Link string `json:"link"`
+	Name        string `json:"name"`
+	Link        string `json:"link"`
+	LandingAddr string `json:"-"`
 }
 
 // ---------- 节点链接来源 ----------
@@ -146,7 +148,7 @@ func (s *Server) collectSubLinks(landingIndices map[int]bool) []subLink {
 		}
 		for _, l := range g.Links {
 			name := linkDisplayName(l.Link, g.Name+"-"+l.Label)
-			out = append(out, subLink{Name: name, Link: l.Link})
+			out = append(out, subLink{Name: name, Link: l.Link, LandingAddr: g.Landing})
 		}
 	}
 	return out
@@ -778,7 +780,12 @@ var streamSuffixes = []string{
 //   - Hiddify（hiddify-app，lib/features/proxy/data/
 //     proxy_repository.dart 的 _ipInfoSources，proxyOnly: true 强制走
 //     代理）：ipwho.is、api.ip.sb、ipapi.co、ipinfo.io；
-//   - Mihomo Party（调研代理从源码核实）：api.internetdata.io。
+//   - Clash Party（原 Mihomo Party，调研代理从源码核实）：api.internetdata.io。
+//     注意：它的 IP 查询跟随系统代理（Electron 默认 session），只有开了
+//     系统代理或 TUN 时订阅规则才管用，两者都关仍直连——客户端实现决定，
+//     订阅规则解决不了。
+//   - 补 3 个（v1.3.25）：ifconfig.co（Hiddify 当前 main 第 5 个源）、
+//     api.myip.com 与 ip-api.com（FlClash 旧版 v0.8.88–0.8.93 旧表独有）。
 // 未确认的不写进规则：Stash、Shadowrocket、Surge、Quantumult X、Loon、
 // Clash 官方 iOS 客户端（ProjectClash/Clash-Client）、Karing、SFA、
 // NekoBox——官方文档/源码里没找到内置查 IP 服务的域名；v2rayNG 吃
@@ -789,6 +796,7 @@ var ipCheckSuffixes = []string{
 	"www.cloudflare.com", "api.ip.sb", "ipinfo.io", "ipwho.is",
 	"get.geojs.io", "api.country.is", "api.ipquery.io", "ident.me",
 	"ipapi.co", "api.ipapi.is", "ip.api.skk.moe", "api.internetdata.io",
+	"ifconfig.co", "api.myip.com", "ip-api.com",
 }
 
 // renderClashHeader 渲染 Clash YAML 顶部的 dns / ipv6 / mode / sniffer 段
@@ -1182,25 +1190,42 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 	// contentMode 是令牌上存的订阅内容范围（both|relay|direct，老记录空 = both），
 	// 与上面 resolveSubMode 的分流模式（split|global）是两回事。
 	contentMode := "both"
+	// 按人限流（v1.3.25）：命中的订阅开了限流时，订阅里的中转节点改用
+	// 该用户的端口（本面板上的转发），SNI 与域名不变。已停用的订阅
+	// （超量）链接照常返回、端口已死（endpoints 已撤），与落地级停用
+	// 后链接仍在订阅里但连不上的做法一致；userinfo 头里能看到已用
+	// 满的量，知道为什么连不上。
+	var userKey string
+	var userLimit int64
+	var userLimitMode string
 	if tok != "" && s.cfg.SubTokenHash != "" && verifySubToken(tok, s.cfg.SubTokenHash) {
 		links = s.collectSubLinks(nil)
 		contentMode = s.cfg.SubTokenMode
 	} else if u, ok := s.findSubUser(tok); ok {
 		// 一人一条（v1.3.0）：没勾选 = 单面板全量订阅，有勾选 = 合并订阅
 		contentMode = u.Mode
+		if u.TrafficLimitBytes > 0 {
+			userKey, userLimit, userLimitMode = userSubKey("subuser", u.ID), u.TrafficLimitBytes, u.TrafficLimitMode
+		}
 		if len(u.Selection) == 0 {
 			links = s.collectSubLinks(nil)
 		} else {
-			links, localIndices = s.collectMergedSubLinks(&MergedSub{Selection: u.Selection})
+			links, localIndices = s.collectMergedSubLinks(&MergedSub{Selection: u.Selection}, userKey)
 		}
 	} else if ms, ok := s.findMergedSub(tok); ok {
 		contentMode = ms.Mode
-		links, localIndices = s.collectMergedSubLinks(ms)
+		if ms.TrafficLimitBytes > 0 {
+			userKey, userLimit, userLimitMode = userSubKey("merged", ms.ID), ms.TrafficLimitBytes, ms.TrafficLimitMode
+		}
+		links, localIndices = s.collectMergedSubLinks(ms, userKey)
 	} else {
 		http.NotFound(w, r)
 		return
 	}
 	links = filterSubLinksByKind(links, contentMode)
+	if userKey != "" {
+		links = rewriteSubLinksForUser(links, s.userPortByAddr(userKey))
+	}
 	body, ctype, err := renderSubContent(links, format, mode)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
@@ -1209,7 +1234,17 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 	// 令牌到期与落地到期取更早的（v1.3.24：订阅本身的到期也要进 userinfo，
 	// 否则管理面板模式下客户端看不到到期时间）。
 	exp, _ := s.subExpiryForToken(tok)
-	if h := s.subUserinfoHeader(localIndices, exp); h != "" {
+	// 开了限流的订阅优先用本机每用户用量拼 userinfo（total 是该订阅
+	// 的上限）；本面板上没有该订阅的用量（例如管理面板模式）时回落
+	// 到原来的落地汇总头。
+	h := ""
+	if userKey != "" {
+		h = s.subUserinfoHeaderForUser(userKey, userLimit, userLimitMode, exp, localIndices)
+	}
+	if h == "" {
+		h = s.subUserinfoHeader(localIndices, exp)
+	}
+	if h != "" {
 		w.Header().Set("subscription-userinfo", h)
 	}
 	w.Header().Set("Content-Type", ctype)
@@ -1650,6 +1685,20 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 		Mode      string         `json:"mode"`                 // both|relay|direct，老记录空 = 全部
 		Selection []SubSelection `json:"selection,omitempty"`  // 编辑弹窗预选用；空 = 全部落地
 		ExpiresAt string         `json:"expires_at,omitempty"` // v1.3.20：RFC3339，空 = 永久
+		// 流量上限（v1.3.25）：limit_mb 0 = 不限流；used 是本面板上的
+		// 已用字节（monthly 用本期，total 用累计），has_used=false 时
+		// 本面板上还没该订阅的用量（例如管理面板模式）；disabled 是
+		// 超量停用；forward_count 是本面板上的转发条数（有限流但
+		// 0 条 = 转发没建起来，重新保存一次）。
+		LimitMB       int64  `json:"traffic_limit_mb"`
+		LimitMode     string `json:"traffic_limit_mode,omitempty"`
+		ResetMode     string `json:"reset_mode,omitempty"`
+		ResetDay      int    `json:"reset_day,omitempty"`
+		NextResetAt   string `json:"next_reset_at,omitempty"`
+		Used          int64  `json:"traffic_used"`
+		HasUsed       bool   `json:"has_used"`
+		Disabled      bool   `json:"traffic_disabled"`
+		ForwardCount  int    `json:"forward_count"`
 	}
 	items := []item{}
 	for _, u := range s.cfg.SubUsers {
@@ -1659,7 +1708,8 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 			kind = "merged"
 			summary = s.selectionSummary(u.Selection)
 		}
-		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode, Selection: u.Selection, ExpiresAt: u.ExpiresAt})
+		used, _, hasUsed := s.userUsageSummary(userSubKey("subuser", u.ID), u.TrafficLimitBytes, u.TrafficLimitMode)
+		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode, Selection: u.Selection, ExpiresAt: u.ExpiresAt, LimitMB: u.TrafficLimitBytes / 1024 / 1024, LimitMode: u.TrafficLimitMode, ResetMode: u.ResetMode, ResetDay: u.ResetDay, NextResetAt: u.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: u.Disabled, ForwardCount: len(s.userForwardsFor(userSubKey("subuser", u.ID)))})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"users": items}))
 }
@@ -1676,6 +1726,14 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 		Selection []SubSelection `json:"selection"`
 		Mode      string         `json:"mode"`
 		ExpiresAt *string        `json:"expires_at"`
+		// 流量上限（v1.3.25）：limit_mb 0/不给 = 不限流（走共享端口）；
+		// limit_mode total=累计 monthly=按月；reset_mode 只在 monthly
+		// 下有效（monthly=每月 1 号，anniversary=跟随生成日，
+		// custom=自定义每月几号，reset_day 1–31）。
+		TrafficLimitMB   int64  `json:"traffic_limit_mb"`
+		TrafficLimitMode string `json:"traffic_limit_mode"`
+		ResetMode        string `json:"reset_mode"`
+		ResetDay         int    `json:"reset_day"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -1719,21 +1777,36 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	nowTime := time.Now().UTC()
+	limitBytes, limitMode, resetMode, resetDay, nextResetAt, err := normalizeUserLimitFields(mbToBytes(req.TrafficLimitMB), req.TrafficLimitMode, req.ResetMode, req.ResetDay, nowTime, nowTime)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
 	tok := generateSubToken()
 	enc, err := s.encryptSubTokenNow(tok)
 	if err != nil {
 		writeJSON(w, 500, errResp("令牌加密失败："+err.Error()))
 		return
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowTime.Format(time.RFC3339)
 	id := "su-" + randomTokenHex(6)
-	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: id, Name: name, Note: note, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt})
+	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: id, Name: name, Note: note, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt, TrafficLimitBytes: limitBytes, TrafficLimitMode: limitMode, ResetMode: resetMode, ResetDay: resetDay, NextResetAt: nextResetAt})
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
 	}
-	s.audit(s.currentUser(r), "新建订阅用户", name, "成功", "链接已加密存好，随时能复制")
-	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "name": name, "mode": subMode, "expires_at": expiresAt}))
+	// 按人限流（v1.3.25）：订阅已保存，再核对本机转发并同步到各远程
+	// 面板。建不起来也不撤订阅——没建起来的那部分暂时走共享端口、
+	// 不限流，warning 让前端提示用户重新保存一次。
+	resp := map[string]any{"id": id, "url": s.subURL(r, tok), "name": name, "mode": subMode, "expires_at": expiresAt, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
+	if warn := s.syncUserForwardsWarning("subuser", id, name, sel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
+		resp["warning"] = warn
+		s.audit(s.currentUser(r), "新建订阅用户", name, "部分成功", warn)
+	} else {
+		s.audit(s.currentUser(r), "新建订阅用户", name, "成功", "链接已加密存好，随时能复制")
+	}
+	writeJSON(w, 200, okResp(resp))
 }
 
 // handleSubUsersRotate 轮换一个订阅用户的链接：旧链接立即失效，只影响这个人。
@@ -1773,13 +1846,30 @@ func (s *Server) handleSubUsersDelete(w http.ResponseWriter, r *http.Request) {
 	for i := range s.cfg.SubUsers {
 		if s.cfg.SubUsers[i].ID == id {
 			name := s.cfg.SubUsers[i].Name
+			sel := s.cfg.SubUsers[i].Selection
 			s.cfg.SubUsers = append(s.cfg.SubUsers[:i], s.cfg.SubUsers[i+1:]...)
 			if err := s.saveConfig(); err != nil {
 				writeJSON(w, 500, errResp("保存失败："+err.Error()))
 				return
 			}
-			s.audit(s.currentUser(r), "撤销订阅用户", name, "成功", "该用户的订阅链接已失效，其他人照常")
-			writeJSON(w, 200, okResp(nil))
+			// 按人限流（v1.3.25）：订阅删了就回收它的转发与端口
+			// （本机 + 各远程面板）。
+			s.opMu.Lock()
+			recErr := s.removeUserForwards("subuser", id)
+			s.opMu.Unlock()
+			var warns []string
+			if recErr != nil {
+				warns = append(warns, "本机转发没撤干净："+recErr.Error())
+			}
+			warns = append(warns, s.removeUserForwardsFromRemotes(userSubKey("subuser", id), sel)...)
+			resp := map[string]any{}
+			if len(warns) > 0 {
+				resp["warning"] = "订阅已删，但" + strings.Join(warns, "；") + "，请检查中转机上的转发。"
+				s.audit(s.currentUser(r), "撤销订阅用户", name, "部分成功", strings.Join(warns, "；"))
+			} else {
+				s.audit(s.currentUser(r), "撤销订阅用户", name, "成功", "该用户的订阅链接已失效，其他人照常")
+			}
+			writeJSON(w, 200, okResp(resp))
 			return
 		}
 	}
@@ -1800,6 +1890,12 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		Selection []SubSelection `json:"selection"`
 		Mode      string         `json:"mode"`
 		ExpiresAt *string        `json:"expires_at"`
+		// 流量上限（v1.3.25）：指针 = 没给保持原值，给了按新值
+		// （limit_mb 给 0 = 取消限流，回共享端口）。
+		TrafficLimitMB   *int64  `json:"traffic_limit_mb"`
+		TrafficLimitMode *string `json:"traffic_limit_mode"`
+		ResetMode        *string `json:"reset_mode"`
+		ResetDay         *int    `json:"reset_day"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -1849,12 +1945,44 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.SubUsers[i].ID != id {
 			continue
 		}
-		s.cfg.SubUsers[i].Name = name
-		s.cfg.SubUsers[i].Note = note
-		s.cfg.SubUsers[i].Selection = sel
-		s.cfg.SubUsers[i].Mode = subMode
+		u := &s.cfg.SubUsers[i]
+		// 限流字段：没给的保持原值，给了的按新值算（anchor 是订阅创建
+		// 时间，anniversary 取它的日）。没给限流时直接用原字节数，
+		// 不经过 MB 换算（避免丢精度）。
+		newLimit := u.TrafficLimitBytes
+		newMode, newResetMode, newResetDay := u.TrafficLimitMode, u.ResetMode, u.ResetDay
+		if req.TrafficLimitMB != nil {
+			newLimit = mbToBytes(*req.TrafficLimitMB)
+		}
+		if req.TrafficLimitMode != nil {
+			newMode = *req.TrafficLimitMode
+		}
+		if req.ResetMode != nil {
+			newResetMode = *req.ResetMode
+		}
+		if req.ResetDay != nil {
+			newResetDay = *req.ResetDay
+		}
+		anchor, _ := time.Parse(time.RFC3339, u.CreatedAt)
+		limitBytes, limitMode, resetMode, resetDay, nextResetAt, err := normalizeUserLimitFields(newLimit, newMode, newResetMode, newResetDay, anchor, time.Now().UTC())
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+		// 调高上限后不再超量就自动恢复（清停用标志，让 reconcile 把
+		// endpoints 加回去）；仍超量就继续停用。
+		s.maybeResumeUser(userSubKey("subuser", id), limitBytes, limitMode)
+		u.Name = name
+		u.Note = note
+		u.Selection = sel
+		u.Mode = subMode
+		u.TrafficLimitBytes = limitBytes
+		u.TrafficLimitMode = limitMode
+		u.ResetMode = resetMode
+		u.ResetDay = resetDay
+		u.NextResetAt = nextResetAt
 		if expiresGiven {
-			s.cfg.SubUsers[i].ExpiresAt = expiresAt
+			u.ExpiresAt = expiresAt
 		}
 		if err := s.saveConfig(); err != nil {
 			writeJSON(w, 500, errResp("保存失败："+err.Error()))
@@ -1870,8 +1998,14 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		if selOut == nil {
 			selOut = []SubSelection{}
 		}
-		s.audit(s.currentUser(r), "编辑订阅用户", name+"（"+summary+"）", "成功", "链接不变，下次更新订阅即按新勾选同步")
-		writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name, "kind": kind, "summary": summary, "mode": subMode, "selection": selOut, "expires_at": s.cfg.SubUsers[i].ExpiresAt}))
+		resp := map[string]any{"id": id, "name": name, "kind": kind, "summary": summary, "mode": subMode, "selection": selOut, "expires_at": u.ExpiresAt, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
+		if warn := s.syncUserForwardsWarning("subuser", id, name, sel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
+			resp["warning"] = warn
+			s.audit(s.currentUser(r), "编辑订阅用户", name+"（"+summary+"）", "部分成功", warn)
+		} else {
+			s.audit(s.currentUser(r), "编辑订阅用户", name+"（"+summary+"）", "成功", "链接不变，下次更新订阅即按新勾选同步")
+		}
+		writeJSON(w, 200, okResp(resp))
 		return
 	}
 	writeJSON(w, 404, errResp("没有这个订阅用户"))
@@ -2229,13 +2363,24 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 		HasLink   bool           `json:"has_link"`
 		Mode      string         `json:"mode"`                 // both|relay|direct，老记录空 = 全部
 		ExpiresAt string         `json:"expires_at,omitempty"` // v1.3.20：RFC3339，空 = 永久
+		// 流量上限（v1.3.25）：与订阅用户列表同一套字段含义。
+		LimitMB      int64  `json:"traffic_limit_mb"`
+		LimitMode    string `json:"traffic_limit_mode,omitempty"`
+		ResetMode    string `json:"reset_mode,omitempty"`
+		ResetDay     int    `json:"reset_day,omitempty"`
+		NextResetAt  string `json:"next_reset_at,omitempty"`
+		Used         int64  `json:"traffic_used"`
+		HasUsed      bool   `json:"has_used"`
+		Disabled     bool   `json:"traffic_disabled"`
+		ForwardCount int    `json:"forward_count"`
 	}
 	items := []item{}
 	for _, ms := range s.cfg.MergedSubs {
 		if ms.Selection == nil {
 			ms.Selection = []SubSelection{}
 		}
-		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: s.selectionSummary(ms.Selection), HasLink: ms.TokenEnc != "", Mode: ms.Mode, ExpiresAt: ms.ExpiresAt})
+		used, _, hasUsed := s.userUsageSummary(userSubKey("merged", ms.ID), ms.TrafficLimitBytes, ms.TrafficLimitMode)
+		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: s.selectionSummary(ms.Selection), HasLink: ms.TokenEnc != "", Mode: ms.Mode, ExpiresAt: ms.ExpiresAt, LimitMB: ms.TrafficLimitBytes / 1024 / 1024, LimitMode: ms.TrafficLimitMode, ResetMode: ms.ResetMode, ResetDay: ms.ResetDay, NextResetAt: ms.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: ms.Disabled, ForwardCount: len(s.userForwardsFor(userSubKey("merged", ms.ID)))})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"subs": items}))
 }
@@ -2255,6 +2400,12 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 		Name      string         `json:"name"`
 		Mode      string         `json:"mode"`
 		ExpiresAt *string        `json:"expires_at"`
+		// 流量上限（v1.3.25）：指针 = 没给保持原值（轮换时）或不限流
+		// （新建时），给了按新值（给 0 = 取消限流）。
+		TrafficLimitMB   *int64  `json:"traffic_limit_mb"`
+		TrafficLimitMode *string `json:"traffic_limit_mode"`
+		ResetMode        *string `json:"reset_mode"`
+		ResetDay         *int    `json:"reset_day"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -2291,12 +2442,40 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 500, errResp("令牌加密失败："+err.Error()))
 		return
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	nowTime := time.Now().UTC()
+	now := nowTime.Format(time.RFC3339)
 	rotated := false
 	id := ""
+	// 限流字段：新建时没给 = 不限流；轮换时没给 = 保持原值，给了按新值。
+	// anchor 是订阅创建时间（新建是现在，轮换时 CreatedAt 会刷新到
+	// 现在，anniversary 锚点跟着走）。
+	limitBytes, limitMode, resetMode, resetDay, nextResetAt := int64(0), "", "", 0, ""
+	limitOf := func(curLimit int64, curMode, curResetMode string, curDay int) (int64, string, string, int, string, error) {
+		limit := curLimit
+		mode, rm, day := curMode, curResetMode, curDay
+		if req.TrafficLimitMB != nil {
+			limit = mbToBytes(*req.TrafficLimitMB)
+		}
+		if req.TrafficLimitMode != nil {
+			mode = *req.TrafficLimitMode
+		}
+		if req.ResetMode != nil {
+			rm = *req.ResetMode
+		}
+		if req.ResetDay != nil {
+			day = *req.ResetDay
+		}
+		return normalizeUserLimitFields(limit, mode, rm, day, nowTime, nowTime)
+	}
 	if name != "" {
+		var err error
+		limitBytes, limitMode, resetMode, resetDay, nextResetAt, err = limitOf(0, "", "", 0)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
 		id = "ms-" + randomTokenHex(6)
-		s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, Name: name, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt})
+		s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, Name: name, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt, TrafficLimitBytes: limitBytes, TrafficLimitMode: limitMode, ResetMode: resetMode, ResetDay: resetDay, NextResetAt: nextResetAt})
 	} else {
 		for i := range s.cfg.MergedSubs {
 			// 只轮换同样没填名称的记录：已归属到人的那条不能被误轮换
@@ -2304,6 +2483,12 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 				continue
 			}
 			if _, k := canonicalSelection(s.cfg.MergedSubs[i].Selection); k == key {
+				var err error
+				limitBytes, limitMode, resetMode, resetDay, nextResetAt, err = limitOf(s.cfg.MergedSubs[i].TrafficLimitBytes, s.cfg.MergedSubs[i].TrafficLimitMode, s.cfg.MergedSubs[i].ResetMode, s.cfg.MergedSubs[i].ResetDay)
+				if err != nil {
+					writeJSON(w, 400, errResp(err.Error()))
+					return
+				}
 				s.cfg.MergedSubs[i].TokenHash = hashSubToken(tok)
 				s.cfg.MergedSubs[i].TokenEnc = enc
 				s.cfg.MergedSubs[i].CreatedAt = now
@@ -2322,14 +2507,25 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 				} else {
 					expiresAt = s.cfg.MergedSubs[i].ExpiresAt
 				}
+				s.cfg.MergedSubs[i].TrafficLimitBytes = limitBytes
+				s.cfg.MergedSubs[i].TrafficLimitMode = limitMode
+				s.cfg.MergedSubs[i].ResetMode = resetMode
+				s.cfg.MergedSubs[i].ResetDay = resetDay
+				s.cfg.MergedSubs[i].NextResetAt = nextResetAt
 				id = s.cfg.MergedSubs[i].ID
 				rotated = true
 				break
 			}
 		}
 		if id == "" {
+			var err error
+			limitBytes, limitMode, resetMode, resetDay, nextResetAt, err = limitOf(0, "", "", 0)
+			if err != nil {
+				writeJSON(w, 400, errResp(err.Error()))
+				return
+			}
 			id = "ms-" + randomTokenHex(6)
-			s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt})
+			s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt, TrafficLimitBytes: limitBytes, TrafficLimitMode: limitMode, ResetMode: resetMode, ResetDay: resetDay, NextResetAt: nextResetAt})
 		}
 	}
 	if err := s.saveConfig(); err != nil {
@@ -2344,8 +2540,14 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 	if name != "" {
 		target = name + "（" + target + "）"
 	}
-	s.audit(s.currentUser(r), action, target, "成功", "链接已加密存好，随时能复制")
-	writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": rotated, "selection": sel, "summary": s.selectionSummary(sel), "mode": subMode, "expires_at": expiresAt}))
+	resp := map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": rotated, "selection": sel, "summary": s.selectionSummary(sel), "mode": subMode, "expires_at": expiresAt, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
+	if warn := s.syncUserForwardsWarning("merged", id, name, sel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
+		resp["warning"] = warn
+		s.audit(s.currentUser(r), action, target, "部分成功", warn)
+	} else {
+		s.audit(s.currentUser(r), action, target, "成功", "链接已加密存好，随时能复制")
+	}
+	writeJSON(w, 200, okResp(resp))
 }
 
 // handleMergedSubsRotate 轮换一条合并订阅：同一勾选集合与同一归属人换一个
@@ -2393,13 +2595,30 @@ func (s *Server) handleMergedSubsDelete(w http.ResponseWriter, r *http.Request) 
 	for i := range s.cfg.MergedSubs {
 		if s.cfg.MergedSubs[i].ID == id {
 			summary := s.selectionSummary(s.cfg.MergedSubs[i].Selection)
+			sel := s.cfg.MergedSubs[i].Selection
 			s.cfg.MergedSubs = append(s.cfg.MergedSubs[:i], s.cfg.MergedSubs[i+1:]...)
 			if err := s.saveConfig(); err != nil {
 				writeJSON(w, 500, errResp("保存失败："+err.Error()))
 				return
 			}
-			s.audit(s.currentUser(r), "撤销合并订阅", summary, "成功", "该订阅链接已失效")
-			writeJSON(w, 200, okResp(nil))
+			// 按人限流（v1.3.25）：订阅删了就回收它的转发与端口
+			// （本机 + 各远程面板）。
+			s.opMu.Lock()
+			recErr := s.removeUserForwards("merged", id)
+			s.opMu.Unlock()
+			var warns []string
+			if recErr != nil {
+				warns = append(warns, "本机转发没撤干净："+recErr.Error())
+			}
+			warns = append(warns, s.removeUserForwardsFromRemotes(userSubKey("merged", id), sel)...)
+			resp := map[string]any{}
+			if len(warns) > 0 {
+				resp["warning"] = "订阅已删，但" + strings.Join(warns, "；") + "，请检查中转机上的转发。"
+				s.audit(s.currentUser(r), "撤销合并订阅", summary, "部分成功", strings.Join(warns, "；"))
+			} else {
+				s.audit(s.currentUser(r), "撤销合并订阅", summary, "成功", "该订阅链接已失效")
+			}
+			writeJSON(w, 200, okResp(resp))
 			return
 		}
 	}
@@ -2419,6 +2638,12 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 		Name      string         `json:"name"`
 		Mode      string         `json:"mode"`
 		ExpiresAt *string        `json:"expires_at"`
+		// 流量上限（v1.3.25）：指针 = 没给保持原值，给了按新值
+		// （limit_mb 给 0 = 取消限流，回共享端口）。
+		TrafficLimitMB   *int64  `json:"traffic_limit_mb"`
+		TrafficLimitMode *string `json:"traffic_limit_mode"`
+		ResetMode        *string `json:"reset_mode"`
+		ResetDay         *int    `json:"reset_day"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -2455,11 +2680,43 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 		if s.cfg.MergedSubs[i].ID != id {
 			continue
 		}
-		s.cfg.MergedSubs[i].Selection = sel
-		s.cfg.MergedSubs[i].Mode = subMode
-		s.cfg.MergedSubs[i].Name = name
+		ms := &s.cfg.MergedSubs[i]
+		// 限流字段：没给的保持原值，给了的按新值算（anchor 是订阅创建
+		// 时间，anniversary 取它的日；没给限流时直接用原字节数，
+		// 不经过 MB 换算，避免丢精度）。
+		newLimit := ms.TrafficLimitBytes
+		newMode, newResetMode, newResetDay := ms.TrafficLimitMode, ms.ResetMode, ms.ResetDay
+		if req.TrafficLimitMB != nil {
+			newLimit = mbToBytes(*req.TrafficLimitMB)
+		}
+		if req.TrafficLimitMode != nil {
+			newMode = *req.TrafficLimitMode
+		}
+		if req.ResetMode != nil {
+			newResetMode = *req.ResetMode
+		}
+		if req.ResetDay != nil {
+			newResetDay = *req.ResetDay
+		}
+		anchor, _ := time.Parse(time.RFC3339, ms.CreatedAt)
+		limitBytes, limitMode, resetMode, resetDay, nextResetAt, err := normalizeUserLimitFields(newLimit, newMode, newResetMode, newResetDay, anchor, time.Now().UTC())
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+		// 调高上限后不再超量就自动恢复（清停用标志，让 reconcile 把
+		// endpoints 加回去）；仍超量就继续停用。
+		s.maybeResumeUser(userSubKey("merged", id), limitBytes, limitMode)
+		ms.Selection = sel
+		ms.Mode = subMode
+		ms.Name = name
+		ms.TrafficLimitBytes = limitBytes
+		ms.TrafficLimitMode = limitMode
+		ms.ResetMode = resetMode
+		ms.ResetDay = resetDay
+		ms.NextResetAt = nextResetAt
 		if expiresGiven {
-			s.cfg.MergedSubs[i].ExpiresAt = expiresAt
+			ms.ExpiresAt = expiresAt
 		}
 		if err := s.saveConfig(); err != nil {
 			writeJSON(w, 500, errResp("保存失败："+err.Error()))
@@ -2470,23 +2727,108 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 		if name != "" {
 			target = name + "（" + summary + "）"
 		}
-		s.audit(s.currentUser(r), "编辑合并订阅", target, "成功", "链接不变，下次更新订阅即按新勾选同步")
-		writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name, "summary": summary, "mode": subMode, "selection": sel, "expires_at": s.cfg.MergedSubs[i].ExpiresAt}))
+		resp := map[string]any{"id": id, "name": name, "summary": summary, "mode": subMode, "selection": sel, "expires_at": ms.ExpiresAt, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
+		if warn := s.syncUserForwardsWarning("merged", id, name, sel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
+			resp["warning"] = warn
+			s.audit(s.currentUser(r), "编辑合并订阅", target, "部分成功", warn)
+		} else {
+			s.audit(s.currentUser(r), "编辑合并订阅", target, "成功", "链接不变，下次更新订阅即按新勾选同步")
+		}
+		writeJSON(w, 200, okResp(resp))
 		return
 	}
 	writeJSON(w, 404, errResp("没有这条合并订阅"))
+}
+
+// ---------- 按订阅限流：手动恢复（v1.3.25） ----------
+// resumeSub 手动恢复一条订阅（超量停用后）：先看当前用量——仍超上限
+// 就不恢复（恢复了下一分钟也会再停用，提示先调高上限或等下个周期）；
+// 已在上限以下就清停用、把 endpoints 加回去。没开限流的也不用恢复。
+func (s *Server) resumeSub(kind, id string) error {
+	key := userSubKey(kind, id)
+	limit, mode, _, _, _, _, ok := s.userLimitForKey(key)
+	if !ok || limit <= 0 {
+		return fmt.Errorf("这条订阅没开限流，不用恢复")
+	}
+	rec := s.userTraffic.get(key)
+	used := userTrafficUsed(rec, mode)
+	if used >= limit {
+		return fmt.Errorf("流量还没回到上限以下（已用 %s / 上限 %s），恢复了下一分钟也会再停用；请先调高上限或等下个周期", formatBytes(used), formatBytes(limit))
+	}
+	return s.resumeUserForwards(key)
+}
+
+// handleSubUsersResume 手动恢复一个订阅用户（超量停用后）。
+func (s *Server) handleSubUsersResume(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	found := false
+	name := ""
+	for i := range s.cfg.SubUsers {
+		if s.cfg.SubUsers[i].ID == id {
+			found = true
+			name = s.cfg.SubUsers[i].Name
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, 404, errResp("没有这个订阅用户"))
+		return
+	}
+	if err := s.resumeSub("subuser", id); err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	s.audit(s.currentUser(r), "手动恢复订阅用户", name, "成功", "流量已回到上限以下，转发已恢复")
+	writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name}))
+}
+
+// handleMergedSubsResume 手动恢复一条合并订阅（超量停用后）。
+func (s *Server) handleMergedSubsResume(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	found := false
+	name := ""
+	var sel []SubSelection
+	for i := range s.cfg.MergedSubs {
+		if s.cfg.MergedSubs[i].ID == id {
+			found = true
+			name = s.cfg.MergedSubs[i].Name
+			sel = s.cfg.MergedSubs[i].Selection
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, 404, errResp("没有这条合并订阅"))
+		return
+	}
+	if err := s.resumeSub("merged", id); err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	target := name
+	if target == "" {
+		target = s.selectionSummary(sel)
+	}
+	s.audit(s.currentUser(r), "手动恢复合并订阅", target, "成功", "流量已回到上限以下，转发已恢复")
+	writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name}))
 }
 
 // ---------- 合并订阅的内容来源 ----------
 
 // fetchRemoteSubLinks 从一台远程面板取指定落地的节点链接（走 central 令牌通道）：
 // 远程面板连不上或版本太旧时返回空（合并订阅里这台暂时跳过，下次拉取自动恢复）。
-func (s *Server) fetchRemoteSubLinks(rem RemotePanel, indices []int) []subLink {
+// forUser 不为空时带上 for_user 参数（v1.3.25）：远程按该订阅在它
+// 那边的转发改写中转节点链接端口；远程版本太旧（没这个参数概念）
+// 时忽略参数、返回共享端口的链接（走共享端口、不限流）。
+func (s *Server) fetchRemoteSubLinks(rem RemotePanel, indices []int, forUser string) []subLink {
 	var parts []string
 	for _, n := range indices {
 		parts = append(parts, strconv.Itoa(n))
 	}
-	_, body, err := s.remoteCall(rem, "GET", "/api/v1/central/subscription?landings="+strings.Join(parts, ","), nil, 15*time.Second)
+	path := "/api/v1/central/subscription?landings=" + strings.Join(parts, ",")
+	if forUser != "" {
+		path += "&for_user=" + url.QueryEscape(forUser)
+	}
+	_, body, err := s.remoteCall(rem, "GET", path, nil, 15*time.Second)
 	if err != nil {
 		return nil
 	}
@@ -2505,8 +2847,9 @@ func (s *Server) fetchRemoteSubLinks(rem RemotePanel, indices []int) []subLink {
 
 // collectMergedSubLinks 按一份合并订阅的勾选集合取全部节点链接（实时生成）：
 // 本面板的部分读 nodes.txt，远程的部分当场去各远程面板取。
+// forUser 不为空时远程链接带 for_user 参数（v1.3.25，按人转发改写端口）。
 // 返回链接与其中本面板落地的编号集合（给 subscription-userinfo 用）。
-func (s *Server) collectMergedSubLinks(ms *MergedSub) ([]subLink, map[int]bool) {
+func (s *Server) collectMergedSubLinks(ms *MergedSub, forUser string) ([]subLink, map[int]bool) {
 	localIndices := map[int]bool{}
 	remoteIndices := map[string][]int{}
 	for _, e := range ms.Selection {
@@ -2525,7 +2868,7 @@ func (s *Server) collectMergedSubLinks(ms *MergedSub) ([]subLink, map[int]bool) 
 		if rem == nil {
 			continue
 		}
-		out = append(out, s.fetchRemoteSubLinks(*rem, indices)...)
+		out = append(out, s.fetchRemoteSubLinks(*rem, indices, forUser)...)
 	}
 	return out, localIndices
 }
@@ -2553,5 +2896,16 @@ func (s *Server) handleCentralSubscription(w http.ResponseWriter, r *http.Reques
 	if links == nil {
 		links = []subLink{}
 	}
-	writeJSON(w, 200, okResp(map[string]any{"links": links}))
+	// for_user（v1.3.25）：按该订阅在本面板上的转发改写中转节点链接
+	// 端口（远程面板是其转发记录的唯一事实来源，改写在这里做）。
+	// 没这订阅的转发时原样返回（走共享端口），for_user_applied=false。
+	forUser := strings.TrimSpace(r.URL.Query().Get("for_user"))
+	applied := false
+	if forUser != "" {
+		if ports := s.userPortByAddr(forUser); len(ports) > 0 {
+			links = rewriteSubLinksForUser(links, ports)
+			applied = true
+		}
+	}
+	writeJSON(w, 200, okResp(map[string]any{"links": links, "for_user_applied": applied, "panel_version": Version}))
 }

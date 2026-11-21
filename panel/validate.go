@@ -116,13 +116,32 @@ func parseNodeLink(link string) (*ParsedLink, error) {
 		}
 	case "ss":
 		pl.Name = u.Fragment
-		if strings.Contains(u.Opaque, "@") || u.Host != "" {
-			// SIP002: ss://user@host:port
+		if u.User != nil {
+			// SIP002：ss://user@host:port（userinfo 可能是 base64 的 method:password）
 			host := u.Hostname()
 			p, _ := strconv.Atoi(u.Port())
 			pl.Host, pl.Port = host, p
+		} else if u.Host != "" {
+			// host 位置可能是明文 host:port（SIP002），也可能是整段 base64
+			// 的传统形式 ss://base64(method:password@host:port)。
+			// 先试 base64 解码：解出来带 @ 且 host:port 合法就是传统形式。
+			if raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(u.Host, "=")); err == nil {
+				if at := strings.LastIndex(string(raw), "@"); at >= 0 {
+					hp := string(raw[at+1:])
+					h, pt, _ := net.SplitHostPort(hp)
+					p, _ := strconv.Atoi(pt)
+					if h != "" && p > 0 {
+						pl.Host, pl.Port = h, p
+					}
+				}
+			}
+			if pl.Port == 0 {
+				host := u.Hostname()
+				p, _ := strconv.Atoi(u.Port())
+				pl.Host, pl.Port = host, p
+			}
 		} else {
-			// 传统 base64 形式
+			// 传统 base64 形式（Opaque，无 //）：ss:base64(method:password@host:port)
 			raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(u.Opaque, "="))
 			if err != nil {
 				raw, err = base64.StdEncoding.DecodeString(u.Opaque)

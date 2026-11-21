@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -64,11 +65,13 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/subscriptions/merged", s.requireAuth(s.handleMergedSubsList))
 	mux.HandleFunc("POST /api/v1/subscriptions/merged", s.requireAuth(s.handleMergedSubsCreate))
 	mux.HandleFunc("POST /api/v1/subscriptions/merged/{id}/rotate", s.requireAuth(s.handleMergedSubsRotate))
+	mux.HandleFunc("POST /api/v1/subscriptions/merged/{id}/resume", s.requireAuth(s.handleMergedSubsResume))
 	mux.HandleFunc("PUT /api/v1/subscriptions/merged/{id}", s.requireAuth(s.handleMergedSubsUpdate))
 	mux.HandleFunc("DELETE /api/v1/subscriptions/merged/{id}", s.requireAuth(s.handleMergedSubsDelete))
 	mux.HandleFunc("GET /api/v1/subscriptions/users", s.requireAuth(s.handleSubUsersList))
 	mux.HandleFunc("POST /api/v1/subscriptions/users", s.requireAuth(s.handleSubUsersCreate))
 	mux.HandleFunc("POST /api/v1/subscriptions/users/{id}/rotate", s.requireAuth(s.handleSubUsersRotate))
+	mux.HandleFunc("POST /api/v1/subscriptions/users/{id}/resume", s.requireAuth(s.handleSubUsersResume))
 	mux.HandleFunc("PUT /api/v1/subscriptions/users/{id}", s.requireAuth(s.handleSubUsersUpdate))
 	mux.HandleFunc("DELETE /api/v1/subscriptions/users/{id}", s.requireAuth(s.handleSubUsersDelete))
 	mux.HandleFunc("GET /api/v1/subscriptions/worker", s.requireAuth(s.handleWorkerCode))
@@ -96,6 +99,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/manager-only", s.requireAuth(s.handleManagerOnly))
 	mux.HandleFunc("POST /api/v1/settings/password", s.requireAuth(s.handleChangePassword))
 	mux.HandleFunc("POST /api/v1/settings/port", s.requireAuth(s.handleChangePort))
+	mux.HandleFunc("POST /api/v1/settings/user-ports", s.requireAuth(s.handleUserPortsSet))
 	mux.HandleFunc("POST /api/v1/settings/ip-whitelist", s.requireAuth(s.handleIPWhitelist))
 	mux.HandleFunc("POST /api/v1/settings/https", s.requireAuth(s.handleHTTPS))
 	mux.HandleFunc("POST /api/v1/settings/cloudflare", s.requireAuth(s.handleCloudflare))
@@ -122,6 +126,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/central/status", s.requireCentralToken(s.handleCentralStatus))
 	mux.HandleFunc("GET /api/v1/central/links", s.requireCentralToken(s.handleLinks))
 	mux.HandleFunc("GET /api/v1/central/subscription", s.requireCentralToken(s.handleCentralSubscription))
+	mux.HandleFunc("POST /api/v1/central/user-forwards", s.requireCentralToken(s.handleCentralUserForwards))
+	mux.HandleFunc("GET /api/v1/central/user-traffic", s.requireCentralToken(s.handleCentralUserTraffic))
+	mux.HandleFunc("POST /api/v1/central/user-forwards/disable", s.requireCentralToken(s.handleCentralUserForwardDisable))
+	mux.HandleFunc("POST /api/v1/central/user-forwards/resume", s.requireCentralToken(s.handleCentralUserForwardResume))
 	mux.HandleFunc("POST /api/v1/central/landings", s.requireCentralToken(s.handleAddLanding))
 	mux.HandleFunc("PUT /api/v1/central/landings/{index}", s.requireCentralToken(s.handleUpdateLanding))
 	mux.HandleFunc("POST /api/v1/central/landings/{index}/orig-link", s.requireCentralToken(s.handleSetOrigLink))
@@ -889,6 +897,10 @@ func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
 	// 流量链重建（best-effort）
 	if rc2, _, err := s.readRelayConf(); err == nil {
 		_ = s.ensureTrafficChains(rc2.Landings)
+		// 按人限流（v1.3.25）：新落地要进全量订阅与勾选含它的订阅，
+		// 给开了限流的订阅补转发（没限流的不动；opMu 已由 tryOpLock
+		// 持有，reconcileAllUserForwards 不自己加锁）。
+		s.reconcileAllUserForwards()
 		if landingIndex > 0 {
 			if l, _, err := s.landingByIndex(landingIndex); err == nil && req.SpeedLimitMbps > 0 {
 				if err := s.applySpeedLimit(*l, req.SpeedLimitMbps); err != nil {
@@ -1339,6 +1351,9 @@ func (s *Server) handleUpdateLanding(w http.ResponseWriter, r *http.Request) {
 	var newToml []byte
 	if needsRestart {
 		newToml = removeEndpointsFromToml(tomlData, old.Landing)
+		// 保留内容末尾补一个换行再追加（ensureTomlNewline，与按人
+		// 转发 applyUserForwards 同根因，v1.3.25）。
+		newToml = ensureTomlNewline(newToml)
 		newToml = appendEndpointsForLanding(newToml, newLanding, newShare80, newShare443)
 		// realm 无 endpoint 会 panic：留占位
 		if !strings.Contains(string(newToml), "[[endpoints]]") {
@@ -1410,6 +1425,14 @@ func (s *Server) handleUpdateLanding(w http.ResponseWriter, r *http.Request) {
 		ext = s.state.ext(req.Landing)
 		// 流量计数跟着地址走（累计、月度、采样基数一起搬）
 		s.traffic.rename(old.Landing, req.Landing)
+		// 按人转发（v1.3.25）：改地址时转发记录的落地地址跟着迁，
+		// 否则记录成孤儿、endpoints 加不回去。上面第 1 步已把旧地址
+		// 的端点全删了（含用户转发），这里迁完记录要重建用户端点
+		// 并再重启一次 realm（只在该落地有用户转发时才做；opMu
+		// 已由 tryOpLock 持有，applyUserForwards 不自己加锁）。
+		if s.renameUserForwardsLanding(old.Landing, req.Landing) {
+			_ = s.applyUserForwards()
+		}
 		// 延迟探测结果跟新地址走：旧探测目标的结果删掉，下一轮重探；
 		// 证书提醒去重标志在 ext 里，改名时已随旧键整体迁移，不重复提醒
 		s.latency.remove(latencyStoreKey(*old))
@@ -2244,6 +2267,10 @@ func (s *Server) handleDeleteLanding(w http.ResponseWriter, r *http.Request) {
 	if rc2, _, err := s.readRelayConf(); err == nil {
 		_ = s.ensureTrafficChains(rc2.Landings)
 	}
+	// 按人限流（v1.3.25）：该落地上的用户转发记录一起删掉（端口回收）；
+	// config.toml 里的端点上面已按 remote 地址全删了，realm 也已重启，
+	// 这里只清记录。opMu 已由 tryOpLock 持有。
+	s.dropUserForwardsForLanding(l.Landing)
 	s.audit(user, "删除落地", l.Landing, "成功", "软删除，进回收站 7 天")
 	writeJSON(w, 200, okResp(map[string]any{"recycle_id": id}))
 }
@@ -2620,10 +2647,20 @@ func (s *Server) handleTwin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
-// setLinkPort 换链接端口（vless/trojan；vmess/ss base64 换不了时原样返回）。
+// setLinkPort 只换节点链接的端口，host 不动；换不了原样返回。
+// v1.3.25 起四个协议都处理（原来只处理 vless/trojan，ss/vmess 原样
+// 返回）：按人转发时中转节点链接改成该用户的端口用；双生链接生成
+// 时 ss/vmess 的中转链接端口也终于能对上中转监听端口了。分支结构
+// 照着 util.go 里的 setLinkHost 来。
 func setLinkPort(link string, newPort int) string {
+	if newPort <= 0 || newPort > 65535 {
+		return link
+	}
 	pl, err := parseNodeLink(link)
 	if err != nil || pl.Port == 0 {
+		return link
+	}
+	if pl.Port == newPort {
 		return link
 	}
 	switch pl.Scheme {
@@ -2635,6 +2672,86 @@ func setLinkPort(link string, newPort int) string {
 		host := u.Hostname()
 		u.Host = net.JoinHostPort(host, strconv.Itoa(newPort))
 		return u.String()
+	case "ss":
+		u, err := neturlParse(strings.TrimSpace(link))
+		if err != nil {
+			return link
+		}
+		if u.User != nil {
+			// SIP002：ss://user@host:port
+			u.Host = hostPort(pl.Host, newPort)
+			return u.String()
+		}
+		// 没有 userinfo：可能是 ss://host:port（SIP002）或 ss://base64 传统形式。
+		// 先试传统 base64：整段 host 解出来是 method:password@host:port。
+		if u.Host != "" {
+			if raw, err := decodeSSOpaque(u.Host); err == nil {
+				if at := strings.LastIndex(string(raw), "@"); at >= 0 {
+					nb := base64.RawURLEncoding.EncodeToString([]byte(string(raw[:at+1]) + net.JoinHostPort(pl.Host, strconv.Itoa(newPort))))
+					out := "ss://" + nb
+					if u.RawQuery != "" {
+						out += "?" + u.RawQuery
+					}
+					if u.Fragment != "" {
+						out += "#" + u.Fragment
+					}
+					return out
+				}
+			}
+			// 不是 base64 传统形式：按 SIP002 直接换端口
+			u.Host = hostPort(pl.Host, newPort)
+			return u.String()
+		}
+		// 传统 base64 形式：ss:base64(method:password@host:port)（无 //，Opaque 形式）
+		raw, err := decodeSSOpaque(u.Opaque)
+		if err != nil {
+			return link
+		}
+		at := strings.LastIndex(string(raw), "@")
+		if at < 0 {
+			return link
+		}
+		nb := base64.RawURLEncoding.EncodeToString([]byte(string(raw[:at+1]) + net.JoinHostPort(pl.Host, strconv.Itoa(newPort))))
+		out := "ss://" + nb
+		if u.RawQuery != "" {
+			out += "?" + u.RawQuery
+		}
+		if u.Fragment != "" {
+			out += "#" + u.Fragment
+		}
+		return out
+	case "vmess":
+		trimmed := strings.TrimSpace(link)
+		idx := strings.Index(trimmed, "://")
+		if idx < 0 {
+			return link
+		}
+		rest := trimmed[idx+3:]
+		frag := ""
+		if i := strings.Index(rest, "#"); i >= 0 {
+			frag = rest[i:]
+			rest = rest[:i]
+		}
+		if i := strings.Index(rest, "?"); i >= 0 {
+			rest = rest[:i]
+		}
+		raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(rest, "="))
+		if err != nil {
+			raw, err = base64.StdEncoding.DecodeString(rest)
+			if err != nil {
+				return link
+			}
+		}
+		var j map[string]any
+		if err := json.Unmarshal(raw, &j); err != nil {
+			return link
+		}
+		j["port"] = newPort
+		nb, err := json.Marshal(j)
+		if err != nil {
+			return link
+		}
+		return "vmess://" + base64.RawURLEncoding.EncodeToString(nb) + frag
 	}
 	return link
 }

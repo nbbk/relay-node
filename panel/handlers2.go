@@ -49,6 +49,11 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		},
 		"remotes_count": len(s.cfg.Remotes),
 		"cloudflare":    map[string]any{"has_token": s.cfg.CloudflareToken != ""},
+		// 每用户端口段（v1.3.25）：返回生效值（没设过 = 默认 30000–39999）。
+		"user_ports": func() map[string]any {
+			start, end := s.userPortRange()
+			return map[string]any{"start": start, "end": end}
+		}(),
 		"panel_cert":    s.panelCertStatus(),
 		"version":       Version, "latest_version": latest, "update_available": update,
 	}))
@@ -67,6 +72,36 @@ func (s *Server) panelCertStatus() map[string]any {
 		"self_signed": info.SelfSigned, "expires": expires,
 		"last_error": s.cfg.PanelCertLastErr,
 	}
+}
+
+// ---------- 每用户端口段（v1.3.25） ----------
+
+// handleUserPortsSet 改每用户端口段：按人转发从这个段里分配监听端口
+// （默认 30000–39999）。只校验范围合法（1–65535、起 <= 止）；已分配
+// 的转发不受影响（端口照常工作，新分配才用新段）；段里撞上落地监听
+// 端口或面板端口时分配会自动避让，不用在这里拦。
+func (s *Server) handleUserPortsSet(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Start int `json:"start"`
+		End   int `json:"end"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	if req.Start < 1 || req.End > 65535 || req.Start > req.End {
+		writeJSON(w, 400, errResp("端口段不对：起止都要在 1–65535 内，且起始 <= 结束"))
+		return
+	}
+	oldStart, oldEnd := s.userPortRange()
+	s.cfg.UserPortStart, s.cfg.UserPortEnd = req.Start, req.End
+	if err := s.saveConfig(); err != nil {
+		s.cfg.UserPortStart, s.cfg.UserPortEnd = oldStart, oldEnd
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	s.audit(s.currentUser(r), "改每用户端口段", fmt.Sprintf("%d–%d", req.Start, req.End), "成功", "已分配的转发不受影响，新分配才用新段")
+	writeJSON(w, 200, okResp(map[string]any{"start": req.Start, "end": req.End}))
 }
 
 // ---------- 面板名称（v1.3.4） ----------

@@ -354,10 +354,65 @@ func (s *Server) ensureTrafficChains(landings []Landing) error {
 				run("-A", "RELAY-PANEL-OUT", "-p", p.Proto, "--sport", strconv.Itoa(p.Listen), "-j", "RETURN")
 			}
 		}
+		// 每用户转发端口（v1.3.25）：按订阅剩余量加 quota（即时断流，
+// 停用的转发没有 endpoint，规则也跳过）。quota 与落地级一样按
+// （协议，端口）单条规则计，tcp/udp 各一份；权威停用靠
+// disableUserForwards 撤 endpoints。
+		byAddr := map[string]Landing{}
+		for _, l := range landings {
+			byAddr[l.Landing] = l
+		}
+		for _, f := range s.cfg.UserForwards {
+			if f.Disabled {
+				continue
+			}
+			l, ok := byAddr[f.LandingAddr]
+			if !ok {
+				continue
+			}
+			limit, mode, _, _, _, _, ok := s.userLimitForKey(f.Key)
+			if !ok || limit <= 0 {
+				continue
+			}
+			rec := s.userTraffic.get(f.Key)
+			remaining := limit - userTrafficUsed(rec, mode)
+			if remaining < 0 {
+				remaining = 0
+			}
+			for _, p := range s.userForwardEndpoints(l, f.ListenPort) {
+				run("-A", "RELAY-PANEL-IN", "-p", p.Proto, "--dport", strconv.Itoa(p.Listen), "-m", "quota", "--quota", strconv.FormatInt(remaining, 10), "-j", "RETURN")
+				run("-A", "RELAY-PANEL-IN", "-p", p.Proto, "--dport", strconv.Itoa(p.Listen), "-j", "DROP")
+				run("-A", "RELAY-PANEL-OUT", "-p", p.Proto, "--sport", strconv.Itoa(p.Listen), "-m", "quota", "--quota", strconv.FormatInt(remaining, 10), "-j", "RETURN")
+				run("-A", "RELAY-PANEL-OUT", "-p", p.Proto, "--sport", strconv.Itoa(p.Listen), "-j", "DROP")
+			}
+		}
 	}
 	run("-A", "RELAY-PANEL-IN", "-j", "RETURN")
 	run("-A", "RELAY-PANEL-OUT", "-j", "RETURN")
 	return nil
+}
+
+// readTrafficCounters 读一次本机流量计数（iptables-save -c 或 nft -j），
+// 返回 map["proto:port"]=[inBytes,outBytes]；无后端或读失败返回 nil。
+// 落地采样与按人采样共用。
+func readTrafficCounters() map[string][2]int64 {
+	be := detectTrafficBackend()
+	switch be.Kind {
+	case "iptables":
+		r, err := runCmdOut(nil, 10*time.Second, "iptables-save", "-c")
+		if err != nil {
+			return nil
+		}
+		return parseIptablesSave(r.Stdout)
+	case "nftables":
+		r, err := runCmdOut(nil, 10*time.Second, "nft", "-j", "list", "ruleset")
+		if err != nil {
+			return nil
+		}
+		return parseNftCounters(r.Stdout)
+	default:
+		return nil
+	}
 }
 
 // sampleTraffic 一次采样：iptables-save -c 解析增量累加到 traffic.json。
@@ -369,22 +424,8 @@ func (s *Server) sampleTraffic() {
 	if err != nil || rc == nil {
 		return
 	}
-	be := detectTrafficBackend()
-	var counters map[string][2]int64
-	switch be.Kind {
-	case "iptables":
-		r, err := runCmdOut(nil, 10*time.Second, "iptables-save", "-c")
-		if err != nil {
-			return
-		}
-		counters = parseIptablesSave(r.Stdout)
-	case "nftables":
-		r, err := runCmdOut(nil, 10*time.Second, "nft", "-j", "list", "ruleset")
-		if err != nil {
-			return
-		}
-		counters = parseNftCounters(r.Stdout)
-	default:
+	counters := readTrafficCounters()
+	if len(counters) == 0 {
 		return
 	}
 	// 按落地分：每个落地的端口集合对应一组计数
