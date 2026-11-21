@@ -3,7 +3,7 @@
 > 本教程覆盖**安装、卸载/删除、排查运维、可视化面板**四部分，所有命令都可直接复制跑。
 > 简版说明看 [README.md](README.md)。中转核心是 [realm](https://github.com/zhboner/realm)（v2.9.6，Rust 纯转发）。
 >
-> 先记住架构：客户端 → **中转机（realm 原样转发，不解密）** → 落地机（你现成的 [tiktok-node](https://github.com/nbbk/tiktok-node) / [sing-box-node](https://github.com/nbbk/sing-box-node)）。
+> 先记住架构：客户端 → **中转机（realm 原样转发，不解密）** → 落地机（你现成的 [landing-node](https://github.com/nbbk/landing-node)，Xray 或 sing-box 核心）。
 > TLS 握手是客户端和落地机之间端到端完成的，中转看不到、也改不了任何内容。
 
 ---
@@ -49,7 +49,7 @@
 
 ### 总流程（照这个顺序做）
 
-1. 落地机装 tiktok-node / sing-box-node（填域名），确认节点能用。
+1. 落地机装 landing-node（填域名，安装第一步先选 Xray 或 sing-box 核心），确认节点能用。
 2. 落地机跑 `landing.sh` 检查，记下落地 IP。
 3. 中转机装 relay-node（填落地 IP、选预设），最后粘贴原链接拿双节点。
 4. 域名 A 记录改指到中转机 IP，等 DNS 生效。
@@ -64,7 +64,7 @@
 | 项目 | 要求 |
 |---|---|
 | 中转服务器 | Ubuntu / Debian，root 权限，x86_64 或 aarch64 架构 |
-| 落地服务器 | tiktok-node 或 sing-box-node 已在跑，记下它的 IP 或域名 |
+| 落地服务器 | landing-node（Xray 或 sing-box 核心）已在跑，记下它的 IP 或域名 |
 | 域名 | 一个已解析到落地的域名（改指用；没有域名也能中转，见 1.5 第二种用法） |
 | 端口 | 中转机要转发的端口全部空闲（安装脚本装前会自动检查，被占会直接退出） |
 | 云厂商安全组 | 中转机放行要转发的端口，**TCP 和 UDP 分开算**：放了 8388/TCP 不等于放了 8388/UDP；落地机也要放行这些端口给中转机访问 |
@@ -86,14 +86,14 @@ uname -m
 curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/landing.sh | bash
 ```
 
-输出示例（tiktok-node 在跑）：
+输出示例（landing-node Xray 核心在跑）：
 
 ```text
 == 1/4 落地节点容器 ==
 运行中的相关容器：
 tiktok-caddy Up 3 days
 tiktok-xray Up 3 days
-识别到：tiktok-node（Xray），中转预设选 1
+识别到：landing-node（Xray 核心），中转预设选 1
 
 == 2/4 端口监听 ==
   [监听中] 80/tcp
@@ -106,7 +106,7 @@ tiktok-xray Up 3 days
 
 == 4/4 给中转侧安装用的信息（照抄过去填） ==
   落地地址：203.0.113.1
-  预设：1（tiktok-node：80 + 443）
+  预设：1（landing-node Xray 核心：80 + 443）
   落地不用装任何东西，也不用重启；装完中转后把域名 A 记录改指到中转 IP 即可。
 ```
 
@@ -158,14 +158,14 @@ LANDING=203.0.113.1 PRESET=2 bash install.sh
 
 ```text
 转发预设：
-  1) tiktok-node（Xray）：80 + 443（TCP）  ← 默认，直接回车就是 1
-  2) sing-box-node：80 + 443（TCP）+ 8388（TCP+UDP）+ 8443（UDP）+ 8444（UDP）
+  1) landing-node（Xray 核心）：80 + 443（TCP）  ← 默认，直接回车就是 1
+  2) landing-node（sing-box 核心）：80 + 443（TCP）+ 8388（TCP+UDP）+ 8443（UDP）+ 8444（UDP）
   3) 自定义端口（自己输）
 请输入你的选择：
 ② 选预设 [1/2/3]，直接回车选默认 1：
 ```
 
-填写示例（落地是 tiktok-node，落地 IP `203.0.113.1`，标准模式）：
+填写示例（落地是 landing-node Xray 核心，落地 IP `203.0.113.1`，标准模式）：
 
 ```text
 请填写你的落地 IP 或域名：
@@ -174,7 +174,7 @@ LANDING=203.0.113.1 PRESET=2 bash install.sh
 ② 选预设 [1/2/3]，直接回车选默认 1：1
 ```
 
-落地是 sing-box-node 就选 `2`，再问 TLS 还是明文时直接回车就是 TLS（默认 1）、明文选 `2`。
+落地是 landing-node sing-box 核心就选 `2`，再问 TLS 还是明文时直接回车就是 TLS（默认 1）、明文选 `2`。
 
 - 选 `2` 会再问落地是 TLS 模式还是明文模式：TLS 选 `1`；明文（VLESS 8080 / Trojan 8081 / VMess 8082）选 `2`。
 - 选 `3` 自定义：输入端口，逗号分隔；监听端口默认与落地端口相同，如需改监听端口用 `监听:落地` 的写法，例如 `443,8388,8443:9443` 表示监听 8443 转到落地 9443；再问要不要同时转 UDP（`y` 就是全部端口都加 UDP）。
@@ -182,7 +182,7 @@ LANDING=203.0.113.1 PRESET=2 bash install.sh
 验证：屏幕打印的 `预设` 和 `转发` 两行与你的落地一致，例如：
 
 ```text
-预设：sing-box-node TLS 模式
+预设：landing-node（sing-box 核心）TLS 模式
 转发：tcp:80:80 tcp:443:443 tcp:8388:8388 udp:8388:8388 udp:8443:8443 udp:8444:8444
 ```
 
@@ -357,14 +357,14 @@ proxies:
 
 中转转发的是端口，不是协议——下面是两套节点各协议对应的端口，转哪个取决于你用的协议：
 
-**tiktok-node（Xray，预设 1）：**
+**landing-node（Xray 核心，预设 1）：**
 
 | 协议 | 端口 | 传输 | 中转转发 |
 |---|---|---|---|
 | VLESS + WS + TLS | 443 | TCP | 是（预设 1） |
 | Caddy / 证书续签 | 80 | TCP | 是（预设 1） |
 
-**sing-box-node（预设 2）：**
+**landing-node（sing-box 核心，预设 2）：**
 
 | 协议 | 端口 | 传输 | TLS 模式 | 明文模式 |
 |---|---|---|---|---|
@@ -492,15 +492,15 @@ RELAY_MODE=door RELAY_ADDR=203.0.113.9 bash install.sh 203.0.113.1 1
    # 应返回 203.0.113.1
    ```
 
-4. 重启落地 Caddy 触发续签（在落地机上跑，tiktok-node 和 sing-box-node 的容器名不一样）：
+4. 重启落地 Caddy 触发续签（在落地机上跑，Xray 与 sing-box 核心的容器名不一样）：
 
    ```bash
-   # tiktok-node（落地机）：
-   cd ~/tiktok-node-kit && docker compose restart caddy
+   # Xray 核心（落地机，新装在 ~/landing-node-kit，旧版在 ~/tiktok-node-kit）：
+   cd ~/landing-node-kit && docker compose restart caddy
    # 或：docker restart tiktok-caddy
 
-   # sing-box-node（落地机）：
-   cd ~/sing-box-node-kit && docker compose restart caddy
+   # sing-box 核心（落地机，新装在 ~/landing-node-kit，旧版在 ~/sing-box-node-kit）：
+   cd ~/landing-node-kit && docker compose restart caddy
    # 或：docker restart singbox-caddy
    ```
 
@@ -975,7 +975,7 @@ systemctl restart realm
 bash check.sh
 ```
 
-如果新落地同时换了节点类型（例如从 tiktok-node 换成 sing-box-node），端口表也变了：直接重跑 install.sh 重新选预设比重写配置更省事。
+如果新落地同时换了节点类型（例如从 Xray 核心换成 sing-box 核心），端口表也变了：直接重跑 install.sh 重新选预设比重写配置更省事。
 
 ### 12. 怎么临时绕过中转，直连落地做对比测试
 

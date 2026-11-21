@@ -951,8 +951,8 @@ function editLanding(index) {
     '<label>落地 IP 或域名</label><input id="edit-landing" value="' + esc(l.landing) + '">' +
     '<label>名称 / 备注 <span class="hint">显示名，空着显示落地地址；改名只改显示，不动转发配置</span></label><input id="edit-name" value="' + esc(l.name && l.name !== l.landing ? l.name : '') + '" placeholder="' + esc(l.landing) + '" maxlength="64">' +
     '<label>预设</label><select id="edit-preset">' +
-    '<option value="1"' + (l.preset === '1' ? ' selected' : '') + '>预设 1：tiktok-node（Xray）</option>' +
-    '<option value="2"' + (l.preset === '2' ? ' selected' : '') + '>预设 2：sing-box-node</option>' +
+    '<option value="1"' + (l.preset === '1' ? ' selected' : '') + '>预设 1：landing-node（Xray 核心）</option>' +
+    '<option value="2"' + (l.preset === '2' ? ' selected' : '') + '>预设 2：landing-node（sing-box 核心）</option>' +
     '<option value="3"' + (l.preset === '3' ? ' selected' : '') + '>预设 3：自定义端口</option></select>' +
     '<label>模式</label><select id="edit-mode">' +
     '<option value="standard"' + (l.mode !== 'door' ? ' selected' : '') + '>标准模式</option>' +
@@ -4132,7 +4132,7 @@ function centralAddLanding(id) {
     '<label>名称 / 备注 <span class="hint">选填，显示名，如 香港-01；空着显示落地地址</span></label><input id="central-add-name" placeholder="如 香港-01" maxlength="64">' +
     '<label>原始节点链接 <span class="hint">选填，落地机上生成的节点链接（vless:// 等开头）；填了卡片上直接出中转链接与二维码，不填以后也能在管理里补粘贴</span></label><input id="central-add-orig-link" placeholder="vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443?security=tls&sni=example.com#示例">' +
     '<label>节点名称 <span class="hint">选填，生成链接时的备注名；空着用原始链接自己的备注名</span></label><input id="central-add-link-name" placeholder="如 香港-01" maxlength="64">' +
-    '<label>预设 <span class="hint">落地机装的节点类型</span></label><select id="central-add-preset"><option value="1">预设 1：tiktok-node（Xray）</option><option value="2">预设 2：sing-box-node</option><option value="3">预设 3：自定义端口</option></select>' +
+    '<label>预设 <span class="hint">落地机装的节点类型</span></label><select id="central-add-preset"><option value="1">预设 1：landing-node（Xray 核心）</option><option value="2">预设 2：landing-node（sing-box 核心）</option><option value="3">预设 3：自定义端口</option></select>' +
     '<div id="central-add-sb-wrap" class="hidden"><label>sing-box 模式</label><select id="central-add-sb-mode"><option value="1">TLS（443）</option><option value="2">明文（8080）</option></select></div>' +
     '<div id="central-add-custom-wrap" class="hidden"><label>自定义端口 <span class="hint">必填，逗号分隔，如 443,8388；可写 监听:落地，如 10443:443</span></label><input id="central-add-custom" placeholder="443,8388"></div>' +
     '<label>模式 <span class="hint">任意门：节点域名永远指落地，中转只做端口转发</span></label><select id="central-add-mode"><option value="standard" selected>标准模式</option><option value="door">任意门模式</option></select>' +
@@ -4313,8 +4313,8 @@ function centralEditLanding(remoteId, index, l) {
     '<label>落地 IP 或域名</label><input id="central-edit-landing" value="' + esc(l.landing) + '">' +
     '<label>名称 / 备注 <span class="hint">显示名，空着显示落地地址；改名只改显示，不动转发配置</span></label><input id="central-edit-name" value="' + esc(l.name && l.name !== l.landing ? l.name : '') + '" placeholder="' + esc(l.landing) + '" maxlength="64">' +
     '<label>预设</label><select id="central-edit-preset">' +
-    '<option value="1"' + (l.preset === '1' ? ' selected' : '') + '>预设 1：tiktok-node（Xray）</option>' +
-    '<option value="2"' + (l.preset === '2' ? ' selected' : '') + '>预设 2：sing-box-node</option>' +
+    '<option value="1"' + (l.preset === '1' ? ' selected' : '') + '>预设 1：landing-node（Xray 核心）</option>' +
+    '<option value="2"' + (l.preset === '2' ? ' selected' : '') + '>预设 2：landing-node（sing-box 核心）</option>' +
     '<option value="3"' + (l.preset === '3' ? ' selected' : '') + '>预设 3：自定义端口</option></select>' +
     '<label>模式</label><select id="central-edit-mode">' +
     '<option value="standard"' + (l.mode !== 'door' ? ' selected' : '') + '>标准模式</option>' +

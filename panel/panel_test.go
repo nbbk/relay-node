@@ -664,7 +664,7 @@ func TestMobileDrawerAndUpdatePoll(t *testing.T) {
 	body := get("/").Body.String()
 	for _, want := range []string{
 		`id="menu-btn"`, `id="scrim"`, `id="sidebar-close"`,
-		`https://github.com/nbbk/relay-node`, `https://github.com/nbbk/tiktok-node`, `https://github.com/nbbk/sing-box-node`,
+		`https://github.com/nbbk/relay-node`, `https://github.com/nbbk/landing-node`,
 		`target="_blank"`,
 	} {
 		if !strings.Contains(body, want) {

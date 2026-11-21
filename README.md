@@ -2,14 +2,13 @@
 
 **核心：realm**（[zhboner/realm](https://github.com/zhboner/realm)，Rust 写的纯 TCP/UDP 转发，单二进制、内存几 MB、零拷贝）。
 
-> 落地节点看这里：[tiktok-node](https://github.com/nbbk/tiktok-node)（核心：Xray，VLESS + WS + TLS 单协议）｜[sing-box-node](https://github.com/nbbk/sing-box-node)（核心：sing-box，6 协议合一）。中转只转发、不解密、不改协议，落地不用装任何东西。
+> 落地节点看这里：[landing-node](https://github.com/nbbk/landing-node)（安装第一步先选核心：Xray 单协议，或 sing-box 6 协议合一）。中转只转发、不解密、不改协议，落地不用装任何东西。
 
 > 📖 详细教程（安装、卸载、排查运维全流程）：**[TUTORIAL.md](TUTORIAL.md)**
 
 ## 相关仓库
 
-- [tiktok-node](https://github.com/nbbk/tiktok-node)：落地节点，Xray 内核，VLESS + WS + TLS 单协议
-- [sing-box-node](https://github.com/nbbk/sing-box-node)：落地节点，sing-box 内核，VLESS/Trojan/VMess/Shadowsocks/Hysteria2/TUIC 6 协议合一
+- [landing-node](https://github.com/nbbk/landing-node)：落地节点，安装第一步先选核心——Xray（VLESS + WS + TLS 单协议）或 sing-box（VLESS/Trojan/VMess/Shadowsocks/Hysteria2/TUIC 6 协议合一）
 - [relay-node](https://github.com/nbbk/relay-node)（本仓库）：中转，realm 纯转发，落地线路不好时提速
 
 ## 这是什么
@@ -35,7 +34,7 @@
 ## 前置条件
 
 - 一台中转服务器（Ubuntu/Debian，root 权限，x86_64 或 aarch64），离用户近、到落地线路好（香港/新加坡/日本优先）
-- 落地服务器上节点已在跑（tiktok-node 或 sing-box-node），记下它的 IP 或域名
+- 落地服务器上节点已在跑（landing-node，Xray 或 sing-box 核心），记下它的 IP 或域名
 - 中转机放行要转发的端口（云厂商安全组 + ufw）
 
 ## 使用步骤
@@ -56,7 +55,7 @@ curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/landing.sh | b
 curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/install.sh | bash
 ```
 
-预设：`1` = tiktok-node（80 + 443）｜`2` = sing-box-node（TLS：80 + 443 + 8388 + 8443 + 8444，含 UDP；明文：8080–8082 + 8388）｜`3` = 自定义端口。装完自动跑 `check.sh` 自检。
+预设：`1` = landing-node（Xray 核心，80 + 443）｜`2` = landing-node（sing-box 核心，TLS：80 + 443 + 8388 + 8443 + 8444，含 UDP；明文：8080–8082 + 8388）｜`3` = 自定义端口。装完自动跑 `check.sh` 自检。
 
 > **只想先装面板？不用先装中转**：直接跑下面这条命令只装面板，装完打开面板添加第一个落地，中转会自动装好：
 >
@@ -66,7 +65,7 @@ curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/install.sh | b
 
 装完最后还会问一句要不要装可视化面板（见下面“可视化面板”），选 `y` 就装好，浏览器里点几下就能管中转；不装也不影响转发。
 
-填写示例（落地是 tiktok-node，落地 IP `203.0.113.1`）：
+填写示例（落地是 landing-node Xray 核心，落地 IP `203.0.113.1`）：
 
 ```text
 请填写你的落地 IP 或域名：
@@ -75,7 +74,7 @@ curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/install.sh | b
 ② 选预设 [1/2/3]，直接回车选默认 1：1
 ```
 
-落地是 sing-box-node 就选 `2`（再问 TLS 还是明文：TLS 选 `1`）。
+落地是 landing-node sing-box 核心就选 `2`（再问 TLS 还是明文：TLS 选 `1`）。
 
 装完最后一步会问你要不要粘贴原节点链接，粘贴后直接给出直连 + 中转两条链接和二维码：
 
@@ -212,14 +211,14 @@ vless://11111111-2222-3333-4444-555555555555@example.com:443?encryption=none&sec
    dig example.com +short
    # 应返回 203.0.113.1
    ```
-4. 重启落地 Caddy 触发续签（在落地机上跑，tiktok-node 和 sing-box-node 的容器名不一样）：
+4. 重启落地 Caddy 触发续签（在落地机上跑，Xray 与 sing-box 核心的容器名不一样）：
    ```bash
-   # tiktok-node（落地机）：
-   cd ~/tiktok-node-kit && docker compose restart caddy
+   # Xray 核心（落地机，新装在 ~/landing-node-kit，旧版在 ~/tiktok-node-kit）：
+   cd ~/landing-node-kit && docker compose restart caddy
    # 或：docker restart tiktok-caddy
 
-   # sing-box-node（落地机）：
-   cd ~/sing-box-node-kit && docker compose restart caddy
+   # sing-box 核心（落地机，新装在 ~/landing-node-kit，旧版在 ~/sing-box-node-kit）：
+   cd ~/landing-node-kit && docker compose restart caddy
    # 或：docker restart singbox-caddy
    ```
 5. 核对新到期日（剩余天数应回到 90 天左右）：

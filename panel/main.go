@@ -26,20 +26,18 @@ var versionFile string
 var Version = strings.TrimSpace(versionFile)
 
 const (
-	// LANDING_ADD_NODE_CMD_* 给落地加节点向导第 1 步的命令模板，
+	// LANDING_ADD_NODE_CMD 给落地加节点向导第 1 步的命令模板，
 	// <子域名> 由调用方替换；面板够不着落地机，只生成命令。
-	// 落地是 tiktok-node 还是 sing-box-node 按该落地的预设选（1=tiktok，2=sing-box，3=自定义默认 tiktok）。
-	LANDING_ADD_NODE_CMD_TIKTOK  = "curl -fsSL https://raw.githubusercontent.com/nbbk/tiktok-node/main/install.sh | bash -s -- --add-node <子域名>"
-	LANDING_ADD_NODE_CMD_SINGBOX = "curl -fsSL https://raw.githubusercontent.com/nbbk/sing-box-node/main/install.sh | bash -s -- --add-node <子域名>"
+	// 两核心共用同一个 landing-node 一键命令（首装时第一步选核心；
+	// --add-node 时按落地已装核心走，不用按预设区分）。
+	LANDING_ADD_NODE_CMD = "curl -fsSL https://raw.githubusercontent.com/nbbk/landing-node/main/install.sh | bash -s -- --add-node <子域名>"
 )
 
-// landingAddNodeCmd 按落地预设生成加节点命令（preset 2 走 sing-box-node，其余走 tiktok-node）。
+// landingAddNodeCmd 按落地预设生成加节点命令（两核心共用同一个 landing-node 一键命令，
+// --add-node 时按落地已装核心走；preset 参数保留是为了调用方不用改签名）。
 func landingAddNodeCmd(preset, subdomain string) string {
-	tpl := LANDING_ADD_NODE_CMD_TIKTOK
-	if preset == "2" {
-		tpl = LANDING_ADD_NODE_CMD_SINGBOX
-	}
-	return strings.ReplaceAll(tpl, "<子域名>", subdomain)
+	_ = preset
+	return strings.ReplaceAll(LANDING_ADD_NODE_CMD, "<子域名>", subdomain)
 }
 
 // Env 运行环境（环境变量覆盖，供测试与运维）。

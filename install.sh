@@ -104,7 +104,7 @@ ask() {
   printf -v "$varname" '%s' "$ans"
 }
 
-# ---------- 端口占用预检（ss -> netstat -> /proc 回退，与 tiktok/sing-box 包一致） ----------
+# ---------- 端口占用预检（ss -> netstat -> /proc 回退，与 landing-node 包一致） ----------
 port_in_use() {
   local proto="$1" port="$2"
   local hex
@@ -1522,8 +1522,8 @@ collect_landing() { # $1=标题（如 "1/6 落地目标与转发预设"），收
   if [ -z "$PRESET" ]; then
     echo ""
     echo "转发预设："
-    echo "  1) tiktok-node（Xray）：80 + 443（TCP）  ← 默认，直接回车就是 1"
-    echo "  2) sing-box-node：80 + 443（TCP）+ 8388（TCP+UDP）+ 8443（UDP）+ 8444（UDP）"
+    echo "  1) landing-node（Xray 核心）：80 + 443（TCP）  ← 默认，直接回车就是 1"
+    echo "  2) landing-node（sing-box 核心）：80 + 443（TCP）+ 8388（TCP+UDP）+ 8443（UDP）+ 8444（UDP）"
     echo "  3) 自定义端口（自己输）"
     echo "请输入你的选择："
     ask "② 选预设 [1/2/3]，直接回车选默认 1： " PRESET "1"
@@ -1535,19 +1535,19 @@ collect_landing() { # $1=标题（如 "1/6 落地目标与转发预设"），收
   case "$PRESET" in
     1)
       PORTS="tcp:80:80 tcp:443:443"
-      MODE_NOTE="tiktok-node（Xray）"
+      MODE_NOTE="landing-node（Xray 核心）"
       ;;
     2)
       echo "  1) TLS 模式（443）  ← 默认，直接回车就是 1"
       echo "  2) 明文模式（8080-8082）"
       echo "请输入你的选择："
-      ask "落地 sing-box-node 是 TLS 还是明文？[1/2]，直接回车选默认 1（TLS）： " SB_MODE "1"
+      ask "落地 sing-box 核心是 TLS 还是明文？[1/2]，直接回车选默认 1（TLS）： " SB_MODE "1"
       if [ "$SB_MODE" = "2" ]; then
         PORTS="tcp:8080:8080 tcp:8081:8081 tcp:8082:8082 tcp:8388:8388 udp:8388:8388"
-        MODE_NOTE="sing-box-node 明文模式（HY2/TUIC 不启用）"
+        MODE_NOTE="landing-node（sing-box 核心）明文模式（HY2/TUIC 不启用）"
       else
         PORTS="tcp:80:80 tcp:443:443 tcp:8388:8388 udp:8388:8388 udp:8443:8443 udp:8444:8444"
-        MODE_NOTE="sing-box-node TLS 模式"
+        MODE_NOTE="landing-node（sing-box 核心）TLS 模式"
       fi
       ;;
     3)

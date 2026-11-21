@@ -849,12 +849,12 @@ func modeNoteFor(preset, sbMode string, door bool) string {
 	var note string
 	switch preset {
 	case "1":
-		note = "tiktok-node（Xray）"
+		note = "landing-node（Xray 核心）"
 	case "2":
 		if sbMode == "2" {
-			note = "sing-box-node 明文模式（HY2/TUIC 不启用）"
+			note = "landing-node（sing-box 核心）明文模式（HY2/TUIC 不启用）"
 		} else {
-			note = "sing-box-node TLS 模式"
+			note = "landing-node（sing-box 核心）TLS 模式"
 		}
 	default:
 		note = "自定义端口"

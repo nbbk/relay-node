@@ -53,8 +53,8 @@ else
   echo "本机没有 docker 命令；如果节点是别的方式跑的，下面只按端口检查。"
 fi
 case "$FOUND_NODE" in
-  tiktok) echo "识别到：tiktok-node（Xray），中转预设选 1" ;;
-  singbox) echo "识别到：sing-box-node，中转预设选 2" ;;
+  tiktok) echo "识别到：landing-node（Xray 核心），中转预设选 1" ;;
+  singbox) echo "识别到：landing-node（sing-box 核心），中转预设选 2" ;;
   *) echo "没识别到已知的节点容器：可能节点没启动，或容器改了名；下面按端口继续检查。" ;;
 esac
 
@@ -80,8 +80,8 @@ echo ""
 echo "== 4/4 给中转侧安装用的信息（照抄过去填） =="
 echo "  落地地址：$PUB_IP"
 case "$FOUND_NODE" in
-  tiktok) echo "  预设：1（tiktok-node：80 + 443）" ;;
-  singbox) echo "  预设：2（sing-box-node：按落地是 TLS 还是明文再选）" ;;
+  tiktok) echo "  预设：1（landing-node Xray 核心：80 + 443）" ;;
+  singbox) echo "  预设：2（landing-node sing-box 核心：按落地是 TLS 还是明文再选）" ;;
   *) echo "  预设：按上面监听中的端口选 1/2，端口对不上就选 3 自定义" ;;
 esac
 echo "  落地不用装任何东西，也不用重启；装完中转后把域名 A 记录改指到中转 IP 即可。"

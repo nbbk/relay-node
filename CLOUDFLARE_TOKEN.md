@@ -54,7 +54,7 @@ curl "https://api.cloudflare.com/client/v4/user/tokens/verify" \
 - 也可以提前用环境变量预设（会进 shell 历史，交互粘贴更安全）：
 
 ```bash
-CERT_METHOD=dns CLOUDFLARE_API_TOKEN=你的令牌 curl -fsSL https://raw.githubusercontent.com/nbbk/tiktok-node/main/install.sh | bash -s example.com
+CERT_METHOD=dns CLOUDFLARE_API_TOKEN=你的令牌 curl -fsSL https://raw.githubusercontent.com/nbbk/landing-node/main/install.sh | bash -s example.com
 ```
 
 - **中转面板**：设置 → Cloudflare Token 里填进去，再开 HTTPS 绑域名。
