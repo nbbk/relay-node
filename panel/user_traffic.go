@@ -696,6 +696,75 @@ func removeUserEndpointsFromToml(data []byte, ports map[int]bool) []byte {
 	return []byte(strings.Join(kept, "\n\n"))
 }
 
+// removeOrphanUserEndpoints 清掉 config.toml 里无主的按人转发段
+// （v1.3.29，恢复后调用）：孤儿 = 监听端口在用户端口段内、不是共享
+// 落地的段、也不在当前 UserForwards 的 ListenPort 集合内。applyUserForwards
+// 与 reconcileUserForwards 都删不掉它们（删除集合只来自 UserForwards，
+// 为空时删空；reconcile 只处理现存订阅自己的 Key），所以恢复后单独清。
+// 只改文件不重启（调用方 applyImportPayload 末尾统一 restartRealm）。
+// 返回清掉的段数。
+func (s *Server) removeOrphanUserEndpoints() int {
+	rc, _, err := s.readRelayConf()
+	if err != nil || rc == nil {
+		return 0
+	}
+	tomlData, err := s.readConfigToml()
+	if err != nil {
+		return 0
+	}
+	shared := map[int]bool{}
+	for _, l := range rc.Landings {
+		for _, p := range l.Ports {
+			shared[p.Listen] = true
+		}
+	}
+	start, end := s.userPortRange()
+	owned := map[int]bool{}
+	for _, f := range s.cfg.UserForwards {
+		owned[f.ListenPort] = true
+	}
+	orphans := map[int]bool{}
+	for _, seg := range strings.Split(string(tomlData), "\n\n") {
+		if !strings.Contains(seg, "[[endpoints]]") {
+			continue
+		}
+		listen := tomlEndpointListen(seg)
+		if listen > 0 && listen >= start && listen <= end && !shared[listen] && !owned[listen] {
+			orphans[listen] = true
+		}
+	}
+	if len(orphans) == 0 {
+		return 0
+	}
+	newToml := removeUserEndpointsFromToml(tomlData, orphans)
+	if !strings.Contains(string(newToml), "[[endpoints]]") {
+		newToml = append(ensureTomlNewline(newToml), []byte("\n[[endpoints]]\nlisten = \"127.0.0.1:9\"\nremote = \"127.0.0.1:9\"\n")...)
+	}
+	if string(newToml) == string(tomlData) {
+		return 0
+	}
+	if err := s.writeConfigTomlAtomic(newToml); err != nil {
+		return 0
+	}
+	return len(orphans)
+}
+
+// tomlEndpointListen 解析一个 [[endpoints]] 段的监听端口（与
+// removeUserEndpointsFromToml 同一套解析口径）。
+func tomlEndpointListen(seg string) int {
+	for _, line := range strings.Split(seg, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "listen = ") {
+			v := strings.Trim(strings.TrimPrefix(line, "listen = "), "\"")
+			if _, p, err := net.SplitHostPort(v); err == nil {
+				n, _ := strconv.Atoi(p)
+				return n
+			}
+		}
+	}
+	return 0
+}
+
 // applyUserForwards 按当前 UserForwards 重建 config.toml 里的用户
 // endpoints：先删掉全部用户端口的段，再把已启用的加回去；有变化才
 // 写文件并重启 realm。调用方须持 opMu。

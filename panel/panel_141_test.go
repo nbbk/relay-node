@@ -627,9 +627,11 @@ func TestRemoteBackupRestore141(t *testing.T) {
 	if rec := restore("restore-passphrase-1"); rec.Code != 200 {
 		t.Fatalf("对口令恢复应 200，实际 %d：%s", rec.Code, rec.Body.String())
 	}
-	// u1 回来了（令牌哈希为空，备份里本来就不含令牌，须重新生成）
-	if len(s.cfg.SubUsers) != 1 || s.cfg.SubUsers[0].ID != "u1" || s.cfg.SubUsers[0].TokenHash != "" {
-		t.Fatalf("u1 应恢复回来且令牌哈希为空，实际 %+v", s.cfg.SubUsers)
+	// v1.3.29：设了迁移口令时备份里含令牌哈希，口令对就随备份恢复回来，
+	// 旧订阅链接继续能用（未设口令时备份里不含令牌，恢复后哈希为空、须轮换，
+	// 见 panel_1329_test.go 的无口令一档）。
+	if len(s.cfg.SubUsers) != 1 || s.cfg.SubUsers[0].ID != "u1" || s.cfg.SubUsers[0].TokenHash != "hash-aaa" {
+		t.Fatalf("u1 应恢复回来且令牌哈希随备份回来，实际 %+v", s.cfg.SubUsers)
 	}
 	// 键校验：乱下的键 → 400
 	req := httptest.NewRequest("POST", "/api/v1/remote-backup/restore/r2/..%2Fconfig.json",

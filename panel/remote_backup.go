@@ -1047,19 +1047,28 @@ func (s *Server) handleRemoteBackupRestore(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer s.opMu.Unlock()
+	oldSubPath := s.subPath()
+	var notes []string
 	warn, ferr := s.applyImportPayload(imp, importApplyOpts{
 		preBackupLabel: "恢复异地备份前自动备份", auditAction: "恢复异地备份",
-		auditDetail:       destName(kind) + " " + key + "；密码哈希与 Telegram token 保持本机原值；订阅用户按 ID 保留现有令牌，不在备份里的用户会被移除，新用户需重新生成令牌",
+		auditDetail:       destName(kind) + " " + key + "；订阅用户按 ID 保留现有令牌，不在备份里的用户会被移除；迁移信封与远程备份用同一口令，口令已输过不再多问",
 		restartWarnPrefix: "配置已恢复，但重启 realm 失败：",
 		verifyWarnPrefix:  "恢复后端口校验失败：", user: s.currentUser(r),
+		migrationPassphrase: req.Passphrase, notes: &notes,
 	})
 	if ferr != nil {
 		writeJSON(w, ferr.status, errResp(ferr.msg))
 		return
 	}
+	if msg := s.restartForSubPathChange(oldSubPath); msg != "" {
+		notes = append(notes, msg)
+		if warn != "" {
+			warn += "；" + msg
+		}
+	}
 	if warn != "" {
 		writeJSON(w, 200, errResp(warn))
 		return
 	}
-	writeJSON(w, 200, okResp(nil))
+	writeJSON(w, 200, okResp(map[string]any{"notes": notes}))
 }

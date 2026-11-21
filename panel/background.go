@@ -382,6 +382,11 @@ func (s *Server) maybeScheduledBackup() {
 	}
 	id, err := s.runScheduledBackup("自动定时备份")
 	if err != nil {
+		// v1.3.29：定时备份失败不再静默——记审计 + 发 Telegram，与异地
+		// 上传失败同等待遇；否则磁盘满/权限错会无声无息丢掉当天备份。
+		// 开关关闭仍静默返回（预期行为，与报错区分开，见函数开头）。
+		s.audit("system", "自动定时备份", "", "失败", err.Error())
+		s.sendTelegram("自动定时备份失败：" + err.Error())
 		return
 	}
 	s.audit("system", "自动定时备份", "", "成功", "")

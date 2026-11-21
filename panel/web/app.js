@@ -2062,11 +2062,17 @@ function initSettings() {
       $('#import-result').innerHTML = '<div class="error-box">文件格式不正确：缺少 relay_conf / config_toml / state，不是面板导出的文件。</div>';
       e.target.value = ''; return;
     }
-    const ok = await confirmModal('导入配置', '<p>导入会覆盖当前全部落地与设置（导入前会自动备份当前配置；密码与 Telegram Token 保持本机原值，不随导入走）。确定导入 <b>' + esc(file.name) + '</b> 吗？</p>', '确认导入', true);
+    const hasMig = !!data.migration_enc;
+    const ok = await confirmModal('导入配置', '<p>导入会覆盖当前全部落地与设置（导入前会自动备份当前配置）。' + (hasMig ? '这份文件含迁移信封，订阅令牌、到期与限流随导入恢复，旧链接继续可用；导入时要输异地备份口令。' : '这份文件没设迁移口令，导入后旧订阅链接失效，要逐个轮换后重新发链接；密码与 Telegram Token 保持本机原值，不随导入走。') + '确定导入 <b>' + esc(file.name) + '</b> 吗？</p>', '确认导入', true);
     if (!ok) { e.target.value = ''; return; }
+    if (hasMig) {
+      const pass = await promptMigrationPassphrase();
+      if (pass == null) { e.target.value = ''; return; }
+      data.passphrase = pass;
+    }
     try {
-      await apiPost('/api/v1/import', data);
-      $('#import-result').innerHTML = '<div class="ok-box">导入成功，realm 已重启并验过端口。</div>';
+      const r = await apiPost('/api/v1/import', data);
+      $('#import-result').innerHTML = '<div class="ok-box">导入成功，realm 已重启并验过端口。' + ((r && r.notes && r.notes.length) ? esc(r.notes.join('；')) : '') + '</div>';
       toast('导入成功', 'ok'); loadOverview();
     } catch (err) { $('#import-result').innerHTML = '<div class="error-box">导入失败：' + esc(err.message) + '</div>'; }
     e.target.value = '';
@@ -2167,15 +2173,25 @@ async function loadSchedBackups() {
     const pg = paginate(filtered, schedBackupPage);
     schedBackupPage = pg.cur;
     wrap.innerHTML = pg.slice.map((b) =>
-      '<div class="kv"><span>' + esc(fmtDate(b.ts)) + '<br><span class="small">' + esc(b.label || '') + ' · ' + (b.size != null ? (b.size / 1024).toFixed(1) + ' KB' : '') + '</span></span>' +
-      '<span><button class="btn secondary sm" type="button" data-restore-sbk="' + esc(b.id) + '">恢复</button> ' +
+      '<div class="kv"><span>' + esc(fmtDate(b.ts)) + '<br><span class="small">' + esc(b.label || '') + ' · ' + (b.size != null ? (b.size / 1024).toFixed(1) + ' KB' : '') + (b.has_migration_enc ? ' · 可整机迁移' : (b.migration_enc_missing ? ' · 未设迁移口令，换机需重发链接' : '')) + '</span></span>' +
+      '<span><button class="btn secondary sm" type="button" data-restore-sbk="' + esc(b.id) + '" data-mig-enc="' + (b.has_migration_enc ? '1' : '') + '">恢复</button> ' +
       '<button class="btn secondary sm" type="button" data-del-sbk="' + esc(b.id) + '">删除</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'schedbackup');
     if (pg.totalPages > 1) wirePager(wrap, 'schedbackup', pg.cur, pg.totalPages, (p) => { schedBackupPage = p; loadSchedBackups(); });
     $$('[data-restore-sbk]', wrap).forEach((btn) => btn.addEventListener('click', async () => {
-      const ok = await confirmModal('恢复定时备份', '<p>恢复会用这份备份覆盖当前配置并重启 realm；恢复后不在备份里的订阅用户会被移除，新用户的订阅令牌要重新生成。确定恢复吗？</p>', '恢复备份', true);
+      // v1.3.29：含迁移信封的备份恢复前先弹口令框；口令错整单失败、当前配置不动。
+      const hasMig = btn.dataset.migEnc === '1';
+      const ok = await confirmModal('恢复定时备份', '<p>恢复会用这份备份覆盖当前配置并重启 realm；恢复后不在备份里的订阅用户会被移除。' + (hasMig ? '这份备份含迁移信封，订阅令牌、到期与限流随备份恢复，旧链接继续可用。' : '这份备份没设迁移口令，恢复后旧订阅链接失效，要逐个轮换后重新发链接。') + '确定恢复吗？</p>', '恢复备份', true);
       if (!ok) return;
-      try { await apiPost('/api/v1/scheduled-backups/' + encodeURIComponent(btn.dataset.restoreSbk) + '/restore', {}); toast('备份已恢复', 'ok'); loadOverview(); }
+      let pass = '';
+      if (hasMig) {
+        pass = await promptMigrationPassphrase();
+        if (pass == null) return;
+      }
+      try {
+        const r = await apiPost('/api/v1/scheduled-backups/' + encodeURIComponent(btn.dataset.restoreSbk) + '/restore', { passphrase: pass });
+        toast('备份已恢复' + (r && r.notes && r.notes.length ? '：' + r.notes.join('；') : ''), 'ok'); loadOverview();
+      }
       catch (e) { toast('恢复失败：' + e.message, 'err'); }
     }));
     $$('[data-del-sbk]', wrap).forEach((btn) => btn.addEventListener('click', async () => {
@@ -2192,7 +2208,7 @@ async function loadSchedBackups() {
 function renderRemoteBackupCard(rb) {
   rb = rb || {};
   const ps = $('#rb-pass-status');
-  if (ps) ps.textContent = rb.passphrase_set ? '口令已设置。换口令在上面填新口令与旧口令；清除口令会同时关闭两个上传开关，旧备份仍可用旧口令恢复。' : '还没设置异地备份口令。';
+  if (ps) ps.textContent = rb.passphrase_set ? '口令已设置。这个口令同时是迁移口令：设了口令后备份才含订阅令牌与迁移信封，换机恢复不用重发链接。换口令在上面填新口令与旧口令；清除口令会同时关闭两个上传开关，旧备份仍可用旧口令恢复。' : '还没设置异地备份口令。设了口令后备份才能整机迁移（换机不用重发链接）；没设口令的备份换机要逐个轮换令牌。';
   const r2 = rb.r2 || {}, qn = rb.qiniu || {};
   const set = (id, v) => { const el = $(id); if (el) el.value = v || ''; };
   const chk = (id, v) => { const el = $(id); if (el) el.checked = !!v; };
@@ -2242,9 +2258,10 @@ async function loadRemoteList(kind) {
   } catch (e) { wrap.innerHTML = '<div class="empty">远程列表不可用：' + esc(e.message) + '</div>'; }
 }
 // promptRemotePassphrase 恢复远程备份时弹口令框：确认返回口令，取消返回 null。
-function promptRemotePassphrase() {
+// v1.3.29：标题与提示可覆盖，迁移信封恢复复用同一口令框。
+function promptRemotePassphrase(title, hint) {
   return new Promise((resolve) => {
-    const m = openModal('<h2>恢复远程备份</h2><div><p>这份备份是加密的，恢复要输口令。如果是换口令之前传的，请输旧口令。</p>' +
+    const m = openModal('<h2>' + esc(title || '恢复远程备份') + '</h2><div><p>' + esc(hint || '这份备份是加密的，恢复要输口令。如果是换口令之前传的，请输旧口令。') + '</p>' +
       '<label for="rb-restore-pass">口令</label><input id="rb-restore-pass" type="password" autocomplete="current-password" placeholder="异地备份口令"></div>' +
       '<div class="btn-row"><button class="btn danger" id="rb-restore-ok" type="button">恢复备份</button>' +
       '<button class="btn secondary" id="rb-restore-cancel" type="button">取消</button></div>');
@@ -2254,6 +2271,10 @@ function promptRemotePassphrase() {
     onIn(m, '#rb-restore-ok', 'click', () => { const v = input ? input.value : ''; closeModal(); resolve(v); });
     onIn(m, '#rb-restore-cancel', 'click', () => { closeModal(); resolve(null); });
   });
+}
+// promptMigrationPassphrase 恢复含迁移信封的备份时弹口令框：确认返回口令，取消返回 null。
+function promptMigrationPassphrase() {
+  return promptRemotePassphrase('恢复备份：输入迁移口令', '这份备份含迁移信封（登录密码、TOTP、令牌密钥等），恢复要输异地备份口令。口令错了整单失败，当前配置不动。');
 }
 /* ---------- 通用前端分页（审计/端口表/各列表共用） ---------- */
 const PAGE_SIZE = 20;

@@ -978,22 +978,33 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.opMu.Unlock()
 	// 落地逻辑见 applyImportPayload（与定时备份恢复共用；不做端口校验，
-	// 与旧版 handleImport 一致）。
+	// 与旧版 handleImport 一致）。v1.3.29：导入文件里含迁移信封时，
+	// 口令随请求体里的 passphrase 字段一起发（前端恢复时现输），
+	// 口令错整单失败、不写盘。
+	oldSubPath := s.subPath()
+	var notes []string
 	warn, ferr := s.applyImportPayload(imp, importApplyOpts{
 		preBackupLabel: "导入前自动备份", auditAction: "导入配置",
-		auditDetail:       "密码哈希与 Telegram token 保持本机原值",
+		auditDetail:       "订阅用户按 ID 保留现有令牌，不在备份里的用户会被移除；有迁移信封时密码/TOTP/令牌密钥随备份恢复",
 		restartWarnPrefix: "导入已写入，但重启 realm 失败：",
 		verifyWarnPrefix:  "", user: s.currentUser(r),
+		migrationPassphrase: imp.Passphrase, notes: &notes,
 	})
 	if ferr != nil {
 		writeJSON(w, ferr.status, errResp(ferr.msg))
 		return
 	}
+	if msg := s.restartForSubPathChange(oldSubPath); msg != "" {
+		notes = append(notes, msg)
+		if warn != "" {
+			warn += "；" + msg
+		}
+	}
 	if warn != "" {
 		writeJSON(w, 200, errResp(warn))
 		return
 	}
-	writeJSON(w, 200, okResp(nil))
+	writeJSON(w, 200, okResp(map[string]any{"notes": notes}))
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {

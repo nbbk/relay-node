@@ -660,7 +660,7 @@
             <div class="grid cols-2">
               <div class="card">
             <h2>备份</h2>
-            <p class="muted">每次备份都先存本机；R2 和七牛云开了才另外加密传一份，没开就不传。备份内容包括落地、设置、订阅用户、流量库，不含密码哈希与 Telegram Token；保留份数到了就删最旧的，不会把盘写满。</p>
+            <p class="muted">每次备份都先存本机；R2 和七牛云开了才另外加密传一份，没开就不传。备份内容包括落地、设置、订阅用户、流量库；设了异地备份口令后，备份还含订阅令牌与一个加密的迁移信封（登录密码、TOTP、令牌密钥等），换机恢复后旧链接继续可用；没设口令的备份换机要逐个轮换令牌。保留份数到了就删最旧的，不会把盘写满。</p>
             <div class="btn-row" style="margin-top:0"><button class="btn" id="bk-now" type="button">立即备份</button></div>
             <h2 style="margin-top:20px">自动定时备份</h2>
             <div class="btn-row" style="margin-top:0;flex-wrap:wrap">
@@ -746,7 +746,7 @@
           </div>
               <div class="card">
             <h2>导出 / 导入整机配置</h2>
-            <p class="muted">导出：所有落地、方式、设置打包成一个 JSON 文件（不含密码哈希和 Telegram Token）。换中转机时导入就全回来了。</p>
+            <p class="muted">导出：所有落地、方式、设置打包成一个 JSON 文件。设了异地备份口令后，导出文件还含订阅令牌与加密的迁移信封，换中转机导入就全回来了（恢复时要输口令）；没设口令的导出文件换机要逐个轮换令牌。改配置前面板自动拍的操作前快照（backups/）只是安全网，不能当迁移备份用。</p>
             <div class="btn-row" style="margin-top:0">
               <button class="btn" id="export-btn" type="button">导出配置</button>
               <label class="btn secondary" for="import-file" style="cursor:pointer">选择文件导入</label>
