@@ -1940,6 +1940,8 @@ function initSettings() {
   on('#sub-file-name-save', 'click', async () => { await saveSubFileName(); });
   // 订阅到期时间与订阅路径（v1.3.20）
   on('#sub-expiry-permanent', 'change', () => { const d = $('#sub-expiry-date'); if (d) d.disabled = $('#sub-expiry-permanent').checked; });
+  // 订阅用户创建表单“永久”勾选（v1.3.28）：与通用订阅同一模式，勾选时日期框置灰。
+  on('#sub-user-expiry-permanent', 'change', () => { const d = $('#sub-user-expiry-date'); if (d) d.disabled = $('#sub-user-expiry-permanent').checked; });
   on('#sub-expiry-save', 'click', async () => { await saveSubExpiry(); });
   on('#sub-path-save', 'click', async () => { await saveSubPath(); });
   // 每用户端口段（v1.3.25）：限流订阅的独立转发从这里分配。
@@ -3071,13 +3073,17 @@ async function subUserCreate() {
   try {
     const scope = $('#sub-user-name').closest('.card');
     const tl = readTrafficLimit(scope);
-    const r = await apiPost('/api/v1/subscriptions/users', { name, note: $('#sub-user-note').value.trim(), mode: subModeOf('sub-user-mode'), expires_at: ($('#sub-user-expiry-date') || {}).value || '', traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day, group_id: ($('#sub-user-group') || {}).value || '' });
+    // 到期时间（v1.3.28）：勾永久 = 空串（永不过期）；不勾 = 日期框的值。
+    const permEl = $('#sub-user-expiry-permanent');
+    const dateEl = $('#sub-user-expiry-date');
+    const expiresAt = (permEl && permEl.checked) ? '' : (dateEl ? dateEl.value : '');
+    const r = await apiPost('/api/v1/subscriptions/users', { name, note: $('#sub-user-note').value.trim(), mode: subModeOf('sub-user-mode'), expires_at: expiresAt, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day, group_id: ($('#sub-user-group') || {}).value || '' });
     $('#sub-user-url-value').textContent = r.url || '';
     const box = $('#sub-user-once');
     if (box) { box.classList.remove('hidden'); box.hidden = false; }
     $('#sub-user-name').value = ''; $('#sub-user-note').value = '';
-    const expEl = $('#sub-user-expiry-date');
-    if (expEl) expEl.value = '';
+    if (dateEl) { dateEl.value = ''; dateEl.disabled = true; }
+    if (permEl) permEl.checked = true;
     const gbEl = scope ? scope.querySelector('[data-tl-gb]') : null;
     if (gbEl) gbEl.value = 0;
     if (r.warning) toast(r.warning, 'err');
@@ -4634,6 +4640,8 @@ function initCentral() {
   initCentralTabs(); // v1.3.13：大选项卡绑定 + 恢复上次大选项卡
   initCentralSubTabs(); // v1.3.13：子选项卡事件委托（栏只绑一次）+ 恢复上次子选项卡在重绘时做
   on('#central-refresh', 'click', centralRefreshAll);
+  // 合并订阅创建表单“永久”勾选（v1.3.28）：与通用订阅同一模式，勾选时日期框置灰。
+  on('#central-sub-permanent', 'change', () => { const d = $('#central-sub-expiry-date'); if (d) d.disabled = $('#central-sub-permanent').checked; });
   on('#central-sub-generate', 'click', async () => {
     const selection = [];
     (centralSubTree || []).forEach((p) => p.landings.forEach((l) => {
@@ -4642,10 +4650,14 @@ function initCentral() {
     if (!selection.length) { toast('请先勾选至少一个落地', 'err'); return; }
     const nameEl = $('#central-sub-name');
     const expEl = $('#central-sub-expiry-date');
+    const permEl = $('#central-sub-permanent');
+    // 到期时间（v1.3.28）：勾永久 = 空串（永不过期）；不勾 = 日期框的值。
+    const expiresAt = (permEl && permEl.checked) ? '' : (expEl ? expEl.value : '');
     const tl = readTrafficLimit($('#central-sub-traffic-row'));
     const groupEl = $('#central-sub-group');
-    await showSubForSelection(selection, '合并订阅', nameEl ? nameEl.value.trim() : '', subModeOf('central-sub-mode'), expEl ? expEl.value : '', tl, groupEl ? groupEl.value : '');
-    if (expEl) expEl.value = '';
+    await showSubForSelection(selection, '合并订阅', nameEl ? nameEl.value.trim() : '', subModeOf('central-sub-mode'), expiresAt, tl, groupEl ? groupEl.value : '');
+    if (expEl) { expEl.value = ''; expEl.disabled = true; }
+    if (permEl) permEl.checked = true;
   });
   // 合并订阅列表搜索（v1.3.20）：输入即过滤，回到第 1 页。
   wireListSearch('#central-sub-search', (q) => { mergedSubSearch = q; mergedSubPage = 1; loadMergedSubsList(); });
