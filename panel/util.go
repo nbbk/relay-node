@@ -101,7 +101,8 @@ func runCmdOut(env []string, timeout time.Duration, name string, args ...string)
 	return res, err
 }
 
-// runScript 在 KIT_DIR 下跑 bash <script> <args...>，stdin=/dev/null，超时 300 秒。
+// runScript 在 KIT_DIR 下跑 bash <script> <args...>，stdin=/dev/null，
+// 超时由调用方传。
 func (s *Server) runScript(script string, timeout time.Duration, env []string, args ...string) (cmdResult, error) {
 	full := []string{filepath.Join(s.env.KitDir, script)}
 	full = append(full, args...)
@@ -131,6 +132,60 @@ func hasSystemd() bool {
 	}
 	_, err := exec.LookPath("systemctl")
 	return err == nil
+}
+
+// ---------- 1.3.44：更新进程与面板服务脱钩 ----------
+
+// updateTimeout1344 后台更新超时（v1.3.44）：小机器上下 Go 包（71M）+
+// 编译常超 300 秒，之前一到 300 秒就被 SIGKILL，/tmp 临时目录来不及清理。
+const updateTimeout1344 = 900 * time.Second
+
+// scopeRunnerAvailable1344（v1.3.44）：更新能不能走 systemd-run --scope。
+// 默认检查三点：有 systemd、systemd-run 在 PATH 里、能起一个空 scope。
+// 包级变量，测试可替换成假实现。
+var scopeRunnerAvailable1344 = func() bool {
+	if !hasSystemd() || !commandExists("systemd-run") {
+		return false
+	}
+	_, err := runCmdOut(nil, 10*time.Second, "systemd-run", "--scope", "--quiet", "true")
+	return err == nil
+}
+
+// updateCommand1344（v1.3.44）：后台更新要跑的命令与超时。有 systemd 时用
+// systemd-run --scope 起 transient scope 跑安装脚本：scope 在面板服务的
+// cgroup 之外，脚本末尾 systemctl restart relay-panel 杀不到它；就算
+// 900 秒超时杀掉的也只是 systemd-run 客户端，scope 里跑着的更新继续跑。
+// 没有 systemd 或 systemd-run 不可用时回退原来的直接跑法。
+func (s *Server) updateCommand1344() (name string, args []string, timeout time.Duration) {
+	script := filepath.Join(s.env.KitDir, "panel-install.sh")
+	timeout = updateTimeout1344
+	if scopeRunnerAvailable1344() {
+		return "systemd-run", []string{"--scope", "--quiet", "bash", script}, timeout
+	}
+	return "bash", []string{script}, timeout
+}
+
+// runUpdate1344（v1.3.44）：按 updateCommand1344 跑一次后台更新。
+func (s *Server) runUpdate1344() (cmdResult, error) {
+	name, args, timeout := s.updateCommand1344()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = s.env.KitDir
+	cmd.Env = os.Environ()
+	cmd.Stdin = nil
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	err := cmd.Run()
+	res := cmdResult{Stdout: out.String(), Stderr: errb.String()}
+	if cmd.ProcessState != nil {
+		res.ExitCode = cmd.ProcessState.ExitCode()
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return res, fmt.Errorf("脚本超时：panel-install.sh")
+	}
+	return res, err
 }
 
 func commandExists(name string) bool {

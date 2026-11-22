@@ -63,6 +63,15 @@ GO_MIN="1.22"      # 面板要求 Go >= 1.22（go.mod 写死，代码用了 Go 1
 GO_VER="1.23.0"    # 官方包版本（没有或太旧时下载这个）
 GO_INSTALL_DIR="${GO_INSTALL_DIR:-/usr/local/go}"
 
+# 已装过的 Go 也认（v1.3.44）：面板服务进程的 PATH 里没有 /usr/local/go/bin，
+# 不加的话 go_ok 每次都当没装过、每回更新都重下 71M Go 包。
+if [ -n "$GO_INSTALL_DIR" ] && [ -x "$GO_INSTALL_DIR/bin/go" ]; then
+  case ":$PATH:" in
+    *":$GO_INSTALL_DIR/bin:"*) ;;
+    *) export PATH="$GO_INSTALL_DIR/bin:$PATH" ;;
+  esac
+fi
+
 go_version() { # 输出已装 Go 的版本号（如 1.19.8），没装或解析不出输出空
   local v=""
   if command -v go >/dev/null 2>&1; then
@@ -168,12 +177,22 @@ if disk_low "$TMP_DIR" 500; then
   exit 1
 fi
 
+# 兜底（v1.3.44）：清掉以前更新被杀掉后留下的旧临时目录（超过 1 天的 tmp.*），
+# 免得越攒越多把盘吃满；只清旧的，当次新建的目录是新鲜的，不会被误删。
+# -mindepth 1 防止 $TMP_DIR 本身正好叫 tmp.* 时被连根删掉。
+if [ -n "$TMP_DIR" ] && [ "$TMP_DIR" != "/" ]; then
+  find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d -name 'tmp.*' -mtime +0 -exec rm -rf {} + 2>/dev/null || true
+fi
+
 echo "安装 relay-node 可视化面板..."
 echo "（现场编译：下载源码 -> 装 Go -> 编译出单二进制；不需要预编译好的二进制文件）"
 
 # 1. 下载源码包
 SRC_DIR="$(mktemp -d)" || { echo "建临时目录失败：磁盘可能满了（mktemp 在 $TMP_DIR 建不出目录），先腾地方再重跑：df -h 看哪里满了；清 /tmp；清日志 journalctl --vacuum-size=100M。"; exit 1; }
-trap 'rm -rf "$SRC_DIR"' EXIT
+# TERM/INT/HUP 也清（v1.3.44）：脚本末尾 systemctl restart relay-panel 会连更新
+# 进程一起 SIGTERM，之前只有 EXIT，重启时清不掉；SIGKILL 仍然 trap 不到，
+# 防不住 SIGKILL 靠的是面板侧 systemd-run --scope 脱钩，这里只是补强。
+trap 'rm -rf "$SRC_DIR"' EXIT TERM INT HUP
 if [ "$DRY_RUN" = "1" ]; then
   echo "[dry-run] 跳过下载源码包（$REPO_TARBALL）"
 else

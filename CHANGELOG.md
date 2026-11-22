@@ -408,3 +408,10 @@
 - 管理面板模式下本机没有中转，“中转倍率”卡片隐藏（与任意门地址、延迟探测同款处理），倍率由各中转面板自己设；集中管理聚合只加总各面板已折算的数，不再乘。改中转倍率记审计；改完才按新倍率算，之前已记的用量不追溯。
 - 测试：go test -race 全过（1343 文件新增 6 个：中转倍率归一化、有效倍率相乘与只设一处、采样侧逐端口有效倍率、agent 推送按有效倍率与 generic 不乘、quota 换回原始字节除以有效倍率、设置接口保存与非法值拒绝；版本断言同步改到 1.3.43；gofmt 干净、go vet 过）；jsdom test-1343.js 32 项全过（桌面 1280 16 项、窄屏 390 12 项、管理面板模式 4 项：版本 1.3.43 surfacing、中转倍率输入框与取值、管理面板模式下卡片隐藏，另回归备份列表与 1.3.32 两处修法）。未测：真机、iPhone Safari 实际渲染与触摸操作、远程面板联调、干净机器、真二进制端到端。
 - 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置，旧面板默认中转倍率 1、用量不变；改了中转倍率的面板，改完才开始按新倍率算，之前已记的用量不追溯。
+
+### v1.3.44 更新
+
+- 修 /tmp 临时目录泄漏：面板内更新（handleUpdateApply 后台跑 panel-install.sh）每次在 /tmp 建临时目录、下 Go 包（71M）现场编译，脚本有 trap 清理但两条路杀掉它清不掉——①脚本末尾 systemctl restart relay-panel，更新进程是面板的子进程、同 cgroup，重启连它一起杀；②面板给更新只留 300 秒超时，小机器上下 Go 包＋编译超了就被 SIGKILL。香港中转机实测 /tmp 攒了 2.2G（约 30 个残留 tmp.* 目录，2026-11-18～22 连发期每天好几次更新）。
+- 四处改动：①panel-install.sh 开头把 $GO_INSTALL_DIR/bin 加进 PATH（该目录存在时才加），go_ok 认得到已装的 Go，更新不再每次重下 71M；②更新进程与面板服务脱钩——有 systemd 时用 systemd-run --scope 起 transient scope 跑安装脚本（scope 在面板服务的 cgroup 之外，restart 杀不到它；就算 900 秒超时杀掉的也只是 systemd-run 客户端，scope 里跑着的更新继续跑），没有 systemd 或 systemd-run 不可用时回退原来的直接跑法；超时从 300 秒放宽到 900 秒；③trap 从只清 EXIT 改成同时覆盖 EXIT TERM INT HUP（补强；SIGKILL 仍然 trap 不到，根本解是第 ② 条）；④兜底——磁盘预检之后、mktemp 之前，清掉 $TMP_DIR 里超过 1 天的旧 tmp.* 目录（只删 -mindepth 1 -maxdepth 1 的目录，当次新建的不受影响）。
+- 测试：go test -race 全过（1344 文件新增 6 个：更新命令构造——有 systemd 时走 scope、无 systemd 时回退原路径、超时 900 秒；回退路径真跑一次假安装脚本；真实 panel-install.sh DRY_RUN 实测——PATH 没有 go 但 $GO_INSTALL_DIR/bin/go 存在时认得到、旧 tmp.* 只删 1 天以上的；同款 trap 发 TERM 后目录被删；版本断言同步改到 1.3.44；gofmt 干净、go vet 过）。未测：真机、iPhone Safari、远程面板联调、干净机器、真二进制端到端。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置；升级后第一次更新会自动清掉 /tmp 里 1 天以上的旧残留，已攒下的残留也可以先手动删：rm -rf /tmp/tmp.*。

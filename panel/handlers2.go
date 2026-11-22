@@ -702,10 +702,12 @@ func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 		script := filepath.Join(s.env.KitDir, "panel-install.sh")
 		if _, err := os.Stat(script); err != nil {
 			// 远程拉取安装脚本跑一次
-			_, _ = runCmdOut(nil, 300*time.Second, "bash", "-c", "curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/panel-install.sh | bash")
+			_, _ = runCmdOut(nil, updateTimeout1344, "bash", "-c", "curl -fsSL https://raw.githubusercontent.com/nbbk/relay-node/main/panel-install.sh | bash")
 			return
 		}
-		_, _ = s.runScript("panel-install.sh", 300*time.Second, nil)
+		// v1.3.44：走 runUpdate1344（有 systemd 时 systemd-run --scope
+		// 脱钩，超时 900 秒）；更新完跑一遍 check 存下来。
+		_, _ = s.runUpdate1344()
 		// 更新完跑一遍 check 存下来
 		if res, err := s.runScript("check.sh", 60*time.Second, nil, "--json"); err == nil {
 			_ = os.WriteFile(filepath.Join(s.env.PanelHome, "last-check.json"), []byte(res.Stdout), 0o600)
