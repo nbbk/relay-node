@@ -414,11 +414,13 @@ function latencyHtml(l) {
 }
 function trafficBarHtml(l) {
   const t = l.traffic || {};
-  if (!t.limit_bytes) return '<div class="bar-row"><span>流量：不限</span><span>' + fmtBytes(t.used_bytes || 0) + ' 已用</span></div>';
+  // v1.3.32：agent 在线时流量是节点侧推来的总量，标来源。
+  const src = l.metering_source === 'agent' ? ' · 节点侧' : '';
+  if (!t.limit_bytes) return '<div class="bar-row"><span>流量：不限' + src + '</span><span>' + fmtBytes(t.used_bytes || 0) + ' 已用</span></div>';
   const pct = Math.min(100, Number(t.pct) || 0);
   const cls = pct >= 100 ? 'bad' : pct >= 80 ? 'warn' : '';
   const mode = t.limit_mode === 'monthly' ? '按月' : '总量';
-  return '<div class="bar-row"><span>流量（' + mode + '）</span><span>' + pct + '% · ' + fmtBytes(t.used_bytes || 0) + ' / ' + fmtBytes(t.limit_bytes) + '</span></div>' +
+  return '<div class="bar-row"><span>流量（' + mode + '）' + src + '</span><span>' + pct + '% · ' + fmtBytes(t.used_bytes || 0) + ' / ' + fmtBytes(t.limit_bytes) + '</span></div>' +
     '<div class="bar"><i class="' + cls + '" style="width:' + pct + '%"></i></div>';
 }
 function certBadge(days) {
@@ -559,8 +561,10 @@ function paginateCards(list, page) {
 // 小卡片一行流量文字：已用 / 上限（百分比），不限只显示已用
 function trafficMiniText(l) {
   const t = l.traffic || {};
-  if (!t.limit_bytes) return '不限 · 已用 ' + fmtBytes(t.used_bytes || 0);
-  return fmtBytes(t.used_bytes || 0) + ' / ' + fmtBytes(t.limit_bytes) + '（' + (Math.min(100, Number(t.pct) || 0)) + '%）';
+  // v1.3.32：agent 在线时卡片流量是节点侧推来的总量，标来源免得和中转侧混淆。
+  const src = l.metering_source === 'agent' ? ' · 节点侧' : '';
+  if (!t.limit_bytes) return '不限 · 已用 ' + fmtBytes(t.used_bytes || 0) + src;
+  return fmtBytes(t.used_bytes || 0) + ' / ' + fmtBytes(t.limit_bytes) + '（' + (Math.min(100, Number(t.pct) || 0)) + '%）' + src;
 }
 // 紧凑小卡片：只显示名称、在线状态、模式、证书剩余天数、流量已用/上限、到期；
 // 点小卡片弹完整卡片弹窗；右上角小“编辑”按钮直接开编辑弹窗（点它不弹完整卡片）
@@ -2644,12 +2648,27 @@ function initSubMode() {
   });
 }
 /* ---------- 订阅到期时间（v1.3.20） ---------- */
+// browserTimeZone: 浏览器所在 IANA 时区（v1.3.32：选日期时随请求发给后端，
+// 后端按该时区算当天结束；拿不到时返回 ''，后端回退服务器本地时间）。
+function browserTimeZone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { return ''; }
+}
+// expiryDay: RFC3339 -> 浏览器本地日期 YYYY-MM-DD（v1.3.32：以前直接取
+// UTC 字符串前 10 位，UTC− 用户选 12 月 1 日存的是 2026-12-02T04:59:59Z，
+// 显示会跳到 12 月 2 日；现在按浏览器本地年月日显示）。
+function expiryDay(expiresAt) {
+  const d = new Date(expiresAt);
+  if (isNaN(d.getTime())) return '';
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return d.getFullYear() + '-' + m + '-' + day;
+}
 // fmtExpiry: "永久" / "2027-02-17 到期" / "已过期（2026-11-19）"。
 function fmtExpiry(expiresAt) {
   if (!expiresAt) return '永久';
   const d = new Date(expiresAt);
   if (isNaN(d.getTime())) return '永久';
-  const day = expiresAt.slice(0, 10);
+  const day = expiryDay(expiresAt);
   return d.getTime() < Date.now() ? '已过期（' + day + '）' : day + ' 到期';
 }
 // expiryBadge: 列表行里的到期徽章（永久灰、30 天内黄、7 天内与已过期红）。
@@ -2657,7 +2676,7 @@ function expiryBadge(expiresAt) {
   if (!expiresAt) return '<span class="badge grey">永久</span>';
   const d = new Date(expiresAt);
   if (isNaN(d.getTime())) return '<span class="badge grey">永久</span>';
-  const day = expiresAt.slice(0, 10);
+  const day = expiryDay(expiresAt);
   if (d.getTime() < Date.now()) return '<span class="badge red">已过期 ' + esc(day) + '</span>';
   const days = Math.ceil((d.getTime() - Date.now()) / 86400000);
   const cls = days <= 7 ? 'red' : days <= 30 ? 'yellow' : 'green';
@@ -2667,7 +2686,7 @@ function expiryBadge(expiresAt) {
 function dateInputOfExpiry(expiresAt) {
   if (!expiresAt) return '';
   const d = new Date(expiresAt);
-  return isNaN(d.getTime()) ? '' : expiresAt.slice(0, 10);
+  return isNaN(d.getTime()) ? '' : expiryDay(expiresAt);
 }
 /* ---------- 列表搜索（v1.3.20） ---------- */
 // matchSubText: 不区分大小写，任一字段包含关键词即命中；关键词为空全过。
@@ -2839,7 +2858,7 @@ async function saveSubExpiry() {
   const dateEl = $('#sub-expiry-date');
   const expiresAt = (perm && perm.checked) ? '' : (dateEl ? dateEl.value : '');
   try {
-    const r = await apiPost('/api/v1/settings/subscription/expiry', { expires_at: expiresAt });
+    const r = await apiPost('/api/v1/settings/subscription/expiry', { expires_at: expiresAt, timezone: browserTimeZone() });
     const status = $('#sub-expiry-status');
     if (status) status.textContent = r.expires_at ? '当前：' + fmtExpiry(r.expires_at) : '当前：永久';
     if (dateEl) dateEl.disabled = !r.expires_at;
@@ -3098,7 +3117,7 @@ async function subUserCreate() {
     const permEl = $('#sub-user-expiry-permanent');
     const dateEl = $('#sub-user-expiry-date');
     const expiresAt = (permEl && permEl.checked) ? '' : (dateEl ? dateEl.value : '');
-    const r = await apiPost('/api/v1/subscriptions/users', { name, note: $('#sub-user-note').value.trim(), mode: subModeOf('sub-user-mode'), expires_at: expiresAt, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day, group_id: ($('#sub-user-group') || {}).value || '' });
+    const r = await apiPost('/api/v1/subscriptions/users', { name, note: $('#sub-user-note').value.trim(), mode: subModeOf('sub-user-mode'), expires_at: expiresAt, timezone: browserTimeZone(), traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day, group_id: ($('#sub-user-group') || {}).value || '' });
     $('#sub-user-url-value').textContent = r.url || '';
     const box = $('#sub-user-once');
     if (box) { box.classList.remove('hidden'); box.hidden = false; }
@@ -3377,8 +3396,8 @@ async function openSubEditModal(opts) {
         : '/api/v1/subscriptions/users/' + encodeURIComponent(opts.id);
       const tl = readTrafficLimit(m);
       const body = isMerged
-        ? { selection, name, mode, expires_at: expiresAt, group_id: groupId, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day }
-        : { name, note: ((m.querySelector('[data-edit-note]') || {}).value || '').trim(), selection, mode, expires_at: expiresAt, group_id: groupId, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day };
+        ? { selection, name, mode, expires_at: expiresAt, timezone: browserTimeZone(), group_id: groupId, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day }
+        : { name, note: ((m.querySelector('[data-edit-note]') || {}).value || '').trim(), selection, mode, expires_at: expiresAt, timezone: browserTimeZone(), group_id: groupId, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day };
       const r = await api(url, { method: 'PUT', body: JSON.stringify(body) });
       closeModal();
       if (r && r.warning) toast(r.warning, 'err');
@@ -3492,7 +3511,7 @@ function openMergedSubModal(url, opts) {
 async function showSubForSelection(selection, title, name, mode, expiresAt, traffic, groupId) {
   try {
     const tl = traffic || { limit_mb: 0, limit_mode: 'total', reset_mode: 'monthly', reset_day: 1 };
-    const r = await apiPost('/api/v1/subscriptions/merged', { selection, name: name || undefined, mode: subModeValid(mode || 'both'), expires_at: expiresAt || '', traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day, group_id: groupId || '' });
+    const r = await apiPost('/api/v1/subscriptions/merged', { selection, name: name || undefined, mode: subModeValid(mode || 'both'), expires_at: expiresAt || '', timezone: browserTimeZone(), traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day, group_id: groupId || '' });
     openMergedSubModal(r.url || '', { title, rotated: r.rotated, name, mergedId: r.id, mode: r.mode || mode || 'both', expires_at: r.expires_at });
     if (r.warning) toast(r.warning, 'err');
     loadMergedSubsList();
@@ -3681,6 +3700,7 @@ function renderCentralSubTabs() {
   holder.querySelectorAll('[data-central-open]').forEach((b) => b.addEventListener('click', () => window.open(b.dataset.centralOpen, '_blank', 'noopener')));
   holder.querySelectorAll('[data-central-detail]').forEach((b) => b.addEventListener('click', () => openCentralDetail(b.dataset.centralDetail)));
   holder.querySelectorAll('[data-central-del]').forEach((b) => b.addEventListener('click', () => centralDeregister(b.dataset.centralDel)));
+  holder.querySelectorAll('[data-central-token]').forEach((b) => b.addEventListener('click', () => centralChangeToken(b.dataset.centralToken)));
   let saved = null;
   try { saved = localStorage.getItem(CENTRAL_SUB_TAB_KEY); } catch (e) { /* 读不到就用第一个 */ }
   showCentralSubTab(saved);
@@ -3713,6 +3733,7 @@ function centralRemoteCardHtml(rm) {
     '<div class="btn-row">' +
     '<button class="btn sm" type="button" data-central-detail="' + esc(rm.id) + '">查看详情</button>' +
     '<button class="btn secondary sm" type="button" data-central-open="' + esc(rm.base_url) + '">打开远程面板 ↗</button>' +
+    '<button class="btn secondary sm" type="button" data-central-token="' + esc(rm.id) + '">更换令牌</button>' +
     '<button class="btn danger sm" type="button" data-central-del="' + esc(rm.id) + '">取消登记</button></div></div>';
 }
 async function loadCentral() {
@@ -3751,6 +3772,7 @@ async function openCentralDetail(id) {
     '<button class="btn secondary sm" type="button" data-cd-check="' + esc(id) + '">远程体检</button>' +
     '<button class="btn secondary sm" type="button" data-cd-realm="' + esc(id) + '">重启 realm</button>' +
     '<button class="btn secondary sm" type="button" data-cd-links="' + esc(id) + '">查看链接</button>' +
+    '<button class="btn secondary sm" type="button" data-cd-token="' + esc(id) + '">更换令牌</button>' +
     '<button class="btn danger sm" type="button" data-cd-remove="' + esc(id) + '">取消登记</button></div>' +
     '<h3 style="margin-top:14px">落地（' + landings.length + ' 个）</h3>' +
     '<div id="central-detail-modal">加载中…</div>' +
@@ -3762,6 +3784,7 @@ async function openCentralDetail(id) {
   $$('[data-cd-check]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); centralCheck(b.dataset.cdCheck); }));
   $$('[data-cd-realm]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); centralRestart(b.dataset.cdRealm); }));
   $$('[data-cd-links]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); centralLinks(b.dataset.cdLinks); }));
+  $$('[data-cd-token]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); centralChangeToken(b.dataset.cdToken); }));
   $$('[data-cd-remove]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); centralDeregister(b.dataset.cdRemove); }));
   loadCentralLandings(id);
   // 流量汇总再从远程面板实时拉一次（central/traffic 代理接口，和快照
@@ -3971,13 +3994,15 @@ function centralLandingFacts(l) {
   const cert = l.cert_days_left == null ? '—' : esc(l.cert_days_left) + ' 天' + (l.renew_mode ? '（' + esc(l.renew_mode) + '）' : '');
   const exp = l.days_left == null ? '永久' : (l.days_left < 0 ? '已到期 ' + esc(-l.days_left) + ' 天' : '剩余 ' + esc(l.days_left) + ' 天');
   const tr = l.traffic || {};
-  const traffic = '今日 ' + esc(fmtBytes((tr.today_up || 0) + (tr.today_down || 0))) + ' / 本月 ' + esc(fmtBytes((tr.month_up || 0) + (tr.month_down || 0))) + ' / 累计 ' + esc(fmtBytes((tr.total_up || 0) + (tr.total_down || 0))) + (tr.limit_bytes ? '（上限 ' + esc(fmtBytes(tr.limit_bytes)) + '，已用 ' + esc(Math.round(tr.pct || 0)) + '%）' : '（不限）');
+  // v1.3.32：agent 在线时流量是节点侧推来的总量，标来源。
+  const src = l.metering_source === 'agent' ? ' · 节点侧' : '';
+  const traffic = '今日 ' + esc(fmtBytes((tr.today_up || 0) + (tr.today_down || 0))) + ' / 本月 ' + esc(fmtBytes((tr.month_up || 0) + (tr.month_down || 0))) + ' / 累计 ' + esc(fmtBytes((tr.total_up || 0) + (tr.total_down || 0))) + (tr.limit_bytes ? '（上限 ' + esc(fmtBytes(tr.limit_bytes)) + '，已用 ' + esc(Math.round(tr.pct || 0)) + '%）' : '（不限）') + src;
   const subs = (l.subnodes || []).map((sn) =>
     '<div class="kv"><span>' + esc(sn.domain) + '</span><span><button class="btn danger sm" type="button" data-central-delsub="' + esc(l.index) + '|' + esc(sn.domain) + '">删除节点</button></span></div>'
   ).join('');
   // 行头也放到期与流量（和本机卡片同一款式）：不用点开就看得到。
   const expCls = l.days_left == null ? 'grey' : l.days_left < 0 ? 'red' : l.days_left <= 7 ? 'red' : l.days_left <= 30 ? 'yellow' : 'green';
-  const trafficHead = '今日 ' + esc(fmtBytes((tr.today_up || 0) + (tr.today_down || 0))) + ' · 累计 ' + esc(fmtBytes((tr.total_up || 0) + (tr.total_down || 0)));
+  const trafficHead = '今日 ' + esc(fmtBytes((tr.today_up || 0) + (tr.today_down || 0))) + ' · 累计 ' + esc(fmtBytes((tr.total_up || 0) + (tr.total_down || 0))) + src;
   // 子节点没有独立流量：同一落地的节点共用一份流量（中转机按端口统计，
   // 分不清节点），下面正文里的流量就是该落地的共享流量，别当成单个节点的。
   const subShared = (l.subnodes && l.subnodes.length)
@@ -4645,6 +4670,35 @@ async function centralDeregister(id) {
     toast('已取消登记', 'ok');
     loadCentral();
   } catch (e) { toast('取消失败：' + e.message, 'err'); }
+}
+// 更换一台已登记远程面板的令牌（v1.3.31）：弹窗只填新令牌，当前令牌
+// 不回显原文、只显示“已设置”。提交后后端拿新令牌当场连一次远程面板，
+// 验过才保存，验不过原令牌不动、错误显示在弹窗里不关闭。
+async function centralChangeToken(id) {
+  const rm = centralRemotes.find((x) => x.id === id);
+  if (!rm) { toast('找不到这台远程面板', 'err'); return; }
+  const m = openModal('<h2>更换令牌</h2>' +
+    '<p class="muted">远程面板 <b>' + esc(rm.name || rm.base_url) + '</b>（<span class="mono">' + esc(rm.base_url) + '</span>）</p>' +
+    '<p class="muted">当前令牌：已设置（原文不显示）。先到被管面板的设置页生成新令牌，填进来；提交后会拿新令牌当场连一次远程面板，验过才保存，验不过原令牌不动。</p>' +
+    '<label>新令牌 <span class="hint">必填，以 rpt_ 开头，不回显</span></label><input id="central-token-new" type="password" placeholder="rpt_…" autocomplete="off">' +
+    '<div class="error-box hidden" id="central-token-err"></div>' +
+    '<div class="btn-row"><button class="btn" id="central-token-save" type="button">保存新令牌</button><button class="btn secondary" id="central-token-cancel" type="button">取消</button></div>');
+  if (!m) return;
+  onIn(m, '#central-token-cancel', 'click', () => closeModal());
+  onIn(m, '#central-token-save', 'click', async () => {
+    const input = $('#central-token-new', m);
+    const token = input ? input.value.trim() : '';
+    const errBox = $('#central-token-err', m);
+    const showErr = (msg) => { if (errBox) { errBox.textContent = msg; errBox.classList.remove('hidden'); } };
+    if (!token) { showErr('请填新令牌'); return; }
+    try {
+      const d = await apiRaw('/api/v1/central/remotes/' + encodeURIComponent(id) + '/token', { method: 'PUT', body: JSON.stringify({ token }) });
+      if (d.ok === false) { showErr(centralOpError(d)); return; }
+      closeModal();
+      toast('令牌已更换', 'ok');
+      loadCentral();
+    } catch (e) { showErr(e.message); }
+  });
 }
 async function centralRefreshAll() {
   try {

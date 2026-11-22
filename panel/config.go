@@ -885,9 +885,19 @@ func validSubPath(p string) bool {
 // ---------- 订阅到期时间（v1.3.20） ----------
 
 // parseSubExpiry 解析用户填的到期时间：空 = 永久；"YYYY-MM-DD" = 当天
-// 23:59:59（服务器本地时间）；RFC3339 全串原样接受。返回规范化后的
+// 23:59:59（浏览器所在时区）；RFC3339 全串原样接受。返回规范化后的
 // RFC3339（空 = 永久），非法返回错误。
 func parseSubExpiry(v string) (string, error) {
+	return parseSubExpiryIn(v, "")
+}
+
+// parseSubExpiryIn 同 parseSubExpiry，但纯日期按 tz（IANA 时区名，如
+// "Asia/Shanghai"）算当天结束。tz 为空或 LoadLocation 失败时回退
+// time.Local（老客户端/纯 API 调用不带时区，行为与原来一致）。
+// v1.3.32：以前纯日期按服务器本地时间（EST）算当天结束，CST 用户选
+// 12 月 1 日会存成 2026-12-02T04:59:59Z、显示与实际到期都跳到 2 号。
+// 日期是在浏览器里选的，“那天”只能是浏览器所在时区的当天。
+func parseSubExpiryIn(v, tz string) (string, error) {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return "", nil
@@ -895,8 +905,14 @@ func parseSubExpiry(v string) (string, error) {
 	if t, err := time.Parse(time.RFC3339, v); err == nil {
 		return t.UTC().Format(time.RFC3339), nil
 	}
-	if d, err := time.ParseInLocation("2006-01-02", v, time.Local); err == nil {
-		end := time.Date(d.Year(), d.Month(), d.Day(), 23, 59, 59, 0, time.Local)
+	loc := time.Local
+	if tz != "" {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
+	}
+	if d, err := time.ParseInLocation("2006-01-02", v, loc); err == nil {
+		end := time.Date(d.Year(), d.Month(), d.Day(), 23, 59, 59, 0, loc)
 		return end.UTC().Format(time.RFC3339), nil
 	}
 	return "", fmt.Errorf("到期时间不对：填日期（如 2026-12-31）或留空表示永久")

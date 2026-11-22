@@ -358,7 +358,135 @@ func TestCentralRemotesAddRejects(t *testing.T) {
 	}
 }
 
-// ---------- 离线超时处理 ----------
+// ---------- 1.3.31：更换已登记远程面板的令牌 ----------
+
+// tokenFakeRemote 校验令牌的假远程：只接受当前 validTok，
+// 其他令牌返回 401（模拟被管面板的 requireCentralToken）。
+// 令牌轮换后远程只认新令牌，靠 setValid 模拟被管面板那边换了令牌。
+type tokenFakeRemote struct {
+	mu       sync.Mutex
+	validTok string
+	seen     *seenCalls
+	srv      *httptest.Server
+}
+
+func newTokenFakeRemote(t *testing.T, validTok string) *tokenFakeRemote {
+	t.Helper()
+	f := &tokenFakeRemote{validTok: validTok, seen: &seenCalls{}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/central/status", func(w http.ResponseWriter, r *http.Request) {
+		f.seen.add("status:" + r.Header.Get("Authorization"))
+		f.mu.Lock()
+		want := f.validTok
+		f.mu.Unlock()
+		if r.Header.Get("Authorization") != "Bearer "+want {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"ok":false,"error":"unauthorized"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fakeRemoteStatus))
+	})
+	f.srv = httptest.NewServer(mux)
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *tokenFakeRemote) setValid(tok string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.validTok = tok
+}
+
+func TestCentralRemotesUpdateToken(t *testing.T) {
+	tok1 := generateRemoteToken()
+	tok2 := generateRemoteToken()
+	badTok := generateRemoteToken()
+	fake := newTokenFakeRemote(t, tok1)
+	s := newTestAddLandingServer(t, t.TempDir(), t.TempDir())
+	put := func(id, body string) (int, map[string]any) {
+		req := httptest.NewRequest("PUT", "/api/v1/central/remotes/"+id+"/token", strings.NewReader(body))
+		req.SetPathValue("id", id)
+		rec := httptest.NewRecorder()
+		s.handleCentralRemotesUpdateToken(rec, req)
+		var resp map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		return rec.Code, resp
+	}
+	// 先用 tok1 登记（假远程当时只认 tok1）
+	req := httptest.NewRequest("POST", "/api/v1/central/remotes", strings.NewReader(`{"name":"测试远程","base_url":"`+fake.srv.URL+`","token":"`+tok1+`"}`))
+	rec := httptest.NewRecorder()
+	s.handleCentralRemotesAdd(rec, req)
+	var addResp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &addResp)
+	if addResp["ok"] != true {
+		t.Fatalf("登记应成功：%v", addResp)
+	}
+	id, _ := addResp["id"].(string)
+	stored := func() string { return s.cfg.Remotes[0].Token }
+	if stored() != tok1 {
+		t.Fatalf("登记后存的应是 tok1")
+	}
+	// 被管面板那边换成 tok2：换令牌应成功，且后续调用带新令牌
+	fake.setValid(tok2)
+	if code, r := put(id, `{"token":"`+tok2+`"}`); code != 200 || r["ok"] != true {
+		t.Fatalf("换成有效新令牌应成功：%d %v", code, r)
+	}
+	if stored() != tok2 {
+		t.Fatalf("换令牌后存的应是 tok2")
+	}
+	waitCentralPolls(t, s)
+	foundNew := false
+	for _, c := range fake.seen.list() {
+		if c == "status:Bearer "+tok2 {
+			foundNew = true
+		}
+	}
+	if !foundNew {
+		t.Fatalf("换令牌后应拿新令牌调远程，实际：%v", fake.seen.list())
+	}
+	// 新令牌写进磁盘 config.json（明文存 600 配置，与登记时同口径）
+	b, _ := os.ReadFile(filepath.Join(s.env.PanelHome, "config.json"))
+	if !strings.Contains(string(b), tok2) {
+		t.Fatalf("磁盘 config.json 里应存下新令牌")
+	}
+	// 换成远程不认的令牌：应拒绝，原令牌不动
+	if _, r := put(id, `{"token":"`+badTok+`"}`); r["ok"] != false {
+		t.Fatalf("远程不认的令牌应拒绝：%v", r)
+	}
+	if stored() != tok2 {
+		t.Fatalf("验不过时原令牌应不动")
+	}
+	// 格式不对与空令牌：400，原令牌不动
+	if code, _ := put(id, `{"token":"abc"}`); code != 400 {
+		t.Fatalf("非 rpt_ 开头应 400，实际 %d", code)
+	}
+	if code, _ := put(id, `{"token":""}`); code != 400 {
+		t.Fatalf("空令牌应 400，实际 %d", code)
+	}
+	if stored() != tok2 {
+		t.Fatalf("格式校验失败时原令牌应不动")
+	}
+	// 没登记过的 id：404
+	if code, _ := put("rm-nope", `{"token":"`+tok2+`"}`); code != 404 {
+		t.Fatalf("未知 id 应 404，实际 %d", code)
+	}
+	// 列表接口与审计日志里绝不能出现令牌明文
+	req2 := httptest.NewRequest("GET", "/api/v1/central/remotes", nil)
+	rec2 := httptest.NewRecorder()
+	s.handleCentralRemotesList(rec2, req2)
+	if strings.Contains(rec2.Body.String(), tok2) {
+		t.Fatalf("列表返回里出现了令牌明文")
+	}
+	audit, _ := os.ReadFile(filepath.Join(s.env.PanelHome, "audit.log"))
+	if strings.Contains(string(audit), tok2) || strings.Contains(string(audit), tok1) {
+		t.Fatalf("审计日志里出现了令牌明文")
+	}
+	if !strings.Contains(string(audit), "更换远程面板令牌") {
+		t.Fatalf("审计里应记一笔更换远程面板令牌：%s", audit)
+	}
+}
 
 func TestPollOneRemoteOffline(t *testing.T) {
 	s := newTestAddLandingServer(t, t.TempDir(), t.TempDir())

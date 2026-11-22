@@ -1391,6 +1391,7 @@ func (s *Server) handleSubTokenGenerate(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		Mode      string  `json:"mode"`
 		ExpiresAt *string `json:"expires_at"`
+		Timezone  string  `json:"timezone,omitempty"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -1405,7 +1406,7 @@ func (s *Server) handleSubTokenGenerate(w http.ResponseWriter, r *http.Request) 
 	}
 	expiresAt := s.cfg.SubTokenExpiresAt
 	if req.ExpiresAt != nil {
-		expiresAt, err = parseSubExpiry(*req.ExpiresAt)
+		expiresAt, err = parseSubExpiryIn(*req.ExpiresAt, req.Timezone)
 		if err != nil {
 			writeJSON(w, 400, errResp(err.Error()))
 			return
@@ -1441,6 +1442,7 @@ func (s *Server) handleSubTokenGenerate(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleSubTokenSetExpiry(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ExpiresAt string `json:"expires_at"`
+		Timezone  string `json:"timezone,omitempty"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -1452,7 +1454,7 @@ func (s *Server) handleSubTokenSetExpiry(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, 400, errResp("还没有通用订阅链接，先点“生成订阅链接”"))
 		return
 	}
-	expiresAt, err := parseSubExpiry(req.ExpiresAt)
+	expiresAt, err := parseSubExpiryIn(req.ExpiresAt, req.Timezone)
 	if err != nil {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
@@ -1752,6 +1754,7 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 		Selection []SubSelection `json:"selection"`
 		Mode      string         `json:"mode"`
 		ExpiresAt *string        `json:"expires_at"`
+		Timezone  string         `json:"timezone,omitempty"`
 		// 分组（v1.3.26）：group_id 空 = 不分组；进了组，订阅按组的落地
 		// 集合出内容，自己的 Selection 保留在记录里（出组后恢复）。
 		GroupID string `json:"group_id"`
@@ -1805,7 +1808,7 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	expiresAt := ""
 	if req.ExpiresAt != nil {
-		expiresAt, err = parseSubExpiry(*req.ExpiresAt)
+		expiresAt, err = parseSubExpiryIn(*req.ExpiresAt, req.Timezone)
 		if err != nil {
 			writeJSON(w, 400, errResp(err.Error()))
 			return
@@ -1932,6 +1935,7 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		Selection []SubSelection `json:"selection"`
 		Mode      string         `json:"mode"`
 		ExpiresAt *string        `json:"expires_at"`
+		Timezone  string         `json:"timezone,omitempty"`
 		// 分组（v1.3.26）：指针 = 没给保持原分组；给了 "" = 出组（恢复自己
 		// 勾选），给了 "sg-…" = 进组（订阅按组的落地出，自己的勾选保留在
 		// 记录里不动）。进组时请求里的 selection 不动自己的勾选。
@@ -1994,7 +1998,7 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	expiresGiven := false
 	if req.ExpiresAt != nil {
 		expiresGiven = true
-		expiresAt, err = parseSubExpiry(*req.ExpiresAt)
+		expiresAt, err = parseSubExpiryIn(*req.ExpiresAt, req.Timezone)
 		if err != nil {
 			writeJSON(w, 400, errResp(err.Error()))
 			return
@@ -2487,6 +2491,7 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 		Name      string         `json:"name"`
 		Mode      string         `json:"mode"`
 		ExpiresAt *string        `json:"expires_at"`
+		Timezone  string         `json:"timezone,omitempty"`
 		// 分组（v1.3.26）：指针 = 没给保持原分组（轮换那条的）；给了 "" =
 		// 不分组，给了 "sg-…" = 进组（订阅按组的落地出，自己的勾选保留）。
 		GroupID *string `json:"group_id"`
@@ -2532,7 +2537,7 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 	}
 	expiresAt := ""
 	if req.ExpiresAt != nil {
-		expiresAt, err = parseSubExpiry(*req.ExpiresAt)
+		expiresAt, err = parseSubExpiryIn(*req.ExpiresAt, req.Timezone)
 		if err != nil {
 			writeJSON(w, 400, errResp(err.Error()))
 			return
@@ -2759,6 +2764,7 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 		Name      string         `json:"name"`
 		Mode      string         `json:"mode"`
 		ExpiresAt *string        `json:"expires_at"`
+		Timezone  string         `json:"timezone,omitempty"`
 		// 分组（v1.3.26）：指针 = 没给保持原分组；给了 "" = 出组（恢复自己
 		// 勾选），给了 "sg-…" = 进组（订阅按组的落地出，自己的勾选保留在
 		// 记录里不动）。进组时请求里的 selection 不动自己的勾选。
@@ -2808,7 +2814,7 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 	expiresGiven := false
 	if req.ExpiresAt != nil {
 		expiresGiven = true
-		expiresAt, err = parseSubExpiry(*req.ExpiresAt)
+		expiresAt, err = parseSubExpiryIn(*req.ExpiresAt, req.Timezone)
 		if err != nil {
 			writeJSON(w, 400, errResp(err.Error()))
 			return

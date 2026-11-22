@@ -175,11 +175,17 @@ func resetDayForMode(resetMode string, resetDay int, anchor time.Time) int {
 // PeriodID 是周期号（重置时 +1，推送带上防串周期），LastCounters 是
 // 采样基数（key 是 "proto:port"，只对本订阅的用户端口采样）。
 type userTrafficRec struct {
-	UpTotal      int64               `json:"up_total"`
-	DownTotal    int64               `json:"down_total"`
-	UpPeriod     int64               `json:"up_period"`
-	DownPeriod   int64               `json:"down_period"`
-	PeriodID     int                 `json:"period_id"`
+	UpTotal    int64 `json:"up_total"`
+	DownTotal  int64 `json:"down_total"`
+	UpPeriod   int64 `json:"up_period"`
+	DownPeriod int64 `json:"down_period"`
+	PeriodID   int   `json:"period_id"`
+	// v1.3.32：日桶（落地卡片“今日”用；agent 总量没有 A 侧那样的 Daily 桶，
+	// 在 addAgentDelta 里顺手记。老文件缺字段时默认零值，向后兼容）。
+	DayKey  string `json:"day_key"`
+	DayUp   int64  `json:"day_up"`
+	DayDown int64  `json:"day_down"`
+	// 采样基数（不导出到 API，存文件里用于增量计算）
 	LastCounters map[string][2]int64 `json:"last_counters"`
 }
 
@@ -253,6 +259,21 @@ func (t *userTrafficStore) totals(key string) (up, down, upPeriod, downPeriod in
 		return 0, 0, 0, 0, false
 	}
 	return rec.UpTotal, rec.DownTotal, rec.UpPeriod, rec.DownPeriod, true
+}
+
+// agentGenericTotals 读 agent 推来的节点总量（"generic" 键）：累计、本期、
+// 当日。没有记录时 ok=false，不建新记录（只读，不改变 store）。
+// v1.3.32：落地卡片在 agent 在线时用这份数代替 A 侧 store（A 侧不采样
+// agent 落地，再读它就永远是 0）。注意 agent 的 period_id 恒为 0，
+// 所以本期 = 累计（Phase 0 固有口径，Phase 1 按人周期时再分）。
+func (t *userTrafficStore) agentGenericTotals() (up, down, upPeriod, downPeriod, dayUp, dayDown int64, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	rec, ok := t.data[nodeAgentGenericUserID]
+	if !ok || rec == nil {
+		return 0, 0, 0, 0, 0, 0, false
+	}
+	return rec.UpTotal, rec.DownTotal, rec.UpPeriod, rec.DownPeriod, rec.DayUp, rec.DayDown, true
 }
 
 // addDelta 累计增量（采样用）；计数器重启清零时按新值重记基数，不算负增量。

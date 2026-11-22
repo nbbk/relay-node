@@ -615,6 +615,51 @@ func (s *Server) handleCentralRemotesDelete(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, 200, okResp(nil))
 }
 
+// handleCentralRemotesUpdateToken 更换一台已登记远程面板的令牌（v1.3.31）：
+// 只换令牌，不动地址与其他字段。提交后先拿新令牌当场调一次该远程的
+// /api/v1/central/status（与登记时同一套 fetchRemoteStatus 校验）：
+// 连不上、令牌不对、版本太旧都直接拒绝，原令牌不动；验过才保存并记审计。
+// 令牌明文只存在 600 权限的 config.json 里，接口不返回、审计不记原文。
+func (s *Server) handleCentralRemotesUpdateToken(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rem := s.remoteByID(id)
+	if rem == nil {
+		writeJSON(w, 404, errResp("没有登记过这台远程面板"))
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	tok := strings.TrimSpace(req.Token)
+	if tok == "" {
+		writeJSON(w, 400, errResp("令牌为空：到被管面板的设置页生成远程管理令牌后填进来"))
+		return
+	}
+	if !strings.HasPrefix(tok, remoteTokenPrefix) {
+		writeJSON(w, 400, errResp("令牌格式不对：应以 rpt_ 开头"))
+		return
+	}
+	candidate := *rem
+	candidate.Token = tok
+	if _, err := s.fetchRemoteStatus(candidate); err != nil {
+		side, msg := remoteSideOf(err)
+		writeJSON(w, 200, map[string]any{"ok": false, "error": msg, "side": side})
+		return
+	}
+	rem.Token = tok
+	if err := s.saveConfig(); err != nil {
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	s.pollOneRemote(*rem)
+	s.audit(s.currentUser(r), "更换远程面板令牌", rem.Name+"（"+rem.BaseURL+"）", "成功", "新令牌已验证通过，原令牌即刻失效")
+	writeJSON(w, 200, okResp(nil))
+}
+
 func (s *Server) handleCentralRemotesPoll(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	rem := s.remoteByID(id)

@@ -155,6 +155,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesList))
 	mux.HandleFunc("POST /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesAdd))
 	mux.HandleFunc("DELETE /api/v1/central/remotes/{id}", s.requireAuth(s.handleCentralRemotesDelete))
+	mux.HandleFunc("PUT /api/v1/central/remotes/{id}/token", s.requireAuth(s.handleCentralRemotesUpdateToken))
 	mux.HandleFunc("POST /api/v1/central/remotes/{id}/poll", s.requireAuth(s.handleCentralRemotesPoll))
 	mux.HandleFunc("GET /api/v1/central/remotes/{id}/landings", s.requireAuth(s.handleCentralRemoteLandings))
 	mux.HandleFunc("GET /api/v1/central/remotes/{id}/links", s.requireAuth(s.handleCentralRemoteLinks))
@@ -419,6 +420,21 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			links = []labelledLink{}
 		}
 		lt := s.traffic.get(l.Landing)
+		// v1.3.32：agent 在线时落地流量以 agent 推来的节点总量为准——
+		// A 侧不采样该落地（§4.5，防 double-count），卡片再读 A 侧就永远
+		// 是 0。只替换显示口径，不碰采样、去重与执法（quota、overLimit）。
+		// localStatusPayload 复用 handleStatus，远程落地（central/status）
+		// 同时修好；agent 不在线或没收到过 generic 总量时走原 A 侧逻辑。
+		meteringSource := ""
+		if s.nodeAgentLive(l.Landing) {
+			if up, down, upPeriod, downPeriod, dayUp, dayDown, ok := s.userTraffic.agentGenericTotals(); ok {
+				lt = &landingTraffic{
+					UpTotal: up, DownTotal: down, UpMonth: upPeriod, DownMonth: downPeriod,
+					Daily: []dailyBucket{{Date: time.Now().Format("2006-01-02"), Up: dayUp, Down: dayDown}},
+				}
+				meteringSource = "agent"
+			}
+		}
 		used := trafficUsed(lt, ext.TrafficLimitMode)
 		pct := 0.0
 		if ext.TrafficLimitBytes > 0 {
@@ -444,6 +460,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"expiry": ext.Expiry, "days_left": daysLeft,
 			"orig_link": ext.OrigLink, "orig_link_name": ext.OrigLinkName, "links": links, "qr": qr,
 			"speed_limit_mbps": ext.SpeedLimitMbps,
+			"metering_source":  meteringSource,
 			"traffic": map[string]any{
 				"today_up": dayUp(lt), "today_down": dayDown(lt),
 				"month_up": lt.UpMonth, "month_down": lt.DownMonth,

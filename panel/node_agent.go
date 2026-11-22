@@ -282,10 +282,19 @@ func (t *userTrafficStore) addAgentDelta(key string, up, down int64, periodID in
 		rec.UpPeriod, rec.DownPeriod = 0, 0
 		rec.PeriodID = periodID
 	}
+	// v1.3.32：日桶（落地卡片“今日”用；与 A 侧 Daily 桶同一服务器本地时钟）。
+	// 日期变了先清零当日再累加。
+	dayKey := time.Now().Format("2006-01-02")
+	if rec.DayKey != dayKey {
+		rec.DayKey = dayKey
+		rec.DayUp, rec.DayDown = 0, 0
+	}
 	rec.UpTotal += up
 	rec.DownTotal += down
 	rec.UpPeriod += up
 	rec.DownPeriod += down
+	rec.DayUp += up
+	rec.DayDown += down
 	t.saveLocked()
 }
 
