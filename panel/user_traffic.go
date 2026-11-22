@@ -811,6 +811,10 @@ func (s *Server) applyUserForwards() error {
 		byAddr[l.Landing] = l
 	}
 	var add strings.Builder
+	// v1.3.33：同端口 tcp+udp 两条 PortSpec 只写一段（与
+	// appendEndpointsForLanding 同理：不带 network 字段的段按全局
+	// use_udp 开关同时走 TCP/UDP，写两段一模一样的，第二段绑定必定失败）。
+	seen := map[string]bool{}
 	for _, f := range s.cfg.UserForwards {
 		if f.Disabled {
 			continue
@@ -820,6 +824,11 @@ func (s *Server) applyUserForwards() error {
 			continue
 		}
 		for _, p := range s.userForwardEndpoints(l, f.ListenPort) {
+			k := strconv.Itoa(p.Listen) + ":" + l.Landing + ":" + strconv.Itoa(p.Remote)
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
 			add.WriteString(fmt.Sprintf("\n[[endpoints]]\nlisten = \"0.0.0.0:%d\"\nremote = \"%s:%d\"\n", p.Listen, l.Landing, p.Remote))
 		}
 	}

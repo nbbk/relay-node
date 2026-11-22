@@ -131,6 +131,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/central/links", s.requireCentralToken(s.handleLinks))
 	mux.HandleFunc("GET /api/v1/central/subscription", s.requireCentralToken(s.handleCentralSubscription))
 	mux.HandleFunc("POST /api/v1/central/user-forwards", s.requireCentralToken(s.handleCentralUserForwards))
+	mux.HandleFunc("GET /api/v1/central/user-forwards", s.requireCentralToken(s.handleCentralUserForwardsList))
 	mux.HandleFunc("GET /api/v1/central/user-traffic", s.requireCentralToken(s.handleCentralUserTraffic))
 	mux.HandleFunc("POST /api/v1/central/user-forwards/disable", s.requireCentralToken(s.handleCentralUserForwardDisable))
 	mux.HandleFunc("POST /api/v1/central/user-forwards/resume", s.requireCentralToken(s.handleCentralUserForwardResume))
@@ -1041,8 +1042,12 @@ func boolToOnOff(b bool) string {
 
 // appendEndpointsForLanding 把一个落地的 endpoints 段追加到 config.toml 文本后
 // （分流走的端口不写进 realm：80 归 nginx、443 归 haproxy）。
+// v1.3.33：同落地同端口的 tcp+udp 两条 PortSpec 只写一段——不带 network
+// 字段的段按全局 use_udp 开关同时走 TCP/UDP，写两段一模一样的，第二段
+// 绑定必定失败（realm 启动报错噪音），转发语义不变。
 func appendEndpointsForLanding(tomlData []byte, l Landing, share80, share443 bool) []byte {
 	var add strings.Builder
+	seen := map[string]bool{}
 	for _, p := range l.Ports {
 		if p.Proto == "tcp" && p.Listen == 80 && share80 {
 			continue
@@ -1050,6 +1055,11 @@ func appendEndpointsForLanding(tomlData []byte, l Landing, share80, share443 boo
 		if p.Proto == "tcp" && p.Listen == 443 && share443 {
 			continue
 		}
+		k := strconv.Itoa(p.Listen) + ":" + l.Landing + ":" + strconv.Itoa(p.Remote)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
 		add.WriteString(fmt.Sprintf("\n[[endpoints]]\nlisten = \"0.0.0.0:%d\"\nremote = \"%s:%d\"\n", p.Listen, l.Landing, p.Remote))
 	}
 	return append(append([]byte{}, tomlData...), []byte(add.String())...)

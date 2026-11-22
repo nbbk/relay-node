@@ -585,8 +585,20 @@ func (s *Server) handleCentralRemotesAdd(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.pollOneRemote(rem)
+	// v1.3.33：登记后立即把远程已有的按人转发记录导进来（Panel 写成
+	// 这台远程的 id），之后分配端口就能避开它们；撤销重登记也不再变
+	// 瞎。导不进来（远程不可达、旧版本）只记警告，不阻断登记成功。
+	imported, updated, importErr := s.importRemoteUserForwards(rem)
+	resp := map[string]any{"id": rem.ID, "imported": imported, "updated": updated}
+	if importErr != nil {
+		_, msg := remoteSideOf(importErr)
+		resp["import_warning"] = "远程转发记录没导进来（" + msg + "），分配端口时仍按旧口径避让本地记录"
+		s.audit(s.currentUser(r), "导入远程转发记录", name+"（"+baseURL+"）", "警告", resp["import_warning"].(string))
+	} else if imported+updated > 0 {
+		s.audit(s.currentUser(r), "导入远程转发记录", name+"（"+baseURL+"）", "成功", fmt.Sprintf("导入 %d 条，更新 %d 条", imported, updated))
+	}
 	s.audit(s.currentUser(r), "登记远程面板", name+"（"+baseURL+"）", "成功", "")
-	writeJSON(w, 200, okResp(map[string]any{"id": rem.ID}))
+	writeJSON(w, 200, okResp(resp))
 }
 
 func (s *Server) handleCentralRemotesDelete(w http.ResponseWriter, r *http.Request) {

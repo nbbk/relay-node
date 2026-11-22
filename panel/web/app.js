@@ -4745,7 +4745,9 @@ function initCentral() {
     try {
       const d = await apiPostRaw('/api/v1/central/remotes', { name, base_url: baseUrl, token });
       if (d.ok === false) { toast(centralOpError(d), 'err'); return; }
-      toast('远程面板已登记', 'ok');
+      // v1.3.33：登记时顺带导入远程已有的按人转发记录（分配端口不再撞）。
+      toast('远程面板已登记' + (d.imported ? '，已导入远程的 ' + d.imported + ' 条转发记录' : ''), 'ok');
+      if (d.import_warning) { toast(d.import_warning, 'err'); }
       e.target.reset();
       loadCentral();
     } catch (err) { toast('登记失败：' + err.message, 'err'); }

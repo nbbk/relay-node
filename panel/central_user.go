@@ -13,6 +13,9 @@ package main
 //     端口与配额发过来，本面板校验（落地存在、端口不撞落地监听
 //     端口与其他订阅的转发）后落盘、重建 endpoints、重启 realm。
 //     forwards 为空 = 删掉该订阅在本面板上的全部转发。
+//   GET  /api/v1/central/user-forwards
+//     （v1.3.33）本机全部按人转发记录 + 已占用监听端口（只读，供管理
+//     面板分配端口前问询、登记时导入用；不含任何令牌）。
 //   GET  /api/v1/central/user-traffic?key=subuser:su-xxxxxx
 //     一个订阅在本面板上的用量与转发状态（管理面板汇总用）。
 //   POST /api/v1/central/user-forwards/disable  {key, reason}
@@ -33,6 +36,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -131,6 +135,24 @@ func (s *Server) handleCentralUserForwards(w http.ResponseWriter, r *http.Reques
 	}
 	s.audit("central", "下发按人转发", req.Key, "成功", fmt.Sprintf("应用 %d 条，跳过 %d 条", len(fresh), skipped))
 	writeJSON(w, 200, okResp(map[string]any{"applied": len(fresh), "skipped": skipped, "panel_version": Version}))
+}
+
+// handleCentralUserForwardsList 被管端：返回本机全部按人转发记录与已占
+// 用监听端口（v1.3.33，只读）。供管理面板分配端口前问询（远程说了算，
+// 不再只凭管理面板自己的记录猜）、登记远程时导入用。UserForward 本来
+// 就不含令牌，响应里也没有任何敏感字段。
+func (s *Server) handleCentralUserForwardsList(w http.ResponseWriter, r *http.Request) {
+	forwards := append([]UserForward{}, s.cfg.UserForwards...)
+	if forwards == nil {
+		forwards = []UserForward{}
+	}
+	used := s.usedListenPorts()
+	ports := make([]int, 0, len(used))
+	for p := range used {
+		ports = append(ports, p)
+	}
+	sort.Ints(ports)
+	writeJSON(w, 200, okResp(map[string]any{"forwards": forwards, "used_ports": ports, "panel_version": Version}))
 }
 
 // handleCentralUserTraffic 被管端：一个订阅在本面板上的用量与转发状态
@@ -278,8 +300,11 @@ func (s *Server) findRemoteUserForward(key, panelID, landingAddr string) *UserFo
 
 // allocateUserPortForPanel 给某台远程面板上的转发分配端口：避让本机
 // 落地监听端口、面板端口与该远程面板上已分配的用户端口（防同一远程
-// 上两个订阅撞端口）。远程的落地端口本面板看不见，远程收到后自己
-// 校验、冲突的跳过并上报（见 handleCentralUserForwards）。
+// 上两个订阅撞端口）。v1.3.33：分配前先问远程要已占端口表（远程说了
+// 算，见 fetchRemoteUserForwards）——只凭本机记录会撞上远程自己建的
+// 转发、或撤销重登记后换了面板 id 的旧记录。远程不可达、超时或旧版本
+// 无此接口时回退本地记录（行为与旧版一致，不报错）；远程收到后仍会
+// 自己校验、冲突的跳过并上报（见 handleCentralUserForwards）。
 func (s *Server) allocateUserPortForPanel(panelID string) (int, error) {
 	used := map[int]bool{}
 	if rc, _, err := s.readRelayConf(); err == nil && rc != nil {
@@ -295,6 +320,18 @@ func (s *Server) allocateUserPortForPanel(panelID string) (int, error) {
 	for _, f := range s.cfg.UserForwards {
 		if f.Panel == panelID {
 			used[f.ListenPort] = true
+		}
+	}
+	// v1.3.33：问远程要已占端口表并入避让集合。问不到就按本地记录分
+	// （旧远程、远程掉线时都走这条路，不阻断保存）。
+	if rem := s.remoteByID(panelID); rem != nil {
+		if rf, err := s.fetchRemoteUserForwards(*rem); err == nil {
+			for _, p := range rf.UsedPorts {
+				used[p] = true
+			}
+			for _, f := range rf.Forwards {
+				used[f.ListenPort] = true
+			}
 		}
 	}
 	start, end := s.userPortRange()
@@ -528,6 +565,92 @@ type remoteUserTraffic struct {
 	Disabled                                 bool
 	HasData                                  bool
 	TrafficError                             string // 远程面板的流量采样失败原因（v1.3.27）
+}
+
+// remoteUserForwards 一台远程面板的按人转发全量与已占端口
+// （GET /api/v1/central/user-forwards 的返回）。
+type remoteUserForwards struct {
+	Forwards  []UserForward `json:"forwards"`
+	UsedPorts []int         `json:"used_ports"`
+}
+
+// fetchRemoteUserForwards 拉一台远程面板的按人转发全量与已占端口
+// （v1.3.33）。远程不可达、超时、旧版本无此接口（404）时返回错误，
+// 调用方回退本地记录逻辑、不阻断保存。5 秒超时，别让一次远程掉线
+// 拖垮保存/登记流程。
+func (s *Server) fetchRemoteUserForwards(rem RemotePanel) (*remoteUserForwards, error) {
+	_, body, err := s.remoteCall(rem, "GET", "/api/v1/central/user-forwards", nil, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		OK        bool          `json:"ok"`
+		Forwards  []UserForward `json:"forwards"`
+		UsedPorts []int         `json:"used_ports"`
+		Error     string        `json:"error"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("local：远程面板返回的内容解析失败：%v", err)
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("remote：远程面板：%s", resp.Error)
+	}
+	if resp.Forwards == nil {
+		resp.Forwards = []UserForward{}
+	}
+	return &remoteUserForwards{Forwards: resp.Forwards, UsedPorts: resp.UsedPorts}, nil
+}
+
+// importRemoteUserForwards 从一台远程面板拉它的按人转发全量，导入为
+// 本机记录（v1.3.33，登记远程时调用）：Panel 写成该远程的面板 id，与
+// 本机已有的该远程记录按 (Key, ListenPort) 去重；同订阅同落地、端口
+// 已变的，以远程的为准（远程是其转发记录的唯一事实来源，连端口一起
+// 刷新）。本机原有记录不删。拉不到（不可达、超时、旧版本）返回错误，
+// 调用方只记警告、不阻断登记。
+func (s *Server) importRemoteUserForwards(rem RemotePanel) (imported, updated int, err error) {
+	rf, err := s.fetchRemoteUserForwards(rem)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, f := range rf.Forwards {
+		var existing *UserForward
+		for i := range s.cfg.UserForwards {
+			c := &s.cfg.UserForwards[i]
+			if c.Panel != rem.ID || c.Key != f.Key {
+				continue
+			}
+			if c.LandingAddr == f.LandingAddr || c.ListenPort == f.ListenPort {
+				existing = c
+				break
+			}
+		}
+		if existing == nil {
+			nf := f
+			nf.Panel = rem.ID
+			s.cfg.UserForwards = append(s.cfg.UserForwards, nf)
+			imported++
+			continue
+		}
+		// 同订阅同落地（或同端口）：以远程的为准，全字段刷新。
+		existing.SubKind = f.SubKind
+		existing.SubID = f.SubID
+		existing.SubName = f.SubName
+		existing.LandingAddr = f.LandingAddr
+		existing.ListenPort = f.ListenPort
+		existing.Disabled = f.Disabled
+		existing.LimitBytes = f.LimitBytes
+		existing.LimitMode = f.LimitMode
+		existing.ResetMode = f.ResetMode
+		existing.ResetDay = f.ResetDay
+		existing.NextResetAt = f.NextResetAt
+		updated++
+	}
+	if imported+updated > 0 {
+		if err := s.saveConfig(); err != nil {
+			return imported, updated, fmt.Errorf("保存失败：%v", err)
+		}
+	}
+	return imported, updated, nil
 }
 
 // fetchRemoteUserTraffic 拉一台远程面板上一个订阅的用量。
