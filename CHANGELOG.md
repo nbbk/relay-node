@@ -393,3 +393,10 @@
 - 没动的三处（放不进设置页的 8 个选项卡）：落地管理与添加落地的增删改是整套 CRUD 流程（卡片、编辑弹窗、回收站），不是设置表单；流量页的图表与流量限制表单是配套用的（看用量时顺手设上限），拆开反而难用；落地编辑与订阅编辑弹窗是聚焦的单表单弹窗，套选项卡没有意义。这三处保持原样。
 - 测试：go test -race 399 个测试函数全过（约 298 秒；后端没动，无新增 Go 测试；版本断言 TestVersion1340 换成 TestVersion1341，1333 文件的 panel_version 断言与 1330 文件的两处断言同步改到 1.3.41；gofmt 干净、go vet 过）；jsdom test-1341.js 86 项全过（桌面 1280 与窄屏 390 各 43 项：三处新选项卡结构与 aria、点切与 localStorage 记忆、新页面实例恢复上次选项卡、方向键/Home/End、字段一个没丢、添加落地表单提交取值仍对、防火墙与服务按钮仍工作；另回归设置页 8 选项卡与两种模式下卡片对照）。未测：真机、iPhone Safari 实际渲染与触摸操作、远程面板联调、干净机器、真二进制端到端。
 - 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置，已发出去的订阅链接内容、模式与到期状态不变。
+
+### v1.3.42 更新
+
+- 粘贴原始链接注册落地补全 Hysteria2 与 TUIC（1.3.39 只补了订阅输出，这条线还只认 4 个协议）：现在粘贴 hysteria2://（也认 hy2:// 别名）与 tuic:// 链接也能注册落地，全链路走通——解析（parseNodeLink：HY2 取密码/host/端口/sni，TUIC 取 uuid/密码/host/端口/sni；HY2 没密码、TUIC 没 uuid/密码直接报错）、前端 9 处粘贴校验放行、twin 推导（install.sh --twin：hysteria2/hy2/tuic 走 twin_plain，换 host、加/改 sni、备注加 -直连）、任意门（--door 同样走通）、第 7 步 --nodes 补生成（link_sni_domain、link_port、set_link_port 与问 SNI 的分支都已补）。Go 侧换端口/换 host/改备注（setLinkPort/setLinkHost/setLinkName）同样补上。落地侧不用改：landing-node 的 install.sh 本来就生成这两种链接（hysteria2://密码@域名:端口?sni=域名&alpn=h3、tuic://uuid:密码@域名:端口?congestion_control=bbr&alpn=h3&sni=域名），面板只认它原有的格式。
+- UDP 说明（不用另改转发）：HY2/TUIC 走 UDP，转发端口按加落地时选的预设走——预设 2（sing-box TLS）本来就转 udp:8443 与 udp:8444（落地默认的 HY2/TUIC 端口）；落地 HY2/TUIC 端口改过自定义端口时，选预设 3 自定义端口并勾“同时转 UDP”。twin 链接本身不改端口，只换地址。
+- 测试：go test -race 403 个测试函数全过（含 1342 文件新增 4 个：粘贴 hy2/tuic 链接解析字段全、字段缺失被拒、原来 4 个协议回归、换端口/换 host/改备注、真实 install.sh --twin/--door 端到端、预设 2 的 UDP 覆盖；版本断言 TestVersion1341 换成 TestVersion1342，1333 文件的 panel_version 断言与 1330 文件的两处断言同步改到 1.3.42；gofmt 干净、go vet 过）；jsdom test-1342.js 40 项全过（桌面 1280 与窄屏 390 各 20 项：版本 1.3.42 surfacing、补粘贴原始链接流程 hy2/tuic 放行、vless 回归、非法链接仍拦，另回归备份列表、1.3.32 两处修法与 1.3.33 登记导入 toast）。未测：真机、iPhone Safari 实际渲染与触摸操作、远程面板联调、干净机器、真二进制端到端。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置，已发出去的订阅链接内容、模式与到期状态不变。

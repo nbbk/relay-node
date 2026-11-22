@@ -2718,8 +2718,9 @@ func (s *Server) handleTwin(w http.ResponseWriter, r *http.Request) {
 // setLinkPort 只换节点链接的端口，host 不动；换不了原样返回。
 // v1.3.25 起四个协议都处理（原来只处理 vless/trojan，ss/vmess 原样
 // 返回）：按人转发时中转节点链接改成该用户的端口用；双生链接生成
-// 时 ss/vmess 的中转链接端口也终于能对上中转监听端口了。分支结构
-// 照着 util.go 里的 setLinkHost 来。
+// 时 ss/vmess 的中转链接端口也终于能对上中转监听端口了；v1.3.42 起
+// hysteria2/hy2/tuic 也走 vless/trojan 的分支（三者都是
+// userinfo@host:port 的 URL 形状）。分支结构照着 util.go 里的 setLinkHost 来。
 func setLinkPort(link string, newPort int) string {
 	if newPort <= 0 || newPort > 65535 {
 		return link
@@ -2732,7 +2733,7 @@ func setLinkPort(link string, newPort int) string {
 		return link
 	}
 	switch pl.Scheme {
-	case "vless", "trojan":
+	case "vless", "trojan", "hysteria2", "hy2", "tuic":
 		u, err := neturlParse(link)
 		if err != nil {
 			return link

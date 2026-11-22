@@ -800,7 +800,7 @@ function buildAddPayload() {
   const name = $('#add-name') ? $('#add-name').value.trim() : '';
   if (name && name.length > 64) { toast('名称不能超过 64 字', 'err'); return null; }
   const origLink = $('#add-orig-link') ? $('#add-orig-link').value.trim() : '';
-  if (origLink && !/^(vless|trojan|ss|vmess):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss:// 或 vmess:// 开头', 'err'); return null; }
+  if (origLink && !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2:// 或 tuic:// 开头', 'err'); return null; }
   const linkName = $('#add-link-name') ? $('#add-link-name').value.trim() : '';
   if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return null; }
   return {
@@ -1081,7 +1081,7 @@ function buildEditPayload(m) {
   const name = $('#edit-name', m).value.trim();
   if (name && name.length > 64) { toast('名称不能超过 64 字', 'err'); return null; }
   const origLink = $('#edit-orig-link', m).value.trim();
-  if (origLink && !/^(vless|trojan|ss|vmess):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss:// 或 vmess:// 开头', 'err'); return null; }
+  if (origLink && !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2:// 或 tuic:// 开头', 'err'); return null; }
   const linkName = $('#edit-link-name', m).value.trim();
   if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return null; }
   return {
@@ -1114,7 +1114,7 @@ async function pasteOrigLink(index) {
   onIn(m, '#paste-ok', 'click', async () => {
     const origLink = $('#paste-orig-link', m).value.trim();
     const linkName = $('#paste-link-name', m).value.trim();
-    if (!origLink || !/^(vless|trojan|ss|vmess):\/\//.test(origLink)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
+    if (!origLink || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(origLink)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
     if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return; }
     closeModal();
     try {
@@ -1194,7 +1194,7 @@ async function addNodeWizard(index) {
       onIn(m2, '#wz-back', 'click', () => addNodeWizard(index));
       onIn(m2, '#wz-done', 'click', async () => {
         const link = $('#wz-link', m2).value.trim();
-        if (!link || !/^(vless|trojan|ss|vmess):\/\//.test(link)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
+        if (!link || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(link)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
         try {
           const r2 = await apiPost('/api/v1/landings/' + index + '/add-node', { subdomain: sub, new_link: link });
           closeModal();
@@ -1364,7 +1364,7 @@ function initTwin() {
     const sni = $('#twin-sni').value.trim();
     const name = $('#twin-name') ? $('#twin-name').value.trim() : '';
     if (name && name.length > 64) { toast('节点名称不能超过 64 字', 'err'); return; }
-    if (!/^(vless|trojan|ss|vmess):\/\//.test(link)) { toast('链接格式不正确，需以 vless://、trojan://、ss:// 或 vmess:// 开头', 'err'); return; }
+    if (!/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(link)) { toast('链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2:// 或 tuic:// 开头', 'err'); return; }
     if (!landingIp) { toast('请填写落地 IP', 'err'); return; }
     try {
       const r = await apiPost('/api/v1/links/twin', { link, landing_ip: landingIp, sni, name: name || undefined, mode: twinMode() });
@@ -4448,7 +4448,7 @@ function buildCentralAddPayload(m) {
   const name = $('#central-add-name', m).value.trim();
   if (name && name.length > 64) { toast('名称不能超过 64 字', 'err'); return null; }
   const origLink = $('#central-add-orig-link', m).value.trim();
-  if (origLink && !/^(vless|trojan|ss|vmess):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss:// 或 vmess:// 开头', 'err'); return null; }
+  if (origLink && !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2:// 或 tuic:// 开头', 'err'); return null; }
   const linkName = $('#central-add-link-name', m).value.trim();
   if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return null; }
   return {
@@ -4506,7 +4506,7 @@ async function centralAddNodeWizard(remoteId, index, label) {
       onIn(m2, '#central-wz-back', 'click', () => centralAddNodeWizard(remoteId, index, label));
       onIn(m2, '#central-wz-done', 'click', async () => {
         const link = $('#central-wz-link', m2).value.trim();
-        if (!link || !/^(vless|trojan|ss|vmess):\/\//.test(link)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
+        if (!link || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(link)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
         try {
           const r2 = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/landings/' + index + '/add-node', { subdomain: sub, new_link: link });
           if (r2.ok === false) { toast(centralOpError(r2), 'err'); return; }
@@ -4658,7 +4658,7 @@ function buildCentralEditPayload(m) {
   const name = $('#central-edit-name', m).value.trim();
   if (name && name.length > 64) { toast('名称不能超过 64 字', 'err'); return null; }
   const origLink = $('#central-edit-orig-link', m).value.trim();
-  if (origLink && !/^(vless|trojan|ss|vmess):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss:// 或 vmess:// 开头', 'err'); return null; }
+  if (origLink && !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2:// 或 tuic:// 开头', 'err'); return null; }
   const linkName = $('#central-edit-link-name', m).value.trim();
   if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return null; }
   return {
@@ -4762,7 +4762,7 @@ async function centralPasteOrigLink(remoteId, index, l) {
   onIn(m, '#central-paste-ok', 'click', async () => {
     const origLink = $('#central-paste-orig-link', m).value.trim();
     const linkName = $('#central-paste-link-name', m).value.trim();
-    if (!origLink || !/^(vless|trojan|ss|vmess):\/\//.test(origLink)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
+    if (!origLink || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(origLink)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
     if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return; }
     closeModal();
     try {

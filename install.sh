@@ -786,7 +786,7 @@ link_port() { # $1=节点链接 -> 打印端口号（vless/trojan/ss SIP002/vmes
   local core="${rest%%#*}"
   core="${core%%\?*}" # 先去掉 query，不然 host:port 后面会粘着一串参数
   case "$scheme" in
-    vless|trojan)
+    vless|trojan|hysteria2|hy2|tuic)
       local auth="${core%%/*}"
       local hostport="${auth##*@}"
       if [[ "$hostport" == *:* ]]; then
@@ -833,7 +833,7 @@ set_link_port() { # $1=节点链接 $2=新端口 -> 打印改了端口的链接�
   local query="" has_query=0
   if [[ "$base" == *"?"* ]]; then query="${base#*\?}"; base="${base%%\?*}"; has_query=1; fi
   case "$scheme" in
-    vless|trojan)
+    vless|trojan|hysteria2|hy2|tuic)
       local auth="$base" path=""
       if [[ "$base" == */* ]]; then auth="${base%%/*}"; path="/${base#*/}"; fi
       local userinfo="" hostport="$auth"
@@ -981,7 +981,8 @@ frag_door() { # $1=frag $2=原来有没有 fragment(0/1) -> 加 -任意门 后�
   frag_marked "$1" "$2" door
 }
 
-twin_plain() { # vless/trojan：换地址 host，加/改 sni，名字加 -直连（$4=door 时加 -任意门）
+twin_plain() { # vless/trojan/hysteria2/tuic：换地址 host，加/改 sni，名字加 -直连（$4=door 时加 -任意门）
+  # 四者都是 userinfo@host:port?query#frag 的 URL 形状，同一套拆法通用。
   local link="$1" lip="$2" sni="$3" mark="${4:-direct}"
   local scheme="${link%%://*}"
   scheme="$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')"
@@ -1112,7 +1113,7 @@ twin_uri() { # $1=link $2=落地IP $3=sni域名 [$4=标记 direct/door] -> echo 
   local scheme="${link%%://*}"
   scheme="$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')"
   case "$scheme" in
-    vless|trojan)
+    vless|trojan|hysteria2|hy2|tuic)
       twin_plain "$link" "$lip" "$sni" "$mark"
       ;;
     ss)
@@ -1136,7 +1137,7 @@ door_uri() { # $1=link $2=中转地址 $3=sni域名 $4=转发端口 -> echo 任�
   scheme="$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')"
   local out=""
   case "$scheme" in
-    vless|trojan)
+    vless|trojan|hysteria2|hy2|tuic)
       out="$(twin_plain "$link" "$addr" "$sni" door)" || { printf '%s' "$out"; return 1; }
       ;;
     ss)
@@ -1166,7 +1167,7 @@ link_sni_domain() { # $1=link -> 打印 sni 用的域名（链接地址是域名
   if [[ "$core" == *"?"* ]]; then q="${core#*\?}"; core="${core%%\?*}"; fi
   local host="" v=""
   case "$scheme" in
-    vless|trojan)
+    vless|trojan|hysteria2|hy2|tuic)
       local auth="${core%%/*}"
       host="${auth##*@}"
       host="${host%%:*}"
@@ -1292,7 +1293,7 @@ step7_nodes() { # 第 7 步：双节点链接（可选；跳过不报错，始�
     _scheme_l="$(printf '%s' "${_orig%%://*}" | tr '[:upper:]' '[:lower:]')"
     if [ -z "$_sni" ] && [ "$SNI_ASKED" != "1" ]; then
       case "$_scheme_l" in
-        vless|trojan|vmess)
+        vless|trojan|vmess|hysteria2|hy2|tuic)
           SNI_ASKED=1
           echo "请填写直连要用的域名（SNI）："
           ask "第 $i 条链接里没找到域名，直连要用的域名（SNI，就是证书上的那个域名；不知道就直接回车）: " SNI_DOMAIN

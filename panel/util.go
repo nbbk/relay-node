@@ -1008,7 +1008,7 @@ func setLinkHost(link, newHost string) string {
 		return link
 	}
 	switch pl.Scheme {
-	case "vless", "trojan":
+	case "vless", "trojan", "hysteria2", "hy2", "tuic":
 		u, err := url.Parse(strings.TrimSpace(link))
 		if err != nil || u.Host == "" {
 			return link
@@ -1105,7 +1105,7 @@ func setLinkHost(link, newHost string) string {
 	return link
 }
 
-// setLinkName 只换节点链接的备注名（vless/trojan/ss 是 # 后面的片段，
+// setLinkName 只换节点链接的备注名（vless/trojan/ss/hysteria2/tuic 是 # 后面的片段，
 // vmess 是 JSON 里的 ps 字段），其余部分原样不动；换不了原样返回。
 // 中文备注经 url.URL.String() 百分号编码（与 setLinkHost 同一套规则），
 // 链接等价，客户端显示时会解码。
@@ -1119,7 +1119,7 @@ func setLinkName(link, name string) string {
 		return link
 	}
 	switch pl.Scheme {
-	case "vless", "trojan", "ss":
+	case "vless", "trojan", "ss", "hysteria2", "hy2", "tuic":
 		u, err := url.Parse(strings.TrimSpace(link))
 		if err != nil {
 			return link
