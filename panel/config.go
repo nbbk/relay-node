@@ -609,7 +609,8 @@ type Server struct {
 	state                 PanelState
 	stateMu               sync.Mutex
 	sessions              *sessionStore
-	opMu                  sync.Mutex // 写操作锁（TryLock，占用时返回 409）
+	clientSessions        *clientSessionStore // 客户端会话令牌（v1.3.45，只存 SHA-256 哈希）
+	opMu                  sync.Mutex          // 写操作锁（TryLock，占用时返回 409）
 	traffic               *trafficStore
 	userTraffic           *userTrafficStore  // 每订阅流量累计（v1.3.25，PANEL_HOME/user_traffic.json）
 	nodePushSeen          *nodePushSeenStore // 节点侧推送去重（v1.3.30，PANEL_HOME/node_push_seen.json）
@@ -657,7 +658,7 @@ func newServer(env Env) (*Server, error) {
 		// 测试环境 REALM_DIR 可能不可写目录已存在则忽略
 		_ = os.MkdirAll(env.RealmDir, 0o755)
 	}
-	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), userTraffic: newUserTrafficStore(filepath.Join(env.PanelHome, "user_traffic.json")), nodePushSeen: newNodePushSeenStore(filepath.Join(env.PanelHome, "node_push_seen.json")), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}, centralUsersFailAudit: map[string]time.Time{}, centralUserUsage: map[string]*centralUserUsage{}, subFails: map[string]*subFailState{}}
+	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), clientSessions: newClientSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), userTraffic: newUserTrafficStore(filepath.Join(env.PanelHome, "user_traffic.json")), nodePushSeen: newNodePushSeenStore(filepath.Join(env.PanelHome, "node_push_seen.json")), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}, centralUsersFailAudit: map[string]time.Time{}, centralUserUsage: map[string]*centralUserUsage{}, subFails: map[string]*subFailState{}}
 	if err := s.loadConfig(); err != nil {
 		return nil, err
 	}

@@ -157,6 +157,21 @@ func (st *sessionStore) destroy(r *http.Request) {
 	st.mu.Unlock()
 }
 
+// loginRetryAfter 锁还剩多少秒（没锁返回 0；供客户端登录 429 的 Retry-After 头）。
+func (st *sessionStore) loginRetryAfter(ip string) int {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	a, ok := st.attempts[ip]
+	if !ok || a.failures < 5 {
+		return 0
+	}
+	remain := 5*time.Minute - time.Since(a.lockedAt)
+	if remain <= 0 {
+		return 0
+	}
+	return int(remain.Seconds()) + 1
+}
+
 // loginLocked 同一 IP 5 次失败锁 5 分钟。
 func (st *sessionStore) loginLocked(ip string) bool {
 	st.mu.Lock()

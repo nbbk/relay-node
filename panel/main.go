@@ -204,6 +204,7 @@ func main() {
 	}
 	mux := s.routes()
 	var srv *http.Server
+	tlsCert, tlsKey := "", ""
 	if s.cfg.HTTPSEnabled {
 		cert, key := filepath.Join(env.PanelHome, "certs", "cert.pem"), filepath.Join(env.PanelHome, "certs", "key.pem")
 		if _, err := os.Stat(cert); err != nil {
@@ -213,12 +214,19 @@ func main() {
 			}
 		}
 		if _, err := os.Stat(cert); err == nil {
-			srv = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-			log.Printf("relay-panel %s 监听 https://%s", Version, addr)
-			serveWithRetry(srv, cert, key)
-			return
+			tlsCert, tlsKey = cert, key
 		}
 	}
+	if tlsCert != "" {
+		// 客户端登录监听（v1.3.45）：9870-9880，HTTPS，只服务 /api/v1/client/*。
+		// 自签证书时监听照常起，客户端证书校验过不了、连不上，这是契约预期行为。
+		s.startClientLoginListeners(tlsCert, tlsKey)
+		srv = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+		log.Printf("relay-panel %s 监听 https://%s", Version, addr)
+		serveWithRetry(srv, tlsCert, tlsKey)
+		return
+	}
+	log.Printf("客户端登录监听未启动：面板未开启 HTTPS（登录接口只走 HTTPS，需先在设置页开启 HTTPS）")
 	srv = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	log.Printf("relay-panel %s 监听 http://%s", Version, addr)
 	serveWithRetry(srv, "", "")
