@@ -25,9 +25,7 @@ package main
 // 里的 nodeAgentLive 门）；agent 离线超过 5 分钟回落到 A 的数，
 // 界面标注“仅中转”。两个来源永远不相加。
 //
-// 限制（本版不做，Phase 1 再做）：
-//   - node_uuids 字段已留好并随用户表下发，但面板本版不生成每人 UUID
-//     （Phase 1 试点时生成），下发时没 UUID 的用户 node_uuids 为空对象。
+// 限制（本版不做，Phase 2 再做）：
 //   - enforce=false：本版只收数、不执法；80%/100% 停用仍只走 A 的
 //     enforceUserTrafficLimits（读同一张 user_traffic.json，所以
 //     agent 推上来的超量用户也会被 A 的裁决停用——但停用只撤中转
@@ -35,8 +33,12 @@ package main
 //   - 切换到 agent 的当期，本期用量含切换前 A 已采的数（同一张表），
 //     下一周期起纯净；总量（UpTotal/DownTotal）始终是两路累计之和，
 //     切换时不重算。
+//   - 每人 UUID 在 1.3.35 生成（见本文件末尾的 newNodeUUID 与
+//     ensureNodeUUIDs*）：新建用户即生成、已有用户启动与集中管理轮询
+//     时补生成、删除用户随记录回收；用户表下发时带上 UUID。
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -96,6 +98,130 @@ func nodeUserEmail(kind, id string) string {
 		return "u-merged-" + id + "@node"
 	}
 	return "u-sub-" + id + "@node"
+}
+
+// ---------- 每人 UUID 生成与补齐（v1.3.35，切片 1） ----------
+//
+// 每人 UUID 是节点侧按人计量的身份（方案 §3.2）：一个订阅在每个落地
+// 各一个 UUID，agent 按落地地址从 node_uuids 里取。生成规则：
+//   - 只补不剪：缺失的落地补生成，已有的永远不动；勾选去掉的落地的
+//     UUID 留在表里不删（agent 只按自己落地地址取，复勾时 UUID 稳定
+//     不变；删用户时整条记录删掉，UUID 随之回收）。
+//   - 生效勾选：进了组用组的落地集合，没进组用自己的勾选（与转发
+//     核对同一口径，见 effectiveSelectionFor*）。
+//   - 地址解析：本地落地直接从 relay.conf 解；远程落地靠集中管理
+//     快照（remoteLandingAddr），快照没到时该落地先不生成、等快照
+//     到了由轮询补齐（pollAllRemotes 末尾扫一遍）。
+//   - 调用方负责保存：ensure/backfill 只改内存、返回有没有改动，
+//     改了的调用方调 saveConfig 落盘。
+
+// newNodeUUID 生成一个 UUIDv4（crypto/rand，与节点 UUID 同款随机强度）。
+func newNodeUUID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand 读不到是致命环境问题，不要静默返回全零 UUID。
+		panic("生成节点 UUID 失败：" + err.Error())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // 版本 4
+	b[8] = (b[8] & 0x3f) | 0x80 // 变体 10
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// landingAddrsForSelection 把生效勾选解析成落地地址列表（本地在前、
+// 远程在后，各自保持原有顺序；去重）。远程落地快照没到时跳过不报错，
+// 调用方（轮询补齐）下次再来。
+func (s *Server) landingAddrsForSelection(sel []SubSelection) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range s.localLandingsForSelection(sel) {
+		if l.Landing == "" || seen[l.Landing] {
+			continue
+		}
+		seen[l.Landing] = true
+		out = append(out, l.Landing)
+	}
+	for _, e := range sel {
+		if e.Panel == "local" {
+			continue
+		}
+		addr, ok := s.remoteLandingAddr(e.Panel, e.Landing)
+		if !ok || addr == "" || seen[addr] {
+			continue
+		}
+		seen[addr] = true
+		out = append(out, addr)
+	}
+	return out
+}
+
+// ensureNodeUUIDs 给一张 node_uuids 表补齐指定落地地址的 UUID（只补
+// 不剪）。uuids 为 nil 时新建表。返回新表与有没有改动。
+func ensureNodeUUIDs(uuids map[string]string, addrs []string) (map[string]string, bool) {
+	if uuids == nil {
+		uuids = map[string]string{}
+	}
+	changed := false
+	for _, addr := range addrs {
+		if addr == "" {
+			continue
+		}
+		if _, ok := uuids[addr]; ok {
+			continue
+		}
+		uuid := newNodeUUID()
+		// 同一张表里不许撞（概率极低，撞了就重抽一个）。
+		for {
+			dup := false
+			for _, v := range uuids {
+				if v == uuid {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				break
+			}
+			uuid = newNodeUUID()
+		}
+		uuids[addr] = uuid
+		changed = true
+	}
+	return uuids, changed
+}
+
+// ensureNodeUUIDsForSubUser 按生效勾选给一个订阅用户补齐每人 UUID。
+func (s *Server) ensureNodeUUIDsForSubUser(u *SubUser) bool {
+	addrs := s.landingAddrsForSelection(s.effectiveSelectionForSubUser(u))
+	uuids, changed := ensureNodeUUIDs(u.NodeUUIDs, addrs)
+	u.NodeUUIDs = uuids
+	return changed
+}
+
+// ensureNodeUUIDsForMerged 按生效勾选给一条合并订阅补齐每人 UUID。
+func (s *Server) ensureNodeUUIDsForMerged(m *MergedSub) bool {
+	addrs := s.landingAddrsForSelection(s.effectiveSelectionForMerged(m))
+	uuids, changed := ensureNodeUUIDs(m.NodeUUIDs, addrs)
+	m.NodeUUIDs = uuids
+	return changed
+}
+
+// backfillNodeUUIDs 给全部订阅用户与合并订阅补齐每人 UUID（启动与
+// 集中管理轮询时调用）。只改内存、返回有没有改动，改了的调用方负责
+// 调 saveConfig 落盘。
+func (s *Server) backfillNodeUUIDs() bool {
+	changed := false
+	for i := range s.cfg.SubUsers {
+		if s.ensureNodeUUIDsForSubUser(&s.cfg.SubUsers[i]) {
+			changed = true
+		}
+	}
+	for i := range s.cfg.MergedSubs {
+		if s.ensureNodeUUIDsForMerged(&s.cfg.MergedSubs[i]) {
+			changed = true
+		}
+	}
+	return changed
 }
 
 // nodeUsersPayload 组装用户表（SubUser + MergedSub，按 ID 排序，稳定

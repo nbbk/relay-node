@@ -219,8 +219,8 @@ type MergedSub struct {
 	DisabledReason    string `json:"disabled_reason,omitempty"`
 	// NodeUUIDs（v1.3.30，节点侧按人计量）：每落地一个 UUID，键是落地
 	// 地址（relay.conf 的 LANDING，与 state.json 的落地键一致），值是
-	// 该落地给这份订阅的 UUID（明文，与节点 UUID 同款存法）。本版只留
-	// 字段、下发时原样返回，不生成（Phase 1 试点时生成）；备份/恢复
+	// 该落地给这份订阅的 UUID（明文，与节点 UUID 同款存法）。1.3.35
+	// 起生成（新建即生成、已有补生成、删除随记录回收）；备份/恢复
 	// 全量跟走，丢了它用户就得重新导入。
 	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
 }
@@ -277,7 +277,8 @@ type SubUser struct {
 	TrafficWarned100  bool   `json:"traffic_warned_100,omitempty"`
 	Disabled          bool   `json:"disabled,omitempty"`
 	DisabledReason    string `json:"disabled_reason,omitempty"`
-	// NodeUUIDs（v1.3.30，节点侧按人计量）：与 SubUser 同款，见上。
+	// NodeUUIDs（v1.3.30，节点侧按人计量）：与 MergedSub 同款，见上；
+	// 1.3.35 起生成（新建即生成、已有补生成、删除随记录回收）。
 	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
 }
 

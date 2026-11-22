@@ -444,6 +444,15 @@ func (s *Server) pollAllRemotes() {
 	for _, rem := range append([]RemotePanel{}, s.cfg.Remotes...) {
 		s.pollOneRemote(rem)
 	}
+	// 每人 UUID（v1.3.35）：快照刚刷新完，给已有用户补齐远程落地的
+	// UUID；写锁被占时跳过这一轮（下次轮询再来），只改了才落盘。
+	if s.opMu.TryLock() {
+		changed := s.backfillNodeUUIDs()
+		if changed {
+			_ = s.saveConfig()
+		}
+		s.opMu.Unlock()
+	}
 }
 
 // pollOneRemote 拉一台远程面板并更新缓存；在线/离线变化与持续离线

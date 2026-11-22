@@ -189,6 +189,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("启动失败：%v", err)
 	}
+	// 每人 UUID（v1.3.35）：启动时给已有用户补生成（只改内存、改了才
+	// 落盘；远程落地快照还没到时那部分先不生成，由集中管理轮询补齐）。
+	if s.backfillNodeUUIDs() {
+		if err := s.saveConfig(); err != nil {
+			log.Printf("补生成每人 UUID 后保存失败：%v", err)
+		}
+	}
 	s.startBackground()
 	addr := fmt.Sprintf("0.0.0.0:%d", s.cfg.Port)
 	if v := os.Getenv("PANEL_PORT"); v != "" {

@@ -1829,6 +1829,8 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 	now := nowTime.Format(time.RFC3339)
 	id := "su-" + randomTokenHex(6)
 	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: id, Name: name, Note: note, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt, GroupID: groupID, TrafficLimitBytes: limitBytes, TrafficLimitMode: limitMode, ResetMode: resetMode, ResetDay: resetDay, NextResetAt: nextResetAt})
+	// 每人 UUID（v1.3.35）：新建即按生效勾选生成（进了组按组的落地）。
+	s.ensureNodeUUIDsForSubUser(&s.cfg.SubUsers[len(s.cfg.SubUsers)-1])
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
@@ -2056,6 +2058,8 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		if expiresGiven {
 			u.ExpiresAt = expiresAt
 		}
+		// 每人 UUID（v1.3.35）：勾选/分组变了就按新生效勾选补齐。
+		s.ensureNodeUUIDsForSubUser(u)
 		if err := s.saveConfig(); err != nil {
 			writeJSON(w, 500, errResp("保存失败："+err.Error()))
 			return
@@ -2650,6 +2654,10 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 			effSel = g.Selection
 		}
 	}
+	// 每人 UUID（v1.3.35）：新建/轮换即按生效勾选生成。
+	if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
+		s.ensureNodeUUIDsForMerged(ms)
+	}
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
@@ -2871,6 +2879,8 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 		if expiresGiven {
 			ms.ExpiresAt = expiresAt
 		}
+		// 每人 UUID（v1.3.35）：勾选/分组变了就按新生效勾选补齐。
+		s.ensureNodeUUIDsForMerged(ms)
 		if err := s.saveConfig(); err != nil {
 			writeJSON(w, 500, errResp("保存失败："+err.Error()))
 			return
