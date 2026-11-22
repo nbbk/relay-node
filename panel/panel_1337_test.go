@@ -35,7 +35,8 @@ func dnsServers1337(t *testing.T, doc map[string]any) []map[string]any {
 
 // TestSingboxDNSNewFormat1337 有节点时 sing-box JSON 的 dns 段是 1.14 新格式：
 // 两台服务器都有 type=https、server、server_port=443，没有 legacy 的
-// address 字段；detour 不变；route.default_domain_resolver 是 dns-direct；
+// address 字段；detour 按 1.3.38（直连无 detour、代理 detour 是大写
+// Proxy）；route.default_domain_resolver 是 dns-direct；
 // dns rules 与 final 不变。
 func TestSingboxDNSNewFormat1337(t *testing.T) {
 	var doc map[string]any
@@ -43,7 +44,7 @@ func TestSingboxDNSNewFormat1337(t *testing.T) {
 		t.Fatalf("sing-box JSON 解析失败：%v", err)
 	}
 	servers := dnsServers1337(t, doc)
-	want := map[string]string{"dns-direct": "doh.pub", "dns-proxy": "dns.google"}
+	want := map[string]string{"dns-direct": "223.5.5.5", "dns-proxy": "dns.google"}
 	for _, s := range servers {
 		tag, _ := s["tag"].(string)
 		host, ok := want[tag]
@@ -66,8 +67,11 @@ func TestSingboxDNSNewFormat1337(t *testing.T) {
 			t.Fatalf("%s 不应写 path（默认就是 /dns-query）：%v", tag, s)
 		}
 	}
-	if servers[0]["detour"] != "direct" || servers[1]["detour"] != "proxy" {
-		t.Fatalf("两台服务器的 detour 应仍是 direct/proxy：%v", servers)
+	if _, has := servers[0]["detour"]; has {
+		t.Fatalf("直连 DNS 不应再写 detour（v1.3.38）：%v", servers)
+	}
+	if servers[1]["detour"] != "Proxy" {
+		t.Fatalf("代理 DNS 的 detour 应是大写 Proxy（v1.3.38）：%v", servers)
 	}
 	route, _ := doc["route"].(map[string]any)
 	if route == nil {

@@ -360,7 +360,9 @@ func singboxOutboundFromLink(l subLink) (map[string]any, bool) {
 // renderSingboxJSON 渲染 sing-box 订阅：完整 sing-box 配置 JSON
 // （dns + mixed 入站 + 节点 outbounds + selector/urltest + route 规则）。
 // DNS 查询本身可以走 detour：国内域名走直连 DoH，TikTok 等国外域名走
-// 代理 DoH（detour: proxy），这是 sing-box 比 mihomo 优越的地方。
+// 代理 DoH（detour 指到 selector 出站 Proxy，tag 大小写敏感）。直连
+// DNS 不写 detour：1.14.4 启动时 detour 指到 direct 出站会报
+// "detour to an empty direct outbound makes no sense"，不写默认就是直连。
 // 入站只放 mixed（官方客户端自己会按需加 tun，订阅里不强加 tun，避免
 // 与客户端的 TUN 设置冲突）。route 里 TikTok/社交/流媒体走 Proxy 组，
 // .cn 直连，其余 final direct。mode 参数不影响 sing-box（始终分流）。
@@ -389,16 +391,31 @@ func renderSingboxJSON(links []subLink) string {
 			directTag = name
 		}
 	}
+	// DNS 服务器（v1.3.38 修 1.3.37 的 detour 问题：直连 DNS 去掉 detour，
+	// 代理 DNS 的 detour 改成 "Proxy"，对上 selector 的 tag；节点为空时
+	// 没有 Proxy 组，代理 DNS 改用 IP 8.8.8.8、不写 detour，否则启动时
+	// 域名无人解析、且 detour 指不到不存在的出站）。
+	// 直连 DNS 的 server 须是 IP（223.5.5.5，阿里 DoH）：1.14.4 里
+	// DNS 服务器地址写域名时须有另一台 IP 服务器当解析器，否则 check
+	// 就报 "missing domain resolver for domain server address"——
+	// doh.pub 是域名、两台服务器又都没 IP，所以 doh.pub 不能留。
+	dnsServers := []any{
+		// 新格式（v1.3.37，sing-box 1.14 移除了 legacy DNS：address 写法会被
+		// check 拒绝）。DoH 服务器须写 type + server + server_port，
+		// path 默认 /dns-query，不用写。
+		map[string]any{"tag": "dns-direct", "type": "https", "server": "223.5.5.5", "server_port": 443},
+	}
+	if len(tags) > 0 {
+		dnsServers = append(dnsServers,
+			map[string]any{"tag": "dns-proxy", "type": "https", "server": "dns.google", "server_port": 443, "detour": "Proxy"})
+	} else {
+		dnsServers = append(dnsServers,
+			map[string]any{"tag": "dns-proxy", "type": "https", "server": "8.8.8.8", "server_port": 443})
+	}
 	cfg := map[string]any{
 		"log": map[string]any{"level": "info"},
 		"dns": map[string]any{
-			"servers": []any{
-				// 新格式（v1.3.37，sing-box 1.14 移除了 legacy DNS：address 写法会被
-				// check 拒绝）。DoH 服务器须写 type + server + server_port，
-				// path 默认 /dns-query，不用写。
-				map[string]any{"tag": "dns-direct", "type": "https", "server": "doh.pub", "server_port": 443, "detour": "direct"},
-				map[string]any{"tag": "dns-proxy", "type": "https", "server": "dns.google", "server_port": 443, "detour": "proxy"},
-			},
+			"servers": dnsServers,
 			"rules": []any{
 				map[string]any{"domain_suffix": []string{".cn"}, "server": "dns-direct"},
 				map[string]any{"domain_suffix": tiktokSuffixes, "server": "dns-proxy"},
