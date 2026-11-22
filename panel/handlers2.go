@@ -54,8 +54,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			start, end := s.userPortRange()
 			return map[string]any{"start": start, "end": end}
 		}(),
-		"panel_cert": s.panelCertStatus(),
-		"version":    Version, "latest_version": latest, "update_available": update,
+		// 中转倍率（v1.3.43）：返回生效值（没设过 = 1）。
+		"relay_multiplier": s.relayMultiplier(),
+		"panel_cert":       s.panelCertStatus(),
+		"version":          Version, "latest_version": latest, "update_available": update,
 	}))
 }
 
@@ -102,6 +104,38 @@ func (s *Server) handleUserPortsSet(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(s.currentUser(r), "改每用户端口段", fmt.Sprintf("%d–%d", req.Start, req.End), "成功", "已分配的转发不受影响，新分配才用新段")
 	writeJSON(w, 200, okResp(map[string]any{"start": req.Start, "end": req.End}))
+}
+
+// ---------- 中转倍率（v1.3.43） ----------
+
+// handleRelayMultiplierSet 改中转倍率：面板级设置，与单落地倍率相乘——
+// 实际流量 × 落地倍率 × 中转倍率计入订阅用量（userinfo 与 80%/100%
+// 限流都按折算后的用量算）。0 = 没填（按 1 算）；0.1–100 之外拒绝
+// （与落地倍率的取值范围一致，见 parseTrafficMultiplier）；改完才按
+// 新倍率算，之前已记的用量不追溯。管理面板模式下本机没有中转，设置页
+// 这张卡隐藏，倍率由各中转面板自己设；集中管理聚合只加总各面板已折算
+// 的数，不再乘。
+func (s *Server) handleRelayMultiplierSet(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Multiplier float64 `json:"multiplier"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	if req.Multiplier != 0 && (req.Multiplier < 0.1 || req.Multiplier > maxTrafficMultiplier) {
+		writeJSON(w, 400, errResp("中转倍率填 0.1–100，默认 1"))
+		return
+	}
+	old := s.cfg.RelayMultiplier
+	s.cfg.RelayMultiplier = req.Multiplier
+	if err := s.saveConfig(); err != nil {
+		s.cfg.RelayMultiplier = old
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	s.audit(s.currentUser(r), "改中转倍率", fmt.Sprintf("×%s→×%s", formatMultiplier(old), formatMultiplier(req.Multiplier)), "成功", "改完才按新倍率算，之前已记的用量不追溯")
+	writeJSON(w, 200, okResp(map[string]any{"relay_multiplier": s.relayMultiplier()}))
 }
 
 // ---------- 面板名称（v1.3.4） ----------

@@ -116,6 +116,12 @@ type PanelConfig struct {
 	// 已分配的用户端口；用户/订阅删除时回收。
 	UserPortStart int `json:"user_port_start,omitempty"`
 	UserPortEnd   int `json:"user_port_end,omitempty"`
+	// 中转倍率（v1.3.43）：本台中转机的流量倍率，与单落地倍率相乘——
+	// 实际流量 × 落地倍率 × 中转倍率计入订阅用量（userinfo 与 80%/100%
+	// 限流都按折算后的用量算）；0 = 没填（旧面板，按 1 算）。存在
+	// config.json，设置页订阅选项卡可改；管理面板模式下本机没有中转，
+	// 这张卡隐藏（见 loadSettingsPage），倍率由各中转面板自己设。
+	RelayMultiplier float64 `json:"relay_multiplier,omitempty"`
 	// 登记的远程面板（v1.2.0，主面板端）：Token 是明文（必须拿原文去调远程接口），
 	// 与 Telegram Token、Cloudflare 令牌同等待遇，只存在 600 权限的 config.json 里。
 	Remotes []RemotePanel `json:"remotes"`

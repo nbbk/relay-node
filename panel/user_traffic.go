@@ -373,6 +373,26 @@ func (s *Server) landingMultiplier(addr string) float64 {
 	return 1
 }
 
+// relayMultiplier 中转倍率（v1.3.43）：面板级设置，存在 config.json，
+// 默认 1；旧配置无该字段按 1 算。
+func (s *Server) relayMultiplier() float64 {
+	return normalizeTrafficMultiplier(s.cfg.RelayMultiplier)
+}
+
+// effectiveMultiplier 某落地的有效倍率（v1.3.43）：落地倍率 × 中转倍率，
+// 再按同一规则归一化（≤0/非法→1，>100 钳到 100）。采样、agent 推送
+// 与 quota 换算都走它，各乘一次、不重复。
+func (s *Server) effectiveMultiplier(addr string) float64 {
+	return normalizeTrafficMultiplier(s.landingMultiplier(addr) * s.relayMultiplier())
+}
+
+// effectiveLandingMultiplier 落地记录的有效倍率（v1.3.43）：与
+// effectiveMultiplier 同口径，调用方手里已有 Landing 记录时用它，
+// 不用再读一次 relay.conf。
+func (s *Server) effectiveLandingMultiplier(l Landing) float64 {
+	return normalizeTrafficMultiplier(l.multiplier() * s.relayMultiplier())
+}
+
 // ---------- 端口分配 ----------
 
 // usedListenPorts 返回本机已被占用的监听端口：落地监听端口 + 已分配的
@@ -889,8 +909,9 @@ func (s *Server) applyUserForwards() error {
 
 // ---------- 采样与执法 ----------
 
-// userTrafficPortMultipliers 用户转发端口 → 倍率（v1.3.40）：按转发所属
-// 落地的倍率取；relay.conf 读不到、落地不存在时该端口缺项（调用方按 1 算）。
+// userTrafficPortMultipliers 用户转发端口 → 有效倍率（v1.3.40，v1.3.43
+// 改成落地倍率 × 中转倍率）：按转发所属落地的倍率取；relay.conf 读不到、
+// 落地不存在时该端口缺项（调用方按 1 算）。
 func (s *Server) userTrafficPortMultipliers() map[int]float64 {
 	m := map[int]float64{}
 	rc, _, err := s.readRelayConf()
@@ -903,7 +924,7 @@ func (s *Server) userTrafficPortMultipliers() map[int]float64 {
 	}
 	for _, f := range s.cfg.UserForwards {
 		if l, ok := byAddr[f.LandingAddr]; ok {
-			m[f.ListenPort] = l.multiplier()
+			m[f.ListenPort] = s.effectiveLandingMultiplier(l)
 		}
 	}
 	return m

@@ -1743,14 +1743,14 @@ async function loadSettingsPage() {
     const st = await api('/api/v1/settings');
     settingsCache = st;
     // 面板模式（v1.2.8）：管理面板模式下隐藏本机中转专属设置卡
-    //（任意门地址、延迟探测都是本机中转的配置，管理面板本机没有中转）。
+    //（任意门地址、延迟探测、中转倍率都是本机中转的配置，管理面板本机没有中转）。
     // Cloudflare Token 与机器监控在管理面板下也可见：前者是面板自身 HTTPS
     // 签证书要用的（v1.3.14，管理面板没有它就签不到真证书），后者是面板本机
     // 的磁盘/内存/CPU 监控，后台循环在管理面板下照常跑。
     const modeOn = !!st.manager_only;
     const modeStatus = $('#mode-status');
     if (modeStatus) modeStatus.textContent = modeOn ? '当前：管理面板（只做集中管理，本地页已隐藏）' : '当前：完整面板';
-    ['card-door', 'card-latency'].forEach((cid) => {
+    ['card-door', 'card-latency', 'card-relay-multiplier'].forEach((cid) => {
       const c = document.getElementById(cid);
       if (c) c.classList.toggle('hidden', modeOn);
     });
@@ -1762,6 +1762,9 @@ async function loadSettingsPage() {
     const up = st.user_ports || {};
     $('#user-port-start').value = up.start || 30000;
     $('#user-port-end').value = up.end || 39999;
+    // 中转倍率（v1.3.43）：没设过 = 1，输入框留空；设过就预填。
+    const rm = st.relay_multiplier || 1;
+    $('#relay-multiplier').value = rm === 1 ? '' : rm;
     $('#whitelist-input').value = (st.ip_whitelist || []).join('\n');
     $('#https-domain').value = st.https_domain || '';
     $('#https-status').textContent = st.https_enabled ? 'HTTPS 已开启' + (st.https_domain ? '（域名：' + st.https_domain + '）' : '（自签证书）') : '当前为 HTTP，未开启 HTTPS。';
@@ -2094,6 +2097,16 @@ function initSettings() {
     try {
       const r = await apiPost('/api/v1/settings/user-ports', { start, end });
       toast('已保存：' + (r.start || '') + '–' + (r.end || '') + '（已分配的转发不受影响，新分配才用新段）', 'ok');
+      loadSettingsPage();
+    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+  });
+  // 中转倍率（v1.3.43）：与单落地倍率相乘，空着 = 1。
+  on('#relay-multiplier-save', 'click', async () => {
+    const mult = parseTrafficMultiplier($('#relay-multiplier'));
+    if (mult == null) return;
+    try {
+      const r = await apiPost('/api/v1/settings/relay-multiplier', { multiplier: mult });
+      toast('中转倍率已保存：×' + (r.relay_multiplier != null ? r.relay_multiplier : mult) + '（改完才按新倍率算，之前已记的用量不追溯）', 'ok');
       loadSettingsPage();
     } catch (err) { toast('保存失败：' + err.message, 'err'); }
   });
