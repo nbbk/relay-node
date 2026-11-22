@@ -393,8 +393,11 @@ func renderSingboxJSON(links []subLink) string {
 		"log": map[string]any{"level": "info"},
 		"dns": map[string]any{
 			"servers": []any{
-				map[string]any{"tag": "dns-direct", "address": "https://doh.pub/dns-query", "detour": "direct"},
-				map[string]any{"tag": "dns-proxy", "address": "https://dns.google/dns-query", "detour": "proxy"},
+				// 新格式（v1.3.37，sing-box 1.14 移除了 legacy DNS：address 写法会被
+				// check 拒绝）。DoH 服务器须写 type + server + server_port，
+				// path 默认 /dns-query，不用写。
+				map[string]any{"tag": "dns-direct", "type": "https", "server": "doh.pub", "server_port": 443, "detour": "direct"},
+				map[string]any{"tag": "dns-proxy", "type": "https", "server": "dns.google", "server_port": 443, "detour": "proxy"},
 			},
 			"rules": []any{
 				map[string]any{"domain_suffix": []string{".cn"}, "server": "dns-direct"},
@@ -440,7 +443,9 @@ func renderSingboxJSON(links []subLink) string {
 		)
 	}
 	cfg["outbounds"] = outbounds
-	cfg["route"] = map[string]any{"rules": routeRules, "final": "direct"}
+	// default_domain_resolver（v1.3.37）：sing-box 1.14 起 route 里必填，
+	// 规则里出现的域名用 dns-direct 解析。
+	cfg["route"] = map[string]any{"rules": routeRules, "final": "direct", "default_domain_resolver": "dns-direct"}
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return "{}\n"
