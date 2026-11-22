@@ -255,9 +255,41 @@ func renderSubContent(links []subLink, format, mode string) (string, string, err
 	}
 }
 
+// splitAlpnList 把链接的 alpn 参数拆成列表（逗号分隔，也可能出现多次）。
+func splitAlpnList(q url.Values) []string {
+	var out []string
+	for _, v := range q["alpn"] {
+		for _, p := range strings.Split(v, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// hy2TuicTLS 拼 HY2/TUIC 出站的 tls 段：TLS 恒开（这两个协议本身就是
+// TLS 承载）；server_name 取 sni（调用方已按 sni→host 参数回退，都没有
+// 就不写，sing-box 默认用 server）；alpn 按链接参数写；insecure=1 时
+// 写 insecure。
+func hy2TuicTLS(sni string, q url.Values) map[string]any {
+	tls := map[string]any{"enabled": true}
+	if sni != "" {
+		tls["server_name"] = sni
+	}
+	if alpn := splitAlpnList(q); len(alpn) > 0 {
+		tls["alpn"] = alpn
+	}
+	if v := strings.ToLower(strings.TrimSpace(q.Get("insecure"))); v == "1" || v == "true" {
+		tls["insecure"] = true
+	}
+	return tls
+}
+
 // singboxOutboundFromLink 把一条节点链接转成 sing-box outbound
 // （map 形式，由 renderSingboxJSON 统一 Marshal）。支持 vless /
-// trojan / vmess / ss；hy2/tuic 暂不支持，跳过。
+// trojan / vmess / ss / hysteria2 / tuic；字段缺失（如 hy2 没密码、
+// tuic 没 uuid/密码）返回失败、调用方跳过这条，不断链。
 func singboxOutboundFromLink(l subLink) (map[string]any, bool) {
 	u, err := url.Parse(strings.TrimSpace(l.Link))
 	if err != nil || u.Scheme == "" {
@@ -334,6 +366,43 @@ func singboxOutboundFromLink(l subLink) (map[string]any, bool) {
 		}
 		path = raw["path"]
 		wsHost = raw["host"]
+	case "hysteria2", "hy2":
+		// HY2 链接：hysteria2://<密码>@<地址>:<端口>?sni=<域名>&alpn=h3
+		// （落地 install.sh 生成的格式；也认 obfs=salamander +
+		// obfs-password）。TLS 与 WS 的公共处理不适用（HY2 自带 TLS、
+		// 没有 WS 传输），这里直接返回。
+		pw := ""
+		if u.User != nil {
+			pw = u.User.Username()
+		}
+		if pw == "" {
+			return nil, false
+		}
+		ob = map[string]any{"type": "hysteria2", "tag": l.Name, "server": host, "server_port": port, "password": pw, "tls": hy2TuicTLS(sni, q)}
+		if q.Get("obfs") == "salamander" {
+			if obfsPw := q.Get("obfs-password"); obfsPw != "" {
+				ob["obfs"] = map[string]any{"type": "salamander", "password": obfsPw}
+			}
+		}
+		return ob, true
+	case "tuic":
+		// TUIC 链接：tuic://<uuid>:<密码>@<地址>:<端口>?congestion_control=bbr&alpn=h3&sni=<域名>
+		// （落地 install.sh 生成的格式）。同 HY2，直接返回。
+		uuid := ""
+		pw := ""
+		if u.User != nil {
+			uuid = u.User.Username()
+			pw, _ = u.User.Password()
+		}
+		if uuid == "" || pw == "" {
+			return nil, false
+		}
+		ob = map[string]any{"type": "tuic", "tag": l.Name, "server": host, "server_port": port, "uuid": uuid, "password": pw, "tls": hy2TuicTLS(sni, q)}
+		switch cc := strings.ToLower(strings.TrimSpace(q.Get("congestion_control"))); cc {
+		case "cubic", "new_reno", "bbr":
+			ob["congestion_control"] = cc
+		}
+		return ob, true
 	default:
 		return nil, false
 	}
@@ -476,9 +545,19 @@ func yamlDQ(s string) string {
 	return strconv.Quote(s)
 }
 
+// writeClashAlpn 按 mihomo 的列表写法出 alpn（没有就不写）。
+func writeClashAlpn(b *strings.Builder, q url.Values) {
+	if alpn := splitAlpnList(q); len(alpn) > 0 {
+		b.WriteString("    alpn:\n")
+		for _, a := range alpn {
+			b.WriteString("      - " + yamlDQ(a) + "\n")
+		}
+	}
+}
+
 // clashProxyFromLink 把一条节点链接转成一个 Clash proxy 条目（YAML 行块）。
-// 支持 vless / trojan / vmess / ss；hy2/tuic 暂不支持，在 clash 里跳过
-// （base64/plain 订阅里还在）。所有条目都写 udp: true——mihomo 的 udp
+// 支持 vless / trojan / vmess / ss / hysteria2 / tuic；字段缺失返回失败、
+// 调用方跳过这条。所有条目都写 udp: true——mihomo 的 udp
 // 默认 false，不写等于禁用 UDP 中继，TikTok 大量走的 QUIC 就不通。
 func clashProxyFromLink(l subLink) (string, bool) {
 	u, err := url.Parse(strings.TrimSpace(l.Link))
@@ -575,6 +654,66 @@ func clashProxyFromLink(l subLink) (string, bool) {
 		}
 		path = raw["path"]
 		wsHost = raw["host"]
+	case "hysteria2", "hy2":
+		// HY2：字段顺序与落地 install.sh 生成的 Clash 参考一致
+		// （type/server/port/password/sni/alpn）。TLS 与 network/ws
+		// 的公共处理不适用，这里直接返回。
+		pw := ""
+		if u.User != nil {
+			pw = u.User.Username()
+		}
+		if pw == "" {
+			return "", false
+		}
+		b.WriteString("    type: hysteria2\n")
+		b.WriteString("    server: " + yamlDQ(host) + "\n")
+		b.WriteString("    port: " + strconv.Itoa(port) + "\n")
+		b.WriteString("    password: " + yamlDQ(pw) + "\n")
+		if q.Get("obfs") == "salamander" {
+			if obfsPw := q.Get("obfs-password"); obfsPw != "" {
+				b.WriteString("    obfs: salamander\n")
+				b.WriteString("    obfs-password: " + yamlDQ(obfsPw) + "\n")
+			}
+		}
+		if sni != "" {
+			b.WriteString("    sni: " + yamlDQ(sni) + "\n")
+		}
+		writeClashAlpn(&b, q)
+		if v := strings.ToLower(strings.TrimSpace(q.Get("insecure"))); v == "1" || v == "true" {
+			b.WriteString("    skip-cert-verify: true\n")
+		}
+		b.WriteString("    udp: true\n")
+		return b.String(), true
+	case "tuic":
+		// TUIC：字段顺序与落地 install.sh 生成的 Clash 参考一致
+		// （type/server/port/uuid/password/congestion-controller/sni/alpn）。
+		uuid := ""
+		pw := ""
+		if u.User != nil {
+			uuid = u.User.Username()
+			pw, _ = u.User.Password()
+		}
+		if uuid == "" || pw == "" {
+			return "", false
+		}
+		b.WriteString("    type: tuic\n")
+		b.WriteString("    server: " + yamlDQ(host) + "\n")
+		b.WriteString("    port: " + strconv.Itoa(port) + "\n")
+		b.WriteString("    uuid: " + yamlDQ(uuid) + "\n")
+		b.WriteString("    password: " + yamlDQ(pw) + "\n")
+		switch cc := strings.ToLower(strings.TrimSpace(q.Get("congestion_control"))); cc {
+		case "cubic", "new_reno", "bbr":
+			b.WriteString("    congestion-controller: " + cc + "\n")
+		}
+		if sni != "" {
+			b.WriteString("    sni: " + yamlDQ(sni) + "\n")
+		}
+		writeClashAlpn(&b, q)
+		if v := strings.ToLower(strings.TrimSpace(q.Get("insecure"))); v == "1" || v == "true" {
+			b.WriteString("    skip-cert-verify: true\n")
+		}
+		b.WriteString("    udp: true\n")
+		return b.String(), true
 	default:
 		return "", false
 	}
@@ -882,7 +1021,7 @@ func renderClashHeader(domains []string) string {
 // split（分流，MATCH,DIRECT）或 global（全局，MATCH,手动选择）。
 // GLOBAL 组只在客户端切全局模式时生效，规则模式下只看 rules，不走它。
 // 节点为空时（v1.3.22 修）：订阅里没有任何能进 Clash 的节点（节点为空，
-// 或全是 Clash 不支持的类型如 Hysteria2/TUIC）时，不出任何策略组——
+// 或全部链接都解析失败）时，不出任何策略组——
 // Clash 要求每个组必须有非空 proxies 或 use，空组会让导入直接报错
 // “proxy group[0]: 'use' or 'proxies' missing”。此时只出一个合法的
 // 空配置（proxies: []、proxy-groups: []、规则只留 MATCH,DIRECT，不引用

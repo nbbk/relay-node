@@ -184,13 +184,20 @@ func TestRenderClashYAMLSSOnly1322(t *testing.T) {
 	}
 }
 
-// TestRenderClashYAMLHY2Only1322 全是 Clash 不支持的类型（HY2/TUIC
-// 仍会被 clashProxyFromLink 跳过）时不出空组。
+// TestRenderClashYAMLHY2Only1322 全是 HY2/TUIC 时：1.3.38 以前两者
+// 会被 clashProxyFromLink 跳过，出空配置；1.3.39 起两者都进 YAML
+// （hysteria2 / tuic proxy），不再出空配置。
 func TestRenderClashYAMLHY2Only1322(t *testing.T) {
 	hy2 := subLink{Name: "HY2节点", Link: "hysteria2://pass@203.0.113.1:8443#HY2节点"}
-	out := renderClashYAML([]subLink{hy2}, "split")
-	if !strings.Contains(out, "proxy-groups: []") {
-		t.Fatalf("HY2-only 订阅应出空配置（HY2 不进 Clash），实际：\n%s", out)
+	tuic := subLink{Name: "TUIC节点", Link: "tuic://11111111-2222-3333-4444-555555555555:pass@203.0.113.1:8444?sni=example.com#TUIC节点"}
+	out := renderClashYAML([]subLink{hy2, tuic}, "split")
+	if strings.Contains(out, "proxy-groups: []") {
+		t.Fatalf("HY2/TUIC 订阅 1.3.39 起应有节点，不应出空配置，实际：\n%s", out)
+	}
+	for _, want := range []string{"name: \"HY2节点\"", "type: hysteria2", "password: \"pass\"", "name: \"TUIC节点\"", "type: tuic", "uuid: \"11111111-2222-3333-4444-555555555555\"", "udp: true"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("HY2/TUIC 订阅缺 %q，实际：\n%s", want, out)
+		}
 	}
 }
 
