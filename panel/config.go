@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -421,6 +422,40 @@ type Landing struct {
 	// ""=没填（旧落地，按老逻辑判）、"http01"=默认走 80、
 	// "dns01"=DNS 验证 Cloudflare（续签不走 80，全自动）。
 	CertMode string `json:"cert_mode"`
+	// TrafficMultiplier 流量倍率（relay.conf 的 MULTIPLIER[_N]，v1.3.40）：
+	// 实际流量 × 倍率计入订阅用量（userinfo 与 80%/100% 限流都按折算后
+	// 的用量算）；0 = 没填（旧落地，按 1 算）。
+	TrafficMultiplier float64 `json:"traffic_multiplier"`
+}
+
+// 流量倍率上限（v1.3.40）：100 倍已是极端值，再高多半是手误。
+const maxTrafficMultiplier = 100
+
+// normalizeTrafficMultiplier 倍率归一化：<=0 / 非法 = 1（默认）；
+// 超过上限钳制到上限。文件解析与落点都走它，API 校验另在
+// validateLandingReqFields 里拒绝非法值。
+func normalizeTrafficMultiplier(m float64) float64 {
+	if m <= 0 || math.IsNaN(m) || math.IsInf(m, 0) {
+		return 1
+	}
+	if m > maxTrafficMultiplier {
+		return maxTrafficMultiplier
+	}
+	return m
+}
+
+// multiplier 落地的有效倍率（旧落地无该字段时为 0，按 1 算）。
+func (l Landing) multiplier() float64 {
+	return normalizeTrafficMultiplier(l.TrafficMultiplier)
+}
+
+// setMultiplierLine 写/删 relay.conf 里某落地的 MULTIPLIER 键：
+// 倍率 1 不存键（默认），其他值存起来；lines 是当前 relay.conf 行。
+func setMultiplierLine(lines []string, suffix string, mult float64) []string {
+	if m := normalizeTrafficMultiplier(mult); m != 1 {
+		return setRelayConfValue(lines, "MULTIPLIER"+suffix, strconv.FormatFloat(m, 'f', -1, 64))
+	}
+	return removeRelayConfValue(lines, "MULTIPLIER"+suffix)
 }
 
 // displayName 卡片标题、历史分组、集中管理里显示的名字：
@@ -481,6 +516,10 @@ func parseRelayConf(data []byte) *RelayConf {
 			continue
 		}
 		l := Landing{Index: i, Landing: landing, Domain: get("DOMAIN"), CertDomain: get("CERT_DOMAIN"), Preset: get("PRESET"), ModeNote: get("MODE_NOTE"), PortsRaw: get("PORTS"), Name: get("NAME"), CertMode: get("CERT_MODE")}
+		// 流量倍率（v1.3.40）：没填/非法按 1 算（见 multiplier()），不报错。
+		if mv, err := strconv.ParseFloat(get("MULTIPLIER"), 64); err == nil {
+			l.TrafficMultiplier = mv
+		}
 		// MODE 缺字段的旧 relay.conf 默认标准模式（向后兼容）；只有 door 才记 door。
 		if get("MODE") == "door" {
 			l.Mode = "door"

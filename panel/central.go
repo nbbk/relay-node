@@ -114,32 +114,35 @@ type remoteTraffic struct {
 // 集中管理代理操作（编辑/续期/流量/证书/删子节点）靠它预填表单、展示状态；
 // 链接与二维码不走这里，仍由 central/links 另外取。
 type remoteLandingSummary struct {
-	Index          int           `json:"index"`
-	Name           string        `json:"name"`
-	Landing        string        `json:"landing"`
-	Domain         string        `json:"domain"`
-	Mode           string        `json:"mode"`
-	Ports          []PortSpec    `json:"ports"`
-	Online         *bool         `json:"online"`
-	LatencyMs      *int          `json:"latency_ms"`
-	CertDomain     string        `json:"cert_domain"`
-	CertMode       string        `json:"cert_mode"`
-	Preset         string        `json:"preset"`
-	SBMode         string        `json:"sb_mode"`
-	CustomPorts    string        `json:"custom_ports"`
-	WantUDP        bool          `json:"want_udp"`
-	CertDaysLeft   *int          `json:"cert_days_left"`
-	CertExpiry     string        `json:"cert_expiry"`
-	RenewMode      string        `json:"renew_mode"`
-	Expiry         string        `json:"expiry"`
-	DaysLeft       *int          `json:"days_left"`
-	OrigLink       string        `json:"orig_link"`
-	OrigLinkName   string        `json:"orig_link_name"`
-	SpeedLimitMbps int           `json:"speed_limit_mbps"`
-	Traffic        remoteTraffic `json:"traffic"`
-	Disabled       bool          `json:"disabled"`
-	DisabledReason string        `json:"disabled_reason"`
-	SubNodes       []SubNode     `json:"subnodes"`
+	Index      int        `json:"index"`
+	Name       string     `json:"name"`
+	Landing    string     `json:"landing"`
+	Domain     string     `json:"domain"`
+	Mode       string     `json:"mode"`
+	Ports      []PortSpec `json:"ports"`
+	Online     *bool      `json:"online"`
+	LatencyMs  *int       `json:"latency_ms"`
+	CertDomain string     `json:"cert_domain"`
+	CertMode   string     `json:"cert_mode"`
+	// TrafficMultiplier 流量倍率（v1.3.40）：远程面板 central/status
+	// 下发的落地对象里带，集中管理编辑表单靠它预填。
+	TrafficMultiplier float64       `json:"traffic_multiplier"`
+	Preset            string        `json:"preset"`
+	SBMode            string        `json:"sb_mode"`
+	CustomPorts       string        `json:"custom_ports"`
+	WantUDP           bool          `json:"want_udp"`
+	CertDaysLeft      *int          `json:"cert_days_left"`
+	CertExpiry        string        `json:"cert_expiry"`
+	RenewMode         string        `json:"renew_mode"`
+	Expiry            string        `json:"expiry"`
+	DaysLeft          *int          `json:"days_left"`
+	OrigLink          string        `json:"orig_link"`
+	OrigLinkName      string        `json:"orig_link_name"`
+	SpeedLimitMbps    int           `json:"speed_limit_mbps"`
+	Traffic           remoteTraffic `json:"traffic"`
+	Disabled          bool          `json:"disabled"`
+	DisabledReason    string        `json:"disabled_reason"`
+	SubNodes          []SubNode     `json:"subnodes"`
 }
 
 // centralAlertState 远程面板离线提醒的去重状态（复用延迟探测/监控告警的模式：
@@ -761,13 +764,16 @@ func (s *Server) handleCentralRemoteLinks(w http.ResponseWriter, r *http.Request
 // 校验通过后才把原始请求体发给远程面板；远程面板还会再校验一遍。
 func validateRemoteAddLandingBody(body []byte) error {
 	var req struct {
-		Landing           string         `json:"landing"`
-		Preset            string         `json:"preset"`
-		SBMode            string         `json:"sb_mode"`
-		CustomPorts       string         `json:"custom_ports"`
-		WantUDP           bool           `json:"want_udp"`
-		CertDomain        string         `json:"cert_domain"`
-		CertMode          string         `json:"cert_mode"`
+		Landing     string `json:"landing"`
+		Preset      string `json:"preset"`
+		SBMode      string `json:"sb_mode"`
+		CustomPorts string `json:"custom_ports"`
+		WantUDP     bool   `json:"want_udp"`
+		CertDomain  string `json:"cert_domain"`
+		CertMode    string `json:"cert_mode"`
+		// TrafficMultiplier 流量倍率（v1.3.40）：DisallowUnknownFields，
+		// 这里不加字段，主面板代理加/编辑落地会被拦在本地。
+		TrafficMultiplier float64        `json:"traffic_multiplier"`
 		DurationDays      int            `json:"duration_days"`
 		TrafficLimitBytes int64          `json:"traffic_limit_bytes"`
 		TrafficLimitMode  string         `json:"traffic_limit_mode"`
@@ -805,6 +811,9 @@ func validateRemoteAddLandingBody(body []byte) error {
 	}
 	if req.CertMode != "" && req.CertMode != "http01" && req.CertMode != "dns01" {
 		return fmt.Errorf("证书签发方式只能是 http01（默认走 80）或 dns01（DNS 验证）")
+	}
+	if req.TrafficMultiplier < 0 || req.TrafficMultiplier > maxTrafficMultiplier {
+		return fmt.Errorf("流量倍率只能填 0–100（0 = 不改，留空默认 1）")
 	}
 	if req.TrafficLimitMode != "" && req.TrafficLimitMode != "total" && req.TrafficLimitMode != "monthly" {
 		return fmt.Errorf("流量限制模式只能是 total 或 monthly")

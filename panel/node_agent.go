@@ -43,6 +43,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -522,7 +523,17 @@ func (s *Server) handleNodePush(w http.ResponseWriter, r *http.Request) {
 			duplicates++
 			continue
 		}
-		s.userTraffic.addAgentDelta(key, e.UpBytes, e.DownBytes, e.PeriodID)
+		// 流量倍率（v1.3.40）：按人条目按推送节点（node_id=落地地址）
+		// 的倍率折算后记账；generic 是节点总量（落地卡片用），不乘。
+		// 去重在乘之前，重推不会重复乘。
+		up, down := e.UpBytes, e.DownBytes
+		if key != nodeAgentGenericUserID {
+			if m := s.landingMultiplier(nodeID); m != 1 {
+				up = int64(math.Round(float64(up) * m))
+				down = int64(math.Round(float64(down) * m))
+			}
+		}
+		s.userTraffic.addAgentDelta(key, up, down, e.PeriodID)
 		accepted++
 	}
 

@@ -416,11 +416,13 @@ function trafficBarHtml(l) {
   const t = l.traffic || {};
   // v1.3.32：agent 在线时流量是节点侧推来的总量，标来源。
   const src = l.metering_source === 'agent' ? ' · 节点侧' : '';
-  if (!t.limit_bytes) return '<div class="bar-row"><span>流量：不限' + src + '</span><span>' + fmtBytes(t.used_bytes || 0) + ' 已用</span></div>';
+  // v1.3.40：倍率不是 1 时标出来（订阅用量已按倍率折算）。
+  const mult = (l.traffic_multiplier && l.traffic_multiplier !== 1) ? ' · 倍率 ×' + l.traffic_multiplier : '';
+  if (!t.limit_bytes) return '<div class="bar-row"><span>流量：不限' + src + mult + '</span><span>' + fmtBytes(t.used_bytes || 0) + ' 已用</span></div>';
   const pct = Math.min(100, Number(t.pct) || 0);
   const cls = pct >= 100 ? 'bad' : pct >= 80 ? 'warn' : '';
   const mode = t.limit_mode === 'monthly' ? '按月' : '总量';
-  return '<div class="bar-row"><span>流量（' + mode + '）' + src + '</span><span>' + pct + '% · ' + fmtBytes(t.used_bytes || 0) + ' / ' + fmtBytes(t.limit_bytes) + '</span></div>' +
+  return '<div class="bar-row"><span>流量（' + mode + '）' + src + mult + '</span><span>' + pct + '% · ' + fmtBytes(t.used_bytes || 0) + ' / ' + fmtBytes(t.limit_bytes) + '</span></div>' +
     '<div class="bar"><i class="' + cls + '" style="width:' + pct + '%"></i></div>';
 }
 function certBadge(days) {
@@ -563,8 +565,10 @@ function trafficMiniText(l) {
   const t = l.traffic || {};
   // v1.3.32：agent 在线时卡片流量是节点侧推来的总量，标来源免得和中转侧混淆。
   const src = l.metering_source === 'agent' ? ' · 节点侧' : '';
-  if (!t.limit_bytes) return '不限 · 已用 ' + fmtBytes(t.used_bytes || 0) + src;
-  return fmtBytes(t.used_bytes || 0) + ' / ' + fmtBytes(t.limit_bytes) + '（' + (Math.min(100, Number(t.pct) || 0)) + '%）' + src;
+  // v1.3.40：倍率不是 1 时标出来。
+  const mult = (l.traffic_multiplier && l.traffic_multiplier !== 1) ? ' · 倍率 ×' + l.traffic_multiplier : '';
+  if (!t.limit_bytes) return '不限 · 已用 ' + fmtBytes(t.used_bytes || 0) + src + mult;
+  return fmtBytes(t.used_bytes || 0) + ' / ' + fmtBytes(t.limit_bytes) + '（' + (Math.min(100, Number(t.pct) || 0)) + '%）' + src + mult;
 }
 // 紧凑小卡片：只显示名称、在线状态、模式、证书剩余天数、流量已用/上限、到期；
 // 点小卡片弹完整卡片弹窗；右上角小“编辑”按钮直接开编辑弹窗（点它不弹完整卡片）
@@ -758,6 +762,15 @@ function initAddForm() {
     await submitAdd(payload, null);
   });
 }
+// 流量倍率取值（v1.3.40）：空着 = 1；须在 0.1–100 之间，否则报错返回 null。
+function parseTrafficMultiplier(el) {
+  if (!el) return 1;
+  const raw = el.value.trim();
+  if (raw === '') return 1;
+  const v = Number(raw);
+  if (!v || v < 0.1 || v > 100) { toast('流量倍率填 0.1–100，默认 1', 'err'); return null; }
+  return v;
+}
 function buildAddPayload() {
   const landing = $('#add-landing').value.trim();
   const certDomain = $('#add-cert-domain').value.trim();
@@ -780,6 +793,8 @@ function buildAddPayload() {
   if (trafficGb < 0) { toast('流量上限不能为负', 'err'); return null; }
   const speed = Number($('#add-speed').value) || 0;
   if (speed < 0) { toast('限速不能为负', 'err'); return null; }
+  const mult = parseTrafficMultiplier($('#add-traffic-multiplier'));
+  if (mult == null) return null;
   const mode = $('#add-mode') ? $('#add-mode').value : 'standard';
   const relayAddr = (mode === 'door' && $('#add-relay-addr')) ? $('#add-relay-addr').value.trim() : '';
   const name = $('#add-name') ? $('#add-name').value.trim() : '';
@@ -802,6 +817,7 @@ function buildAddPayload() {
     duration_days: duration,
     traffic_limit_bytes: Math.round(trafficGb * 1073741824),
     traffic_limit_mode: trafficGb > 0 ? $('#add-traffic-mode').value : undefined,
+    traffic_multiplier: mult,
     speed_limit_mbps: speed,
   };
 }
@@ -981,6 +997,7 @@ function editLanding(index) {
     '<div id="edit-duration-custom-wrap" class="hidden"><label>自定义天数</label><input id="edit-duration-custom" type="number" min="1" max="3650" placeholder="如 60"></div>' +
     '<label>流量上限（GB，0 = 不限）</label><input id="edit-traffic" type="number" min="0" step="1" value="' + Math.round((t.limit_bytes || 0) / 1073741824) + '">' +
     '<label>流量上限算法</label><select id="edit-traffic-mode"><option value="total"' + (t.limit_mode !== 'monthly' ? ' selected' : '') + '>总量（整个生命周期）</option><option value="monthly"' + (t.limit_mode === 'monthly' ? ' selected' : '') + '>按月（每月重置）</option></select>' +
+    '<label>流量倍率 <span class="hint">实际流量 × 倍率计入订阅用量，默认 1；贵的线路调高</span></label><input id="edit-traffic-multiplier" type="number" min="0.1" max="100" step="0.1" value="' + (l.traffic_multiplier || 1) + '">' +
     '<label>限速（Mbps，0 = 不限速）</label><input id="edit-speed" type="number" min="0" step="1" value="' + (l.speed_limit_mbps || 0) + '">' +
     '<label class="checkbox-row"><input type="checkbox" id="edit-want-udp"' + (l.want_udp ? ' checked' : '') + '><span style="font-weight:400">同时转发 UDP（HY2 / TUIC 需要）</span></label>' +
     '<label>原始节点链接 <span class="hint">选填；有它卡片上才出中转链接，改地址/端口后链接自动跟着重算</span></label><input id="edit-orig-link" value="' + esc(l.orig_link || '') + '" placeholder="vless://…">' +
@@ -1057,6 +1074,8 @@ function buildEditPayload(m) {
   if (trafficGb < 0) { toast('流量上限不能为负', 'err'); return null; }
   const speed = Number($('#edit-speed', m).value) || 0;
   if (speed < 0) { toast('限速不能为负', 'err'); return null; }
+  const mult = parseTrafficMultiplier($('#edit-traffic-multiplier', m));
+  if (mult == null) return null;
   const mode = $('#edit-mode', m).value;
   const relayAddr = (mode === 'door' && $('#edit-relay-addr', m)) ? $('#edit-relay-addr', m).value.trim() : '';
   const name = $('#edit-name', m).value.trim();
@@ -1079,6 +1098,7 @@ function buildEditPayload(m) {
     duration_days: duration,
     traffic_limit_bytes: Math.round(trafficGb * 1073741824),
     traffic_limit_mode: trafficGb > 0 ? $('#edit-traffic-mode', m).value : undefined,
+    traffic_multiplier: mult,
     speed_limit_mbps: speed,
   };
 }
@@ -4232,6 +4252,7 @@ function centralAddLanding(id) {
     '<div id="central-add-duration-wrap" class="hidden"><label>自定义天数</label><input id="central-add-duration-custom" type="number" min="1" max="3650" placeholder="如 60"></div>' +
     '<label>流量上限（GB）<span class="hint">0 = 不限</span></label><input id="central-add-traffic" type="number" min="0" step="1" placeholder="0">' +
     '<label>流量上限算法</label><select id="central-add-traffic-mode"><option value="total">总量（整个生命周期）</option><option value="monthly">按月（每月重置）</option></select>' +
+    '<label>流量倍率 <span class="hint">实际流量 × 倍率计入订阅用量，默认 1；贵的线路调高</span></label><input id="central-add-traffic-multiplier" type="number" min="0.1" max="100" step="0.1" placeholder="1">' +
     '<label>限速（Mbps）<span class="hint">0 = 不限速</span></label><input id="central-add-speed" type="number" min="0" step="1" placeholder="0">' +
     '<div class="checkbox-row"><input type="checkbox" id="central-add-want-udp"><label for="central-add-want-udp" style="margin:0;font-weight:400">同时转发 UDP（HY2 / TUIC 需要）</label></div>' +
     '<div class="btn-row"><button class="btn" id="central-add-ok" type="button">提交并添加落地</button><button class="btn secondary" id="central-add-cancel" type="button">取消</button></div>');
@@ -4301,6 +4322,8 @@ function buildCentralAddPayload(m) {
   if (trafficGb < 0) { toast('流量上限不能为负', 'err'); return null; }
   const speed = Number($('#central-add-speed', m).value) || 0;
   if (speed < 0) { toast('限速不能为负', 'err'); return null; }
+  const mult = parseTrafficMultiplier($('#central-add-traffic-multiplier', m));
+  if (mult == null) return null;
   const mode = $('#central-add-mode', m).value;
   const relayAddr = (mode === 'door' && $('#central-add-relay-addr', m)) ? $('#central-add-relay-addr', m).value.trim() : '';
   const name = $('#central-add-name', m).value.trim();
@@ -4323,6 +4346,7 @@ function buildCentralAddPayload(m) {
     duration_days: duration,
     traffic_limit_bytes: Math.round(trafficGb * 1073741824),
     traffic_limit_mode: trafficGb > 0 ? $('#central-add-traffic-mode', m).value : undefined,
+    traffic_multiplier: mult,
     speed_limit_mbps: speed,
   };
 }
@@ -4428,6 +4452,7 @@ function centralEditLanding(remoteId, index, l) {
     '<div id="central-edit-duration-custom-wrap" class="hidden"><label>自定义天数</label><input id="central-edit-duration-custom" type="number" min="1" max="3650" placeholder="如 60"></div>' +
     '<label>流量上限（GB，0 = 不限）</label><input id="central-edit-traffic" type="number" min="0" step="1" value="' + Math.round((t.limit_bytes || 0) / 1073741824) + '">' +
     '<label>流量上限算法</label><select id="central-edit-traffic-mode"><option value="total"' + (t.limit_mode !== 'monthly' ? ' selected' : '') + '>总量（整个生命周期）</option><option value="monthly"' + (t.limit_mode === 'monthly' ? ' selected' : '') + '>按月（每月重置）</option></select>' +
+    '<label>流量倍率 <span class="hint">实际流量 × 倍率计入订阅用量，默认 1；贵的线路调高</span></label><input id="central-edit-traffic-multiplier" type="number" min="0.1" max="100" step="0.1" value="' + (l.traffic_multiplier || 1) + '">' +
     '<label>限速（Mbps，0 = 不限速）</label><input id="central-edit-speed" type="number" min="0" step="1" value="' + (l.speed_limit_mbps || 0) + '">' +
     '<label class="checkbox-row"><input type="checkbox" id="central-edit-want-udp"' + (l.want_udp ? ' checked' : '') + '><span style="font-weight:400">同时转发 UDP（HY2 / TUIC 需要）</span></label>' +
     '<label>原始节点链接 <span class="hint">选填；有它卡片上才出中转链接，改地址/端口后链接自动跟着重算</span></label><input id="central-edit-orig-link" value="' + esc(l.orig_link || '') + '" placeholder="vless://…">' +
@@ -4507,6 +4532,8 @@ function buildCentralEditPayload(m) {
   if (trafficGb < 0) { toast('流量上限不能为负', 'err'); return null; }
   const speed = Number($('#central-edit-speed', m).value) || 0;
   if (speed < 0) { toast('限速不能为负', 'err'); return null; }
+  const mult = parseTrafficMultiplier($('#central-edit-traffic-multiplier', m));
+  if (mult == null) return null;
   const mode = $('#central-edit-mode', m).value;
   const relayAddr = (mode === 'door' && $('#central-edit-relay-addr', m)) ? $('#central-edit-relay-addr', m).value.trim() : '';
   const name = $('#central-edit-name', m).value.trim();
@@ -4529,6 +4556,7 @@ function buildCentralEditPayload(m) {
     duration_days: duration,
     traffic_limit_bytes: Math.round(trafficGb * 1073741824),
     traffic_limit_mode: trafficGb > 0 ? $('#central-edit-traffic-mode', m).value : undefined,
+    traffic_multiplier: mult,
     speed_limit_mbps: speed,
   };
 }

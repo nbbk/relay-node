@@ -16,6 +16,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"strconv"
@@ -277,7 +278,17 @@ func (t *userTrafficStore) agentGenericTotals() (up, down, upPeriod, downPeriod,
 }
 
 // addDelta 累计增量（采样用）；计数器重启清零时按新值重记基数，不算负增量。
+// 倍率 1 的简写，实际走 addDeltaScaled。
 func (t *userTrafficStore) addDelta(key string, counters map[string][2]int64) {
+	t.addDeltaScaled(key, counters, nil)
+}
+
+// addDeltaScaled 按计数器倍率累计增量（v1.3.40）：mult 按计数器 key
+// （"proto:port"）给倍率，缺项 = 1。基线仍按原始计数存，倍率只乘在
+// 增量上——倍率中途改了也不影响已存基线，下一次采样直接按新倍率算。
+// A 侧唯一的累计入口是 sampleUserTraffic（见下），agent 推送走
+// addAgentDelta（handleNodePush 里乘倍率），两边各乘一次、不重复。
+func (t *userTrafficStore) addDeltaScaled(key string, counters map[string][2]int64, mult map[string]float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	rec, ok := t.data[key]
@@ -299,8 +310,9 @@ func (t *userTrafficStore) addDelta(key string, counters map[string][2]int64) {
 			// 分钟用量永远是 0（见 trafficStore.addDelta 同款修法）。
 			prev = [2]int64{0, 0}
 		}
-		upDelta += deltaCounter(prev[0], cur[0])
-		downDelta += deltaCounter(prev[1], cur[1])
+		m := normalizeTrafficMultiplier(mult[k])
+		upDelta += int64(math.Round(float64(deltaCounter(prev[0], cur[0])) * m))
+		downDelta += int64(math.Round(float64(deltaCounter(prev[1], cur[1])) * m))
 		rec.LastCounters[k] = cur
 	}
 	if upDelta == 0 && downDelta == 0 {
@@ -330,6 +342,35 @@ func userOverLimit(rec *userTrafficRec, limit int64, mode string) bool {
 		return false
 	}
 	return userTrafficUsed(rec, mode) >= limit
+}
+
+// userQuotaRemaining 按人转发端口的 iptables quota 剩余量（原始字节，
+// v1.3.40）：上限减已用（已按倍率折算）再除以倍率换回原始字节——
+// 内核数的是原始流量，直接把折算后的剩余量当 quota 会让倍率>1 时
+// 一分钟内的突发超限。倍率<=0 按 1 算；剩余量<0 钳到 0。
+func userQuotaRemaining(limit, used int64, mult float64) int64 {
+	m := normalizeTrafficMultiplier(mult)
+	r := int64(float64(limit-used) / m)
+	if r < 0 {
+		return 0
+	}
+	return r
+}
+
+// landingMultiplier 取某落地地址的流量倍率（v1.3.40）：relay.conf 读不到、
+// 落地不存在时返回 1（不拦计量）。node_id 就是落地地址，agent 推送
+// 与采样都用它找倍率。
+func (s *Server) landingMultiplier(addr string) float64 {
+	rc, _, err := s.readRelayConf()
+	if err != nil || rc == nil {
+		return 1
+	}
+	for _, l := range rc.Landings {
+		if l.Landing == addr {
+			return l.multiplier()
+		}
+	}
+	return 1
 }
 
 // ---------- 端口分配 ----------
@@ -848,6 +889,26 @@ func (s *Server) applyUserForwards() error {
 
 // ---------- 采样与执法 ----------
 
+// userTrafficPortMultipliers 用户转发端口 → 倍率（v1.3.40）：按转发所属
+// 落地的倍率取；relay.conf 读不到、落地不存在时该端口缺项（调用方按 1 算）。
+func (s *Server) userTrafficPortMultipliers() map[int]float64 {
+	m := map[int]float64{}
+	rc, _, err := s.readRelayConf()
+	if err != nil || rc == nil {
+		return m
+	}
+	byAddr := map[string]Landing{}
+	for _, l := range rc.Landings {
+		byAddr[l.Landing] = l
+	}
+	for _, f := range s.cfg.UserForwards {
+		if l, ok := byAddr[f.LandingAddr]; ok {
+			m[f.ListenPort] = l.multiplier()
+		}
+	}
+	return m
+}
+
 // sampleUserTraffic 一次采样：读本机计数器，按用户端口分到各订阅
 // 的累计里（一个订阅在多落地上的端口汇总到同一条记录）。管理面板
 // 模式不跑（本地没有转发）。
@@ -877,6 +938,10 @@ func (s *Server) sampleUserTraffic() {
 		portToForward[s.cfg.UserForwards[i].ListenPort] = &s.cfg.UserForwards[i]
 	}
 	perKey := map[string]map[string][2]int64{}
+	perKeyMult := map[string]map[string]float64{}
+	// 逐端口倍率（v1.3.40）：一个订阅可能跨多个倍率不同的落地，
+	// 倍率按转发所属的落地取，增量时逐条乘（见 addDeltaScaled）。
+	portMult := s.userTrafficPortMultipliers()
 	for key, cur := range counters {
 		proto, portStr, ok := strings.Cut(key, ":")
 		if !ok {
@@ -897,11 +962,15 @@ func (s *Server) sampleUserTraffic() {
 		_ = proto
 		if perKey[subKey] == nil {
 			perKey[subKey] = map[string][2]int64{}
+			perKeyMult[subKey] = map[string]float64{}
 		}
 		perKey[subKey][key] = cur
+		if m, ok := portMult[port]; ok {
+			perKeyMult[subKey][key] = m
+		}
 	}
 	for key, per := range perKey {
-		s.userTraffic.addDelta(key, per)
+		s.userTraffic.addDeltaScaled(key, per, perKeyMult[key])
 	}
 }
 

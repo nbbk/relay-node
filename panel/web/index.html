@@ -133,6 +133,8 @@
                 <input id="add-traffic" type="number" min="0" step="1" placeholder="0"></div>
               <div><label for="add-traffic-mode">流量上限算法</label>
                 <select id="add-traffic-mode"><option value="total">总量（整个生命周期）</option><option value="monthly">按月（每月重置）</option></select></div>
+              <div><label for="add-traffic-multiplier">流量倍率 <span class="hint">实际流量 × 倍率计入订阅用量，默认 1；贵的线路调高</span></label>
+                <input id="add-traffic-multiplier" type="number" min="0.1" max="100" step="0.1" placeholder="1"></div>
               <div><label for="add-speed">限速（Mbps）<span class="hint">0 = 不限速</span></label>
                 <input id="add-speed" type="number" min="0" step="1" placeholder="0"></div>
               <div class="checkbox-row"><input type="checkbox" id="add-want-udp"><label for="add-want-udp" style="margin:0;font-weight:400">同时转发 UDP（HY2 / TUIC 需要）</label></div>

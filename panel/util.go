@@ -418,6 +418,11 @@ func certModeText(m string) string {
 	}
 }
 
+// formatMultiplier 倍率的审计显示：归一化后去尾零，如 1、2、2.5。
+func formatMultiplier(m float64) string {
+	return "×" + strconv.FormatFloat(normalizeTrafficMultiplier(m), 'f', -1, 64)
+}
+
 func renewModeFor(l Landing, share443 bool, hasCert bool) (string, bool) {
 	// DNS-01：证书走 Cloudflare DNS 验证签发与续签，根本不走 80 端口，
 	// 落地机 Caddy 会自动续；不能因为没 80 就判手动（智利落地 24443

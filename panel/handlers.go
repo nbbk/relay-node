@@ -622,7 +622,10 @@ type addLandingReq struct {
 	CertDomain  string `json:"cert_domain"`
 	// CertMode 证书签发方式：""=没填（按老逻辑判）、"http01"=默认走 80、
 	// "dns01"=DNS 验证 Cloudflare（续签不走 80，全自动）。
-	CertMode          string         `json:"cert_mode"`
+	CertMode string `json:"cert_mode"`
+	// TrafficMultiplier 流量倍率（v1.3.40）：实际流量 × 倍率计入订阅用量；
+	// 0 = 没填（编辑时沿用旧值，见 handleUpdateLanding）。
+	TrafficMultiplier float64        `json:"traffic_multiplier"`
 	DurationDays      int            `json:"duration_days"`
 	TrafficLimitBytes int64          `json:"traffic_limit_bytes"`
 	TrafficLimitMode  string         `json:"traffic_limit_mode"`
@@ -663,6 +666,9 @@ func validateLandingReqFields(req addLandingReq) string {
 	}
 	if req.CertMode != "" && req.CertMode != "http01" && req.CertMode != "dns01" {
 		return "证书签发方式只能是 http01（默认走 80）或 dns01（DNS 验证）"
+	}
+	if req.TrafficMultiplier < 0 || req.TrafficMultiplier > maxTrafficMultiplier {
+		return "流量倍率只能填 0–100（0 = 不改，留空默认 1）"
 	}
 	if req.TrafficLimitMode != "" && req.TrafficLimitMode != "total" && req.TrafficLimitMode != "monthly" {
 		return "流量限制模式只能是 total 或 monthly"
@@ -890,6 +896,18 @@ func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
 			_ = s.writeRelayConfAtomic([]byte(strings.Join(lines, "\n") + "\n"))
 		}
 	}
+	// 流量倍率写进 relay.conf（MULTIPLIER[_N]；install.sh 不写这项，
+	// 面板自己补。没填或 =1 就不写，默认 1）
+	if req.TrafficMultiplier != 0 && normalizeTrafficMultiplier(req.TrafficMultiplier) != 1 && newLanding != nil && rc2 != nil {
+		suffix := ""
+		if newLanding.Index != 1 {
+			suffix = "_" + strconv.Itoa(newLanding.Index)
+		}
+		if rc3, _, err := s.readRelayConf(); err == nil {
+			lines := setMultiplierLine(rc3.Lines, suffix, req.TrafficMultiplier)
+			_ = s.writeRelayConfAtomic([]byte(strings.Join(lines, "\n") + "\n"))
+		}
+	}
 	// 存了原始链接：现场算中转+直连链接，写进 nodes.txt（显式传落地真实编号，
 	// 不用最大编号+1，避免 1.2.1 已知的撞号问题），卡片上直接出链接。
 	manualNote := ""
@@ -1096,6 +1114,8 @@ func rebuildRelayConfForEdit(rc *RelayConf, index int, nl Landing, newShare80, n
 	} else {
 		lines = removeRelayConfValue(lines, "CERT_MODE"+suffix)
 	}
+	// 流量倍率（v1.3.40）：=1 不存键（默认），其他值存 MULTIPLIER 键。
+	lines = setMultiplierLine(lines, suffix, nl.TrafficMultiplier)
 	set("PRESET"+suffix, nl.Preset)
 	set("MODE_NOTE"+suffix, nl.ModeNote)
 	if nl.Mode == "door" {
@@ -1302,8 +1322,13 @@ func (s *Server) handleUpdateLanding(w http.ResponseWriter, r *http.Request) {
 	if certMode == "" {
 		certMode = old.CertMode
 	}
+	// 流量倍率（v1.3.40）：0 = 没填，沿用旧值；填了就写入。
+	mult := req.TrafficMultiplier
+	if mult == 0 {
+		mult = old.TrafficMultiplier
+	}
 	newPortsStr := portsToSpecString(ports)
-	newLanding := Landing{Index: index, Landing: req.Landing, Domain: domain, CertDomain: certDomain, Preset: req.Preset, ModeNote: modeNoteFor(req.Preset, req.SBMode, req.Mode == "door"), Mode: req.Mode, Ports: ports, PortsRaw: newPortsStr, Name: req.Name, CertMode: certMode}
+	newLanding := Landing{Index: index, Landing: req.Landing, Domain: domain, CertDomain: certDomain, Preset: req.Preset, ModeNote: modeNoteFor(req.Preset, req.SBMode, req.Mode == "door"), Mode: req.Mode, Ports: ports, PortsRaw: newPortsStr, Name: req.Name, CertMode: certMode, TrafficMultiplier: mult}
 	// 分流开关：显式选 2/3/4 就开对应项；否则沿用旧开关，但没落地再用 80/443 就关掉
 	newShare80, newShare443 := rc.Share80, rc.Share443
 	if req.ShareMode == "2" || req.ShareMode == "4" {
@@ -1356,6 +1381,9 @@ func (s *Server) handleUpdateLanding(w http.ResponseWriter, r *http.Request) {
 	}
 	if old.CertMode != certMode {
 		changes = append(changes, fmt.Sprintf("证书签发方式：%s→%s", certModeText(old.CertMode), certModeText(certMode)))
+	}
+	if normalizeTrafficMultiplier(old.TrafficMultiplier) != normalizeTrafficMultiplier(mult) {
+		changes = append(changes, fmt.Sprintf("流量倍率：%s→%s", formatMultiplier(old.TrafficMultiplier), formatMultiplier(mult)))
 	}
 	if old.displayName() != newLanding.displayName() {
 		changes = append(changes, fmt.Sprintf("名称：%s→%s", old.displayName(), newLanding.displayName()))

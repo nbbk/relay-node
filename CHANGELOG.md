@@ -374,6 +374,13 @@
 - 测试：go test 385 个测试函数全过（含 -race，约 304 秒；1338 文件 4 个：有节点 detour 形状、空配置 detour 与 IP、HTTP 下发路径、Clash 回归不变；1337 文件的 detour 与直连 server 断言同步改到 1.3.38；版本断言 TestVersion1337 换成 TestVersion1338，1333 文件的 panel_version 断言与 1330 文件的两处断言同步改到 1.3.38，净 +4；gofmt 只报 vendor 第三方文件、go vet 过）；jsdom test-1338.js 32 项全过（真实 index.html + app.js：版本 1.3.38 surfacing、已是最新不弹横幅、备份列表回归，桌面 1280 与窄屏 390 各 16 项：1.3.34 换口流程回归、1.3.32 两处修法回归、1.3.33 登记导入 toast 回归）；真 sing-box 1.14.4 check 与 run（3 秒启动冒烟）校验：修后的配置有节点与空配置各一次都通过，1.3.37 的旧输出复现 run 失败（detour to an empty direct outbound）。未测：真机、iPhone Safari 实际渲染与触摸操作、远程面板联调、干净机器、真二进制端到端。
 - 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置，已发出去的订阅链接内容、模式与到期状态不变，下次拉取即是修好的格式。
 
+### v1.3.40 更新
+
+- 按落地设流量倍率：每个落地可以设一个流量倍率（默认 1，范围 0.1–100，编辑与添加落地时都能填），贵的节点线路把倍率调高，实际流量 × 倍率计入订阅用量。倍率落在落地记录上（relay.conf 的 MULTIPLIER[_N]，=1 不存键；旧落地没这字段按 1 算；改倍率记审计）。计量与限流都按折算后的用量算：userinfo 头里的 upload/download、80% 提醒、100% 停用、订阅列表用量，全部自动跟着走，不用另改。
+- 落点（只乘增量，不碰基线与落地级原始流量）：①中转侧采样（sampleUserTraffic）逐端口按转发所属落地的倍率乘，基线仍按原始计数存、倍率中途改了也不影响已存基线；②agent 推送（handleNodePush）按推送节点（node_id=落地地址）的倍率乘，generic 节点总量不乘（落地卡片仍显示原始流量）；③iptables quota（ensureTrafficChains）里用户端口的剩余量除以该落地倍率换回原始字节——内核数的是原始流量，不换算的话倍率>1 时一分钟内的突发能超限。下游（userinfo、80%/100% 执法、集中管理聚合）都读同一张已折算的表，不改、不重复乘：各面板在自己的累计入口乘一次，管理面板只加总远程已折算的数；落地级流量（落地卡片总量/今日）与落地流量上限仍按原始字节算。
+- 测试：go test -race 399 个测试函数全过（含 1340 文件 9 个：倍率归一化与解析、relay.conf 写回往返、服务端校验、按倍率累计增量与倍率中途改、quota 换回原始字节、agent 推送按节点倍率与 generic 不乘、逐端口倍率映射、userinfo 与 80%/100% 按折算后算；版本断言同步改到 1.3.40，净 +9，约 302 秒；gofmt 干净、go vet 过）；jsdom test-1340.js 50 项全过（桌面 1280 与窄屏 390 各 25 项：版本 1.3.40 surfacing、倍率输入框与取值、卡片“倍率 ×2”显示、编辑弹窗预填与取值，另回归 1.3.34 换口流程、1.3.32 两处修法、1.3.33 登记导入 toast 与备份列表）。未测：真机、iPhone Safari 实际渲染与触摸操作、远程面板联调、干净机器、真二进制端到端。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置，旧落地默认倍率 1、用量不变；改了倍率的落地，改完才开始按新倍率算，之前已记的用量不追溯。
+
 ### v1.3.39 更新
 
 - 订阅补 Hysteria2 与 TUIC：落地能跑的 HY2/TUIC 以前只在 base64/plain 订阅里有，sing-box JSON 与 Clash YAML 里被跳过，现在两种格式都出。sing-box 里是 hysteria2 / tuic 出站（TLS 恒开、server_name 取链接的 sni、alpn 按链接参数、TUIC 的 congestion_control 只认 cubic/new_reno/bbr；也认 obfs=salamander + obfs-password 与 insecure=1）；Clash 里是 hysteria2 / tuic proxy（字段顺序与落地 install.sh 生成的 Clash 参考一致，TUIC 的拥塞控制在 Clash 里叫 congestion-controller、sing-box 里叫 congestion_control）。链接格式就是落地生成的两种：hysteria2://<密码>@<地址>:<端口>?sni=<域名>&alpn=h3、tuic://<uuid>:<密码>@<地址>:<端口>?congestion_control=bbr&alpn=h3&sni=<域名>。字段缺失的链接（HY2 没密码、TUIC 没 uuid/密码）被跳过、不断链；HY2/TUIC 节点同样进 Proxy selector、自动选择与 Clash 全部策略组。已知边界（没改）：手动粘贴原始节点链接当落地注册（parseNodeLink 与 twin 推导）仍只认 vless/trojan/vmess/ss，粘贴 hy2/tuic 链接当原始链接不在本版范围——落地登记走 install.sh --nodes 的链接本来就在 nodes.txt 里，不受影响。

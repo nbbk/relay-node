@@ -404,10 +404,10 @@ func (s *Server) ensureTrafficChains(landings []Landing) error {
 				continue
 			}
 			rec := s.userTraffic.get(f.Key)
-			remaining := limit - userTrafficUsed(rec, mode)
-			if remaining < 0 {
-				remaining = 0
-			}
+			// quota 按原始字节数（v1.3.40）：内核数的是原始流量，
+			// 剩余量（已按倍率折算）要除以该落地倍率换回原始字节，
+			// 否则倍率>1 时一分钟内的突发能超限。
+			remaining := userQuotaRemaining(limit, userTrafficUsed(rec, mode), l.multiplier())
 			for _, p := range s.userForwardEndpoints(l, f.ListenPort) {
 				run("-A", "RELAY-PANEL-IN", "-p", p.Proto, "--dport", strconv.Itoa(p.Listen), "-m", "quota", "--quota", strconv.FormatInt(remaining, 10), "-j", "RETURN")
 				run("-A", "RELAY-PANEL-IN", "-p", p.Proto, "--dport", strconv.Itoa(p.Listen), "-j", "DROP")
