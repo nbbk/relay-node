@@ -3336,10 +3336,13 @@ async function openSubEditModal(opts) {
     '<label class="small check"><input type="checkbox" data-edit-permanent' + (opts.expires_at ? '' : ' checked') + '> 永久</label></div>' +
     '<p class="muted small">到期时间到了，这条订阅就打不开；改到期时间不换令牌，链接不变。勾永久 = 永不过期；填日期 = 当天 23:59:59 到期。</p>' +
     trafficLimitHTML(opts) +
+    ((opts.traffic_limit_mb || 0) > 0 ? '<div style="margin-top:12px"><h3 class="small">中转端口（按人转发）</h3><div data-edit-forwards class="small muted">加载中…</div><p class="muted small">端口被封或想换个端口时，在这里按落地逐条换：换完订阅链接里的中转端口跟着变，客户端要重新导入一次订阅；换的瞬间正在用的连接会断一下。换端口立即生效，不用点下面的保存。</p></div>' : '') +
     '<div class="btn-row" style="margin-top:12px"><button class="btn" type="button" data-edit-save>保存</button>' +
     '<button class="btn secondary" type="button" data-edit-cancel>取消</button></div>', true);
   if (!m) return;
   wireTrafficLimitUI(m);
+  // 更换中转端口（v1.3.34）：开了限流的订阅才有按人转发，逐条显示当前端口。
+  if ((opts.traffic_limit_mb || 0) > 0) loadEditForwards(m, opts);
   // 永久勾选与日期框联动：勾永久时日期框置灰。
   onIn(m, '[data-edit-permanent]', 'change', () => {
     const d = m.querySelector('[data-edit-expiry]'), p = m.querySelector('[data-edit-permanent]');
@@ -3405,6 +3408,45 @@ async function openSubEditModal(opts) {
       if (isMerged) loadMergedSubsList(); else loadSubUsers();
     } catch (err) { toast('保存失败：' + err.message, 'err'); }
   });
+}
+// 更换中转端口（v1.3.34）：编辑弹窗里按落地逐条显示一条订阅的按人转发，
+// 每条可换端口。行内改（不当场开新弹窗，编辑弹窗保持打开、未保存的
+// 改动不丢）：点“更换端口”后该行变成输入框，填自定义端口、或留空自动分配。
+async function loadEditForwards(m, opts) {
+  const box = m.querySelector('[data-edit-forwards]');
+  if (!box) return;
+  const kind = opts.kind === 'merged' ? 'merged' : 'users';
+  const render = (list, portStart, portEnd) => {
+    box.innerHTML = list.map((f, i) => '<div class="kv" data-fwd-row="' + i + '"><span>' + esc(f.panel_name || f.panel_id) + ' · ' + esc(f.landing_name || f.landing_addr) + (f.disabled ? ' <span class="badge red">已停用</span>' : '') + '<br><span class="muted">中转端口：<b>' + f.listen_port + '</b></span></span><span><button class="btn secondary sm" type="button" data-fwd-change="' + i + '">更换端口</button></span></div>').join('');
+    box.querySelectorAll('[data-fwd-change]').forEach((b) => b.addEventListener('click', () => {
+      const f = list[Number(b.dataset.fwdChange)];
+      const row = box.querySelector('[data-fwd-row="' + b.dataset.fwdChange + '"]');
+      if (!f || !row) return;
+      row.innerHTML = '<span><label class="small">新端口（留空自动分配）：<input type="number" data-fwd-new-port style="width:100px" min="' + portStart + '" max="' + portEnd + '" placeholder="留空自动分配"></label><br><span class="muted small">端口段 ' + portStart + '–' + portEnd + '；撞了会报错、不应用。换完订阅链接跟着变，客户端要重新导入一次；换的瞬间正在用的连接会断一下。</span></span><span><button class="btn sm" type="button" data-fwd-confirm>确定更换</button> <button class="btn secondary sm" type="button" data-fwd-cancel>取消</button></span>';
+      row.querySelector('[data-fwd-cancel]').addEventListener('click', () => render(list, portStart, portEnd));
+      row.querySelector('[data-fwd-confirm]').addEventListener('click', async () => {
+        const v = ((row.querySelector('[data-fwd-new-port]') || {}).value || '').trim();
+        const newPort = v === '' ? 0 : Number(v);
+        if (v !== '' && (!Number.isInteger(newPort) || newPort < 1 || newPort > 65535)) { toast('端口填 1–65535 的数字，或留空自动分配', 'err'); return; }
+        try {
+          const r = await apiPost('/api/v1/subscriptions/' + kind + '/' + encodeURIComponent(opts.id) + '/change-port', { panel_id: f.panel_id, landing_addr: f.landing_addr, new_port: newPort });
+          let msg = '已换成新端口 ' + r.new_port + '，订阅链接已变、客户端要重新导入一次订阅';
+          if (r.warning) msg += '；' + r.warning;
+          toast(msg, 'ok');
+          if (kind === 'merged') loadMergedSubsList(); else loadSubUsers();
+          await loadEditForwards(m, opts);
+        } catch (e) { toast('换端口失败：' + e.message, 'err'); }
+      });
+    }));
+  };
+  try {
+    const r = await api('/api/v1/subscriptions/' + kind + '/' + encodeURIComponent(opts.id) + '/forwards');
+    const list = r.forwards || [];
+    if (!list.length) { box.innerHTML = '<span class="muted">这条订阅还没有按人转发（没开限流或转发还没建起来，重新保存一次订阅）。</span>'; return; }
+    render(list, r.port_start || 30000, r.port_end || 39999);
+  } catch (e) {
+    box.innerHTML = '<span class="warn">转发列表加载失败：' + esc(e.message) + '</span>';
+  }
 }
 // ---------- Worker 反代代码生成（v1.3.0） ----------
 async function loadWorkerCode() {

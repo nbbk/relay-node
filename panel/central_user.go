@@ -343,6 +343,310 @@ func (s *Server) allocateUserPortForPanel(panelID string) (int, error) {
 	return 0, fmt.Errorf("用户端口段 %d–%d 已满（远程面板 %s 上已无空闲端口），请在设置里扩大端口段或删除不用的订阅", start, end, panelID)
 }
 
+// ---------- 随时更换中转端口（v1.3.34） ----------
+//
+// 一次性操作，不新增任何后台 goroutine、定时器、轮询循环；只复用已有
+// 的一次性调用链（1.3.33 的 fetchRemoteUserForwards、pushUserForwardsToRemote、
+// applyUserForwards）。新接口只读内存配置（s.cfg.UserForwards、centralCache），
+// 不新增落盘读——唯一一次 relay.conf 读与现有 allocateUserPortForPanel
+// 是同一处调用（本机落地监听端口必须避让）；换口一次的开销：远程
+// 1 次 GET（问占用）+ 1 次 POST（下发新端口），本机 1 次 saveConfig，
+// 下发失败回滚时再加 1 次 saveConfig + 1 次 POST（把旧集合推回去恢复）。
+// 常驻占用新增：零。
+
+// userPortLocalUsed 本机侧已占端口（与 allocateUserPortForPanel 同一套
+// 口径：本机落地监听端口 + 面板端口 + 该面板的本机转发记录），返回
+// 端口 → 占用原因。excludeIdx >= 0 时本机记录里那条转发不算占用
+// （换端口时它自己的旧端口要空出来）。
+func (s *Server) userPortLocalUsed(panelID string, excludeIdx int) map[int]string {
+	used := map[int]string{}
+	if rc, _, err := s.readRelayConf(); err == nil && rc != nil {
+		for _, l := range rc.Landings {
+			for _, p := range l.Ports {
+				if _, ok := used[p.Listen]; !ok {
+					used[p.Listen] = "落地监听端口"
+				}
+			}
+		}
+	}
+	if s.cfg.Port > 0 {
+		used[s.cfg.Port] = "面板端口"
+	}
+	for i := range s.cfg.UserForwards {
+		if i == excludeIdx {
+			continue
+		}
+		f := &s.cfg.UserForwards[i]
+		if f.Panel == panelID {
+			name := f.SubName
+			if name == "" {
+				name = f.Key
+			}
+			used[f.ListenPort] = "订阅「" + name + "」已在用"
+		}
+	}
+	return used
+}
+
+// centralForwardsFor 取本机存的某订阅在某台面板上的转发集合（下发用）。
+func (s *Server) centralForwardsFor(key, panelID string) []centralUserForward {
+	list := []centralUserForward{}
+	for _, f := range s.cfg.UserForwards {
+		if f.Key == key && f.Panel == panelID {
+			list = append(list, centralUserForward{LandingAddr: f.LandingAddr, ListenPort: f.ListenPort, LimitBytes: f.LimitBytes, LimitMode: f.LimitMode, ResetMode: f.ResetMode, ResetDay: f.ResetDay, NextResetAt: f.NextResetAt, Disabled: f.Disabled})
+		}
+	}
+	return list
+}
+
+// remoteLandingName 从集中管理快照（内存）里取一台远程面板上某落地
+// 地址的显示名；快照里没有就返回空串（前端直接显示地址，不另读文件）。
+func (s *Server) remoteLandingName(panelID, addr string) string {
+	s.centralMu.Lock()
+	snap := s.centralCache[panelID]
+	s.centralMu.Unlock()
+	if snap == nil {
+		return ""
+	}
+	for _, l := range snap.Landings {
+		if l.Landing == addr {
+			return l.Name
+		}
+	}
+	return ""
+}
+
+// changeUserForwardPort 换一条按人转发的端口（v1.3.34）：key/panelID/
+// landingAddr 定位一条转发；newPort > 0 = 自定义端口（须在用户端口
+// 段内、不撞任何已占端口），newPort == 0 = 自动分配。返回旧端口、
+// 新端口、远程占用是否确认过（远程问不到时 false，调用方提示）、
+// 失败原因。失败时本地记录不动：下发失败会把本地记录与远程集合都
+// 回滚到旧端口（远程的全量替换会丢掉被跳过的那条，不推旧集合恢复
+// 的话转发就没了）。调用方须持 opMu。
+func (s *Server) changeUserForwardPort(key, panelID, landingAddr string, newPort int) (oldPort, newPortOut int, remoteChecked bool, err error) {
+	idx := -1
+	for i := range s.cfg.UserForwards {
+		f := &s.cfg.UserForwards[i]
+		if f.Key == key && f.Panel == panelID && f.LandingAddr == landingAddr {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return 0, 0, false, fmt.Errorf("这条订阅在这个落地没有按人转发（没开限流，或转发还没建起来，重新保存一次订阅）")
+	}
+	fwd := &s.cfg.UserForwards[idx]
+	oldPort = fwd.ListenPort
+	subName := fwd.SubName
+	var rem *RemotePanel
+	if panelID != "local" {
+		rem = s.remoteByID(panelID)
+		if rem == nil {
+			return 0, 0, false, fmt.Errorf("远程面板 %s 已不在集中管理里", panelID)
+		}
+	}
+	// 已占端口（本机一套 + 远程一套，只问一次远程；问不到就按本机
+	// 记录校验，remoteChecked=false，调用方提示用户）。
+	used := s.userPortLocalUsed(panelID, idx)
+	remoteUsed := map[int]string{}
+	if rem != nil {
+		if rf, err := s.fetchRemoteUserForwards(*rem); err == nil {
+			remoteChecked = true
+			for _, p := range rf.UsedPorts {
+				if p == oldPort {
+					continue
+				}
+				if _, ok := remoteUsed[p]; !ok {
+					remoteUsed[p] = "远程面板上已被占用"
+				}
+			}
+			for _, f := range rf.Forwards {
+				if f.ListenPort == oldPort {
+					continue
+				}
+				name := f.SubName
+				if name == "" {
+					name = f.Key
+				}
+				remoteUsed[f.ListenPort] = "远程面板上订阅「" + name + "」在用"
+			}
+		}
+	}
+	start, end := s.userPortRange()
+	if newPort == 0 {
+		// 自动分配：本机与远程的已占都避让，从小到大找；旧端口不算
+		// （换走即空出来，但自动换回同一个端口等于没换）。
+		for p := start; p <= end; p++ {
+			if p == oldPort {
+				continue
+			}
+			if _, ok := used[p]; ok {
+				continue
+			}
+			if _, ok := remoteUsed[p]; ok {
+				continue
+			}
+			newPort = p
+			break
+		}
+		if newPort == 0 {
+			return 0, 0, remoteChecked, fmt.Errorf("用户端口段 %d–%d 已满，请在设置里扩大端口段或删除不用的订阅", start, end)
+		}
+	} else {
+		if newPort < start || newPort > end {
+			return 0, 0, remoteChecked, fmt.Errorf("端口须在用户端口段 %d–%d 之间", start, end)
+		}
+		if newPort == oldPort {
+			return 0, 0, remoteChecked, fmt.Errorf("新端口与当前端口相同，不用换")
+		}
+		if reason, ok := used[newPort]; ok {
+			return 0, 0, remoteChecked, fmt.Errorf("端口 %d 已被占用（%s），请换一个", newPort, reason)
+		}
+		if reason, ok := remoteUsed[newPort]; ok {
+			return 0, 0, remoteChecked, fmt.Errorf("端口 %d 已被占用（%s），请换一个", newPort, reason)
+		}
+	}
+	// 先改本机记录并落盘，再下发；下发失败回滚两边。
+	oldPayload := s.centralForwardsFor(key, panelID)
+	fwd.ListenPort = newPort
+	if err := s.saveConfig(); err != nil {
+		fwd.ListenPort = oldPort
+		return 0, 0, remoteChecked, fmt.Errorf("保存失败：%v", err)
+	}
+	rollback := func() {
+		fwd.ListenPort = oldPort
+		_ = s.saveConfig()
+	}
+	if panelID == "local" {
+		if err := s.applyUserForwards(); err != nil {
+			rollback()
+			return 0, 0, remoteChecked, fmt.Errorf("转发没建起来：%v", err)
+		}
+		return oldPort, newPort, remoteChecked, nil
+	}
+	applied, skipped, err := s.pushUserForwardsToRemote(*rem, key, subName, s.centralForwardsFor(key, panelID))
+	if err != nil || skipped > 0 {
+		// 远程的全量替换会丢掉被跳过的那条：把旧集合推回去恢复。
+		rollback()
+		_, _, _ = s.pushUserForwardsToRemote(*rem, key, subName, oldPayload)
+		if err != nil {
+			return 0, 0, remoteChecked, fmt.Errorf("远程面板没应用上：%v，已恢复原端口", err)
+		}
+		return 0, 0, remoteChecked, fmt.Errorf("远程面板有 %d 条转发没应用上（端口冲突），已恢复原端口 %d（已应用 %d 条）", skipped, oldPort, applied)
+	}
+	return oldPort, newPort, remoteChecked, nil
+}
+
+// handleSubUserForwards 管理端：一条订阅的按人转发列表（更换端口入口
+// 用）。只读内存配置，不读文件。kind 是 "subuser" 或 "merged"。
+func (s *Server) handleSubUserForwards(kind string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		key := userSubKey(kind, id)
+		var subName string
+		var found bool
+		if kind == "subuser" {
+			if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
+				found, subName = true, u.Name
+			}
+		} else if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
+			found, subName = true, ms.Name
+		}
+		if !found {
+			writeJSON(w, 404, errResp("没有这条订阅"))
+			return
+		}
+		start, end := s.userPortRange()
+		out := []map[string]any{}
+		for _, f := range s.userForwardsFor(key) {
+			panelName := "本面板"
+			landingName := ""
+			if f.Panel != "local" {
+				if rem := s.remoteByID(f.Panel); rem != nil {
+					panelName = rem.Name
+				} else {
+					panelName = f.Panel
+				}
+				landingName = s.remoteLandingName(f.Panel, f.LandingAddr)
+			}
+			out = append(out, map[string]any{
+				"panel_id": f.Panel, "panel_name": panelName,
+				"landing_addr": f.LandingAddr, "landing_name": landingName,
+				"listen_port": f.ListenPort, "disabled": f.Disabled,
+			})
+		}
+		writeJSON(w, 200, okResp(map[string]any{"id": id, "name": subName, "forwards": out, "port_start": start, "port_end": end}))
+	}
+}
+
+// handleSubChangePort 管理端：给一条订阅换一个中转端口（v1.3.34）。
+// 请求体 {panel_id, landing_addr, new_port}，new_port 为 0 = 自动分配。
+// 换完订阅链接里的中转端口跟着变（下次取订阅即新端口），用量记录按
+// 订阅 key 走不清零，旧端口释放回池子。kind 是 "subuser" 或 "merged"。
+func (s *Server) handleSubChangePort(kind string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		key := userSubKey(kind, id)
+		var req struct {
+			PanelID     string `json:"panel_id"`
+			LandingAddr string `json:"landing_addr"`
+			NewPort     int    `json:"new_port"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeJSON(w, 400, errResp("请求格式不对"))
+			return
+		}
+		var subName string
+		var found bool
+		if kind == "subuser" {
+			if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
+				found, subName = true, u.Name
+			}
+		} else if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
+			found, subName = true, ms.Name
+		}
+		if !found {
+			writeJSON(w, 404, errResp("没有这条订阅"))
+			return
+		}
+		req.PanelID = strings.TrimSpace(req.PanelID)
+		req.LandingAddr = strings.TrimSpace(req.LandingAddr)
+		if req.PanelID == "" || req.LandingAddr == "" {
+			writeJSON(w, 400, errResp("没指定要换哪条转发"))
+			return
+		}
+		if !s.tryOpLock(w) {
+			return
+		}
+		defer s.opMu.Unlock()
+		oldPort, newPort, remoteChecked, err := s.changeUserForwardPort(key, req.PanelID, req.LandingAddr, req.NewPort)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+		panelName := "本面板"
+		if req.PanelID != "local" {
+			if rem := s.remoteByID(req.PanelID); rem != nil {
+				panelName = rem.Name
+			} else {
+				panelName = req.PanelID
+			}
+		}
+		detail := fmt.Sprintf("落地 %s（%s）：%d → %d", req.LandingAddr, panelName, oldPort, newPort)
+		warning := ""
+		if req.PanelID != "local" && !remoteChecked {
+			warning = "远程面板没问到（未确认远程占用：版本太旧或连不上），只按本机记录校验了占用；换完请看远程面板上新端口是否生效"
+			detail += "；" + warning
+		}
+		s.audit(s.currentUser(r), "更换中转端口", subName, "成功", detail)
+		resp := map[string]any{"id": id, "name": subName, "old_port": oldPort, "new_port": newPort, "remote_checked": remoteChecked}
+		if warning != "" {
+			resp["warning"] = warning
+		}
+		writeJSON(w, 200, okResp(resp))
+	}
+}
+
 // reconcileRemoteUserForwards 管理面板侧：算一个订阅在各远程面板上
 // 应该有的转发，更新本面板存的记录（Panel=远程面板 id），返回每台
 // 远程要下发的转发集合（按远程面板 id 分组）与警告。limit<=0 时清
