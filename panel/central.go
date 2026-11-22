@@ -453,6 +453,11 @@ func (s *Server) pollAllRemotes() {
 		}
 		s.opMu.Unlock()
 	}
+	// 集中用户表（v1.3.36）：每 2 分钟兜底全量同步一次（新建/编辑/
+	// 删除时已立即同步过，这里只补漏：远程重启丢表、管理面板漏推、
+	// 远程刚登记）。不新增后台任务与轮询，复用本轮询；失败只记审计
+	// （每远程每小时最多一次，见 healCentralUsers），不阻断轮询。
+	s.healCentralUsers()
 }
 
 // pollOneRemote 拉一台远程面板并更新缓存；在线/离线变化与持续离线

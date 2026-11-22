@@ -103,6 +103,13 @@ type PanelConfig struct {
 	// 转发，端口就是用户身份。管理面板模式下本机没有转发，这里是空的；
 	// 远程面板上的转发存在远程面板自己的 config.json 里。
 	UserForwards []UserForward `json:"user_forwards,omitempty"`
+	// 集中用户（v1.3.36，Phase 1 切片 2）：管理面板同步来的用户记录，
+	// 按落地地址分表存放；与本面板本地用户（SubUsers/MergedSubs）分开，
+	// node/users 下发时按落地合并。键是落地地址，值是该落地上的用户行
+	// （nodeUser 形状，每行只带该落地的 UUID）。管理面板按落地全量替
+	// 换：空表 = 该落地无集中用户。备份/恢复全量跟走（丢了它下次同步
+	// ——每 2 分钟的轮询兜底——会重新补齐）。
+	CentralUsers map[string][]nodeUser `json:"central_users,omitempty"`
 	// 每用户端口段（v1.3.25）：分配用户端口的范围，默认 30000–39999，
 	// 设置页可改；0（老配置）= 用默认值。分配时避让已有落地端口与
 	// 已分配的用户端口；用户/订阅删除时回收。
@@ -551,43 +558,44 @@ func (rc *RelayConf) fieldKeys(index int) []string {
 // ---------- 服务器 ----------
 
 type Server struct {
-	env                Env
-	cfg                PanelConfig
-	cfgPath            string
-	state              PanelState
-	stateMu            sync.Mutex
-	sessions           *sessionStore
-	opMu               sync.Mutex // 写操作锁（TryLock，占用时返回 409）
-	traffic            *trafficStore
-	userTraffic        *userTrafficStore  // 每订阅流量累计（v1.3.25，PANEL_HOME/user_traffic.json）
-	nodePushSeen       *nodePushSeenStore // 节点侧推送去重（v1.3.30，PANEL_HOME/node_push_seen.json）
-	trafficErrMu       sync.Mutex         // 流量采样失败记录锁（v1.3.27：失败不再静默）
-	trafficErrMsg      string             // 最近一次流量采样/建链失败原因（空 = 正常）
-	trafficErrAt       time.Time
-	auditMu            sync.Mutex
-	healthMu           sync.Mutex // 健康基线锁（lastHealthOK/lastHealthAt：healthTick 与模式切换共用）
-	lastHealthOK       bool
-	lastHealthAt       time.Time
-	monitorMu          sync.Mutex
-	monitorAlerts      map[string]*monitorAlertState
-	latestMonitor      *SystemStats
-	latency            *latencyStore
-	latencyMu          sync.Mutex
-	latencyAlerts      map[string]*latencyAlertState
-	latencyRoundMu     sync.Mutex // 一轮探测的锁（后台循环与总览兜底互斥）
-	centralMu          sync.Mutex // 集中管理缓存锁
-	centralCache       map[string]*RemoteStatusSnapshot
-	centralAlert       map[string]*centralAlertState
-	centralUserUsageMu sync.Mutex // 按订阅聚合用量缓存锁（v1.3.25）
-	centralUserUsage   map[string]*centralUserUsage
-	centralPollWG      sync.WaitGroup // 后台轮询计数（代理写成功后异步刷新一次；测试等它跑完再清理，避免轮询撞上 TempDir 删除）
-	subKey             []byte         // 订阅令牌加密密钥（v1.3.7，PANEL_HOME/sub_token.key 的内容，懒加载）
-	subKeyMu           sync.Mutex
-	subFailMu          sync.Mutex // /sub/ 限流锁（v1.3.7）
-	subFails           map[string]*subFailState
-	remoteUploadMu     sync.Mutex // 异地备份上传去重锁（v1.3.11）
-	remoteUploading    map[string]bool
-	certMu             sync.Mutex // 面板自身证书 ACME 操作锁（手动签发与后台续签互斥）
+	env                   Env
+	cfg                   PanelConfig
+	cfgPath               string
+	state                 PanelState
+	stateMu               sync.Mutex
+	sessions              *sessionStore
+	opMu                  sync.Mutex // 写操作锁（TryLock，占用时返回 409）
+	traffic               *trafficStore
+	userTraffic           *userTrafficStore  // 每订阅流量累计（v1.3.25，PANEL_HOME/user_traffic.json）
+	nodePushSeen          *nodePushSeenStore // 节点侧推送去重（v1.3.30，PANEL_HOME/node_push_seen.json）
+	trafficErrMu          sync.Mutex         // 流量采样失败记录锁（v1.3.27：失败不再静默）
+	trafficErrMsg         string             // 最近一次流量采样/建链失败原因（空 = 正常）
+	trafficErrAt          time.Time
+	auditMu               sync.Mutex
+	healthMu              sync.Mutex // 健康基线锁（lastHealthOK/lastHealthAt：healthTick 与模式切换共用）
+	lastHealthOK          bool
+	lastHealthAt          time.Time
+	monitorMu             sync.Mutex
+	monitorAlerts         map[string]*monitorAlertState
+	latestMonitor         *SystemStats
+	latency               *latencyStore
+	latencyMu             sync.Mutex
+	latencyAlerts         map[string]*latencyAlertState
+	latencyRoundMu        sync.Mutex // 一轮探测的锁（后台循环与总览兜底互斥）
+	centralMu             sync.Mutex // 集中管理缓存锁
+	centralCache          map[string]*RemoteStatusSnapshot
+	centralAlert          map[string]*centralAlertState
+	centralUsersFailAudit map[string]time.Time // 集中用户表兜底同步失败审计节流（v1.3.36）：每远程每小时最多记一次
+	centralUserUsageMu    sync.Mutex           // 按订阅聚合用量缓存锁（v1.3.25）
+	centralUserUsage      map[string]*centralUserUsage
+	centralPollWG         sync.WaitGroup // 后台轮询计数（代理写成功后异步刷新一次；测试等它跑完再清理，避免轮询撞上 TempDir 删除）
+	subKey                []byte         // 订阅令牌加密密钥（v1.3.7，PANEL_HOME/sub_token.key 的内容，懒加载）
+	subKeyMu              sync.Mutex
+	subFailMu             sync.Mutex // /sub/ 限流锁（v1.3.7）
+	subFails              map[string]*subFailState
+	remoteUploadMu        sync.Mutex // 异地备份上传去重锁（v1.3.11）
+	remoteUploading       map[string]bool
+	certMu                sync.Mutex // 面板自身证书 ACME 操作锁（手动签发与后台续签互斥）
 }
 
 func newServer(env Env) (*Server, error) {
@@ -604,7 +612,7 @@ func newServer(env Env) (*Server, error) {
 		// 测试环境 REALM_DIR 可能不可写目录已存在则忽略
 		_ = os.MkdirAll(env.RealmDir, 0o755)
 	}
-	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), userTraffic: newUserTrafficStore(filepath.Join(env.PanelHome, "user_traffic.json")), nodePushSeen: newNodePushSeenStore(filepath.Join(env.PanelHome, "node_push_seen.json")), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}, centralUserUsage: map[string]*centralUserUsage{}, subFails: map[string]*subFailState{}}
+	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), userTraffic: newUserTrafficStore(filepath.Join(env.PanelHome, "user_traffic.json")), nodePushSeen: newNodePushSeenStore(filepath.Join(env.PanelHome, "node_push_seen.json")), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}, centralUsersFailAudit: map[string]time.Time{}, centralUserUsage: map[string]*centralUserUsage{}, subFails: map[string]*subFailState{}}
 	if err := s.loadConfig(); err != nil {
 		return nil, err
 	}

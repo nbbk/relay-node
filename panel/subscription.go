@@ -1846,7 +1846,17 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	resp := map[string]any{"id": id, "url": s.subURL(r, tok), "name": name, "mode": subMode, "expires_at": expiresAt, "group_id": groupID, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
-	if warn := s.syncUserForwardsWarning("subuser", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
+	warn := s.syncUserForwardsWarning("subuser", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt)
+	// 集中用户表（v1.3.36）：新建订阅也要同步到各远程面板（不限流的
+	// 用户也要计量，同步不看限流开关）。
+	if w := s.syncCentralUsersWarning(); w != "" {
+		if warn != "" {
+			warn += "；" + w
+		} else {
+			warn = w
+		}
+	}
+	if warn != "" {
 		resp["warning"] = warn
 		s.audit(s.currentUser(r), "新建订阅用户", name, "部分成功", warn)
 	} else {
@@ -1909,6 +1919,11 @@ func (s *Server) handleSubUsersDelete(w http.ResponseWriter, r *http.Request) {
 				warns = append(warns, "本机转发没撤干净："+recErr.Error())
 			}
 			warns = append(warns, s.removeUserForwardsFromRemotes(userSubKey("subuser", id), sel)...)
+			// 集中用户表（v1.3.36）：订阅已从本机删掉，全量同步把这条
+			// 从各远程面板的集中用户表里清掉。
+			for _, w := range s.syncCentralUsersToRemotes() {
+				warns = append(warns, w.String())
+			}
 			resp := map[string]any{}
 			if len(warns) > 0 {
 				resp["warning"] = "订阅已删，但" + strings.Join(warns, "；") + "，请检查中转机上的转发。"
@@ -2078,7 +2093,16 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 			selOut = []SubSelection{}
 		}
 		resp := map[string]any{"id": id, "name": name, "kind": kind, "summary": summary, "mode": subMode, "selection": selOut, "expires_at": u.ExpiresAt, "group_id": u.GroupID, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
-		if warn := s.syncUserForwardsWarning("subuser", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
+		warn := s.syncUserForwardsWarning("subuser", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt)
+		// 集中用户表（v1.3.36）：编辑订阅也要同步到各远程面板。
+		if w := s.syncCentralUsersWarning(); w != "" {
+			if warn != "" {
+				warn += "；" + w
+			} else {
+				warn = w
+			}
+		}
+		if warn != "" {
 			resp["warning"] = warn
 			s.audit(s.currentUser(r), "编辑订阅用户", name+"（"+summary+"）", "部分成功", warn)
 		} else {
@@ -2674,7 +2698,16 @@ func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) 
 		target = name + "（" + target + "）"
 	}
 	resp := map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": rotated, "selection": sel, "summary": s.selectionSummary(effSel), "mode": subMode, "expires_at": expiresAt, "group_id": finalGroupID, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
-	if warn := s.syncUserForwardsWarning("merged", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
+	warn := s.syncUserForwardsWarning("merged", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt)
+	// 集中用户表（v1.3.36）：新建/轮换合并订阅也要同步到各远程面板。
+	if w := s.syncCentralUsersWarning(); w != "" {
+		if warn != "" {
+			warn += "；" + w
+		} else {
+			warn = w
+		}
+	}
+	if warn != "" {
 		resp["warning"] = warn
 		s.audit(s.currentUser(r), action, target, "部分成功", warn)
 	} else {
@@ -2745,6 +2778,11 @@ func (s *Server) handleMergedSubsDelete(w http.ResponseWriter, r *http.Request) 
 				warns = append(warns, "本机转发没撤干净："+recErr.Error())
 			}
 			warns = append(warns, s.removeUserForwardsFromRemotes(userSubKey("merged", id), sel)...)
+			// 集中用户表（v1.3.36）：订阅已从本机删掉，全量同步把这条
+			// 从各远程面板的集中用户表里清掉。
+			for _, w := range s.syncCentralUsersToRemotes() {
+				warns = append(warns, w.String())
+			}
 			resp := map[string]any{}
 			if len(warns) > 0 {
 				resp["warning"] = "订阅已删，但" + strings.Join(warns, "；") + "，请检查中转机上的转发。"
@@ -2894,7 +2932,16 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 			target = name + "（" + summary + "）"
 		}
 		resp := map[string]any{"id": id, "name": name, "summary": summary, "mode": subMode, "selection": ms.Selection, "expires_at": ms.ExpiresAt, "group_id": ms.GroupID, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
-		if warn := s.syncUserForwardsWarning("merged", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt); warn != "" {
+		warn := s.syncUserForwardsWarning("merged", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt)
+		// 集中用户表（v1.3.36）：编辑合并订阅也要同步到各远程面板。
+		if w := s.syncCentralUsersWarning(); w != "" {
+			if warn != "" {
+				warn += "；" + w
+			} else {
+				warn = w
+			}
+		}
+		if warn != "" {
 			resp["warning"] = warn
 			s.audit(s.currentUser(r), "编辑合并订阅", target, "部分成功", warn)
 		} else {

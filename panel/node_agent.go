@@ -45,6 +45,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -224,35 +225,81 @@ func (s *Server) backfillNodeUUIDs() bool {
 	return changed
 }
 
+// nodeUserForSubUser 一个订阅用户的下发记录（v1.3.36 从
+// nodeUsersPayload 里抽出：集中用户同步复用同一形状）。NodeUUIDs
+// 复制一份（调用方合并集中用户时会改这个 map，不能写回配置）。
+func nodeUserForSubUser(u *SubUser) nodeUser {
+	uuids := map[string]string{}
+	for a, v := range u.NodeUUIDs {
+		uuids[a] = v
+	}
+	return nodeUser{
+		UserID: userSubKey("subuser", u.ID), Kind: "subuser", ID: u.ID, Name: u.Name,
+		Email: nodeUserEmail("subuser", u.ID), NodeUUIDs: uuids,
+		TrafficLimitBytes: u.TrafficLimitBytes, TrafficLimitMode: u.TrafficLimitMode,
+		ResetMode: u.ResetMode, ResetDay: u.ResetDay, NextResetAt: u.NextResetAt, LastResetAt: u.LastResetAt,
+		ExpiresAt: u.ExpiresAt, Disabled: u.Disabled, DisabledReason: u.DisabledReason, GroupID: u.GroupID,
+	}
+}
+
+// nodeUserForMerged 一条合并订阅的下发记录（同上）。
+func nodeUserForMerged(m *MergedSub) nodeUser {
+	uuids := map[string]string{}
+	for a, v := range m.NodeUUIDs {
+		uuids[a] = v
+	}
+	return nodeUser{
+		UserID: userSubKey("merged", m.ID), Kind: "merged", ID: m.ID, Name: m.Name,
+		Email: nodeUserEmail("merged", m.ID), NodeUUIDs: uuids,
+		TrafficLimitBytes: m.TrafficLimitBytes, TrafficLimitMode: m.TrafficLimitMode,
+		ResetMode: m.ResetMode, ResetDay: m.ResetDay, NextResetAt: m.NextResetAt, LastResetAt: m.LastResetAt,
+		ExpiresAt: m.ExpiresAt, Disabled: m.Disabled, DisabledReason: m.DisabledReason, GroupID: m.GroupID,
+	}
+}
+
 // nodeUsersPayload 组装用户表（SubUser + MergedSub，按 ID 排序，稳定
 // 的 ETag 前提）与它的 ETag（用户表 JSON 的 SHA-256，强校验）。
 func (s *Server) nodeUsersPayload() ([]nodeUser, string) {
 	users := make([]nodeUser, 0, len(s.cfg.SubUsers)+len(s.cfg.MergedSubs))
-	for _, u := range s.cfg.SubUsers {
-		uuids := u.NodeUUIDs
-		if uuids == nil {
-			uuids = map[string]string{}
-		}
-		users = append(users, nodeUser{
-			UserID: userSubKey("subuser", u.ID), Kind: "subuser", ID: u.ID, Name: u.Name,
-			Email: nodeUserEmail("subuser", u.ID), NodeUUIDs: uuids,
-			TrafficLimitBytes: u.TrafficLimitBytes, TrafficLimitMode: u.TrafficLimitMode,
-			ResetMode: u.ResetMode, ResetDay: u.ResetDay, NextResetAt: u.NextResetAt, LastResetAt: u.LastResetAt,
-			ExpiresAt: u.ExpiresAt, Disabled: u.Disabled, DisabledReason: u.DisabledReason, GroupID: u.GroupID,
-		})
+	byID := map[string]int{}
+	for i := range s.cfg.SubUsers {
+		row := nodeUserForSubUser(&s.cfg.SubUsers[i])
+		byID[row.UserID] = len(users)
+		users = append(users, row)
 	}
-	for _, m := range s.cfg.MergedSubs {
-		uuids := m.NodeUUIDs
-		if uuids == nil {
-			uuids = map[string]string{}
+	for i := range s.cfg.MergedSubs {
+		row := nodeUserForMerged(&s.cfg.MergedSubs[i])
+		byID[row.UserID] = len(users)
+		users = append(users, row)
+	}
+	// 集中用户（v1.3.36）：管理面板同步来的用户行（按落地分表），与本地
+	// 用户合并：同一 user_id 只出现一次，NodeUUIDs 按落地合并；本地记录
+	// 优先（本面板自己的用户为准），集中用户里同一 user_id 在多个落地
+	// 出现时只合并 UUID、不重复出 row。落地键排序，保证 ETag 稳定
+	// （map 迭代顺序随机，不能直接拼）。
+	landings := make([]string, 0, len(s.cfg.CentralUsers))
+	for addr := range s.cfg.CentralUsers {
+		landings = append(landings, addr)
+	}
+	sort.Strings(landings)
+	for _, addr := range landings {
+		for _, cu := range s.cfg.CentralUsers[addr] {
+			if idx, ok := byID[cu.UserID]; ok {
+				for a, uuid := range cu.NodeUUIDs {
+					if _, exists := users[idx].NodeUUIDs[a]; !exists {
+						users[idx].NodeUUIDs[a] = uuid
+					}
+				}
+				continue
+			}
+			byID[cu.UserID] = len(users)
+			row := cu
+			row.NodeUUIDs = map[string]string{}
+			for a, uuid := range cu.NodeUUIDs {
+				row.NodeUUIDs[a] = uuid
+			}
+			users = append(users, row)
 		}
-		users = append(users, nodeUser{
-			UserID: userSubKey("merged", m.ID), Kind: "merged", ID: m.ID, Name: m.Name,
-			Email: nodeUserEmail("merged", m.ID), NodeUUIDs: uuids,
-			TrafficLimitBytes: m.TrafficLimitBytes, TrafficLimitMode: m.TrafficLimitMode,
-			ResetMode: m.ResetMode, ResetDay: m.ResetDay, NextResetAt: m.NextResetAt, LastResetAt: m.LastResetAt,
-			ExpiresAt: m.ExpiresAt, Disabled: m.Disabled, DisabledReason: m.DisabledReason, GroupID: m.GroupID,
-		})
 	}
 	b, _ := json.Marshal(users)
 	sum := sha256.Sum256(b)
@@ -456,9 +503,9 @@ func (s *Server) handleNodePush(w http.ResponseWriter, r *http.Request) {
 			kind, id, found := strings.Cut(userID, ":")
 			if !found || (kind != "subuser" && kind != "merged") || id == "" {
 				why = "user_id 格式不对"
-			} else if kind == "subuser" && findSubUserByID(s.cfg.SubUsers, id) == nil {
+			} else if kind == "subuser" && findSubUserByID(s.cfg.SubUsers, id) == nil && !s.hasCentralUser("subuser", id) {
 				why = "订阅用户不存在"
-			} else if kind == "merged" && findMergedSubByID(s.cfg.MergedSubs, id) == nil {
+			} else if kind == "merged" && findMergedSubByID(s.cfg.MergedSubs, id) == nil && !s.hasCentralUser("merged", id) {
 				why = "合并订阅不存在"
 			} else {
 				key = userID

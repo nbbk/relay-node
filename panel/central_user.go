@@ -18,6 +18,12 @@ package main
 //     面板分配端口前问询、登记时导入用；不含任何令牌）。
 //   GET  /api/v1/central/user-traffic?key=subuser:su-xxxxxx
 //     一个订阅在本面板上的用量与转发状态（管理面板汇总用）。
+//   POST /api/v1/central/users
+//     （v1.3.36，Phase 1 切片 2）下发一台落地上的集中用户全量（按落地
+//     全量替换）：管理面板把建在自己身上的订阅用户/合并订阅，按落地
+//     发给各远程面板；远程面板另存“集中用户”，不与本地用户混表，
+//     node/users 下发时与本地用户合并。users 为空 = 清掉该落地上的
+//     全部集中用户。版本门 1.3.36+。
 //   POST /api/v1/central/user-forwards/disable  {key, reason}
 //   POST /api/v1/central/user-forwards/resume   {key}
 //     管理面板下发的停用/恢复指令（汇总裁决后调）。
@@ -153,6 +159,274 @@ func (s *Server) handleCentralUserForwardsList(w http.ResponseWriter, r *http.Re
 	}
 	sort.Ints(ports)
 	writeJSON(w, 200, okResp(map[string]any{"forwards": forwards, "used_ports": ports, "panel_version": Version}))
+}
+
+// ---------- 集中用户表同步（v1.3.36，Phase 1 切片 2，方案 a） ----------
+//
+// 管理面板把建在自己身上的订阅用户/合并订阅，按落地全量同步到各远程
+// 面板；远程面板另存“集中用户”，不与本地用户混表，node/users 下发时
+// 与本地用户合并（见 node_agent.go 的 nodeUsersPayload）。agent 继续
+// 向入网的远程面板拉表、推数，不改拉表对象。
+//
+// 同步语义：按落地全量替换（users 为空 = 清掉该落地上的集中用户），
+// 删除自动传播，不用 tombstone。触发点：订阅新建/编辑/删除时立即全量
+// 同步一次（见 subscription.go 的 syncCentralUsersWarning 调用），
+// 每 2 分钟的远程轮询兜底（见 central.go 的 healCentralUsers）。
+// 同步失败只警告、不阻断本地保存。
+
+// handleCentralUsers 被管端：接收管理面板下发的一台落地上的集中用户
+// 全量（按落地全量替换）。逐行校验（user_id 格式 + 该落地的 UUID
+// 必须在），坏行跳过、不让一整单失败；落地不存在整单拒绝（管理面板
+// 下轮快照刷新后就不再发这台落地）。没变就不落盘（每 2 分钟的兜底
+// 同步不产生无意义的写盘）。调用方须持 opMu（tryOpLock 在这里拿，
+// 占用返回 409，与按人转发同一口径）。
+func (s *Server) handleCentralUsers(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		LandingAddr string     `json:"landing_addr"`
+		Users       []nodeUser `json:"users"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	addr := strings.TrimSpace(req.LandingAddr)
+	if addr == "" {
+		writeJSON(w, 400, errResp("落地地址不能为空"))
+		return
+	}
+	var fresh []nodeUser
+	skipped := 0
+	seen := map[string]bool{}
+	for _, u := range req.Users {
+		kind, id, found := strings.Cut(strings.TrimSpace(u.UserID), ":")
+		if !found || (kind != "subuser" && kind != "merged") || id == "" || u.Kind != kind || u.ID != id {
+			skipped++
+			continue
+		}
+		if u.NodeUUIDs == nil || strings.TrimSpace(u.NodeUUIDs[addr]) == "" {
+			skipped++
+			continue
+		}
+		if seen[u.UserID] {
+			skipped++
+			continue
+		}
+		seen[u.UserID] = true
+		fresh = append(fresh, u)
+	}
+	if !s.tryOpLock(w) {
+		return
+	}
+	defer s.opMu.Unlock()
+	// 本面板的落地地址表（只接受已存在的落地）。
+	rc, _, err := s.readRelayConf()
+	if err != nil {
+		writeJSON(w, 500, errResp("读落地配置失败："+err.Error()))
+		return
+	}
+	known := false
+	for _, l := range rc.Landings {
+		if l.Landing == addr {
+			known = true
+			break
+		}
+	}
+	if !known {
+		writeJSON(w, 400, errResp("落地不存在："+addr))
+		return
+	}
+	if fresh == nil {
+		fresh = []nodeUser{}
+	}
+	if s.cfg.CentralUsers == nil {
+		s.cfg.CentralUsers = map[string][]nodeUser{}
+	}
+	oldB, _ := json.Marshal(s.cfg.CentralUsers[addr])
+	newB, _ := json.Marshal(fresh)
+	if string(oldB) != string(newB) {
+		s.cfg.CentralUsers[addr] = fresh
+		if err := s.saveConfig(); err != nil {
+			writeJSON(w, 500, errResp("保存失败："+err.Error()))
+			return
+		}
+	}
+	s.audit("central", "接收集中用户", addr, "成功", fmt.Sprintf("同步 %d 条，跳过 %d 条", len(fresh), skipped))
+	writeJSON(w, 200, okResp(map[string]any{"applied": len(fresh), "skipped": skipped, "panel_version": Version}))
+}
+
+// hasCentralUser 该订阅是否在集中用户表里（v1.3.36）：管理面板同步来
+// 的用户，agent 推数时与本地用户一样认（见 handleNodePush）。
+func (s *Server) hasCentralUser(kind, id string) bool {
+	want := userSubKey(kind, id)
+	for _, rows := range s.cfg.CentralUsers {
+		for _, u := range rows {
+			if u.UserID == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// centralUsersWarn 一条集中用户表同步警告（结构化，调用方按需拼文案
+// 或按远程节流记审计）。
+type centralUsersWarn struct {
+	RemoteID   string
+	RemoteName string
+	Landing    string
+	Msg        string
+}
+
+func (w centralUsersWarn) String() string {
+	if w.Landing != "" {
+		return "远程面板 " + w.RemoteName + " 的落地 " + w.Landing + " " + w.Msg
+	}
+	return "远程面板 " + w.RemoteName + " " + w.Msg
+}
+
+// selectionHasLanding 生效勾选里有没有解析到该落地地址的条目
+// （v1.3.36）：本地落地直接比地址，远程落地靠快照解析。
+func (s *Server) selectionHasLanding(sel []SubSelection, landingAddr string) bool {
+	for _, addr := range s.landingAddrsForSelection(sel) {
+		if addr == landingAddr {
+			return true
+		}
+	}
+	return false
+}
+
+// centralUsersForLanding 该落地在管理面板上的集中用户行（v1.3.36）：
+// 订阅用户 + 合并订阅里生效勾选含该落地的，按 user_id 去重；每行只带
+// 该落地的 UUID（NodeUUIDs={landingAddr: uuid}）。UUID 还没生成的
+// （远程快照没到）不进表，等轮询补齐 UUID 后下次同步再进。
+func (s *Server) centralUsersForLanding(landingAddr string) []nodeUser {
+	var out []nodeUser
+	seen := map[string]bool{}
+	add := func(u nodeUser, uuid string) {
+		if uuid == "" || seen[u.UserID] {
+			return
+		}
+		seen[u.UserID] = true
+		u.NodeUUIDs = map[string]string{landingAddr: uuid}
+		out = append(out, u)
+	}
+	for i := range s.cfg.SubUsers {
+		u := &s.cfg.SubUsers[i]
+		if s.selectionHasLanding(s.effectiveSelectionForSubUser(u), landingAddr) {
+			add(nodeUserForSubUser(u), u.NodeUUIDs[landingAddr])
+		}
+	}
+	for i := range s.cfg.MergedSubs {
+		m := &s.cfg.MergedSubs[i]
+		if s.selectionHasLanding(s.effectiveSelectionForMerged(m), landingAddr) {
+			add(nodeUserForMerged(m), m.NodeUUIDs[landingAddr])
+		}
+	}
+	if out == nil {
+		out = []nodeUser{}
+	}
+	return out
+}
+
+// pushCentralUsersToRemote 把一台落地上的集中用户全量推到一台远程
+// 面板（v1.3.36）。版本门 1.3.36+：缓存的远程版本低于它直接报错；
+// 没缓存时放行，远程 404 时按版本太旧报错（与按人转发同一口径）。
+// users 为空 = 清掉该落地上的集中用户。15 秒超时。
+func (s *Server) pushCentralUsersToRemote(rem RemotePanel, landingAddr string, users []nodeUser) (applied, skipped int, err error) {
+	if ok, msg := s.remoteVersionOK(rem.ID, "1.3.36"); !ok {
+		return 0, 0, fmt.Errorf("%s", msg)
+	}
+	if users == nil {
+		users = []nodeUser{}
+	}
+	body, _ := json.Marshal(map[string]any{"landing_addr": landingAddr, "users": users})
+	status, respBody, err := s.remoteCall(rem, "POST", "/api/v1/central/users", body, 15*time.Second)
+	if err != nil {
+		if status == 404 {
+			return 0, 0, fmt.Errorf("远程面板 %s 版本太旧（需要 1.3.36+），请先升级远程面板", rem.Name)
+		}
+		return 0, 0, err
+	}
+	var resp struct {
+		OK      bool `json:"ok"`
+		Applied int  `json:"applied"`
+		Skipped int  `json:"skipped"`
+	}
+	_ = json.Unmarshal(respBody, &resp)
+	return resp.Applied, resp.Skipped, nil
+}
+
+// syncCentralUsersToRemotes 全量同步集中用户表（v1.3.36）：所有已登记
+// 远程 × 各自快照里的落地，逐台逐落地推。返回结构化警告（空 = 全成功）。
+// 远程离线（快照说离线）时跳过不推——离线提醒走已有的轮询告警；
+// 版本太旧/推失败只警告，下轮轮询再推，不阻断本地保存。
+func (s *Server) syncCentralUsersToRemotes() []centralUsersWarn {
+	var warns []centralUsersWarn
+	for _, rem := range append([]RemotePanel{}, s.cfg.Remotes...) {
+		s.centralMu.Lock()
+		snap := s.centralCache[rem.ID]
+		s.centralMu.Unlock()
+		if snap == nil || !snap.Online {
+			continue
+		}
+		for _, l := range snap.Landings {
+			if l.Landing == "" {
+				continue
+			}
+			users := s.centralUsersForLanding(l.Landing)
+			applied, skipped, err := s.pushCentralUsersToRemote(rem, l.Landing, users)
+			if err != nil {
+				warns = append(warns, centralUsersWarn{RemoteID: rem.ID, RemoteName: rem.Name, Landing: l.Landing, Msg: "用户表没同步上：" + err.Error()})
+				continue
+			}
+			if skipped > 0 {
+				warns = append(warns, centralUsersWarn{RemoteID: rem.ID, RemoteName: rem.Name, Landing: l.Landing, Msg: fmt.Sprintf("有 %d 条用户没同步上（缺 UUID 或格式不对），已同步 %d 条", skipped, applied)})
+			}
+		}
+	}
+	return warns
+}
+
+// syncCentralUsersWarning 创建/编辑/删除订阅后调：全量同步集中用户表
+// 到各远程面板（按落地全量替换，删了的订阅自然掉出表），返回警告文案
+// （空 = 全成功）。同步失败只警告、不阻断保存，下轮轮询再推。
+func (s *Server) syncCentralUsersWarning() string {
+	warns := s.syncCentralUsersToRemotes()
+	if len(warns) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, w := range warns {
+		parts = append(parts, w.String())
+	}
+	return "用户表同步到远程面板时" + strings.Join(parts, "；") + "，下次保存或轮询时会再推。"
+}
+
+// healCentralUsers 兜底同步集中用户表（v1.3.36）：每轮轮询后全量推
+// 一次；失败的远程记审计（每小时每远程最多一次），下轮再推。
+func (s *Server) healCentralUsers() {
+	warns := s.syncCentralUsersToRemotes()
+	if len(warns) == 0 {
+		return
+	}
+	now := time.Now()
+	s.centralMu.Lock()
+	if s.centralUsersFailAudit == nil {
+		s.centralUsersFailAudit = map[string]time.Time{}
+	}
+	var msgs []string
+	for _, w := range warns {
+		last, ok := s.centralUsersFailAudit[w.RemoteID]
+		if ok && now.Sub(last) < time.Hour {
+			continue
+		}
+		s.centralUsersFailAudit[w.RemoteID] = now
+		msgs = append(msgs, w.String())
+	}
+	s.centralMu.Unlock()
+	if len(msgs) > 0 {
+		s.audit("system", "集中用户表兜底同步", strings.Join(msgs, "；"), "失败", "下轮轮询再推")
+	}
 }
 
 // handleCentralUserTraffic 被管端：一个订阅在本面板上的用量与转发状态

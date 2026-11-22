@@ -136,6 +136,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/central/subscription", s.requireCentralToken(s.handleCentralSubscription))
 	mux.HandleFunc("POST /api/v1/central/user-forwards", s.requireCentralToken(s.handleCentralUserForwards))
 	mux.HandleFunc("GET /api/v1/central/user-forwards", s.requireCentralToken(s.handleCentralUserForwardsList))
+	mux.HandleFunc("POST /api/v1/central/users", s.requireCentralToken(s.handleCentralUsers))
 	mux.HandleFunc("GET /api/v1/central/user-traffic", s.requireCentralToken(s.handleCentralUserTraffic))
 	mux.HandleFunc("POST /api/v1/central/user-forwards/disable", s.requireCentralToken(s.handleCentralUserForwardDisable))
 	mux.HandleFunc("POST /api/v1/central/user-forwards/resume", s.requireCentralToken(s.handleCentralUserForwardResume))
