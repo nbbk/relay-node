@@ -2074,6 +2074,90 @@ print_summary() { # 打印当前落地的汇总（中转 IP 只查一次）
   echo "自检：bash check.sh（会穿过中转连落地 443，核对证书与落地一致）"
 }
 
+# ---------- 日志上限（防爆盘：docker 日志 + journald） ----------
+# docker 容器日志默认无上限（tm 容器就这么长到 8.9G 撑爆过 20G 盘），
+# journald 默认能用到磁盘 10%（20G 盘就是 2G）。
+# 注意：daemon.json 的限制只对新建容器生效，已有容器要重建才生效；本函数不重启 docker
+# （重启会断正在跑的容器），只写配置 + 打印说明。
+# 与 panel-install.sh 里的 setup_log_limits 同一份逻辑（两边改动要同步）。
+setup_log_limits() {
+  # 1) docker：daemon.json 合并 log-driver/log-opts，不覆盖用户原有配置
+  if command -v docker >/dev/null 2>&1; then
+    local dj="/etc/docker/daemon.json"
+    if [ -f "$dj" ] && grep -q '"max-size"' "$dj" 2>/dev/null; then
+      echo "docker 日志上限已配过（$dj 里已有 max-size），不动。"
+    elif [ "$DRY_RUN" = "1" ]; then
+      echo "[dry-run] 会写 $dj：log-driver=json-file，log-opts max-size=10m、max-file=3（已有文件则合并，不覆盖原有配置）"
+    else
+      if command -v python3 >/dev/null 2>&1; then
+        python3 - "$dj" <<'PYEOF' || echo "daemon.json 合并失败：请手动配，见下面说明。"
+import json, os, sys
+p = sys.argv[1]
+existed = os.path.exists(p)
+try:
+    with open(p) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        cfg = {}
+except FileNotFoundError:
+    cfg = {}
+except Exception as e:
+    if existed:
+        print("daemon.json 不是合法 JSON，自动合并不了，请手动改：", e, file=sys.stderr)
+        sys.exit(1)
+    cfg = {}
+cfg["log-driver"] = "json-file"
+opts = cfg.get("log-opts")
+if not isinstance(opts, dict):
+    opts = {}
+opts["max-size"] = "10m"
+opts["max-file"] = "3"
+cfg["log-opts"] = opts
+with open(p, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+PYEOF
+      elif command -v jq >/dev/null 2>&1; then
+        _old="$(cat "$dj" 2>/dev/null || echo '{}')"
+        _new="$(printf '%s' "$_old" | jq '.["log-driver"]="json-file" | .["log-opts"]=(.["log-opts"] // {}) | .["log-opts"]["max-size"]="10m" | .["log-opts"]["max-file"]="3"' 2>/dev/null || true)"
+        if [ -n "$_new" ]; then printf '%s\n' "$_new" > "$dj"; else echo "daemon.json 合并失败：请手动配，见下面说明。"; fi
+      else
+        # 既没 python3 也没 jq：只有文件不存在或为空对象时才敢写，有内容的不动（免得改坏 JSON）
+        if [ ! -f "$dj" ] || [ ! -s "$dj" ]; then
+          printf '{\n  "log-driver": "json-file",\n  "log-opts": {\n    "max-size": "10m",\n    "max-file": "3"\n  }\n}\n' > "$dj"
+        else
+          echo "daemon.json 已存在且本机没有 python3/jq，自动合并不了：请手动加 log-driver/log-opts，见下面说明。"
+        fi
+      fi
+      if grep -q '"max-size"' "$dj" 2>/dev/null; then
+        echo "docker 日志上限已写好（$dj：每个容器日志最多 10m x 3 份）。"
+      fi
+    fi
+  else
+    echo "本机没有 docker，跳过 docker 日志上限。"
+  fi
+  # 2) journald：SystemMaxUse=100M（没配过才加，已配的不动），并立即腾出超出的旧日志
+  if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+    local jc="/etc/systemd/journald.conf"
+    if grep -Eq '^[[:space:]]*SystemMaxUse=' "$jc" 2>/dev/null; then
+      echo "journald 上限已配过（$jc 里已有 SystemMaxUse），不动。"
+    elif [ "$DRY_RUN" = "1" ]; then
+      echo "[dry-run] 会在 $jc 末尾加 [Journal] SystemMaxUse=100M，并重启 systemd-journald、跑 journalctl --vacuum-size=100M"
+    else
+      printf '\n[Journal]\nSystemMaxUse=100M\n' >> "$jc"
+      systemctl restart systemd-journald 2>/dev/null || true
+      journalctl --vacuum-size=100M >/dev/null 2>&1 || true
+      echo "journald 上限已设为 100M（旧日志已按 100M 清过一次）。"
+    fi
+  else
+    echo "本机没有 systemd，跳过 journald 上限。"
+  fi
+  echo "说明：docker 日志上限只对新建容器生效，已有容器要重建才限流（本脚本不重启 docker，免得断正在跑的容器）。"
+  echo "  compose 管的容器：在安装目录跑 docker compose down && docker compose up -d"
+  echo "  单个容器：docker rm -f <名字> 后用原来的 docker run 命令重建"
+  echo "  检查各容器日志占了多少：docker system df -v | grep -A2 Containers，或 du -sh /var/lib/docker/containers/* | sort -rh | head"
+}
+
 # ---------- 主流程 ----------
 LANDING_COUNT=1
 ALL_PORTS=""
@@ -2145,6 +2229,11 @@ while true; do
   fi
   break
 done
+
+# ---------- 日志上限（防爆盘：docker 日志 + journald；重跑/追加也走同一逻辑） ----------
+echo ""
+echo "设置日志上限（防爆盘）..."
+setup_log_limits
 
 # 装完自动跑自检：本地有 check.sh 就用，没有就从仓库拉（拉不到也不报错）
 if [ ! -f check.sh ]; then
