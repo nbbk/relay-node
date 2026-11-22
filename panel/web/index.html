@@ -86,8 +86,14 @@
       <!-- 添加落地 -->
       <section class="page" id="page-add">
         <div class="page-head"><h1>添加落地</h1></div>
-        <div class="card">
+        <div class="card add-shell">
           <form id="add-form">
+            <div class="add-tabs" role="tablist" aria-label="添加落地分类">
+              <button type="button" class="add-tab" role="tab" id="add-tab-basic" aria-controls="add-panel-basic" aria-selected="true" data-add-tab="basic">基本</button>
+              <button type="button" class="add-tab" role="tab" id="add-tab-cert" aria-controls="add-panel-cert" aria-selected="false" data-add-tab="cert">证书</button>
+              <button type="button" class="add-tab" role="tab" id="add-tab-traffic" aria-controls="add-panel-traffic" aria-selected="false" data-add-tab="traffic">流量与限速</button>
+            </div>
+            <div class="add-panel" role="tabpanel" id="add-panel-basic" aria-labelledby="add-tab-basic">
             <div class="form-grid">
               <div><label for="add-landing">落地 IP 或域名 <span class="hint">必填，如 203.0.113.1</span></label>
                 <input id="add-landing" placeholder="203.0.113.1" required></div>
@@ -114,6 +120,10 @@
                 <select id="add-sb-mode"><option value="1">TLS（443）</option><option value="2">明文（8080）</option></select></div>
               <div id="custom-ports-wrap" class="hidden"><label for="add-custom-ports">自定义端口 <span class="hint">必填，逗号分隔，如 443,8388；可写 监听:落地，如 10443:443</span></label>
                 <input id="add-custom-ports" placeholder="443,8388"></div>
+            </div>
+            </div>
+            <div class="add-panel hidden" role="tabpanel" id="add-panel-cert" aria-labelledby="add-tab-cert" hidden>
+            <div class="form-grid">
               <div><label for="add-cert-domain">证书域名 <span class="hint">用于签证书，如 example.com</span></label>
                 <input id="add-cert-domain" placeholder="example.com"></div>
               <div><label for="add-cert-mode">证书签发方式 <span class="hint">决定证书怎么签、怎么续签；要和落地机装节点时选的方式一致</span></label>
@@ -122,6 +132,10 @@
                   <option value="dns01">DNS 验证 Cloudflare（DNS-01）</option>
                 </select></div>
               <p class="small full">默认走 80：落地机装节点时用 80 端口验证域名签证书，最常用、不用多配；代价是 80 必须直通落地，改了监听端口或域名指着中转时，续签要手动把域名改回指向落地。DNS 验证：落地机用 Cloudflare 令牌在 DNS 里加验证记录签证书，续签全自动，域名指哪都行、不用 80；前提是装节点时选了 DNS 验证并配好令牌，没配令牌的落地别选这个。</p>
+            </div>
+            </div>
+            <div class="add-panel hidden" role="tabpanel" id="add-panel-traffic" aria-labelledby="add-tab-traffic" hidden>
+            <div class="form-grid">
               <div><label for="add-duration">节点时长</label>
                 <select id="add-duration">
                   <option value="0">永久（默认）</option><option value="30">30 天</option><option value="90">90 天</option>
@@ -139,8 +153,11 @@
                 <input id="add-speed" type="number" min="0" step="1" placeholder="0"></div>
               <div class="checkbox-row"><input type="checkbox" id="add-want-udp"><label for="add-want-udp" style="margin:0;font-weight:400">同时转发 UDP（HY2 / TUIC 需要）</label></div>
             </div>
-            <div class="btn-row"><button class="btn" type="submit" id="add-submit">提交并添加落地</button></div>
-            <p class="small">提交后面板会先预检端口；若 80 / 443 已被占用，会弹出方式选择（改监听走高位端口、按域名分流、按 SNI 分流等）。</p>
+            </div>
+            <div style="padding:0 18px 18px">
+              <div class="btn-row"><button class="btn" type="submit" id="add-submit">提交并添加落地</button></div>
+              <p class="small">提交后面板会先预检端口；若 80 / 443 已被占用，会弹出方式选择（改监听走高位端口、按域名分流、按 SNI 分流等）。</p>
+            </div>
           </form>
         </div>
       </section>
@@ -203,7 +220,13 @@
       <!-- 服务与日志 -->
       <section class="page" id="page-service">
         <div class="page-head"><h1>服务与日志</h1></div>
-        <div class="card">
+        <div class="card service-shell">
+          <div class="service-tabs" role="tablist" aria-label="服务分类">
+            <button type="button" class="service-tab" role="tab" id="service-tab-service" aria-controls="service-panel-service" aria-selected="true" data-service-tab="service">服务</button>
+            <button type="button" class="service-tab" role="tab" id="service-tab-logs" aria-controls="service-panel-logs" aria-selected="false" data-service-tab="logs">实时日志</button>
+            <button type="button" class="service-tab" role="tab" id="service-tab-ports" aria-controls="service-panel-ports" aria-selected="false" data-service-tab="ports">端口占用</button>
+          </div>
+          <div class="service-panel" role="tabpanel" id="service-panel-service" aria-labelledby="service-tab-service">
           <h2>realm 服务</h2>
           <div id="service-status"></div>
           <div class="btn-row">
@@ -213,15 +236,16 @@
           </div>
           <p class="small">分流组件（nginx / HAProxy）随 SHARE80 / SHARE443 一起启停。面板挂了、关了都不影响 realm 转发。</p>
         </div>
-        <div class="card" style="margin-top:16px">
+        <div class="service-panel hidden" role="tabpanel" id="service-panel-logs" aria-labelledby="service-tab-logs" hidden>
           <h2>实时日志 <span class="small">（最近 200 行，每 10 秒自动刷新）</span></h2>
           <div class="btn-row" style="margin:0 0 10px"><button class="btn secondary sm" id="logs-refresh" type="button">立即刷新</button>
           <label class="checkbox-row" style="margin:0"><input type="checkbox" id="logs-auto" checked><span style="font-weight:400">自动刷新</span></label></div>
           <div class="log-box" id="log-box">加载中…</div>
         </div>
-        <div class="card" style="margin-top:16px">
+        <div class="service-panel hidden" role="tabpanel" id="service-panel-ports" aria-labelledby="service-tab-ports" hidden>
           <h2>端口占用表</h2>
           <div id="ports-table"></div>
+        </div>
         </div>
       </section>
 
@@ -766,7 +790,13 @@
         <div class="page-head"><h1>端口管理</h1></div>
         <div class="info-box">只管本机防火墙（ufw）。云厂商安全组（控制台里那层）面板管不了，还得去控制台开。</div>
         <div id="firewall-status"></div>
-        <div class="grid cols-2" style="margin-top:16px">
+        <div class="card fw-shell" style="margin-top:16px">
+          <div class="fw-tabs" role="tablist" aria-label="端口管理分类">
+            <button type="button" class="fw-tab" role="tab" id="fw-tab-open" aria-controls="fw-panel-open" aria-selected="true" data-fw-tab="open">开放端口</button>
+            <button type="button" class="fw-tab" role="tab" id="fw-tab-rules" aria-controls="fw-panel-rules" aria-selected="false" data-fw-tab="rules">已开放的端口</button>
+          </div>
+          <div class="fw-panel" role="tabpanel" id="fw-panel-open" aria-labelledby="fw-tab-open">
+          <div class="grid cols-2">
           <div class="card">
             <h2>开放指定端口</h2>
             <form id="fw-one-form">
@@ -795,9 +825,11 @@
           </div>
           <p class="small">“开放全部端口”会暴露所有端口（包括 SSH 等），建议只在需要时用，用完可一键恢复只开必要端口（面板端口 + 各落地监听端口 + 22）。</p>
         </div>
-        <div class="card" style="margin-top:16px">
+        </div>
+        <div class="fw-panel hidden" role="tabpanel" id="fw-panel-rules" aria-labelledby="fw-tab-rules" hidden>
           <h2>已开放的端口</h2>
           <div id="firewall-rules"></div>
+        </div>
         </div>
       </section>
 

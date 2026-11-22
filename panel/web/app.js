@@ -1619,6 +1619,125 @@ function initRemoteBackupTabs() {
     if (btn) btn.focus();
   });
 }
+// 添加落地表单选项卡（v1.3.41）：基本 / 证书 / 流量与限速，复用设置页选项卡模式
+//（原生 button＋aria-selected＋方向键，localStorage 记住上次，键与设置页分开）。
+// 提交按钮在选项卡之外、一直可见；切选项卡只是显隐，不影响表单取值与提交。
+const ADD_TABS = ['basic', 'cert', 'traffic'];
+const ADD_TAB_KEY = 'relay-panel-add-tab';
+function addTabValid(id) { return ADD_TABS.indexOf(id) >= 0; }
+function showAddTab(id) {
+  if (!addTabValid(id)) id = 'basic';
+  ADD_TABS.forEach((t) => {
+    const btn = document.getElementById('add-tab-' + t);
+    if (btn) btn.setAttribute('aria-selected', t === id ? 'true' : 'false');
+    setVisible(document.getElementById('add-panel-' + t), t === id);
+  });
+  try { localStorage.setItem(ADD_TAB_KEY, id); } catch (e) { /* 隐私模式等存不了就每次回基本 */ }
+}
+function initAddTabs() {
+  let saved = null;
+  try { saved = localStorage.getItem(ADD_TAB_KEY); } catch (e) { /* 读不到就用默认 */ }
+  showAddTab(addTabValid(saved) ? saved : 'basic');
+  if (initAddTabs.bound) return;
+  initAddTabs.bound = true;
+  ADD_TABS.forEach((t) => {
+    on('#add-tab-' + t, 'click', () => showAddTab(t));
+  });
+  const bar = document.querySelector('.add-tabs');
+  if (bar) bar.addEventListener('keydown', (e) => {
+    const cur = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.addTab : null;
+    if (!cur || !addTabValid(cur)) return;
+    let idx = ADD_TABS.indexOf(cur);
+    if (e.key === 'ArrowRight') idx = (idx + 1) % ADD_TABS.length;
+    else if (e.key === 'ArrowLeft') idx = (idx - 1 + ADD_TABS.length) % ADD_TABS.length;
+    else if (e.key === 'Home') idx = 0;
+    else if (e.key === 'End') idx = ADD_TABS.length - 1;
+    else return;
+    e.preventDefault();
+    showAddTab(ADD_TABS[idx]);
+    const btn = document.getElementById('add-tab-' + ADD_TABS[idx]);
+    if (btn) btn.focus();
+  });
+}
+// 服务与日志页选项卡（v1.3.41）：服务 / 实时日志 / 端口占用，复用设置页选项卡模式。
+const SERVICE_TABS = ['service', 'logs', 'ports'];
+const SERVICE_TAB_KEY = 'relay-panel-service-tab';
+function serviceTabValid(id) { return SERVICE_TABS.indexOf(id) >= 0; }
+function showServiceTab(id) {
+  if (!serviceTabValid(id)) id = 'service';
+  SERVICE_TABS.forEach((t) => {
+    const btn = document.getElementById('service-tab-' + t);
+    if (btn) btn.setAttribute('aria-selected', t === id ? 'true' : 'false');
+    setVisible(document.getElementById('service-panel-' + t), t === id);
+  });
+  try { localStorage.setItem(SERVICE_TAB_KEY, id); } catch (e) { /* 隐私模式等存不了就每次回服务 */ }
+}
+function initServiceTabs() {
+  let saved = null;
+  try { saved = localStorage.getItem(SERVICE_TAB_KEY); } catch (e) { /* 读不到就用默认 */ }
+  showServiceTab(serviceTabValid(saved) ? saved : 'service');
+  if (initServiceTabs.bound) return;
+  initServiceTabs.bound = true;
+  SERVICE_TABS.forEach((t) => {
+    on('#service-tab-' + t, 'click', () => showServiceTab(t));
+  });
+  const bar = document.querySelector('.service-tabs');
+  if (bar) bar.addEventListener('keydown', (e) => {
+    const cur = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.serviceTab : null;
+    if (!cur || !serviceTabValid(cur)) return;
+    let idx = SERVICE_TABS.indexOf(cur);
+    if (e.key === 'ArrowRight') idx = (idx + 1) % SERVICE_TABS.length;
+    else if (e.key === 'ArrowLeft') idx = (idx - 1 + SERVICE_TABS.length) % SERVICE_TABS.length;
+    else if (e.key === 'Home') idx = 0;
+    else if (e.key === 'End') idx = SERVICE_TABS.length - 1;
+    else return;
+    e.preventDefault();
+    showServiceTab(SERVICE_TABS[idx]);
+    const btn = document.getElementById('service-tab-' + SERVICE_TABS[idx]);
+    if (btn) btn.focus();
+  });
+}
+// 端口管理页选项卡（v1.3.41）：开放端口 / 已开放的端口，复用设置页选项卡模式。
+const FW_TABS = ['open', 'rules'];
+const FW_TAB_KEY = 'relay-panel-firewall-tab';
+function fwTabValid(id) { return FW_TABS.indexOf(id) >= 0; }
+function showFwTab(id) {
+  if (!fwTabValid(id)) id = 'open';
+  FW_TABS.forEach((t) => {
+    const btn = document.getElementById('fw-tab-' + t);
+    if (btn) btn.setAttribute('aria-selected', t === id ? 'true' : 'false');
+    setVisible(document.getElementById('fw-panel-' + t), t === id);
+  });
+  try { localStorage.setItem(FW_TAB_KEY, id); } catch (e) { /* 隐私模式等存不了就每次回开放端口 */ }
+}
+function initFirewallTabs() {
+  let saved = null;
+  try { saved = localStorage.getItem(FW_TAB_KEY); } catch (e) { /* 读不到就用默认 */ }
+  showFwTab(fwTabValid(saved) ? saved : 'open');
+  if (initFirewallTabs.bound) return;
+  initFirewallTabs.bound = true;
+  FW_TABS.forEach((t) => {
+    on('#fw-tab-' + t, 'click', () => showFwTab(t));
+  });
+  const bar = document.querySelector('.fw-tabs');
+  if (bar) bar.addEventListener('keydown', (e) => {
+    const cur = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.fwTab : null;
+    if (!cur || !fwTabValid(cur)) return;
+    let idx = FW_TABS.indexOf(cur);
+    if (e.key === 'ArrowRight') idx = (idx + 1) % FW_TABS.length;
+    else if (e.key === 'ArrowLeft') idx = (idx - 1 + FW_TABS.length) % FW_TABS.length;
+    else if (e.key === 'Home') idx = 0;
+    else if (e.key === 'End') idx = FW_TABS.length - 1;
+    else return;
+    e.preventDefault();
+    showFwTab(FW_TABS[idx]);
+    const btn = document.getElementById('fw-tab-' + FW_TABS[idx]);
+    if (btn) btn.focus();
+  });
+}
 async function loadSettingsPage() {
   try {
     const st = await api('/api/v1/settings');
@@ -4843,6 +4962,9 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initLogin);
   safeInit(initCheck);
   safeInit(initAddForm);
+  safeInit(initAddTabs); // v1.3.41：添加落地表单选项卡绑定 + 恢复上次选项卡
+  safeInit(initServiceTabs); // v1.3.41：服务与日志页选项卡绑定 + 恢复上次选项卡
+  safeInit(initFirewallTabs); // v1.3.41：端口管理页选项卡绑定 + 恢复上次选项卡
   safeInit(initTwin);
   safeInit(initSubMode); // v1.3.17：订阅内容三选一绑定 + 恢复上次选择
   safeInit(initService);
