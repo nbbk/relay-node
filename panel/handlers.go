@@ -532,6 +532,61 @@ func (s *Server) handleFix(w http.ResponseWriter, r *http.Request) {
 	}
 	user := s.currentUser(r)
 	switch req.IssueCode {
+	case "tls_unreachable":
+		// v1.3.46：以前 switch 里没有这一项，点一键修复直接 400。
+		// 先做与 check.sh 同款的分段定位，只有 realm 本身的问题才重启；
+		// 其它原因回 need_manual + 具体原因，不 400。
+		if !s.tryOpLock(w) {
+			return
+		}
+		defer s.opMu.Unlock()
+		msg, needManual, reason, err := s.diagnoseTLSUnreachable(req.Landing)
+		if err != nil {
+			writeJSON(w, 200, errResp(err.Error()))
+			return
+		}
+		if needManual {
+			s.audit(user, "一键修复", fmt.Sprintf("落地 %d", req.Landing), "需手动", reason)
+			writeJSON(w, 200, map[string]any{"ok": true, "need_manual": true, "reason": reason, "guide": "/api/v1/certs/renew-guide"})
+			return
+		}
+		s.audit(user, "一键修复", fmt.Sprintf("落地 %d", req.Landing), "成功", msg)
+		writeJSON(w, 200, okResp(map[string]any{"msg": msg}))
+	case "udp_disabled":
+		// v1.3.46：config.toml 里 use_udp 关着导致 UDP 没监听——把开关打开再重启。
+		if !s.tryOpLock(w) {
+			return
+		}
+		defer s.opMu.Unlock()
+		if _, _, err := s.landingByIndex(req.Landing); err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+		tomlData, err := s.readConfigToml()
+		if err != nil {
+			writeJSON(w, 200, errResp("读 config.toml 失败："+err.Error()))
+			return
+		}
+		if on, ok := readUseUDP(tomlData); ok && on {
+			writeJSON(w, 200, okResp(map[string]any{"msg": "UDP 转发已经开着，无需修复"}))
+			return
+		}
+		newToml, ok := setUseUDP(tomlData, true)
+		if !ok {
+			writeJSON(w, 200, map[string]any{"ok": true, "need_manual": true, "reason": "config.toml 里没找到 use_udp 配置行，请手动检查配置", "guide": "/api/v1/certs/renew-guide"})
+			return
+		}
+		if err := s.writeConfigTomlAtomic(newToml); err != nil {
+			writeJSON(w, 200, errResp("写 config.toml 失败："+err.Error()))
+			return
+		}
+		if err := s.restartRealm(); err != nil {
+			s.audit(user, "一键修复", fmt.Sprintf("落地 %d", req.Landing), "失败", err.Error())
+			writeJSON(w, 200, errResp("重启 realm 失败："+err.Error()))
+			return
+		}
+		s.audit(user, "一键修复", fmt.Sprintf("落地 %d", req.Landing), "成功", "enable_udp")
+		writeJSON(w, 200, okResp(map[string]any{"msg": "已开启 UDP 转发并重启 realm"}))
 	case "restart_realm", "realm_down", "port_not_listening":
 		if !s.tryOpLock(w) {
 			return
@@ -561,6 +616,64 @@ func (s *Server) handleFix(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, 400, errResp("不知道怎么修这个问题："+req.IssueCode))
 	}
+}
+
+// diagnoseTLSUnreachable tls_unreachable 的分段定位（v1.3.46，与 check.sh 同款
+// 四档）：① TCP 连 127.0.0.1:TLS_LISTEN；② ss -tlnp 看监听进程归属；
+// ③ 经中转握手（带 SNI，不行再试不带 SNI）；④ 直连落地握手。
+// 返回 (msg, needManual, reason, err)：
+//   - err != nil：定位本身失败（落地不存在、重启失败等），调用方按错误回；
+//   - needManual=true：realm 之外的原因，返回 need_manual + 具体原因，不 400；
+//   - 否则：realm 本身的问题，已重启（或再次探测已恢复），msg 是成功文案。
+func (s *Server) diagnoseTLSUnreachable(landing int) (string, bool, string, error) {
+	l, _, err := s.landingByIndex(landing)
+	if err != nil {
+		return "", false, "", err
+	}
+	listen, remote, ok := pickTLSEndpoint(*l)
+	if !ok {
+		return "", true, "该落地没配到落地 443 的端口，跳过 TLS 直通验证；请重新体检", nil
+	}
+	sni := l.CertDomain
+	if sni == "" {
+		sni = l.Domain
+	}
+	// ① TCP 连监听端口
+	if !tcpPortOpen("127.0.0.1", listen, 3*time.Second) {
+		owner := listenerProcName(listen)
+		if owner != "" && owner != "realm" {
+			return "", true, fmt.Sprintf("监听端口 %d 被非 realm 程序占用（进程：%s），请先停掉它或改端口", listen, owner), nil
+		}
+		// realm 在监听但 TCP 不通，或没人监听：realm 本身的问题，重启。
+		if err := s.restartRealm(); err != nil {
+			return "", false, "", fmt.Errorf("重启 realm 失败：%v", err)
+		}
+		return "realm 已重启", false, "", nil
+	}
+	// ③ 经中转握手（带 SNI，不行再试不带 SNI）
+	if ci := fetchCert(listen, sni); ci.DaysLeft != nil {
+		return "再次探测已恢复，无需重启", false, "", nil
+	}
+	if sni != "" {
+		if ci := fetchCert(listen, ""); ci.DaysLeft != nil {
+			return "", true, fmt.Sprintf("经中转握手带 SNI（%s）失败、不带 SNI 能拿到证书，可能是 SNI/域名不对，请检查证书域名", sni), nil
+		}
+	}
+	// ④ 直连落地握手
+	directAddr := net.JoinHostPort(l.Landing, strconv.Itoa(remote))
+	if ci := fetchCertFrom(directAddr, sni); ci.DaysLeft != nil {
+		// 直连正常、中转失败：realm 转发层的问题，重启。
+		if err := s.restartRealm(); err != nil {
+			return "", false, "", fmt.Errorf("重启 realm 失败：%v", err)
+		}
+		return "直连落地正常，已重启 realm（中转转发层问题）", false, "", nil
+	}
+	if sni != "" {
+		if ci := fetchCertFrom(directAddr, ""); ci.DaysLeft != nil {
+			return "", true, "直连落地带 SNI 失败、不带 SNI 能拿到证书，可能是 SNI/域名不对，请检查证书域名", nil
+		}
+	}
+	return "", true, fmt.Sprintf("落地 TLS 本身拿不到证书（直连 %s 也失败），请先查落地证书与端口", directAddr), nil
 }
 
 // regenProxies 调 proxy.sh 重生成分流配置（契约 §4）；proxy.sh 不在时用 sed 级最小改动回退。
@@ -909,6 +1022,16 @@ func (s *Server) handleAddLanding(w http.ResponseWriter, r *http.Request) {
 			_ = s.writeRelayConfAtomic([]byte(strings.Join(lines, "\n") + "\n"))
 		}
 	}
+	// UDP 需求写进 relay.conf（NEEDS_UDP[_N]，v1.3.46）：install.sh 只写了
+	// 按预设的启发值（预设 1→0、预设 2→1、预设 3→WANT_UDP），面板按落地
+	// 实际节点协议重算（有 HY2/TUIC→1，否则 0），以面板算的为准。
+	// use_udp 开关不用面板补——install.sh 加落地时已按 PORTS 维护。
+	if newLanding != nil && rc2 != nil {
+		if rc3, _, err := s.readRelayConf(); err == nil {
+			lines := setRelayConfValue(rc3.Lines, needsUDPKey(newLanding.Index), strconv.Itoa(computeNeedsUDP(req.OrigLink, req.WantUDP)))
+			_ = s.writeRelayConfAtomic([]byte(strings.Join(lines, "\n") + "\n"))
+		}
+	}
 	// 存了原始链接：现场算中转+直连链接，写进 nodes.txt（显式传落地真实编号，
 	// 不用最大编号+1，避免 1.2.1 已知的撞号问题），卡片上直接出链接。
 	manualNote := ""
@@ -1017,6 +1140,10 @@ func (s *Server) handleSetOrigLink(w http.ResponseWriter, r *http.Request) {
 	s.state.ext(l.Landing).OrigLinkName = req.LinkName
 	s.stateMu.Unlock()
 	_ = s.saveState()
+	// 原始链接换了协议（VLESS↔HY2/TUIC）时，NEEDS_UDP 也要跟着重算
+	// （v1.3.46；写 relay.conf 失败不影响本次返回，下次写 relay.conf 时还会再算）。
+	lines := setRelayConfValue(rc.Lines, needsUDPKey(index), strconv.Itoa(computeNeedsUDP(req.OrigLink, false)))
+	_ = s.writeRelayConfAtomic([]byte(strings.Join(lines, "\n") + "\n"))
 	landingIP := l.Landing
 	if !isIP(landingIP) {
 		if ips, err := net.LookupIP(landingIP); err == nil && len(ips) > 0 {
@@ -1413,6 +1540,9 @@ func (s *Server) handleUpdateLanding(w http.ResponseWriter, r *http.Request) {
 	s.stateMu.Unlock()
 	// 1. relay.conf + config.toml（原子写，失败回滚）
 	newConfLines := rebuildRelayConfForEdit(rc, index, newLanding, newShare80, newShare443, relayAddrForConf)
+	// NEEDS_UDP（v1.3.46）：按新原始链接的协议重算（有 HY2/TUIC→1，否则 0），
+	// 覆盖 install.sh 写下的按预设的启发值；链接没贴过时回落到 WANT_UDP。
+	newConfLines = setRelayConfValue(newConfLines, needsUDPKey(index), strconv.Itoa(computeNeedsUDP(req.OrigLink, req.WantUDP)))
 	newConf := []byte(strings.Join(newConfLines, "\n") + "\n")
 	oldConf := []byte(strings.Join(rc.Lines, "\n"))
 	tomlData, _ := s.readConfigToml()
@@ -1424,6 +1554,17 @@ func (s *Server) handleUpdateLanding(w http.ResponseWriter, r *http.Request) {
 		// 转发 applyUserForwards 同根因，v1.3.25）。
 		newToml = ensureTomlNewline(newToml)
 		newToml = appendEndpointsForLanding(newToml, newLanding, newShare80, newShare443)
+		// use_udp 同步（v1.3.46）：新端口表里有 udp: 条目就保证开关开着；
+		// 没有时保持原值，绝不乱关（ensureUseUDP 内部处理）。
+		hasUDP := false
+		for _, p := range ports {
+			if p.Proto == "udp" {
+				hasUDP = true
+			}
+		}
+		if nt, changed := ensureUseUDP(newToml, hasUDP); changed {
+			newToml = nt
+		}
 		// realm 无 endpoint 会 panic：留占位
 		if !strings.Contains(string(newToml), "[[endpoints]]") {
 			newToml = append(newToml, []byte("\n[[endpoints]]\nlisten = \"127.0.0.1:9\"\nremote = \"127.0.0.1:9\"\n")...)
@@ -2181,7 +2322,7 @@ func endpointsForLanding(data []byte, landing string) string {
 // rebuildRelayConfAfterDelete 删落地后重建 relay.conf：被删编号之后的前移一位，LANDING_COUNT-1。
 func rebuildRelayConfAfterDelete(rc *RelayConf, delIndex int) []string {
 	// 收集各落地字段
-	type lf struct{ landing, isDomain, domain, cert, preset, mode, doorMode, ports, name string }
+	type lf struct{ landing, isDomain, domain, cert, preset, mode, doorMode, ports, name, needsUDP string }
 	var list []lf
 	for _, l := range rc.Landings {
 		if l.Index == delIndex {
@@ -2192,7 +2333,7 @@ func rebuildRelayConfAfterDelete(rc *RelayConf, delIndex int) []string {
 			suffix = "_" + strconv.Itoa(l.Index)
 		}
 		get := func(f string) string { return rc.Raw[f+suffix] }
-		list = append(list, lf{get("LANDING"), get("LANDING_IS_DOMAIN"), get("DOMAIN"), get("CERT_DOMAIN"), get("PRESET"), get("MODE_NOTE"), get("MODE"), get("PORTS"), get("NAME")})
+		list = append(list, lf{get("LANDING"), get("LANDING_IS_DOMAIN"), get("DOMAIN"), get("CERT_DOMAIN"), get("PRESET"), get("MODE_NOTE"), get("MODE"), get("PORTS"), get("NAME"), get("NEEDS_UDP")})
 	}
 	// 保留非落地行
 	landingKeys := map[string]bool{}
@@ -2240,6 +2381,11 @@ func rebuildRelayConfAfterDelete(rc *RelayConf, delIndex int) []string {
 		// NAME 同理：只在非空时写回，删落地不丢其余落地的名称
 		if f.name != "" {
 			lines = append(lines, `NAME`+suffix+`="`+f.name+`"`)
+		}
+		// NEEDS_UDP 同理：只在有值时写回（老落地没这标记的不补，保持旧行为）；
+		// 编号重排后值跟着落地走，不会错位。
+		if f.needsUDP != "" {
+			lines = append(lines, "NEEDS_UDP"+suffix+"="+f.needsUDP)
 		}
 	}
 	lines = append(lines, fmt.Sprintf("LANDING_COUNT=%d", len(list)))

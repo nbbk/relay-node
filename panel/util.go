@@ -401,7 +401,12 @@ type certInfo struct {
 
 // fetchCert 经中转连落地监听端口拿证书算剩余天数（TLS 握手，不验证）。
 func fetchCert(listenPort int, sni string) certInfo {
-	addr := fmt.Sprintf("127.0.0.1:%d", listenPort)
+	return fetchCertFrom(fmt.Sprintf("127.0.0.1:%d", listenPort), sni)
+}
+
+// fetchCertFrom 对任意地址握手拿证书（v1.3.46）：fetchCert 只探本机中转端口，
+// tls_unreachable 分段定位里直连落地对比要直接连落地地址。拿不到返回空 certInfo。
+func fetchCertFrom(addr, sni string) certInfo {
 	d := &net.Dialer{Timeout: 5 * time.Second}
 	conn, err := tls.DialWithDialer(d, "tcp", addr, &tls.Config{InsecureSkipVerify: true, ServerName: sni})
 	if err != nil {
@@ -415,6 +420,77 @@ func fetchCert(listenPort int, sni string) certInfo {
 	exp := st.PeerCertificates[0].NotAfter
 	days := int(time.Until(exp).Hours() / 24)
 	return certInfo{DaysLeft: &days, Expiry: exp.Format("2006-01-02")}
+}
+
+// tcpPortOpen TCP 连通探测（v1.3.46，tls_unreachable 分段定位第 ① 步）。
+func tcpPortOpen(host string, port int, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), timeout)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// pickTLSEndpoint 找落地的 TLS 端点（v1.3.46，与 check.sh pick_tls_endpoint
+// 前两档同规则：优先监听 443，其次落地 443，再取第一个 TCP 监听端口；
+// 一个都没监听时返回第一个 TCP 端口（下游 TCP 探测会报“没人监听”），
+// 没有 TCP 端口返回 ok=false）。
+func pickTLSEndpoint(l Landing) (listen, remote int, ok bool) {
+	for _, p := range l.Ports {
+		if p.Proto == "tcp" && p.Listen == 443 {
+			return p.Listen, p.Remote, true
+		}
+	}
+	for _, p := range l.Ports {
+		if p.Proto == "tcp" && p.Remote == 443 {
+			return p.Listen, p.Remote, true
+		}
+	}
+	for _, p := range l.Ports {
+		if p.Proto != "tcp" {
+			continue
+		}
+		if tcpPortOpen("127.0.0.1", p.Listen, 2*time.Second) {
+			return p.Listen, p.Remote, true
+		}
+	}
+	for _, p := range l.Ports {
+		if p.Proto == "tcp" {
+			return p.Listen, p.Remote, true
+		}
+	}
+	return 0, 0, false
+}
+
+// listenerProcName 查 TCP 端口的监听进程名（v1.3.46，tls_unreachable 分段定位
+// 第 ② 步）：跑 ss -tlnp 解析 users:(("进程名",...))；ss 不在或查不到返回 ""。
+func listenerProcName(port int) string {
+	res, err := runCmdOut(nil, 5*time.Second, "ss", "-tlnp")
+	if err != nil {
+		return ""
+	}
+	pat := ":" + strconv.Itoa(port)
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		idx := strings.Index(line, pat)
+		if idx < 0 {
+			continue
+		}
+		// 端口后必须跟空白，避免 2444 撞上 24443 这类前缀。
+		after := line[idx+len(pat):]
+		if after == "" || (after[0] != ' ' && after[0] != '\t') {
+			continue
+		}
+		u := strings.Index(line, `users:(("`)
+		if u < 0 {
+			continue
+		}
+		rest := line[u+len(`users:(("`):]
+		if end := strings.Index(rest, `"`); end > 0 {
+			return rest[:end]
+		}
+	}
+	return ""
 }
 
 // probeCertForLanding 按落地实际的 TCP 监听端口逐个握手拿证书（443 优先，

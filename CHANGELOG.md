@@ -425,3 +425,15 @@
 - 安全边界：防刷复用管理登录同一套逻辑（同一 IP 5 次失败锁 5 分钟，计数表共用，客户端刷爆同样锁住该 IP 的管理登录）；二次验证开着时客户端登录直接 401（客户端发不了验证码，不给密码单因素绕过二次验证的口子）。
 - 测试：go test -race 427 个测试函数全过（含 1345 文件新增 12 个：登录成功与令牌格式/只存哈希、密码错与账号不存在同 401、缺字段与多余字段 400、无订阅与旧链接不给 subscription_url、5 次失败锁 5 分钟 + Retry-After + 锁定期内正确密码也 429 + 管理登录同锁、会话校验/过期惰性清理/吊销单个与按账号吊销、登录监听 mux 只挂 client 路由且管理接口 404、主 mux 上没有客户端登录接口且 sess_ 调管理接口 401、订阅链接口径（对外域名/主端口 HTTPS/HTTP）、二次验证开着 401、客户端鉴权中间件、真起 11 个监听并在 9876 上 TLS 登录成功；版本断言同步改到 1.3.45，净 +12；gofmt 干净、go vet 过）。本地真跑冒烟：临时配置启动真二进制，主端口 11111 HTTPS 正常、9870–9880 监听全起；9876/9870 正确密码 200（令牌 + 订阅链接，链接拉取 200）、错密码与账号不存在同 401、9876 上管理接口与管理登录 404、5 次失败后第 6 次 429 + Retry-After: 300、锁定期内正确密码 429。未测：真机、真面板联调（9876 被封后自动切其它端口、真证书环境）、iPhone Safari、远程面板联调、干净机器。
 - 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置；客户端登录须先在设置页开启 HTTPS 并拿到真证书，否则登录监听不起、客户端报“面板连接不上”。
+
+### v1.3.46 更新
+
+- 体检优化（香港 2 体检报的两个问题都是误报/坏按钮，这版一次修掉）：
+  - UDP 误报：落地是 VLESS+WS+TLS，走 TCP 就行，UDP 用不上，但 check.sh 对 PORTS 里每个 `udp:` 条目都要求监听，香港 2 的落地 1（24443/udp）就永远 fail。修法：relay.conf 新增 `NEEDS_UDP[_N]`（面板按落地实际节点协议算：有 Hysteria2/TUIC 节点→1，否则 0；老 relay.conf 没这标记时按旧行为检查），check.sh 为 0 时跳过该落地的 udp: 条目并在监听端口段记一条通过原因（“TCP 协议不查 UDP”）；install.sh 只写初始启发值（预设 1→0、预设 2→1、预设 3→WANT_UDP 的值），面板接管后以面板算的为准（加落地、编辑落地、补原始链接时都重算；删落地重排编号时值跟着落地走）。
+  - use_udp 真因：PORTS 里有 udp: 条目但 config.toml 的 `use_udp` 关着时，realm 根本不会监听 UDP，以前报“端口没监听”让人去重启 realm，重启也没用。现在报真因（新 issue code `udp_disabled`，fix=`enable_udp`），一键修复就是把开关打开再重启 realm；面板编辑落地改端口时也会同步保证 use_udp 开着（没有 udp: 条目时保持原值，绝不乱关）。
+  - TLS 分段定位：以前只报一句“拿不到证书”，分不清是中转还是落地的问题。现在依次做四档——① TCP 连 127.0.0.1:$TLS_LISTEN；② ss -tlnp 看监听进程是不是 realm（被别的程序占了就报进程名）；③ 经中转握手；④ 直连落地握手。直连成功、中转失败→“直连落地正常，中转转发有问题”；直连也失败→“落地 TLS 本身拿不到证书”；带 SNI 失败、不带 SNI 能拿到→报 SNI/域名问题。`pick_tls_endpoint` 本身不动。
+  - 证书 warn 是回声：以前握手失败（拿不到证书）时证书段还单独记一条 warn“算不出到期天数”，同一件事报两遍。现在握手失败时不再单独记证书 warn，原因合并进 TLS 那一项的文案（certs[] 里仍写 days_left:null）；没有任何证书项时用中性文案“证书到期随 TLS 直通验证失败，未单独计算”，不再写“无证书落地”。
+  - 一键修复坏按钮：check.sh 发 `tls_unreachable`，handleFix 的 switch 里没有这一项，点下去返回 400。现在 handleFix 有 `tls_unreachable` 和 `udp_disabled` 两个 case：前者先做与 check.sh 同款的分段定位，只有 realm 本身的问题才调 restartRealm()，其它原因返回 `{ok:true, need_manual:true, reason, guide}`，不再 400；后者改开关 + 重启。
+  - 前端：fixIssue / centralFixIssue 收到 need_manual 时弹“需要手动处理”展示原因 + 指引，不再误 toast“修复已执行”；渲染 issues 时只有可修复的才画“一键修复”按钮，没有修复办法的（fix=manual，如指纹不一致）改成“查看原因”按钮，点开直接弹原因文案、不发修复请求。本地体检与远程体检两处同款逻辑。
+- 测试：go test -race 全过（443 个测试函数，1346 文件新增 16 个：NEEDS_UDP 计算与解析、删落地重排后值跟着走、编辑重建写回、use_udp 读写与同步、tls_unreachable 四档分流——被占用/没人监听/直连正常/直连也失败、udp_disabled 修复与已开着不再重启、补原始链接重算 NEEDS_UDP、check.sh --json 四档——跳过 UDP/报真因/直连正常/被占用、tls_unreachable 不再 400；版本断言同步改到 1.3.46；gofmt 干净、go vet 过）；jsdom test-1346.js 19 项全过（本地与远程体检的按钮渲染、查看原因、need_manual 弹窗、修复成功 toast）。check.sh 另有 9 档 bash 模拟验证全过（桩 ss/openssl/systemctl + 真 TCP 监听：跳过 UDP、use_udp 关着报真因、老 relay.conf 两档、TLS 直连正常/直连失败/SNI 问题/被 nginx 占用/realm 在监听但握手失败）。未测：真机、香港 2 真机复核、iPhone Safari、远程面板联调、干净机器。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。已装好的老 relay.conf 没有 NEEDS_UDP 标记，升级后下次加落地/编辑落地/补原始链接时面板会自动补上，在此之前 UDP 检查按旧行为走；中转机上 install.sh 新装的落地自带启发值。

@@ -25,8 +25,12 @@ fail() { echo "  [风险] $1"; }
 # 多落地：1 号落地用平铺变量（LANDING/PORTS），2 号起用 _编号 后缀；老版本单落地
 # relay.conf 没有 LANDING_COUNT，按 1 个落地读，向后兼容。
 # SHARE80/SHARE443：80/443 是否走了分流共享（老 relay.conf 没有，按 0 读）。
+# 测试可覆盖：RELAY_CONF/REALM_TOML 环境变量（默认 /etc/realm 下的真实文件）；
+# 其余命令（ss/openssl/systemctl/sysctl/timeout）走 PATH，测试用桩脚本。
+RELAY_CONF="${RELAY_CONF:-/etc/realm/relay.conf}"
+REALM_TOML="${REALM_TOML:-/etc/realm/config.toml}"
 LANDING=""; LANDING_IS_DOMAIN=0; DOMAIN=""; PORTS=""
-[ -f /etc/realm/relay.conf ] && set -a && . /etc/realm/relay.conf && set +a
+[ -f "$RELAY_CONF" ] && set -a && . "$RELAY_CONF" && set +a
 LANDING_COUNT="${LANDING_COUNT:-1}"
 SHARE80="${SHARE80:-0}"
 SHARE443="${SHARE443:-0}"
@@ -95,6 +99,15 @@ pick_tls_endpoint() { # $1=PORTS $2=证书域名(SNI，可空) -> 打印 "监听
   return 1
 }
 
+tcp_probe() { # $1=本机端口 -> TCP 能连通返回 0（bash /dev/tcp，不依赖 nc）
+  timeout 3 bash -c ": >/dev/tcp/127.0.0.1/$1" 2>/dev/null
+}
+
+listener_proc() { # $1=TCP 端口 -> 监听进程名（ss -tlnp 的 users 字段），查不到为空
+  command -v ss >/dev/null 2>&1 || return 0
+  ss -tlnp 2>/dev/null | grep -E "[:.]$1[[:space:]]" | grep -oE 'users:\(\("[^"]+"' | head -1 | sed -E 's/^users:\(\("//; s/"$//'
+}
+
 if [ "$JSON_MODE" = "1" ]; then
   # ---- realm 运行状态 ----
   _rj_running=0; _rj_version=""; _rj_bbr=""
@@ -105,6 +118,13 @@ if [ "$JSON_MODE" = "1" ]; then
   fi
   _rj_version="$(/usr/local/bin/realm --version 2>/dev/null | head -1 || true)"
   _rj_bbr="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "?")"
+  # use_udp 全局开关（config.toml）：UDP 条目没监听时，先看它是不是根本没开。
+  _USE_UDP=""
+  if [ -f "$REALM_TOML" ]; then
+    _USE_UDP="$(grep -E '^[[:space:]]*use_udp[[:space:]]*=' "$REALM_TOML" 2>/dev/null | tail -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*(#.*)?$//; s/"//g' | tr '[:upper:]' '[:lower:]')"
+  fi
+  # 任一落地 TLS 握手失败过（证书段没有任何证书项时，默认文案不能再写“无证书落地”）
+  _tls_failed_any=0
   if [ "$_rj_running" = "1" ]; then
     _sec_realm_status="pass"; _sec_realm_items='{"level":"pass","message":"realm 正在运行"}'
   else
@@ -129,18 +149,37 @@ if [ "$JSON_MODE" = "1" ]; then
     if [ -z "$_L" ]; then _i=$((_i + 1)); continue; fi
     # 证书签发方式（relay.conf 的 CERT_MODE[_N]，没有就是老落地，按原逻辑）
     _CM="$(landing_field "$_i" CERT_MODE)"
+    # UDP 需不需要（relay.conf 的 NEEDS_UDP[_N]，面板按落地实际节点协议算：
+    # 有 Hysteria2/TUIC 节点→1，否则 0；老 relay.conf 没这标记时按旧行为检查）。
+    _NEEDS_UDP="$(landing_field "$_i" NEEDS_UDP)"
     # 端口监听
     for _spec in $_P; do
       _proto="${_spec%%:*}"; _rest="${_spec#*:}"; _lp="${_rest%%:*}"; _rp="${_rest##*:}"
+      if [ "$_proto" = "udp" ] && [ "$_NEEDS_UDP" = "0" ]; then
+        # 该落地用不上 UDP（纯 TCP 协议，如 VLESS），不查监听，记一条通过原因。
+        _m="落地 $_i 端口 $_lp/udp 跳过：该落地无 UDP 协议节点（NEEDS_UDP=0），TCP 协议不查 UDP"
+        [ -n "$_sec_ports_items" ] && _sec_ports_items="$_sec_ports_items,"
+        _sec_ports_items="$_sec_ports_items{\"level\":\"pass\",\"message\":\"$(jesc "$_m")\"}"
+        continue
+      fi
       if port_listening "$_proto" "$_lp"; then
         _lis="true"
       else
         _lis="false"; _sec_ports_status="fail"
-        _m="落地 $_i 端口 $_lp/$_proto 没监听"
-        [ -n "$_sec_ports_items" ] && _sec_ports_items="$_sec_ports_items,"
-        _sec_ports_items="$_sec_ports_items{\"level\":\"fail\",\"message\":\"$(jesc "$_m")\"}"
-        [ -n "$_issues_json" ] && _issues_json="$_issues_json,"
-        _issues_json="$_issues_json{\"code\":\"port_not_listening\",\"landing\":$_i,\"message\":\"$(jesc "$_m")\",\"fix\":\"restart_realm\"}"
+        if [ "$_proto" = "udp" ] && [ "$_USE_UDP" = "false" ]; then
+          # 真因：中转根本没开 UDP 转发（use_udp 关着），不是端口本身的问题。
+          _m="落地 $_i 端口 $_lp/udp 没监听：中转没开 UDP 转发（config.toml 里 use_udp 关着），开了开关再重启 realm 才能转 UDP"
+          [ -n "$_sec_ports_items" ] && _sec_ports_items="$_sec_ports_items,"
+          _sec_ports_items="$_sec_ports_items{\"level\":\"fail\",\"message\":\"$(jesc "$_m")\"}"
+          [ -n "$_issues_json" ] && _issues_json="$_issues_json,"
+          _issues_json="$_issues_json{\"code\":\"udp_disabled\",\"landing\":$_i,\"message\":\"$(jesc "$_m")\",\"fix\":\"enable_udp\"}"
+        else
+          _m="落地 $_i 端口 $_lp/$_proto 没监听"
+          [ -n "$_sec_ports_items" ] && _sec_ports_items="$_sec_ports_items,"
+          _sec_ports_items="$_sec_ports_items{\"level\":\"fail\",\"message\":\"$(jesc "$_m")\"}"
+          [ -n "$_issues_json" ] && _issues_json="$_issues_json,"
+          _issues_json="$_issues_json{\"code\":\"port_not_listening\",\"landing\":$_i,\"message\":\"$(jesc "$_m")\",\"fix\":\"restart_realm\"}"
+        fi
       fi
       [ -n "$_ports_json" ] && _ports_json="$_ports_json,"
       _ports_json="$_ports_json{\"landing_index\":$_i,\"proto\":\"$_proto\",\"listen\":$_lp,\"remote\":$_rp,\"listening\":$_lis}"
@@ -182,40 +221,65 @@ if [ "$JSON_MODE" = "1" ]; then
     else
       FP_RELAY=""; ENDDATE=""
     fi
-    # TLS 直通
+    # TLS 直通（分段定位：①TCP 连监听端口 → ②看谁在监听 → ③经中转握手 →
+    # ④直连落地对比；TLS 项先攒在 _tls_msg 里，证书段可能改文案，所以等
+    # 证书段跑完才追加到 _sec_tls_items）。
+    _tls_msg=""; _tls_lvl="pass"; _tls_failed=0; _tls_issue_fix=""
     if [ -z "$FP_RELAY" ]; then
+      _tls_failed=1; _tls_lvl="fail"; _tls_issue_fix="restart_realm"
       _sec_tls_status="fail"
-      _m="落地 $_i 穿过中转连 $TLS_LISTEN 拿不到证书"
-      [ -n "$_sec_tls_items" ] && _sec_tls_items="$_sec_tls_items,"
-      _sec_tls_items="$_sec_tls_items{\"level\":\"fail\",\"message\":\"$(jesc "$_m")\"}"
-      [ -n "$_issues_json" ] && _issues_json="$_issues_json,"
-      _issues_json="$_issues_json{\"code\":\"tls_unreachable\",\"landing\":$_i,\"message\":\"$(jesc "$_m")\",\"fix\":\"restart_realm\"}"
+      if ! tcp_probe "$TLS_LISTEN"; then
+        # ① TCP 都不通：看端口谁在监听
+        _occ="$(listener_proc "$TLS_LISTEN")"
+        if [ -n "$_occ" ] && [ "$_occ" != "realm" ]; then
+          _tls_msg="落地 $_i 监听端口 $TLS_LISTEN 被非 realm 程序占用（进程：$_occ），TLS 握手连不上；先停掉它或改端口"
+          _tls_issue_fix="manual"
+        elif [ -n "$_occ" ]; then
+          _tls_msg="落地 $_i 穿过中转连 $TLS_LISTEN 拿不到证书：realm 在监听但握手失败，重启 realm 试试"
+        else
+          _tls_msg="落地 $_i 监听端口 $TLS_LISTEN 没人监听（realm 可能没起来或转发没配好），TLS 握手连不上"
+        fi
+      elif [ "$_L" = "<未知，/etc/realm/relay.conf 缺失>" ]; then
+        _tls_msg="落地 $_i 穿过中转连 $TLS_LISTEN 拿不到证书（不知道落地地址，没法直连对比）"
+      else
+        # ② TCP 通但握手失败：直连落地对比，分清中转还是落地的问题
+        FP_DIRECT="$(echo | timeout 10 openssl s_client -connect "$_L:$TLS_REMOTE" "${SNI_ARGS[@]}" 2>/dev/null | openssl x509 -fingerprint -sha256 -noout 2>/dev/null)"
+        if [ -n "$FP_DIRECT" ]; then
+          _tls_msg="落地 $_i 直连落地正常，中转转发有问题（经中转连 $TLS_LISTEN 拿不到证书，直连 $_L:$TLS_REMOTE 能拿到）"
+        else
+          # 直连也失败：再试一次不带 SNI，通了就是 SNI/域名问题
+          FP_NOSNI="$(echo | timeout 10 openssl s_client -connect "$_L:$TLS_REMOTE" 2>/dev/null | openssl x509 -fingerprint -sha256 -noout 2>/dev/null)"
+          if [ -n "$FP_NOSNI" ]; then
+            _tls_msg="落地 $_i 落地 TLS 本身拿不到证书（带 SNI 失败、不带 SNI 能拿到，可能是 SNI/域名不对）"
+            _tls_issue_fix="manual"
+          else
+            _tls_msg="落地 $_i 落地 TLS 本身拿不到证书（直连 $_L:$TLS_REMOTE 也失败），先查落地证书与端口"
+            _tls_issue_fix="manual"
+          fi
+        fi
+      fi
     elif [ "$_L" = "<未知，/etc/realm/relay.conf 缺失>" ]; then
-      _m="落地 $_i 经中转的证书已拿到（指纹 $(jesc "$FP_RELAY")），不知道落地地址，没法直连对比"
-      [ -n "$_sec_tls_items" ] && _sec_tls_items="$_sec_tls_items,"
-      _sec_tls_items="$_sec_tls_items{\"level\":\"warn\",\"message\":\"$(jesc "$_m")\"}"
+      _tls_msg="落地 $_i 经中转的证书已拿到（指纹 $(jesc "$FP_RELAY")），不知道落地地址，没法直连对比"
+      _tls_lvl="warn"
       [ "$_sec_tls_status" = "pass" ] && _sec_tls_status="warn"
     else
       FP_DIRECT="$(echo | timeout 10 openssl s_client -connect "$_L:$TLS_REMOTE" "${SNI_ARGS[@]}" 2>/dev/null | openssl x509 -fingerprint -sha256 -noout 2>/dev/null)"
       if [ -z "$FP_DIRECT" ]; then
-        _m="落地 $_i 直连拿不到证书（经中转的证书已拿到）"
-        [ -n "$_sec_tls_items" ] && _sec_tls_items="$_sec_tls_items,"
-        _sec_tls_items="$_sec_tls_items{\"level\":\"warn\",\"message\":\"$(jesc "$_m")\"}"
+        _tls_msg="落地 $_i 直连拿不到证书（经中转的证书已拿到）"
+        _tls_lvl="warn"
         [ "$_sec_tls_status" = "pass" ] && _sec_tls_status="warn"
       elif [ "$FP_RELAY" = "$FP_DIRECT" ]; then
-        _m="落地 $_i 证书指纹与直连落地完全一致"
-        [ -n "$_sec_tls_items" ] && _sec_tls_items="$_sec_tls_items,"
-        _sec_tls_items="$_sec_tls_items{\"level\":\"pass\",\"message\":\"$(jesc "$_m")\"}"
+        _tls_msg="落地 $_i 证书指纹与直连落地完全一致"
+        _tls_lvl="pass"
       else
         _sec_tls_status="fail"
-        _m="落地 $_i 证书指纹与直连落地不一致"
-        [ -n "$_sec_tls_items" ] && _sec_tls_items="$_sec_tls_items,"
-        _sec_tls_items="$_sec_tls_items{\"level\":\"fail\",\"message\":\"$(jesc "$_m")\"}"
+        _tls_msg="落地 $_i 证书指纹与直连落地不一致"
+        _tls_lvl="fail"
         [ -n "$_issues_json" ] && _issues_json="$_issues_json,"
-        _issues_json="$_issues_json{\"code\":\"fingerprint_mismatch\",\"landing\":$_i,\"message\":\"$(jesc "$_m")\",\"fix\":\"manual\"}"
+        _issues_json="$_issues_json{\"code\":\"fingerprint_mismatch\",\"landing\":$_i,\"message\":\"$(jesc "$_tls_msg")\",\"fix\":\"manual\"}"
       fi
     fi
-    # 证书天数
+    # 证书天数（ENDDATE 为空 = 握手失败：不再单独记 warn 回声，把原因合并进 TLS 项）
     _days_json="null"; _exp_json="null"; _cert_level="pass"; _cert_msg=""
     if [ -n "$ENDDATE" ]; then
       END_STR="${ENDDATE#notAfter=}"
@@ -247,19 +311,42 @@ if [ "$JSON_MODE" = "1" ]; then
         _cert_level="warn"; _cert_msg="落地 $_i 证书到期日解析失败"
         [ "$_sec_cert_status" = "pass" ] && _sec_cert_status="warn"
       fi
+    elif [ "$_tls_failed" = "1" ]; then
+      # 握手失败的回声：不单独记证书项，原因合并进 TLS 项文案。
+      _tls_msg="$_tls_msg（证书到期天数随本次失败，未单独计算）"
+      _tls_failed_any=1
     else
       _cert_level="warn"; _cert_msg="落地 $_i 经中转拿不到证书，算不出到期天数"
       [ "$_sec_cert_status" = "pass" ] && _sec_cert_status="warn"
     fi
-    [ -n "$_sec_cert_items" ] && _sec_cert_items="$_sec_cert_items,"
-    _sec_cert_items="$_sec_cert_items{\"level\":\"$_cert_level\",\"message\":\"$(jesc "$_cert_msg")\"}"
+    # TLS 项（证书段可能改过文案，所以这里才追加）与证书项
+    if [ -n "$_tls_msg" ]; then
+      [ -n "$_sec_tls_items" ] && _sec_tls_items="$_sec_tls_items,"
+      _sec_tls_items="$_sec_tls_items{\"level\":\"$_tls_lvl\",\"message\":\"$(jesc "$_tls_msg")\"}"
+    fi
+    if [ -n "$_tls_issue_fix" ]; then
+      [ -n "$_issues_json" ] && _issues_json="$_issues_json,"
+      _issues_json="$_issues_json{\"code\":\"tls_unreachable\",\"landing\":$_i,\"message\":\"$(jesc "$_tls_msg")\",\"fix\":\"$_tls_issue_fix\"}"
+    fi
+    if [ -n "$_cert_msg" ]; then
+      [ -n "$_sec_cert_items" ] && _sec_cert_items="$_sec_cert_items,"
+      _sec_cert_items="$_sec_cert_items{\"level\":\"$_cert_level\",\"message\":\"$(jesc "$_cert_msg")\"}"
+    fi
     [ -n "$_certs_json" ] && _certs_json="$_certs_json,"
     _certs_json="$_certs_json{\"index\":$_i,\"landing\":\"$(jesc "$_L")\",\"domain\":\"$(jesc "$_D")\",\"mode\":\"$_M\",\"days_left\":$_days_json,\"expiry\":$_exp_json,\"renew_mode\":\"$(jesc "$_renew")\",\"need_manual\":$_need_manual}"
     _i=$((_i + 1))
   done
   [ -z "$_sec_ports_items" ] && _sec_ports_items='{"level":"pass","message":"监听端口全部正常"}'
   [ -z "$_sec_tls_items" ] && _sec_tls_items='{"level":"pass","message":"无 TLS 落地，跳过直通验证"}'
-  [ -z "$_sec_cert_items" ] && _sec_cert_items='{"level":"pass","message":"无证书落地"}'
+  if [ -z "$_sec_cert_items" ]; then
+    if [ "$_tls_failed_any" = "1" ]; then
+      # 握手失败导致没有任何证书项：不是“无证书落地”，是没拿到证书算不出。
+      _sec_cert_items='{"level":"warn","message":"证书到期随 TLS 直通验证失败，未单独计算"}'
+      _sec_cert_status="warn"
+    else
+      _sec_cert_items='{"level":"pass","message":"无证书落地"}'
+    fi
+  fi
   printf '%s' "{\"ok\":true,\"realm\":{\"running\":$([ "$_rj_running" = "1" ] && echo true || echo false),\"version\":\"$(jesc "$_rj_version")\",\"bbr\":\"$(jesc "$_rj_bbr")\"},\"sections\":[{\"name\":\"realm 进程\",\"status\":\"$_sec_realm_status\",\"items\":[$_sec_realm_items]},{\"name\":\"监听端口\",\"status\":\"$_sec_ports_status\",\"items\":[$_sec_ports_items]},{\"name\":\"BBR\",\"status\":\"$_sec_bbr_status\",\"items\":[{\"level\":\"$_sec_bbr_status\",\"message\":\"BBR：$(jesc "$_rj_bbr")\"}]},{\"name\":\"TLS 直通验证\",\"status\":\"$_sec_tls_status\",\"items\":[$_sec_tls_items]},{\"name\":\"证书到期天数\",\"status\":\"$_sec_cert_status\",\"items\":[$_sec_cert_items]}],\"certs\":[$_certs_json],\"ports\":[$_ports_json],\"issues\":[$_issues_json]}"
   echo ""
   exit 0

@@ -707,16 +707,28 @@ function initCheck() {
       if (issues.length) {
         h += '<h3 style="margin-top:12px">发现的问题（一键修复）</h3>';
         issues.forEach((is, i) => {
-          h += '<div class="kv"><span>❌ ' + esc(is.message || is.code) + '</span><span><button class="btn sm" type="button" data-fix="' + i + '">一键修复</button></span></div>';
+          // v1.3.46：只有可修复的才画“一键修复”按钮；没有修复办法的
+          // （fix=manual，如指纹不一致）改成“查看原因”按钮。
+          const fixable = is.fix && is.fix !== 'manual';
+          h += '<div class="kv"><span>❌ ' + esc(is.message || is.code) + '</span><span><button class="btn sm" type="button" data-fix="' + i + '">' + (fixable ? '一键修复' : '查看原因') + '</button></span></div>';
         });
         body.dataset.issues = JSON.stringify(issues);
       } else h += '<div class="ok-box" style="margin-top:12px">全部正常，没有发现问题。</div>';
       body.innerHTML = h;
-      $$('[data-fix]', body).forEach((b) => b.addEventListener('click', () => fixIssue(JSON.parse(body.dataset.issues)[Number(b.dataset.fix)])));
+      $$('[data-fix]', body).forEach((b) => b.addEventListener('click', () => {
+        const is = JSON.parse(body.dataset.issues)[Number(b.dataset.fix)];
+        if (is.fix && is.fix !== 'manual') fixIssue(is); else viewIssue(is);
+      }));
     } catch (e) {
       body.innerHTML = '<div class="error-box">体检失败：' + esc(e.message) + '</div>';
     }
   });
+}
+// “查看原因”按钮（v1.3.46）：没有一键修复办法的问题，直接弹原因文案，
+// 不发修复请求（以前点“一键修复”会调后端拿 400 / 误 toast“修复已执行”）。
+function viewIssue(issue) {
+  if (!issue) return;
+  openModal('<h2>问题原因</h2><p>' + esc(issue.message || issue.code) + '</p><p class="muted">这个问题没有一键修复办法，请按上面原因手动处理。</p>');
 }
 async function fixIssue(issue) {
   if (!issue) return;
@@ -729,6 +741,12 @@ async function fixIssue(issue) {
   try {
     const r = await apiPost('/api/v1/fix', { issue_code: issue.code, landing: issue.landing });
     if (r.need_choice) { toast('需要先选择分流方式，请到「添加落地」重新提交'); goto('add'); return; }
+    // v1.3.46：后端回 need_manual（tls_unreachable 定位到 realm 之外的原因等）
+    // 时展示原因 + 指引，绝不再 toast“修复已执行”。
+    if (r.need_manual) {
+      await confirmModal('需要手动处理', '<p>' + esc(r.reason || issue.message || issue.code) + '</p>' + (r.guide ? '<p class="muted">指引：' + esc(r.guide) + '</p>' : ''), '知道了');
+      return;
+    }
     toast('修复已执行：' + (r.msg || issue.code), 'ok');
     loadOverview();
   } catch (e) { toast('修复失败：' + e.message, 'err'); }
@@ -4824,12 +4842,17 @@ async function centralCheck(remoteId) {
     if (issues.length) {
       h += '<h3 style="margin-top:12px">发现的问题（一键修复）</h3>';
       issues.forEach((is, i) => {
-        h += '<div class="kv"><span>❌ ' + esc(is.message || is.code) + '</span><span><button class="btn sm" type="button" data-central-fix="' + i + '">一键修复</button></span></div>';
+        // v1.3.46：同款逻辑——只有可修复的才画“一键修复”，没有修复办法的画“查看原因”。
+        const fixable = is.fix && is.fix !== 'manual';
+        h += '<div class="kv"><span>❌ ' + esc(is.message || is.code) + '</span><span><button class="btn sm" type="button" data-central-fix="' + i + '">' + (fixable ? '一键修复' : '查看原因') + '</button></span></div>';
       });
       const body = $('#central-check-body', m);
       body.innerHTML = h;
       body.dataset.issues = JSON.stringify(issues);
-      $$('[data-central-fix]', body).forEach((b) => b.addEventListener('click', () => centralFixIssue(remoteId, JSON.parse(body.dataset.issues)[Number(b.dataset.centralFix)])));
+      $$('[data-central-fix]', body).forEach((b) => b.addEventListener('click', () => {
+        const is = JSON.parse(body.dataset.issues)[Number(b.dataset.centralFix)];
+        if (is.fix && is.fix !== 'manual') centralFixIssue(remoteId, is); else viewIssue(is);
+      }));
     } else {
       h += '<div class="ok-box" style="margin-top:12px">全部正常，没有发现问题。</div>';
       const body = $('#central-check-body', m);
@@ -4848,6 +4871,8 @@ async function centralFixIssue(remoteId, issue) {
     const r = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/fix', { issue_code: issue.code, landing: issue.landing });
     if (r.ok === false) { toast(centralOpError(r), 'err'); return; }
     if (r.need_choice) { toast('需要先选择分流方式：点“打开远程面板”跳过去，到添加落地重新提交'); return; }
+    // v1.3.46：同款逻辑——后端回 need_manual 时展示原因，不再 toast“修复已执行”。
+    if (r.need_manual) { await confirmModal('需要手动处理', '<p>' + esc(r.reason || issue.message || issue.code) + '</p><p class="muted">远程面板上的问题，点“打开远程面板”跳过去手动处理。</p>', '知道了'); return; }
     toast('远程修复已执行：' + (r.msg || issue.code), 'ok');
     loadCentral();
   } catch (e) { toast('修复失败：' + e.message, 'err'); }

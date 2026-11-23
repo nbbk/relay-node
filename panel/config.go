@@ -432,6 +432,10 @@ type Landing struct {
 	// 实际流量 × 倍率计入订阅用量（userinfo 与 80%/100% 限流都按折算后
 	// 的用量算）；0 = 没填（旧落地，按 1 算）。
 	TrafficMultiplier float64 `json:"traffic_multiplier"`
+	// NeedsUDP 该落地是否需要 UDP 转发（relay.conf 的 NEEDS_UDP[_N]，v1.3.46）：
+	// 1=需要（有 Hysteria2/TUIC 节点），0=不需要（纯 TCP 协议，如 VLESS），
+	// -1=没填（老 relay.conf，体检按旧行为检查 UDP 监听）。
+	NeedsUDP int `json:"needs_udp"`
 }
 
 // 流量倍率上限（v1.3.40）：100 倍已是极端值，再高多半是手误。
@@ -526,6 +530,11 @@ func parseRelayConf(data []byte) *RelayConf {
 		if mv, err := strconv.ParseFloat(get("MULTIPLIER"), 64); err == nil {
 			l.TrafficMultiplier = mv
 		}
+		// NEEDS_UDP（v1.3.46）：没填/非法 = -1（未知，老 relay.conf）。
+		l.NeedsUDP = -1
+		if nv, err := strconv.Atoi(get("NEEDS_UDP")); err == nil {
+			l.NeedsUDP = nv
+		}
 		// MODE 缺字段的旧 relay.conf 默认标准模式（向后兼容）；只有 door 才记 door。
 		if get("MODE") == "door" {
 			l.Mode = "door"
@@ -597,7 +606,118 @@ func (rc *RelayConf) fieldKeys(index int) []string {
 	if index != 1 {
 		suffix = "_" + strconv.Itoa(index)
 	}
-	return []string{"LANDING" + suffix, "LANDING_IS_DOMAIN" + suffix, "DOMAIN" + suffix, "CERT_DOMAIN" + suffix, "PRESET" + suffix, "MODE_NOTE" + suffix, "MODE" + suffix, "PORTS" + suffix, "NAME" + suffix}
+	return []string{"LANDING" + suffix, "LANDING_IS_DOMAIN" + suffix, "DOMAIN" + suffix, "CERT_DOMAIN" + suffix, "PRESET" + suffix, "MODE_NOTE" + suffix, "MODE" + suffix, "PORTS" + suffix, "NAME" + suffix, "NEEDS_UDP" + suffix}
+}
+
+// needsUDPKey NEEDS_UDP 键名（编号 1 用平铺键，>=2 用 _N 后缀，v1.3.46）。
+func needsUDPKey(index int) string {
+	if index == 1 {
+		return "NEEDS_UDP"
+	}
+	return "NEEDS_UDP_" + strconv.Itoa(index)
+}
+
+// computeNeedsUDP 按落地实际节点协议算 NEEDS_UDP（v1.3.46）：有 Hysteria2/TUIC
+// 节点→1（走 UDP），其余协议→0；链接解析不出（没贴原始链接等）时回落到
+// 当初勾没勾 WANT_UDP。注意：不能按 WANT_UDP 算——香港 2 的落地 1 就是
+// 预设 3 + WANT_UDP=y 勾出来的 VLESS，UDP 根本用不上。
+func computeNeedsUDP(origLink string, wantUDP bool) int {
+	if pl, err := parseNodeLink(origLink); err == nil {
+		switch pl.Scheme {
+		case "hysteria2", "hy2", "tuic":
+			return 1
+		default:
+			return 0
+		}
+	}
+	if wantUDP {
+		return 1
+	}
+	return 0
+}
+
+// readUseUDP 读 config.toml 里 use_udp 的值（v1.3.46）：返回 (值，找没找到)。
+func readUseUDP(tomlData []byte) (bool, bool) {
+	for _, l := range strings.Split(string(tomlData), "\n") {
+		t := strings.TrimSpace(l)
+		if !strings.HasPrefix(t, "use_udp") {
+			continue
+		}
+		eq := strings.Index(t, "=")
+		if eq < 0 {
+			continue
+		}
+		v := strings.ToLower(strings.TrimSpace(t[eq+1:]))
+		v = strings.Trim(v, `"`)
+		if ci := strings.Index(v, "#"); ci >= 0 {
+			v = strings.TrimSpace(v[:ci])
+		}
+		if v == "true" {
+			return true, true
+		}
+		if v == "false" {
+			return false, true
+		}
+	}
+	return false, false
+}
+
+// setUseUDP 改 config.toml 里 use_udp 开关（v1.3.46）：只改已有的 use_udp 行
+// （行尾注释保留）；没有这行时返回 false，调用方不要凭空加行。
+func setUseUDP(tomlData []byte, on bool) ([]byte, bool) {
+	lines := strings.Split(string(tomlData), "\n")
+	found := false
+	want := "use_udp = false"
+	if on {
+		want = "use_udp = true"
+	}
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if !strings.HasPrefix(t, "use_udp") {
+			continue
+		}
+		eq := strings.Index(t, "=")
+		if eq < 0 {
+			continue
+		}
+		rest := strings.TrimSpace(t[eq+1:])
+		comment := ""
+		if ci := strings.Index(rest, "#"); ci >= 0 {
+			comment = " " + strings.TrimSpace(rest[ci:])
+		}
+		lines[i] = want + comment
+		found = true
+	}
+	if !found {
+		return tomlData, false
+	}
+	return []byte(strings.Join(lines, "\n")), true
+}
+
+// ensureUseUDP needUDP 时保证 config.toml 的 use_udp 是 true（v1.3.46）；
+// 不需要时保持原值，绝不乱关。返回 (新 toml, 是否改过)。
+func ensureUseUDP(tomlData []byte, needUDP bool) ([]byte, bool) {
+	if !needUDP {
+		return tomlData, false
+	}
+	if on, ok := readUseUDP(tomlData); ok && on {
+		return tomlData, false
+	}
+	return setUseUDP(tomlData, true)
+}
+
+// ensureUseUDPForConf 任一落地 PORTS 里有 udp: 条目就保证 config.toml 的
+// use_udp 是 true（v1.3.46）；没有 udp: 条目时保持原值，绝不乱关。
+func ensureUseUDPForConf(rc *RelayConf, tomlData []byte) ([]byte, bool) {
+	need := false
+	for _, l := range rc.Landings {
+		for _, p := range l.Ports {
+			if p.Proto == "udp" {
+				need = true
+			}
+		}
+	}
+	return ensureUseUDP(tomlData, need)
 }
 
 // ---------- 服务器 ----------

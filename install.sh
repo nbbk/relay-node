@@ -1813,6 +1813,9 @@ EOF
   done
   # 给 check.sh / stop.sh 用的状态文件（多落地：1 号落地用平铺变量，2 号起用 _编号 后缀）
   # CERT_DOMAIN 是证书上的域名（分流按它认落地）；SHARE80/SHARE443 是 80/443 是否走了分流共享
+  # NEEDS_UDP 是 UDP 需求启发值（v1.3.46）：按 PORTS 里有没有 udp: 条目算
+  # （预设 1→0、预设 2→1、预设 3→WANT_UDP 的值）；面板接管后按落地实际
+  # 节点协议重算，以面板算的为准。
   cat > /etc/realm/relay.conf <<EOF
 LANDING=$LANDING
 MODE="$RELAY_MODE"
@@ -1822,6 +1825,7 @@ CERT_DOMAIN="$CERT_DOMAIN"
 PRESET=$PRESET
 MODE_NOTE="$MODE_NOTE"
 PORTS="$PORTS"
+NEEDS_UDP=$HAS_UDP
 RELAY_ADDR="$RELAY_ADDR"
 REALM_VERSION="$REALM_VERSION"
 LANDING_COUNT=1
@@ -1875,6 +1879,7 @@ EOF
     echo "PRESET_$_idx=$PRESET"
     echo "MODE_NOTE_$_idx=\"$MODE_NOTE\""
     echo "PORTS_$_idx=\"$PORTS\""
+    echo "NEEDS_UDP_$_idx=$_has_udp"
   } >> /etc/realm/relay.conf
   if grep -q '^LANDING_COUNT=' /etc/realm/relay.conf; then
     sed -i "s/^LANDING_COUNT=.*/LANDING_COUNT=$_idx/" /etc/realm/relay.conf
