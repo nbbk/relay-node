@@ -847,17 +847,50 @@ func tomlEndpointListen(seg string) int {
 	return 0
 }
 
+// tomlHasUserEndpoints config.toml 里还有没有用户端口段（v1.4.4，
+// applyUserForwards 的跳过判断用）：监听端口落在用户端口段内的段。
+func tomlHasUserEndpoints(tomlData []byte, start, end int) bool {
+	for _, seg := range strings.Split(string(tomlData), "\n\n") {
+		if !strings.Contains(seg, "[[endpoints]]") {
+			continue
+		}
+		if p := tomlEndpointListen(seg); p >= start && p <= end {
+			return true
+		}
+	}
+	return false
+}
+
 // applyUserForwards 按当前 UserForwards 重建 config.toml 里的用户
 // endpoints：先删掉全部用户端口的段，再把已启用的加回去；有变化才
 // 写文件并重启 realm。调用方须持 opMu。
+// v1.4.4（修 2026-11-23 实锤的 bug）：管理面板上没有本地 relay，
+// 读 /etc/realm/relay.conf 失败，恢复把错抛给用户、停用把错吞掉。
+// 现在分三种情况：①无本地 relay（读 relay.conf 失败且本机无 relay，
+// 管理面板模式、或 relay.conf 文件不存在）→ 跳过重建、不报错，
+// 恢复／停用都不应因此失败；②没有任何用户转发、且 config.toml 里
+// 也没有残留的用户端口段 → 跳过重建、不报错（removeUserForwards
+// 删掉最后一条转发时若还有残留段，仍走重建清掉，不留僵尸段）；
+// ③有 relay 但重建本身失败（写文件／重启失败）→ 仍返回错误，
+// 调用方（恢复／手动停用）把它报给用户。
 func (s *Server) applyUserForwards() error {
 	rc, _, err := s.readRelayConf()
 	if err != nil {
+		if !s.managesLocalRelay() || os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
 	tomlData, err := s.readConfigToml()
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
+	}
+	start, end := s.userPortRange()
+	if len(s.cfg.UserForwards) == 0 && !tomlHasUserEndpoints(tomlData, start, end) {
+		return nil
 	}
 	ports := map[int]bool{}
 	for _, f := range s.cfg.UserForwards {
@@ -1321,8 +1354,10 @@ func (s *Server) disableUserForwards(key, reason string) {
 
 // disableUserForwardsLocked 同上，不加锁（调用方已持 opMu）。
 // 审计标题固定写“自动停用订阅”：手动停用走 disableUserForwardsManual。
+// 后台调用方没人可报错，重建错误这里吞掉（手动停用走
+// disableUserForwardsManual，会把错误透传给接口）。
 func (s *Server) disableUserForwardsLocked(key, reason string) {
-	if s.applyDisableUserForwardsLocked(key, reason) {
+	if changed, _ := s.applyDisableUserForwardsLocked(key, reason); changed {
 		s.audit("system", "自动停用订阅", key, "成功", "原因："+reason)
 	}
 }
@@ -1330,24 +1365,30 @@ func (s *Server) disableUserForwardsLocked(key, reason string) {
 // disableUserForwardsManual 手动停用一条订阅（v1.4.3）：管理员在用户行上
 // 点“停用”。与自动停用共用同一套状态机（applyDisableUserForwardsLocked），
 // 只审计标题与操作人不同；已停用时幂等（apply 返回 false，不重复审计）。
+// v1.4.4：返回重建错误——停用状态（Disabled 标记＋节点 bump）已落盘，
+// 但有 relay 且重建失败时（写文件／重启失败）调用方要把错误报给用户，
+// 而不是报“成功”（无 relay 时 applyUserForwards 返回 nil，不报错）。
 // 自己加 opMu，不要在已持锁的调用链里调。
-func (s *Server) disableUserForwardsManual(key, actor string) bool {
+func (s *Server) disableUserForwardsManual(key, actor string) (bool, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
-	if !s.applyDisableUserForwardsLocked(key, "手动停用") {
-		return false
+	changed, err := s.applyDisableUserForwardsLocked(key, "手动停用")
+	if !changed {
+		return false, nil
 	}
 	s.audit(actor, "手动停用订阅", key, "成功", "原因：手动停用")
-	return true
+	return true, err
 }
 
 // applyDisableUserForwardsLocked 停用的状态机（不审计）：把订阅与转发记成
 // 已停用、保存、撤 endpoints、bump 已指派该用户的节点。返回是否真改了
-// 东西（已停用时返回 false，调用方据此决定要不要记审计）。
-func (s *Server) applyDisableUserForwardsLocked(key, reason string) bool {
+// 东西（已停用时返回 false，调用方据此决定要不要记审计）与重建错误。
+// v1.4.4：停用状态先落盘、节点先 bump，重建错误单独返回——调用方按
+// 需决定报不报错；无 relay 时 applyUserForwards 返回 nil，不报错。
+func (s *Server) applyDisableUserForwardsLocked(key, reason string) (bool, error) {
 	kind, id, found := strings.Cut(key, ":")
 	if !found {
-		return false
+		return false, nil
 	}
 	changed := false
 	if kind == "subuser" {
@@ -1370,14 +1411,14 @@ func (s *Server) applyDisableUserForwardsLocked(key, reason string) bool {
 		}
 	}
 	if !changed {
-		return false
+		return false, nil
 	}
 	_ = s.saveConfig()
-	_ = s.applyUserForwards()
+	err := s.applyUserForwards()
 	// 切片 3：停用会改变节点上的有效用户集合，bump 已指派该用户的
 	// 节点，agent 60 秒内拉到新用户列表（旧 UUID 新连接被拒）。
 	s.bumpBackendNodesForUserLocked(key)
-	return true
+	return true, err
 }
 
 // userDisabledReason 取一条订阅当前的停用原因（"" = 未停用或不存在）。

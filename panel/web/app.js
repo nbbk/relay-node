@@ -969,13 +969,16 @@ async function loadNodes() {
     if (!nodes.length) { wrap.innerHTML = '<div class="empty">还没有节点。上面填名字与地址，生成入网令牌后去新落地机上跑安装命令。</div>'; return; }
     wrap.innerHTML = nodes.map((n) => '<div class="card" style="margin-bottom:12px"><div class="kv"><span>节点</span><b>' + esc(n.name || '') + '（' + esc(n.address || '') + '）</b></div>' +
       '<div class="kv"><span>健康</span><b>' + esc(nodeHealthLabel(n.health)) + '</b></div>' +
+      '<div class="kv"><span>上报健康</span><b>' + esc((n.backend_health && n.backend_health.detail) || '尚未上报') + '</b></div>' +
       '<div class="kv"><span>agent 版本</span><b>' + esc(n.agent_version || '—') + '</b></div>' +
       '<div class="kv"><span>最后在线</span><b>' + esc(n.last_seen ? fmtDate(n.last_seen) : '—') + '</b></div>' +
       '<div class="kv"><span>已应用配置版本</span><b>' + esc(String(n.config_version == null ? '—' : n.config_version)) + '</b></div>' +
       '<div class="kv"><span>入网</span><b>' + (n.joined ? '已入网' : '未入网') + '</b></div>' +
-      '<div class="btn-row"><button class="btn secondary sm" type="button" data-inbounds="' + esc(String(n.id)) + '" data-inbname="' + esc(n.name || '') + '">入站模板</button>' +
+      '<div class="btn-row"><button class="btn secondary sm" type="button" data-nodedetail="' + esc(String(n.id)) + '" data-detailname="' + esc(n.name || '') + '">详情</button>' +
+      '<button class="btn secondary sm" type="button" data-inbounds="' + esc(String(n.id)) + '" data-inbname="' + esc(n.name || '') + '">入站模板</button>' +
       '<button class="btn secondary sm" type="button" data-regen="' + esc(String(n.id)) + '">重新生成入网令牌</button>' +
       '<button class="btn danger sm" type="button" data-delnodes="' + esc(String(n.id)) + '" data-delname="' + esc(n.name || '') + '">删除</button></div></div>').join('');
+    $$('[data-nodedetail]', wrap).forEach((b) => b.addEventListener('click', () => openNodeDetailModal(Number(b.dataset.nodedetail), b.dataset.detailname)));
     $$('[data-inbounds]', wrap).forEach((b) => b.addEventListener('click', () => loadNodeInbounds(Number(b.dataset.inbounds), b.dataset.inbname)));
     $$('[data-regen]', wrap).forEach((b) => b.addEventListener('click', async () => {
       try {
@@ -996,6 +999,34 @@ function showNodesOnce(token, cmd) {
   $('#nodes-once-cmd').value = cmd;
   box.classList.remove('hidden'); box.hidden = false;
   window.scrollTo(0, 0);
+}
+// 节点详情弹窗（v1.4.4，切片 4）：上报健康块＋流量块（本期按人合计、
+// 各入站总量）。数字全部来自 agent 的 60 秒上报，面板不主动探节点；
+// 失联时显示上次数据，不清零。
+async function openNodeDetailModal(nodeId, nodeName) {
+  let d;
+  try { d = await api('/api/v1/nodes/' + encodeURIComponent(nodeId)); }
+  catch (e) { toast('加载节点详情失败：' + e.message, 'err'); return; }
+  const n = d.node || {};
+  const bh = d.backend_health || n.backend_health || {};
+  const tr = d.traffic || { users: [], inbounds: [], up_period: 0, down_period: 0, up_total: 0, down_total: 0 };
+  const users = tr.users || [];
+  const inbounds = tr.inbounds || [];
+  const m = openModal('<h2>节点详情：' + esc(nodeName || n.name || nodeId) + '</h2>' +
+    '<h3>上报健康</h3>' +
+    '<div class="kv"><span>状态</span><b>' + esc(bh.detail || '尚未上报') + '</b></div>' +
+    '<div class="kv"><span>最后上报</span><b>' + esc(bh.last_traffic_at ? fmtDate(typeof bh.last_traffic_at === 'number' ? bh.last_traffic_at * 1000 : bh.last_traffic_at) : '—') + '</b></div>' +
+    (bh.last_error ? '<div class="kv"><span>最后错误</span><b>' + esc(bh.last_error) + '</b></div>' : '') +
+    '<div class="kv"><span>Xray 重启次数</span><b>' + esc(String(bh.xray_restarts == null ? '—' : bh.xray_restarts)) + '</b></div>' +
+    '<div class="kv"><span>CPU／内存</span><b>' + esc(bh.cpu_percent == null ? '—' : String(bh.cpu_percent) + '% ／ ' + String(bh.mem_mb == null ? '—' : bh.mem_mb) + ' MB') + '</b></div>' +
+    '<h3>流量（本期按人合计）</h3>' +
+    '<div class="kv"><span>本期上行／下行</span><b>' + esc(fmtBytes(tr.up_period || 0)) + ' ／ ' + esc(fmtBytes(tr.down_period || 0)) + '</b></div>' +
+    '<div class="kv"><span>累计上行／下行</span><b>' + esc(fmtBytes(tr.up_total || 0)) + ' ／ ' + esc(fmtBytes(tr.down_total || 0)) + '</b></div>' +
+    (users.length ? users.map((u) => '<div class="kv"><span>' + esc(u.username || u.user_id || '') + '</span><b>本期 ' + esc(fmtBytes((u.up_period || 0) + (u.down_period || 0))) + '（上 ' + esc(fmtBytes(u.up_period || 0)) + '／下 ' + esc(fmtBytes(u.down_period || 0)) + '）</b></div>').join('') : '<p class="muted small">本期还没有按人流量。</p>') +
+    '<h3>各入站总量（累计）</h3>' +
+    (inbounds.length ? inbounds.map((ib) => '<div class="kv"><span>' + esc(ib.inbound_tag || '') + '</span><b>上 ' + esc(fmtBytes(ib.up || 0)) + ' ／ 下 ' + esc(fmtBytes(ib.down || 0)) + '</b></div>').join('') : '<p class="muted small">还没有入站流量。</p>') +
+    '<div class="btn-row"><button class="btn secondary" id="node-detail-close" type="button">关闭</button></div>');
+  if (m) onIn(m, '#node-detail-close', 'click', closeModal);
 }
 async function deleteNode(id, name) {
   const ok = await confirmModal('删除节点', '<p>确定删除节点 <b>' + esc(name || id) + '</b> 吗？</p><p>删除后节点下次拉配置会拿到空配置并自停；流量历史保留。</p>', '删除', true);
@@ -1033,6 +1064,44 @@ const IB_PROTOCOLS = {
   'ss2022': { protocol: 'shadowsocks', transport: 'tcp', security: 'none' },
   'socks': { protocol: 'socks', transport: 'tcp', security: 'none' },
 };
+// SNI 与 REALITY 指纹预设（v1.4.4，切片 4）：用户亲口定的 UI 预设，
+// 下拉框里列全部预设＋“自定义”选项，点开不按输入过滤；选“自定义”
+// 才出文本框手填。SNI 五个是 1.4.2 定的，datalist 做法已删掉；指纹
+// 八个是 1.4.4 新加的。
+const SNI_PRESETS = ['www.microsoft.com', 'www.apple.com', 'www.amazon.com', 'www.cloudflare.com', 'www.bing.com'];
+const REALITY_FP_PRESETS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'qq', 'random'];
+const PRESET_CUSTOM_VALUE = '__custom';
+// presetSelectHtml 一组“下拉框＋自定义文本框”的 HTML：current 在预设
+// 里时下拉框选中它、文本框隐藏；不在预设里时下拉框选“自定义”、文本
+// 框显示并填 current。selectId／customId 由调用方定（页面与弹窗各
+// 用一套 id，不撞）。
+function presetSelectHtml(selectId, customId, presets, current, customPlaceholder) {
+  const cur = String(current || '');
+  const inPresets = presets.indexOf(cur) !== -1;
+  const selVal = cur === '' ? '' : (inPresets ? cur : PRESET_CUSTOM_VALUE);
+  const opts = '<option value="">（留空）</option>' + presets.map((p) => '<option value="' + esc(p) + '"' + (p === selVal ? ' selected' : '') + '>' + esc(p) + '</option>').join('') +
+    '<option value="' + PRESET_CUSTOM_VALUE + '"' + (selVal === PRESET_CUSTOM_VALUE ? ' selected' : '') + '>自定义…</option>';
+  return '<select id="' + selectId + '">' + opts + '</select>' +
+    '<input id="' + customId + '" placeholder="' + esc(customPlaceholder || '') + '" value="' + esc(inPresets || cur === '' ? '' : cur) + '"' + (selVal === PRESET_CUSTOM_VALUE ? '' : ' style="display:none;margin-top:6px"') + '>';
+}
+// presetSelectValue 读一组预设下拉框的值：选了预设就返回预设，选了
+// “自定义”就返回文本框里手填的值。
+function presetSelectValue(selectEl, customEl) {
+  if (!selectEl) return '';
+  if (selectEl.value === PRESET_CUSTOM_VALUE) return (customEl ? customEl.value : '').trim();
+  return selectEl.value;
+}
+// wirePresetSelect 给一组预设下拉框绑 change：切到“自定义”时显示文本
+// 框、切回预设时隐藏。root 不传时在整个 document 里找。
+function wirePresetSelect(selectId, customId, root) {
+  const sel = (root || document).querySelector('#' + selectId);
+  const cus = (root || document).querySelector('#' + customId);
+  if (!sel || !cus) return;
+  sel.addEventListener('change', () => {
+    if (sel.value === PRESET_CUSTOM_VALUE) { cus.style.display = ''; cus.focus(); }
+    else cus.style.display = 'none';
+  });
+}
 function ibProtocolLabel(inb) {
   if (inb.protocol === 'vless' && inb.transport === 'reality') return 'VLESS＋REALITY＋Vision';
   if (inb.protocol === 'vless' && inb.transport === 'xhttp') return 'VLESS＋REALITY＋XHTTP';
@@ -1150,8 +1219,9 @@ function ibCompositeValue(inb) {
 // 编辑入站（v1.4.2，切片 3）：点编辑弹 modal 对话框改，不在页面最下方
 // 展开表单。能改全部字段，包括入站 tag（改名后端按 PUT 改 tag 处理，
 // 同一条入站换名，订阅跟着新 tag 走，不用删了重建）。
-// SNI 输入带 datalist 预设（常用大站下拉＋手填自定义）；改 SNI 时后端
-// 同步 dest 与 serverNames（SNI 是唯一事实来源，见 syncRealitySNIFields）。
+// SNI 与 REALITY 指纹是真正下拉框（v1.4.4）：select 列全部预设＋“自定义”
+// 出文本框，不按输入过滤（datalist 做法已删）；改 SNI 时后端同步 dest
+// 与 serverNames（SNI 是唯一事实来源，见 syncRealitySNIFields）。
 function openInboundEditModal(inb) {
   currentEditInboundId = inb.inbound_id;
   const proto = ibCompositeValue(inb);
@@ -1168,7 +1238,7 @@ function openInboundEditModal(inb) {
     '</select></div>' +
     '<div><label for="nodes-ib-edit-port">端口 <span class="hint">必填，1–65535</span></label><input id="nodes-ib-edit-port" type="number" min="1" max="65535" value="' + esc(String(inb.port)) + '" required></div>' +
     '<div><label for="nodes-ib-edit-listen">监听地址 <span class="hint">0.0.0.0 = 全部网卡</span></label><input id="nodes-ib-edit-listen" value="' + esc(inb.listen || '0.0.0.0') + '" placeholder="0.0.0.0"></div>' +
-    '<div><label for="nodes-ib-edit-sni">SNI / 域名 <span class="hint">点下拉选常用大站，也可手填</span></label><input id="nodes-ib-edit-sni" value="' + esc(inb.sni || inb.domain || '') + '" placeholder="example.com" list="nodes-sni-presets"></div>' +
+    '<div><label for="nodes-ib-edit-sni">SNI / 域名 <span class="hint">点下拉选常用大站，选“自定义”可手填</span></label>' + presetSelectHtml('nodes-ib-edit-sni', 'nodes-ib-edit-sni-custom', SNI_PRESETS, inb.sni || inb.domain || '', '手填 SNI / 域名，如 example.com') + '</div>' +
     '<div id="nodes-ib-edit-ss-method-wrap"><label for="nodes-ib-edit-ss-method">SS 加密方法</label><select id="nodes-ib-edit-ss-method">' +
     ['aes-256-gcm', 'aes-128-gcm', 'chacha20-poly1305', '2022-blake3-aes-128-gcm', '2022-blake3-aes-256-gcm', '2022-blake3-chacha20-poly1305'].map((mm) => '<option value="' + mm + '"' + (inb.ss_method === mm ? ' selected' : '') + '>' + mm + '</option>').join('') +
     '</select></div>' +
@@ -1178,7 +1248,7 @@ function openInboundEditModal(inb) {
     '<div id="nodes-ib-edit-flow-wrap"><label for="nodes-ib-edit-flow">VLESS flow <span class="hint">Vision 入站填 xtls-rprx-vision，空着不填也行</span></label><input id="nodes-ib-edit-flow" value="' + esc(inb.flow || '') + '" placeholder="xtls-rprx-vision"></div>' +
     '<div id="nodes-ib-edit-reality-dest-wrap"><label for="nodes-ib-edit-reality-dest">REALITY 回落目标 <span class="hint">默认跟着 SNI 走（SNI:443），一般不用改</span></label><input id="nodes-ib-edit-reality-dest" value="' + esc(inb.reality_dest || '') + '" placeholder="www.example.com:443"></div>' +
     '<div id="nodes-ib-edit-reality-sn-wrap"><label for="nodes-ib-edit-reality-server-names">REALITY serverNames <span class="hint">默认跟着 SNI 走，一般不用改</span></label><input id="nodes-ib-edit-reality-server-names" value="' + esc(inb.reality_server_names || '') + '" placeholder="www.example.com"></div>' +
-    '<div id="nodes-ib-edit-reality-fp-wrap"><label for="nodes-ib-edit-reality-fingerprint">REALITY 指纹</label><input id="nodes-ib-edit-reality-fingerprint" value="' + esc(inb.reality_fingerprint || 'chrome') + '" placeholder="chrome"></div>' +
+    '<div id="nodes-ib-edit-reality-fp-wrap"><label for="nodes-ib-edit-reality-fingerprint">REALITY 指纹 <span class="hint">点下拉选预设，选“自定义”可手填</span></label>' + presetSelectHtml('nodes-ib-edit-reality-fingerprint', 'nodes-ib-edit-reality-fingerprint-custom', REALITY_FP_PRESETS, inb.reality_fingerprint || 'chrome', '手填指纹，如 chrome') + '</div>' +
     '<div><label for="nodes-ib-edit-multiplier">流量倍率 <span class="hint">默认 1，0.1–100</span></label><input id="nodes-ib-edit-multiplier" type="number" min="0.1" max="100" step="0.1" value="' + esc(String(inb.multiplier == null ? 1 : inb.multiplier)) + '"></div>' +
     '<div><label for="nodes-ib-edit-enabled">启用 <span class="hint">关掉后节点 60 秒内下线该入站</span></label><select id="nodes-ib-edit-enabled"><option value="true"' + (inb.enabled ? ' selected' : '') + '>启用</option><option value="false"' + (!inb.enabled ? ' selected' : '') + '>停用</option></select></div>' +
     '</div>' +
@@ -1204,6 +1274,8 @@ function openInboundEditModal(inb) {
     if (v === 'shadowsocks' && $('#nodes-ib-edit-ss-method', m).value.indexOf('2022-') === 0) $('#nodes-ib-edit-ss-method', m).value = 'aes-256-gcm';
   };
   syncEdit();
+  wirePresetSelect('nodes-ib-edit-sni', 'nodes-ib-edit-sni-custom', m);
+  wirePresetSelect('nodes-ib-edit-reality-fingerprint', 'nodes-ib-edit-reality-fingerprint-custom', m);
   onIn(m, '#nodes-ib-edit-protocol', 'change', syncEdit);
   onIn(m, '#nodes-ib-edit-cancel', 'click', closeModal);
   onIn(m, '#nodes-inbound-edit-form', 'submit', async (e) => {
@@ -1214,7 +1286,7 @@ function openInboundEditModal(inb) {
     if (!tag) { toast('入站 tag/名称不能为空', 'err'); return; }
     if (!port || port < 1 || port > 65535) { toast('端口要在 1–65535 之间', 'err'); return; }
     const p = IB_PROTOCOLS[$('#nodes-ib-edit-protocol', m).value];
-    const sni = $('#nodes-ib-edit-sni', m).value.trim();
+    const sni = presetSelectValue($('#nodes-ib-edit-sni', m), $('#nodes-ib-edit-sni-custom', m));
     const body = { inbound_tag: tag, protocol: p.protocol, transport: p.transport, security: p.security, port, listen: $('#nodes-ib-edit-listen', m).value.trim(), sni, enabled: $('#nodes-ib-edit-enabled', m).value === 'true' };
     const mult = parseFloat($('#nodes-ib-edit-multiplier', m).value);
     if (mult) body.multiplier = mult;
@@ -1231,7 +1303,8 @@ function openInboundEditModal(inb) {
     if (p.transport === 'reality' || p.transport === 'xhttp') {
       if ($('#nodes-ib-edit-reality-dest', m).value.trim()) body.reality_dest = $('#nodes-ib-edit-reality-dest', m).value.trim();
       if ($('#nodes-ib-edit-reality-server-names', m).value.trim()) body.reality_server_names = $('#nodes-ib-edit-reality-server-names', m).value.trim();
-      if ($('#nodes-ib-edit-reality-fingerprint', m).value.trim()) body.reality_fingerprint = $('#nodes-ib-edit-reality-fingerprint', m).value.trim();
+      const fp = presetSelectValue($('#nodes-ib-edit-reality-fingerprint', m), $('#nodes-ib-edit-reality-fingerprint-custom', m));
+      if (fp) body.reality_fingerprint = fp;
     }
     try {
       await api('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/' + encodeURIComponent(currentEditInboundId), { method: 'PUT', body: JSON.stringify(body) });
@@ -1266,6 +1339,9 @@ function initNodes() {
   on('#nodes-once-token-copy', 'click', (e) => copyText($('#nodes-once-token').value, e.target));
   on('#nodes-once-cmd-copy', 'click', (e) => copyText($('#nodes-once-cmd').value, e.target));
   // 入站模板（v1.4.1 切片 2）：三件套、添加、编辑表单的绑定。
+  // SNI 与 REALITY 指纹是真正下拉框（v1.4.4）：select＋自定义文本框，见 presetSelectHtml。
+  wirePresetSelect('nodes-ib-sni', 'nodes-ib-sni-custom');
+  wirePresetSelect('nodes-ib-reality-fingerprint', 'nodes-ib-reality-fingerprint-custom');
   const ssMethodWrap = $('#nodes-ib-ss-method-wrap');
   const ssPwWrap = $('#nodes-ib-ss-pw-wrap');
   if (ssMethodWrap) ssMethodWrap.style.display = 'none';
@@ -1294,7 +1370,9 @@ function initNodes() {
     const tag = $('#nodes-ib-tag').value.trim();
     const port = parseInt($('#nodes-ib-port').value, 10);
     if (!tag || !port || port < 1 || port > 65535) { toast('tag 与端口（1–65535）都要填', 'err'); return; }
-    const body = { inbound_tag: tag, protocol: m.protocol, transport: m.transport, security: m.security, port, listen: $('#nodes-ib-listen').value.trim(), sni: $('#nodes-ib-sni').value.trim() };
+    const body = { inbound_tag: tag, protocol: m.protocol, transport: m.transport, security: m.security, port, listen: $('#nodes-ib-listen').value.trim(), sni: presetSelectValue($('#nodes-ib-sni'), $('#nodes-ib-sni-custom')) };
+    const fpAdd = presetSelectValue($('#nodes-ib-reality-fingerprint'), $('#nodes-ib-reality-fingerprint-custom'));
+    if (fpAdd) body.reality_fingerprint = fpAdd;
     if (proto === 'shadowsocks' || proto === 'ss2022') {
       body.ss_method = $('#nodes-ib-ss-method').value;
       body.ss_password = $('#nodes-ib-ss-password').value.trim() || randomPassword1401(16);
@@ -3762,6 +3840,116 @@ async function disableSubTraffic(kind, id) {
   } catch (e) { toast('停用失败：' + e.message, 'err'); }
 }
 
+// 用户“操作”菜单（v1.4.4，切片 4）：用户行上只留一个“操作”按钮，
+// 点开弹窗列出该用户的全部操作：编辑、复制、二维码、轮换链接、
+// 发到节点、轮换 UUID、停用／恢复、撤销。弹窗里的按钮沿用原来行上
+// 按钮的 data-* 属性（选择器不变，旧测试只改成“先点操作菜单再点
+// 对应项”）。点某一项先关菜单弹窗，再走原来的操作流程。
+function openUserOpsMenu(kind, u) {
+  if (!u) return;
+  const id = u.id;
+  const name = u.name || u.summary || id;
+  const disabled = !!u.traffic_disabled;
+  const item = (attr, label, danger) => '<div style="margin-bottom:8px"><button class="btn ' + (danger ? 'danger' : 'secondary') + '" type="button" style="width:100%;text-align:left" ' + attr + '>' + label + '</button></div>';
+  let html = '<h2>操作：' + esc(name) + '</h2>';
+  if (kind === 'user') {
+    html += item('data-sub-user-edit="' + esc(id) + '"', '编辑') +
+      (disabled ? item('data-sub-user-resume="' + esc(id) + '"', '恢复') : item('data-sub-user-disable="' + esc(id) + '"', '停用')) +
+      item('data-sub-user-copy="' + esc(id) + '"', '复制订阅链接') +
+      item('data-sub-user-qr="' + esc(id) + '"', '二维码') +
+      item('data-sub-user-rotate="' + esc(id) + '"', '轮换链接') +
+      item('data-sub-user-nodes="' + esc(id) + '"', '发到节点') +
+      item('data-sub-user-rotate-uuid="' + esc(id) + '"', '轮换 UUID') +
+      item('data-sub-user-revoke="' + esc(id) + '"', '撤销', true);
+  } else {
+    html += item('data-sub-edit-merged="' + esc(id) + '"', '编辑') +
+      (disabled ? item('data-sub-resume-merged="' + esc(id) + '"', '恢复') : item('data-sub-disable-merged="' + esc(id) + '"', '停用')) +
+      item('data-sub-copy-merged="' + esc(id) + '" data-sub-mode-merged="' + esc(u.mode || '') + '" data-sub-name-merged="' + esc(u.name || '') + '"', '复制订阅链接') +
+      item('data-sub-qr-merged="' + esc(id) + '" data-sub-mode-merged="' + esc(u.mode || '') + '" data-sub-name-merged="' + esc(u.name || '') + '"', '二维码') +
+      item('data-sub-rotate-merged="' + esc(id) + '" data-sub-name-merged="' + esc(u.name || '') + '"', '轮换链接') +
+      item('data-sub-nodes-merged="' + esc(id) + '"', '发到节点') +
+      item('data-sub-rotate-uuid-merged="' + esc(id) + '" data-sub-name-merged="' + esc(u.name || '') + '"', '轮换 UUID') +
+      item('data-sub-revoke-merged="' + esc(id) + '"', '撤销', true);
+  }
+  html += '<div class="btn-row"><button class="btn secondary" id="user-ops-close" type="button">关闭</button></div>';
+  const m = openModal(html);
+  if (!m) return;
+  onIn(m, '#user-ops-close', 'click', closeModal);
+  const act = (sel, fn) => { const b = m.querySelector(sel); if (b) b.addEventListener('click', () => { closeModal(); fn(); }); };
+  if (kind === 'user') {
+    act('[data-sub-user-edit]', () => openSubEditModal({ kind: 'user', id: u.id, name: u.name, note: u.note, selection: u.selection || [], mode: u.mode, expires_at: u.expires_at, traffic_limit_mb: u.traffic_limit_mb, traffic_limit_mode: u.traffic_limit_mode, reset_mode: u.reset_mode, reset_day: u.reset_day, group_id: u.group_id || '' }));
+    if (disabled) act('[data-sub-user-resume]', () => resumeSubTraffic('users', id, u.disabled_reason));
+    else act('[data-sub-user-disable]', () => disableSubTraffic('users', id));
+    act('[data-sub-user-copy]', async () => {
+      try {
+        const r = await fetchSubLink('user', id);
+        if (r.legacy) { await legacySubPrompt(() => rotateSubUser(id)); return; }
+        $('#sub-user-url-value').textContent = r.url || '';
+        const box = $('#sub-user-once');
+        if (box) { box.classList.remove('hidden'); box.hidden = false; }
+        copyText(subLinkWithMode(r.url || '', ''), null);
+      } catch (e) { toast('复制失败：' + e.message, 'err'); }
+    });
+    act('[data-sub-user-qr]', async () => {
+      try {
+        const r = await fetchSubLink('user', id);
+        if (r.legacy) { await legacySubPrompt(() => rotateSubUser(id)); return; }
+        $('#sub-user-url-value').textContent = r.url || '';
+        const box = $('#sub-user-once');
+        if (box) { box.classList.remove('hidden'); box.hidden = false; }
+        await showSubQrModal('user');
+      } catch (e) { toast('二维码失败：' + e.message, 'err'); }
+    });
+    act('[data-sub-user-rotate]', async () => {
+      const ok = await confirmModal('轮换订阅用户链接', '<p>轮换后这个人的旧订阅链接立即失效，客户端里要换成新链接。确定吗？</p>', '轮换', true);
+      if (!ok) return;
+      try { await rotateSubUser(id); }
+      catch (e) { toast('轮换失败：' + e.message, 'err'); }
+    });
+    act('[data-sub-user-nodes]', () => openNodeAssignModal('subuser', id, u.name));
+    act('[data-sub-user-rotate-uuid]', () => rotateNodeUUID('subuser', id, u.name));
+    act('[data-sub-user-revoke]', async () => {
+      const ok = await confirmModal('撤销订阅用户', '<p>撤销后这个人的订阅链接立即失效，其他人照常。确定吗？</p>', '撤销', true);
+      if (!ok) return;
+      try { await api('/api/v1/subscriptions/users/' + encodeURIComponent(id), { method: 'DELETE' }); toast('已撤销', 'ok'); loadSubUsers(); }
+      catch (e) { toast('撤销失败：' + e.message, 'err'); }
+    });
+  } else {
+    act('[data-sub-edit-merged]', () => openSubEditModal({ kind: 'merged', id: u.id, name: u.name, selection: u.selection || [], mode: u.mode, expires_at: u.expires_at, traffic_limit_mb: u.traffic_limit_mb, traffic_limit_mode: u.traffic_limit_mode, reset_mode: u.reset_mode, reset_day: u.reset_day, group_id: u.group_id || '' }));
+    if (disabled) act('[data-sub-resume-merged]', () => resumeSubTraffic('merged', id, u.disabled_reason));
+    else act('[data-sub-disable-merged]', () => disableSubTraffic('merged', id));
+    act('[data-sub-copy-merged]', async () => {
+      try {
+        const r = await fetchSubLink('merged', id);
+        if (r.legacy) { await legacySubPrompt(() => rotateMergedSub(id, u.name || undefined)); return; }
+        openMergedSubModal(r.url || '', { title: '订阅链接', name: u.name || undefined, mergedId: id, mode: u.mode || undefined, expires_at: r.expires_at });
+      } catch (e) { toast('复制失败：' + e.message, 'err'); }
+    });
+    act('[data-sub-qr-merged]', async () => {
+      try {
+        const r = await fetchSubLink('merged', id);
+        if (r.legacy) { await legacySubPrompt(() => rotateMergedSub(id, u.name || undefined)); return; }
+        const m2 = openMergedSubModal(r.url || '', { title: '订阅链接', name: u.name || undefined, mergedId: id, mode: u.mode || undefined, expires_at: r.expires_at });
+        if (m2) { const qb = m2.querySelector('[data-sub-qr]'); if (qb) qb.click(); }
+      } catch (e) { toast('二维码失败：' + e.message, 'err'); }
+    });
+    act('[data-sub-rotate-merged]', async () => {
+      const ok = await confirmModal('轮换订阅链接', '<p>轮换后旧订阅链接立即失效，客户端里已导入的订阅要换成新链接。确定吗？</p>', '轮换订阅链接', true);
+      if (!ok) return;
+      try { await rotateMergedSub(id, u.name || undefined); }
+      catch (e) { toast('轮换失败：' + e.message, 'err'); }
+    });
+    act('[data-sub-nodes-merged]', () => openNodeAssignModal('merged', id, u.name || u.summary));
+    act('[data-sub-rotate-uuid-merged]', () => rotateNodeUUID('merged', id, u.name || undefined));
+    act('[data-sub-revoke-merged]', async () => {
+      const ok = await confirmModal('撤销合并订阅', '<p>撤销后这条订阅链接立即失效。确定吗？</p>', '撤销', true);
+      if (!ok) return;
+      try { await api('/api/v1/subscriptions/merged/' + encodeURIComponent(id), { method: 'DELETE' }); toast('已撤销', 'ok'); loadMergedSubsList(); }
+      catch (e) { toast('撤销失败：' + e.message, 'err'); }
+    });
+  }
+}
+
 async function loadSubUsers() {
   const list = $('#sub-user-list');
   if (!list) return;
@@ -3773,59 +3961,14 @@ async function loadSubUsers() {
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的订阅用户，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, subUserPage);
     subUserPage = pg.cur;
-    list.innerHTML = '<h3>订阅用户</h3>' + pg.slice.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.group_name ? ' <span class="badge">分组：' + esc(u.group_name) + '</span>' : '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 内容' + esc(subModeLabel(u.mode)) + ' · ' + expiryBadge(u.expires_at) + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span><br><span class="small">' + userTrafficText(u) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-edit="' + esc(u.id) + '">编辑</button> ' + (u.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-user-resume="' + esc(u.id) + '">恢复</button> ' : '<button class="btn secondary sm" type="button" data-sub-user-disable="' + esc(u.id) + '">停用</button> ') + '<button class="btn secondary sm" type="button" data-sub-user-copy="' + esc(u.id) + '">复制</button> <button class="btn secondary sm" type="button" data-sub-user-qr="' + esc(u.id) + '">二维码</button> <button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn secondary sm" type="button" data-sub-user-nodes="' + esc(u.id) + '">发到节点</button> <button class="btn secondary sm" type="button" data-sub-user-rotate-uuid="' + esc(u.id) + '">轮换 UUID</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
+    list.innerHTML = '<h3>订阅用户</h3>' + pg.slice.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.group_name ? ' <span class="badge">分组：' + esc(u.group_name) + '</span>' : '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 内容' + esc(subModeLabel(u.mode)) + ' · ' + expiryBadge(u.expires_at) + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span><br><span class="small">' + userTrafficText(u) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-menu="' + esc(u.id) + '">操作</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'subuser') +
       '<p class="muted small">编辑只改勾选与内容，链接不变；撤销只影响那个人，其他人的链接照常；轮换后旧链接立即失效。</p>';
     if (pg.totalPages > 1) wirePager(list, 'subuser', pg.cur, pg.totalPages, (p) => { subUserPage = p; loadSubUsers(); });
-    $$('[data-sub-user-edit]', list).forEach((b) => b.addEventListener('click', () => {
-      const u = users.find((x) => x.id === b.dataset.subUserEdit);
+    $$('[data-sub-user-menu]', list).forEach((b) => b.addEventListener('click', () => {
+      const u = users.find((x) => x.id === b.dataset.subUserMenu);
       if (!u) return;
-      openSubEditModal({ kind: 'user', id: u.id, name: u.name, note: u.note, selection: u.selection || [], mode: u.mode, expires_at: u.expires_at, traffic_limit_mb: u.traffic_limit_mb, traffic_limit_mode: u.traffic_limit_mode, reset_mode: u.reset_mode, reset_day: u.reset_day, group_id: u.group_id || '' });
-    }));
-    $$('[data-sub-user-resume]', list).forEach((b) => b.addEventListener('click', () => { const u = users.find((x) => x.id === b.dataset.subUserResume); resumeSubTraffic('users', b.dataset.subUserResume, u && u.disabled_reason); }));
-    $$('[data-sub-user-disable]', list).forEach((b) => b.addEventListener('click', () => disableSubTraffic('users', b.dataset.subUserDisable)));
-    $$('[data-sub-user-copy]', list).forEach((b) => b.addEventListener('click', async () => {
-      try {
-        const r = await fetchSubLink('user', b.dataset.subUserCopy);
-        if (r.legacy) { await legacySubPrompt(() => rotateSubUser(b.dataset.subUserCopy)); return; }
-        $('#sub-user-url-value').textContent = r.url || '';
-        const box = $('#sub-user-once');
-        if (box) { box.classList.remove('hidden'); box.hidden = false; }
-        copyText(subLinkWithMode(r.url || '', ''), b);
-      } catch (e) { toast('复制失败：' + e.message, 'err'); }
-    }));
-    // 每行二维码：取回这条订阅的链接，显示在卡片下方并生成二维码（扫码导入）。
-    $$('[data-sub-user-qr]', list).forEach((b) => b.addEventListener('click', async () => {
-      try {
-        const r = await fetchSubLink('user', b.dataset.subUserQr);
-        if (r.legacy) { await legacySubPrompt(() => rotateSubUser(b.dataset.subUserQr)); return; }
-        $('#sub-user-url-value').textContent = r.url || '';
-        const box = $('#sub-user-once');
-        if (box) { box.classList.remove('hidden'); box.hidden = false; }
-        await showSubQrModal('user');
-      } catch (e) { toast('二维码失败：' + e.message, 'err'); }
-    }));
-    $$('[data-sub-user-rotate]', list).forEach((b) => b.addEventListener('click', async () => {
-      const ok = await confirmModal('轮换订阅用户链接', '<p>轮换后这个人的旧订阅链接立即失效，客户端里要换成新链接。确定吗？</p>', '轮换', true);
-      if (!ok) return;
-      try { await rotateSubUser(b.dataset.subUserRotate); }
-      catch (e) { toast('轮换失败：' + e.message, 'err'); }
-    }));
-    $$('[data-sub-user-nodes]', list).forEach((b) => b.addEventListener('click', () => {
-      const u = users.find((x) => x.id === b.dataset.subUserNodes);
-      if (!u) return;
-      openNodeAssignModal('subuser', u.id, u.name);
-    }));
-    $$('[data-sub-user-rotate-uuid]', list).forEach((b) => b.addEventListener('click', () => {
-      const u = users.find((x) => x.id === b.dataset.subUserRotateUuid);
-      if (!u) return;
-      rotateNodeUUID('subuser', u.id, u.name);
-    }));
-    $$('[data-sub-user-revoke]', list).forEach((b) => b.addEventListener('click', async () => {
-      const ok = await confirmModal('撤销订阅用户', '<p>撤销后这个人的订阅链接立即失效，其他人照常。确定吗？</p>', '撤销', true);
-      if (!ok) return;
-      try { await api('/api/v1/subscriptions/users/' + encodeURIComponent(b.dataset.subUserRevoke), { method: 'DELETE' }); toast('已撤销', 'ok'); loadSubUsers(); }
-      catch (e) { toast('撤销失败：' + e.message, 'err'); }
+      openUserOpsMenu('user', u);
     }));
   } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
 }
@@ -3839,18 +3982,26 @@ async function rotateSubUser(id) {
   toast('已轮换，旧链接已失效', 'ok'); loadSubUsers();
   return r;
 }
-// ---------- 节点用户指派与轮换 UUID（v1.4.2，切片 3） ----------
-// “发到节点”弹窗：每节点一个复选框，勾上的节点才有这个用户。
-// 指派语义（与后端 PUT /api/v1/nodes/{id}/users 一致）：user_ids 为 null
-// = 全部用户，[] = 一个不发。节点是“全部用户”模式时取消勾选会把它改成
-// 显式列表（全部有效用户去掉这一个）；勾上时全部模式不用改，显式列表
-// 里加上他。只对勾选变了的节点发 PUT。
+// ---------- 节点用户指派与轮换 UUID（v1.4.2，切片 3；v1.4.4 重构） ----------
+// “发到节点”弹窗：四级指派（全部／组／节点／入站）＋节点列表搜索。
+// 级别存在用户记录上（BackendScope／BackendTargets，见 node_assign.go），
+// 节点侧的成员门（UserIDs）仍按旧逻辑同步：勾上的节点把人加进去，
+// 不勾的拿掉；nil（全部用户）节点不用动。
+//   - 全部：所有后端节点，全部入站（scope=all）。
+//   - 组：跟所在分组走，节点取分组的 BackendNodeIDs（scope=group，
+//     targets=[分组id]；没分组或分组没配节点时提示，不让保存）。
+//   - 节点：自选节点，全部入站（scope=node，targets=[节点id]）。
+//   - 入站：自选节点＋入站，配置下发时 users[].inbounds 只含勾的 tag
+//     （scope=inbound，targets=["节点id:入站tag"]；某节点一个入站
+//     都没勾 = 这个人不去该节点）。
 async function openNodeAssignModal(kind, id, name) {
   const key = kind + ':' + id;
   let nodes = [];
   try { const r = await api('/api/v1/nodes'); nodes = r.nodes || []; }
   catch (e) { toast('拉节点列表失败：' + e.message, 'err'); return; }
   if (!nodes.length) { toast('还没有节点，先在节点页建一个', 'err'); return; }
+  let assign = { scope: 'all', targets: [], group_id: '', group_name: '', group_nodes: [] };
+  try { assign = await api('/api/v1/users/' + encodeURIComponent(key) + '/backend-assignment'); } catch (e) { /* 老面板没这个接口时按全部算 */ }
   const states = [];
   for (const n of nodes) {
     try {
@@ -3858,22 +4009,107 @@ async function openNodeAssignModal(kind, id, name) {
       const all = r.all_users === true;
       const ids = r.user_ids || null;
       const eff = (r.users || []).map((u) => u.user_id);
-      states.push({ node: n, all, ids, eff, checked: all || (ids && ids.indexOf(key) !== -1) });
-    } catch (e) { states.push({ node: n, error: true, checked: false }); }
+      let inbounds = [];
+      try { const ri = await api('/api/v1/nodes/' + encodeURIComponent(n.id) + '/inbounds'); inbounds = (ri.inbounds || []).filter((x) => x.enabled).map((x) => x.inbound_tag); } catch (e) { inbounds = []; }
+      states.push({ node: n, all, ids, eff, inbounds, checked: all || (ids && ids.indexOf(key) !== -1) });
+    } catch (e) { states.push({ node: n, error: true, checked: false, inbounds: [] }); }
   }
+  let level = assign.scope || 'all';
+  if (['all', 'group', 'node', 'inbound'].indexOf(level) === -1) level = 'all';
+  const selNodes = new Set();
+  const selInbounds = {}; // nodeId -> Set(tag)
+  states.forEach((st) => { if (st.checked) selNodes.add(st.node.id); });
+  if (level === 'node') { (assign.targets || []).forEach((t) => { const nid = Number(t); if (nid) selNodes.add(nid); }); }
+  if (level === 'inbound') {
+    (assign.targets || []).forEach((t) => {
+      const p = String(t).split(':');
+      if (p.length !== 2) return;
+      const nid = Number(p[0]);
+      if (!nid) return;
+      if (!selInbounds[nid]) selInbounds[nid] = new Set();
+      selInbounds[nid].add(p[1]);
+      selNodes.add(nid);
+    });
+  }
+  let query = '';
+  const groupNodes = assign.group_nodes || [];
   const m = openModal('<h2>发到节点：' + esc(name || id) + '</h2>' +
-    '<p class="muted">勾上的节点才有这个用户；不勾的节点 60 秒内把他下掉。节点没单独指派过人时默认发全部用户，取消勾选会把该节点改成“只发勾选的人”。</p>' +
-    states.map((st, i) => '<label class="checkbox-row"><input type="checkbox" data-assign-node="' + i + '"' + (st.checked ? ' checked' : '') + (st.error ? ' disabled' : '') + '><span>' + esc(st.node.name || '') + '（' + esc(st.node.address || '') + '）' + (st.all ? ' · 全部用户' : '') + (st.error ? ' · 拉取失败' : '') + '</span></label>').join('') +
+    '<div><label for="assign-level">指派级别</label><select id="assign-level">' +
+    '<option value="all"' + (level === 'all' ? ' selected' : '') + '>全部——所有后端节点，全部入站</option>' +
+    '<option value="group"' + (level === 'group' ? ' selected' : '') + '>组——跟所在分组走</option>' +
+    '<option value="node"' + (level === 'node' ? ' selected' : '') + '>节点——只上勾选的节点</option>' +
+    '<option value="inbound"' + (level === 'inbound' ? ' selected' : '') + '>入站——只上勾选的节点与入站</option>' +
+    '</select></div>' +
+    '<p class="muted" id="assign-level-hint"></p>' +
+    '<div><input id="assign-search" placeholder="搜索节点（名字／地址）"></div>' +
+    '<div id="assign-list" style="margin-top:8px"></div>' +
     '<div class="btn-row"><button class="btn" id="assign-ok" type="button">保存</button><button class="btn secondary" id="assign-cancel" type="button">取消</button></div>');
   if (!m) return;
+  const hintEl = () => m.querySelector('#assign-level-hint');
+  const renderHint = () => {
+    const el = hintEl();
+    if (!el) return;
+    if (level === 'all') el.textContent = '全部：这个人上所有后端节点，全部入站。';
+    else if (level === 'group') {
+      if (!assign.group_id) el.textContent = '组：这个人还没分组，先在编辑里给他分组，再回来选组级指派。';
+      else if (!groupNodes.length) el.textContent = '组：所在分组“' + (assign.group_name || assign.group_id) + '”还没配后端节点，先在分组编辑里勾后端节点。';
+      else el.textContent = '组：跟分组“' + (assign.group_name || assign.group_id) + '”走，上 ' + groupNodes.length + ' 个后端节点。';
+    }
+    else if (level === 'node') el.textContent = '节点：只上下面勾选的节点，全部入站。';
+    else el.textContent = '入站：只上下面勾选的节点与入站；某节点一个入站都没勾 = 这个人不去该节点。';
+  };
+  const renderList = () => {
+    const box = m.querySelector('#assign-list');
+    if (!box) return;
+    const q = query.trim().toLowerCase();
+    const showNodes = level === 'all' ? states : (level === 'group' ? states.filter((st) => groupNodes.indexOf(st.node.id) !== -1) : states);
+    const rows = showNodes.filter((st) => !q || (st.node.name || '').toLowerCase().indexOf(q) !== -1 || (st.node.address || '').toLowerCase().indexOf(q) !== -1);
+    if (!rows.length) { box.innerHTML = '<p class="muted small">没有匹配的节点。</p>'; return; }
+    box.innerHTML = rows.map((st) => {
+      const nid = st.node.id;
+      const checked = level === 'all' || level === 'group' ? true : selNodes.has(nid);
+      const dis = st.error || level === 'all' || level === 'group';
+      let ibHtml = '';
+      if (level === 'inbound' && checked && st.inbounds.length) {
+        const sel = selInbounds[nid] || new Set();
+        ibHtml = '<div style="margin:4px 0 4px 24px">' + st.inbounds.map((tag) => '<label class="checkbox-row"><input type="checkbox" data-assign-inbound="' + nid + ':' + esc(tag) + '"' + (sel.has(tag) ? ' checked' : '') + '><span>' + esc(tag) + '</span></label>').join('') + '</div>';
+      }
+      return '<label class="checkbox-row"><input type="checkbox" data-assign-node="' + nid + '"' + (checked ? ' checked' : '') + (dis ? ' disabled' : '') + '><span>' + esc(st.node.name || '') + '（' + esc(st.node.address || '') + '）' + (st.all ? ' · 全部用户' : '') + (st.error ? ' · 拉取失败' : '') + '</span></label>' + ibHtml;
+    }).join('');
+    box.querySelectorAll('[data-assign-node]').forEach((cb) => cb.addEventListener('change', () => {
+      const nid = Number(cb.dataset.assignNode);
+      if (cb.checked) selNodes.add(nid); else { selNodes.delete(nid); delete selInbounds[nid]; }
+      renderList();
+    }));
+    box.querySelectorAll('[data-assign-inbound]').forEach((cb) => cb.addEventListener('change', () => {
+      const p = String(cb.dataset.assignInbound).split(':');
+      const nid = Number(p[0]);
+      if (!selInbounds[nid]) selInbounds[nid] = new Set();
+      if (cb.checked) selInbounds[nid].add(p[1]); else selInbounds[nid].delete(p[1]);
+    }));
+  };
+  renderHint();
+  renderList();
+  onIn(m, '#assign-level', 'change', (e) => { level = e.target.value; renderHint(); renderList(); });
+  onIn(m, '#assign-search', 'input', (e) => { query = e.target.value; renderList(); });
   onIn(m, '#assign-cancel', 'click', closeModal);
   onIn(m, '#assign-ok', 'click', async () => {
     try {
-      for (let i = 0; i < states.length; i++) {
-        const st = states[i];
+      // 期望的节点集合（按级别算）。
+      let wantNodes;
+      if (level === 'all') wantNodes = states.filter((st) => !st.error).map((st) => st.node.id);
+      else if (level === 'group') {
+        if (!assign.group_id) { toast('组级指派要先给这个用户分组', 'err'); return; }
+        wantNodes = groupNodes.slice();
+      }
+      else if (level === 'node') wantNodes = Array.from(selNodes);
+      else {
+        wantNodes = Object.keys(selInbounds).map((x) => Number(x)).filter((nid) => selInbounds[nid] && selInbounds[nid].size > 0);
+      }
+      // 先同步节点侧的成员门（旧逻辑）：勾上的节点加人，不勾的拿掉。
+      for (const st of states) {
         if (st.error) continue;
-        const box = m.querySelector('[data-assign-node="' + i + '"]');
-        const want = !!(box && box.checked);
+        const want = wantNodes.indexOf(st.node.id) !== -1;
         if (want === st.checked) continue;
         let list;
         if (want) {
@@ -3886,6 +4122,14 @@ async function openNodeAssignModal(kind, id, name) {
         }
         await api('/api/v1/nodes/' + encodeURIComponent(st.node.id) + '/users', { method: 'PUT', body: JSON.stringify({ user_ids: list }) });
       }
+      // 再写四级指派。
+      let scope = level, targets = [];
+      if (level === 'node') targets = wantNodes.map((x) => String(x));
+      else if (level === 'inbound') {
+        targets = [];
+        wantNodes.forEach((nid) => { Array.from(selInbounds[nid] || []).forEach((tag) => targets.push(nid + ':' + tag)); });
+      } else if (level === 'group') targets = [assign.group_id];
+      await api('/api/v1/users/' + encodeURIComponent(key) + '/backend-assignment', { method: 'PUT', body: JSON.stringify({ scope, targets }) });
       closeModal();
       toast('已保存，节点 60 秒内应用', 'ok');
       if (kind === 'merged') loadMergedSubsList(); else loadSubUsers();
@@ -3986,6 +4230,8 @@ async function openSubGroupModal(group) {
     '<p class="muted small">至少勾一个落地。</p>' +
     '<div data-group-members style="margin-top:12px">加载中…</div>' +
     '<p class="muted small">成员一人只能进一个组：勾了这里的人，会自动从原来那个组里出来。</p>' +
+    '<div data-group-backend-nodes style="margin-top:12px">加载中…</div>' +
+    '<p class="muted small">后端节点（v1.4.4，组级指派用）：组级指派的成员上这里勾的后端节点；不勾 = 组级指派下成员上不了任何后端节点。</p>' +
     '<div class="btn-row" style="margin-top:12px"><button class="btn" type="button" data-group-save>保存</button>' +
     '<button class="btn secondary" type="button" data-group-cancel>取消</button></div>', true);
   if (!m) return;
@@ -4021,6 +4267,18 @@ async function openSubGroupModal(group) {
     memBox.innerHTML = h;
   };
   renderMembers();
+  // 后端节点多选（v1.4.4）：该组用的后端节点，组级指派时成员上这些节点。
+  const bnBox = m.querySelector('[data-group-backend-nodes]');
+  const curBackendNodes = new Set(group ? (group.backend_node_ids || []) : []);
+  try {
+    const rn = await api('/api/v1/nodes');
+    const nodes = rn.nodes || [];
+    if (bnBox) {
+      bnBox.innerHTML = '<p class="small"><b>后端节点</b></p>' + (nodes.length ? nodes.map((n) => '<label class="checkbox-row"><input type="checkbox" data-group-backend-node="' + esc(String(n.id)) + '"' + (curBackendNodes.has(n.id) ? ' checked' : '') + '><span>' + esc(n.name || '') + '（' + esc(n.address || '') + '）</span></label>').join('') : '<p class="muted small">还没有后端节点。</p>');
+    }
+  } catch (e) {
+    if (bnBox) bnBox.innerHTML = '<div class="error-box">后端节点列表加载失败：' + esc(e.message) + '</div>';
+  }
   onIn(m, '[data-group-cancel]', 'click', closeModal);
   onIn(m, '[data-group-save]', 'click', async () => {
     const name = ((m.querySelector('[data-group-name]') || {}).value || '').trim();
@@ -4029,8 +4287,9 @@ async function openSubGroupModal(group) {
     if (!selection.length) { toast('至少勾一个落地', 'err'); return; }
     const members = $$('[data-group-member-user]', m).filter((cb) => cb.checked).map((cb) => ({ kind: 'user', id: cb.dataset.groupMemberUser }))
       .concat($$('[data-group-member-merged]', m).filter((cb) => cb.checked).map((cb) => ({ kind: 'merged', id: cb.dataset.groupMemberMerged })));
+    const backend_node_ids = $$('[data-group-backend-node]', m).filter((cb) => cb.checked).map((cb) => Number(cb.dataset.groupBackendNode));
     try {
-      const body = { name, note: ((m.querySelector('[data-group-note]') || {}).value || '').trim(), selection, members };
+      const body = { name, note: ((m.querySelector('[data-group-note]') || {}).value || '').trim(), selection, members, backend_node_ids };
       if (isEdit) await api('/api/v1/subscriptions/groups/' + encodeURIComponent(group.id), { method: 'PUT', body: JSON.stringify(body) });
       else await apiPost('/api/v1/subscriptions/groups', body);
       closeModal();
@@ -4888,43 +5147,14 @@ async function loadMergedSubsList() {
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的合并订阅，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, mergedSubPage);
     mergedSubPage = pg.cur;
-    list.innerHTML = '<h3>已生成的合并订阅</h3>' + pg.slice.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + (s.group_name ? '<span class="badge">分组：' + esc(s.group_name) + '</span> ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span><br><span class="small">' + userTrafficText(s) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-edit-merged="' + esc(s.id) + '">编辑</button> ' + (s.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-resume-merged="' + esc(s.id) + '">恢复</button> ' : '<button class="btn secondary sm" type="button" data-sub-disable-merged="' + esc(s.id) + '">停用</button> ') + '<button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-mode-merged="' + esc(s.mode || '') + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn secondary sm" type="button" data-sub-nodes-merged="' + esc(s.id) + '">发到节点</button> <button class="btn secondary sm" type="button" data-sub-rotate-uuid-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换 UUID</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
+    list.innerHTML = '<h3>已生成的合并订阅</h3>' + pg.slice.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + (s.group_name ? '<span class="badge">分组：' + esc(s.group_name) + '</span> ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span><br><span class="small">' + userTrafficText(s) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-menu-merged="' + esc(s.id) + '">操作</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'mergedsub') +
       '<p class="muted small">编辑只改勾选与内容，链接不变；每条订阅都有“复制”按钮，链接加密存在面板里，随时能重新复制；重新勾选生成（不填名称时同一选择重新生成会轮换；填了名称是新起一条，各归各人）。</p>';
     if (pg.totalPages > 1) wirePager(list, 'mergedsub', pg.cur, pg.totalPages, (p) => { mergedSubPage = p; loadMergedSubsList(); });
-    $$('[data-sub-edit-merged]', list).forEach((b) => b.addEventListener('click', () => {
-      const s = subs.find((x) => x.id === b.dataset.subEditMerged);
+    $$('[data-sub-menu-merged]', list).forEach((b) => b.addEventListener('click', () => {
+      const s = subs.find((x) => x.id === b.dataset.subMenuMerged);
       if (!s) return;
-      openSubEditModal({ kind: 'merged', id: s.id, name: s.name, selection: s.selection || [], mode: s.mode, expires_at: s.expires_at, traffic_limit_mb: s.traffic_limit_mb, traffic_limit_mode: s.traffic_limit_mode, reset_mode: s.reset_mode, reset_day: s.reset_day, group_id: s.group_id || '' });
-    }));
-    $$('[data-sub-resume-merged]', list).forEach((b) => b.addEventListener('click', () => { const s = subs.find((x) => x.id === b.dataset.subResumeMerged); resumeSubTraffic('merged', b.dataset.subResumeMerged, s && s.disabled_reason); }));
-    $$('[data-sub-disable-merged]', list).forEach((b) => b.addEventListener('click', () => disableSubTraffic('merged', b.dataset.subDisableMerged)));
-    $$('[data-sub-copy-merged]', list).forEach((b) => b.addEventListener('click', async () => {
-      try {
-        const r = await fetchSubLink('merged', b.dataset.subCopyMerged);
-        if (r.legacy) { await legacySubPrompt(() => rotateMergedSub(b.dataset.subCopyMerged, b.dataset.subNameMerged || undefined)); return; }
-        openMergedSubModal(r.url || '', { title: '订阅链接', name: b.dataset.subNameMerged || undefined, mergedId: b.dataset.subCopyMerged, mode: b.dataset.subModeMerged || undefined, expires_at: r.expires_at });
-      } catch (e) { toast('复制失败：' + e.message, 'err'); }
-    }));
-    $$('[data-sub-rotate-merged]', list).forEach((b) => b.addEventListener('click', async () => {
-      const ok = await confirmModal('轮换订阅链接', '<p>轮换后旧订阅链接立即失效，客户端里已导入的订阅要换成新链接。确定吗？</p>', '轮换订阅链接', true);
-      if (!ok) return;
-      try { await rotateMergedSub(b.dataset.subRotateMerged, b.dataset.subNameMerged || undefined); }
-      catch (e) { toast('轮换失败：' + e.message, 'err'); }
-    }));
-    $$('[data-sub-nodes-merged]', list).forEach((b) => b.addEventListener('click', () => {
-      const s = subs.find((x) => x.id === b.dataset.subNodesMerged);
-      if (!s) return;
-      openNodeAssignModal('merged', s.id, s.name || s.summary);
-    }));
-    $$('[data-sub-rotate-uuid-merged]', list).forEach((b) => b.addEventListener('click', () => {
-      rotateNodeUUID('merged', b.dataset.subRotateUuidMerged, b.dataset.subNameMerged || undefined);
-    }));
-    $$('[data-sub-revoke-merged]', list).forEach((b) => b.addEventListener('click', async () => {
-      const ok = await confirmModal('撤销合并订阅', '<p>撤销后这条订阅链接立即失效。确定吗？</p>', '撤销', true);
-      if (!ok) return;
-      try { await api('/api/v1/subscriptions/merged/' + encodeURIComponent(b.dataset.subRevokeMerged), { method: 'DELETE' }); toast('已撤销', 'ok'); loadMergedSubsList(); }
-      catch (e) { toast('撤销失败：' + e.message, 'err'); }
+      openUserOpsMenu('merged', s);
     }));
   } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
 }

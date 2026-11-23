@@ -171,6 +171,9 @@ func (s *Server) routes() http.Handler {
 	// GET /api/v1/node/config：v1.4.0 起按证书分流——带有效节点证书的
 	// 请求走轻量节点后端新配置，否则走旧 D10 接口（行为不变）。
 	mux.HandleFunc("GET /api/v1/node/config", s.handleNodeConfigDispatch)
+	// POST /api/v1/node/traffic（v1.4.4，切片 4）：后端节点流量＋健康
+	// 上报，mTLS 认证（handler 里验，没证书 401，没有旧接口可回落）。
+	mux.HandleFunc("POST /api/v1/node/traffic", s.handleNodeBackendTraffic)
 	// 轻量节点后端（v1.4.0，切片 1）：节点管理（会话认证）＋入网换证。
 	mux.HandleFunc("POST /api/v1/nodes", s.requireAuth(s.handleNodesCreate))
 	mux.HandleFunc("GET /api/v1/nodes", s.requireAuth(s.handleNodesList))
@@ -190,6 +193,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/nodes/{id}/users", s.requireAuth(s.handleNodeUsersList))
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/users", s.requireAuth(s.handleNodeUsersUpdate))
 	mux.HandleFunc("POST /api/v1/users/{user_id}/rotate-uuid", s.requireAuth(s.handleUserRotateNodeUUID))
+	// 轻量节点后端（v1.4.4，切片 4）：用户四级指派（会话认证）。
+	mux.HandleFunc("GET /api/v1/users/{user_id}/backend-assignment", s.requireAuth(s.handleBackendAssignmentGet))
+	mux.HandleFunc("PUT /api/v1/users/{user_id}/backend-assignment", s.requireAuth(s.handleBackendAssignmentUpdate))
 	mux.HandleFunc("GET /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesList))
 	mux.HandleFunc("POST /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesAdd))
 	mux.HandleFunc("DELETE /api/v1/central/remotes/{id}", s.requireAuth(s.handleCentralRemotesDelete))

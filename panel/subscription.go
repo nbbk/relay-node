@@ -3191,7 +3191,10 @@ func (s *Server) handleSubUsersDisable(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, errResp("没有这个订阅用户"))
 		return
 	}
-	s.disableUserForwardsManual(userSubKey("subuser", id), s.currentUser(r))
+	if _, err := s.disableUserForwardsManual(userSubKey("subuser", id), s.currentUser(r)); err != nil {
+		writeJSON(w, 500, errResp("停用已记下，但中转转发重建失败："+err.Error()))
+		return
+	}
 	writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name}))
 }
 
@@ -3247,7 +3250,10 @@ func (s *Server) handleMergedSubsDisable(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, 404, errResp("没有这条合并订阅"))
 		return
 	}
-	s.disableUserForwardsManual(userSubKey("merged", id), s.currentUser(r))
+	if _, err := s.disableUserForwardsManual(userSubKey("merged", id), s.currentUser(r)); err != nil {
+		writeJSON(w, 500, errResp("停用已记下，但中转转发重建失败："+err.Error()))
+		return
+	}
 	writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name}))
 }
 

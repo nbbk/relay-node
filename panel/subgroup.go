@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -206,6 +207,8 @@ func (s *Server) handleSubGroupsList(w http.ResponseWriter, r *http.Request) {
 		Selection []SubSelection `json:"selection"`
 		Summary   string         `json:"summary"`
 		Members   []groupMember  `json:"members"`
+		// BackendNodeIDs 该组用的后端节点（v1.4.4，组级指派用）。
+		BackendNodeIDs []int64 `json:"backend_node_ids,omitempty"`
 	}
 	items := []item{}
 	for _, g := range s.cfg.SubGroups {
@@ -213,19 +216,43 @@ func (s *Server) handleSubGroupsList(w http.ResponseWriter, r *http.Request) {
 		if sel == nil {
 			sel = []SubSelection{}
 		}
-		items = append(items, item{ID: g.ID, Name: g.Name, Note: g.Note, CreatedAt: g.CreatedAt, Selection: sel, Summary: s.selectionSummary(sel), Members: s.groupMembers(g.ID)})
+		items = append(items, item{ID: g.ID, Name: g.Name, Note: g.Note, CreatedAt: g.CreatedAt, Selection: sel, Summary: s.selectionSummary(sel), Members: s.groupMembers(g.ID), BackendNodeIDs: g.BackendNodeIDs})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"groups": items}))
+}
+
+// validateBackendNodeIDs 校验一组后端节点 id（v1.4.4）：去重、去无效
+// 值、必须存在。返回规范化后的列表（nil 输入返回 nil）。
+func (s *Server) validateBackendNodeIDs(ids []int64) ([]int64, error) {
+	if ids == nil {
+		return nil, nil
+	}
+	seen := map[int64]bool{}
+	out := []int64{}
+	s.nodes.mu.Lock()
+	defer s.nodes.mu.Unlock()
+	for _, id := range ids {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		if s.nodes.getNode(id) == nil {
+			return nil, fmt.Errorf("没有这个后端节点：%d", id)
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out, nil
 }
 
 // handleSubGroupsCreate 新建分组：名字必填，落地至少勾一个（空组没有意义），
 // 成员选填（不选就先建个空组，之后在成员的编辑里或分组编辑里加）。
 func (s *Server) handleSubGroupsCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name      string         `json:"name"`
-		Note      string         `json:"note"`
-		Selection []SubSelection `json:"selection"`
-		Members   []groupMember  `json:"members"`
+		Name           string         `json:"name"`
+		Note           string         `json:"note"`
+		Selection      []SubSelection `json:"selection"`
+		Members        []groupMember  `json:"members"`
+		BackendNodeIDs []int64        `json:"backend_node_ids"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -257,16 +284,21 @@ func (s *Server) handleSubGroupsCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
 	}
+	backendNodes, err := s.validateBackendNodeIDs(req.BackendNodeIDs)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
 	id := "sg-" + randomTokenHex(6)
 	now := time.Now().UTC().Format(time.RFC3339)
-	s.cfg.SubGroups = append(s.cfg.SubGroups, SubGroup{ID: id, Name: name, Note: note, Selection: sel, CreatedAt: now})
+	s.cfg.SubGroups = append(s.cfg.SubGroups, SubGroup{ID: id, Name: name, Note: note, Selection: sel, CreatedAt: now, BackendNodeIDs: backendNodes})
 	s.applyGroupMembers(id, members)
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
 	}
 	summary := s.selectionSummary(sel)
-	resp := map[string]any{"id": id, "name": name, "summary": summary, "selection": sel, "members": members}
+	resp := map[string]any{"id": id, "name": name, "summary": summary, "selection": sel, "members": members, "backend_node_ids": backendNodes}
 	if warn := s.reconcileGroupMembersForwards(members); warn != "" {
 		resp["warning"] = warn
 		s.audit(s.currentUser(r), "新建分组", name+"（"+summary+"）", "部分成功", warn)
@@ -282,10 +314,11 @@ func (s *Server) handleSubGroupsCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSubGroupsUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
-		Name      string         `json:"name"`
-		Note      string         `json:"note"`
-		Selection []SubSelection `json:"selection"`
-		Members   []groupMember  `json:"members"`
+		Name           string         `json:"name"`
+		Note           string         `json:"note"`
+		Selection      []SubSelection `json:"selection"`
+		Members        []groupMember  `json:"members"`
+		BackendNodeIDs []int64        `json:"backend_node_ids"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -313,6 +346,11 @@ func (s *Server) handleSubGroupsUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	members, err := s.validateGroupMembers(req.Members)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	backendNodes, err := s.validateBackendNodeIDs(req.BackendNodeIDs)
 	if err != nil {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
@@ -331,20 +369,43 @@ func (s *Server) handleSubGroupsUpdate(w http.ResponseWriter, r *http.Request) {
 	for _, m := range members {
 		affected[m.Kind+":"+m.ID] = m
 	}
+	oldBackendNodes := g.BackendNodeIDs
 	g.Name = name
 	g.Note = note
 	g.Selection = sel
+	g.BackendNodeIDs = backendNodes
 	s.applyGroupMembers(id, members)
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
 	}
+	// v1.4.4：分组的后端节点变了，组级指派的成员在这些节点上的归属
+	// 可能变了，改前改后并集里的节点都 bump，agent 60 秒内拉到新列表。
+	s.nodes.mu.Lock()
+	bump := map[int64]bool{}
+	for _, nid := range oldBackendNodes {
+		bump[nid] = true
+	}
+	for _, nid := range backendNodes {
+		bump[nid] = true
+	}
+	changed := false
+	for _, node := range s.nodes.data.Nodes {
+		if bump[node.ID] {
+			node.ConfigVersion++
+			changed = true
+		}
+	}
+	if changed {
+		_ = s.nodes.saveLocked()
+	}
+	s.nodes.mu.Unlock()
 	summary := s.selectionSummary(sel)
 	affectedList := []groupMember{}
 	for _, m := range affected {
 		affectedList = append(affectedList, m)
 	}
-	resp := map[string]any{"id": id, "name": name, "summary": summary, "selection": sel, "members": members}
+	resp := map[string]any{"id": id, "name": name, "summary": summary, "selection": sel, "members": members, "backend_node_ids": backendNodes}
 	if warn := s.reconcileGroupMembersForwards(affectedList); warn != "" {
 		resp["warning"] = warn
 		s.audit(s.currentUser(r), "编辑分组", name+"（"+summary+"）", "部分成功", warn)

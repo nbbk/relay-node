@@ -68,11 +68,30 @@ type BackendNode struct {
 	// 非 nil = 只发这些用户；空数组 [] = 一个不发。
 	// 注意：字段不能加 omitempty——nil 要落盘成 null、[] 要落盘成 []，
 	// 两者在 nodes.json 里必须分得清，否则“全部”与“一个不发”会混掉。
-	UserIDs          []string `json:"user_ids"`
-	JoinTokenHash    string   `json:"join_token_hash,omitempty"`
-	JoinTokenExpires int64    `json:"join_token_expires_at"`
-	Joined           bool     `json:"joined"`
-	CreatedAt        int64    `json:"created_at"`
+	UserIDs []string `json:"user_ids"`
+	// Multiplier 节点自身流量倍率（v1.4.4，切片 4）：后端节点上报的
+	// 按人流量先乘它（再乘中转倍率、归一化、上限 100，见
+	// effectiveBackendMultiplier）。0 = 没填，按 1 算；默认 1。
+	Multiplier float64 `json:"multiplier,omitempty"`
+	// InboundTraffic 各入站累计流量（v1.4.4）：tag → [上行, 下行]
+	// （原始字节，不乘倍率；agent 每次上报累加，随节点存 nodes.json）。
+	InboundTraffic map[string][2]int64 `json:"inbound_traffic,omitempty"`
+	// LastTrafficAt 上次收到流量上报的时间（unix 秒，0＝从没上报过；
+	// v1.4.4）。健康 staleness 按它算，不按 LastSeen（配置拉取）算。
+	LastTrafficAt int64 `json:"last_traffic_at,omitempty"`
+	// Health* 上次上报的健康（v1.4.4，随节点存）：HealthAt 是收到
+	// 时间；XrayRunning=false 且 HealthAt!=0 = Xray 未运行。
+	HealthXrayRunning   bool    `json:"health_xray_running,omitempty"`
+	HealthXrayRestarts  int64   `json:"health_xray_restarts,omitempty"`
+	HealthLastError     string  `json:"health_last_error,omitempty"`
+	HealthCPUPercent    float64 `json:"health_cpu_percent,omitempty"`
+	HealthMemMB         float64 `json:"health_mem_mb,omitempty"`
+	HealthConfigVersion int64   `json:"health_config_version,omitempty"`
+	HealthAt            int64   `json:"health_at,omitempty"`
+	JoinTokenHash       string  `json:"join_token_hash,omitempty"`
+	JoinTokenExpires    int64   `json:"join_token_expires_at"`
+	Joined              bool    `json:"joined"`
+	CreatedAt           int64   `json:"created_at"`
 }
 
 // nodeHealth 健康：online／offline／never（§4.6 口径）。
@@ -472,6 +491,10 @@ type NodeConfigUser struct {
 	Email     string `json:"email"`
 	VLESSUUID string `json:"vless_uuid"`
 	Disabled  bool   `json:"disabled"`
+	// Inbounds 该用户被指派的入站 tag 列表（v1.4.4，切片 4，四级指派
+	// 的入站级）：空 = 全部入站；老 agent 不认这个字段时直接忽略、即
+	// 全入站，保持兼容；新 agent（0.1.4 起）按它渲染用户列表。
+	Inbounds []string `json:"inbounds,omitempty"`
 }
 
 // nodeBackendConfigDoc 下发给 agent 的配置文档（§6.4 形状；
@@ -536,7 +559,9 @@ func nodeHasUser(node *BackendNode, key string) bool {
 
 // nodeBackendUsersForNode 该节点的用户列表（v1.4.2，切片 3：按
 // BackendNode.UserIDs 指派过滤；nil = 全部未停用用户，保留切片 2
-// 行为）。UUID 按节点地址取 NodeUUIDs，缺失时现生成并写回 config
+// 行为）。v1.4.4 再过一道用户侧四级指派门（backendAssignAllows，
+// 默认全部），入站级指派写进每条记录的 Inbounds（空 = 全部入站）。
+// UUID 按节点地址取 NodeUUIDs，缺失时现生成并写回 config
 // （只补不剪，与 ensureNodeUUIDs 同款语义）。
 // 调用方须持有 opMu（写 config 用）；返回 changed 表示 config 被改过，
 // 调用方负责 saveConfig 落盘。
@@ -551,6 +576,10 @@ func (s *Server) nodeBackendUsersForNode(node *BackendNode) ([]NodeConfigUser, b
 		if !nodeHasUser(node, userSubKey("subuser", u.ID)) {
 			continue
 		}
+		// v1.4.4，四级指派：用户侧的第二道门（默认全部，不过滤）。
+		if !s.backendAssignAllows(u.BackendScope, u.BackendTargets, u.GroupID, node) {
+			continue
+		}
 		uuids, c := ensureNodeUUIDs(u.NodeUUIDs, []string{node.Address})
 		if c {
 			u.NodeUUIDs = uuids
@@ -560,6 +589,7 @@ func (s *Server) nodeBackendUsersForNode(node *BackendNode) ([]NodeConfigUser, b
 			UserID: userSubKey("subuser", u.ID), Kind: "subuser", ID: u.ID,
 			Name: u.Name, Email: nodeUserEmail("subuser", u.ID),
 			VLESSUUID: uuids[node.Address],
+			Inbounds:  backendAssignInbounds(u.BackendScope, u.BackendTargets, node),
 		})
 	}
 	for i := range s.cfg.MergedSubs {
@@ -568,6 +598,10 @@ func (s *Server) nodeBackendUsersForNode(node *BackendNode) ([]NodeConfigUser, b
 			continue
 		}
 		if !nodeHasUser(node, userSubKey("merged", m.ID)) {
+			continue
+		}
+		// v1.4.4，四级指派：用户侧的第二道门（默认全部，不过滤）。
+		if !s.backendAssignAllows(m.BackendScope, m.BackendTargets, m.GroupID, node) {
 			continue
 		}
 		uuids, c := ensureNodeUUIDs(m.NodeUUIDs, []string{node.Address})
@@ -579,6 +613,7 @@ func (s *Server) nodeBackendUsersForNode(node *BackendNode) ([]NodeConfigUser, b
 			UserID: userSubKey("merged", m.ID), Kind: "merged", ID: m.ID,
 			Name: m.Name, Email: nodeUserEmail("merged", m.ID),
 			VLESSUUID: uuids[node.Address],
+			Inbounds:  backendAssignInbounds(m.BackendScope, m.BackendTargets, node),
 		})
 	}
 	return users, changed
@@ -627,11 +662,11 @@ func (s *Server) handleNodesCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	token := newJoinToken()
 	node := &BackendNode{
-		ID:               s.nodes.data.NextID,
-		Name:             name,
-		Address:          addr,
-		ConfigVersion:    1,
-		Inbounds:         []NodeInbound{},
+		ID:            s.nodes.data.NextID,
+		Name:          name,
+		Address:       addr,
+		ConfigVersion: 1,
+		Inbounds:      []NodeInbound{},
 		// UserIDs 显式空（§5.3：老用户不自动上新节点，须在“发到节点”
 		// 里手动勾；nil = 全部用户只留给 1.4.2 之前建的老节点）。
 		UserIDs:          []string{},
@@ -666,6 +701,8 @@ func (s *Server) nodeInstallCommand(r *http.Request, nodeID int64, token string)
 }
 
 // nodeRowForList 节点列表里的一行（§4.6 字段＋健康）。
+// backend_health 是上报健康（v1.4.4）：按最后上报时间算 staleness，
+// 与 health（配置拉取心跳）分开算、互不干扰。
 func nodeRowForList(n BackendNode) map[string]any {
 	lastSeen := ""
 	if n.LastSeen != 0 {
@@ -675,7 +712,8 @@ func nodeRowForList(n BackendNode) map[string]any {
 		"id": n.ID, "name": n.Name, "address": n.Address,
 		"agent_version": n.AgentVersion, "xray_version": n.XrayVersion,
 		"singbox_version": n.SingBoxVersion, "health": nodeHealth(&n),
-		"last_seen": lastSeen, "config_version": n.ConfigVersion,
+		"backend_health": nodeBackendHealthMap(&n, time.Now()),
+		"last_seen":      lastSeen, "config_version": n.ConfigVersion,
 		"joined":     n.Joined,
 		"created_at": time.Unix(n.CreatedAt, 0).UTC().Format(time.RFC3339),
 		"user_count": 0,
@@ -710,9 +748,13 @@ func (s *Server) handleNodesGet(w http.ResponseWriter, r *http.Request) {
 	row := nodeRowForList(*node)
 	// 入站列表走管理接口视图：私钥不返回（切片 2）。
 	inbounds := sanitizedInbounds(node.Inbounds)
+	// v1.4.4：详情加流量块（本期按人合计＋各入站总量）与上报健康块。
+	traffic := s.nodeBackendTrafficBlock(node)
+	health := nodeBackendHealthMap(node, time.Now())
 	s.nodes.mu.Unlock()
 	writeJSON(w, 200, okResp(map[string]any{
 		"node": row, "inbounds": inbounds, "users": []any{},
+		"traffic": traffic, "backend_health": health,
 	}))
 }
 

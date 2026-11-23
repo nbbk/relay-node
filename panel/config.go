@@ -252,6 +252,10 @@ type MergedSub struct {
 	// 起生成（新建即生成、已有补生成、删除随记录回收）；备份/恢复
 	// 全量跟走，丢了它用户就得重新导入。
 	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
+	// BackendScope/BackendTargets（v1.4.4，切片 4，四级指派，见
+	// node_assign.go）：与 SubUser 同款字段（见 SubUser 上的注释）。
+	BackendScope   string   `json:"backend_scope,omitempty"`
+	BackendTargets []string `json:"backend_targets,omitempty"`
 }
 
 // SubGroup 分组（v1.3.26，权限组）：一组 = 一组落地 + 一组用户，组里的人
@@ -263,12 +267,17 @@ type MergedSub struct {
 // 保证，不会有两个组的落地集合冲突）；换组直接改成员的 GroupID。
 // 成员自己的 Selection 保留在记录里（进组后订阅按组的落地出，自己的勾选
 // 不用、出组/删组后自动恢复，不用重勾）。
+// BackendNodeIDs（v1.4.4，切片 4）：该组的后端节点（轻量节点后端）——
+// 组级指派（见 node_assign.go）时，组内成员上这些节点；空 = 该组没配
+// 后端节点，组级指派下成员上不了任何后端节点。
 type SubGroup struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
 	Note      string         `json:"note,omitempty"`
 	Selection []SubSelection `json:"selection"`
 	CreatedAt string         `json:"created_at"`
+	// BackendNodeIDs 该组用的后端节点 id 列表（v1.4.4）。
+	BackendNodeIDs []int64 `json:"backend_node_ids,omitempty"`
 }
 
 // SubUser 一人一条订阅链接（v1.3.0）：TokenHash 是订阅令牌的 SHA-256
@@ -309,6 +318,14 @@ type SubUser struct {
 	// NodeUUIDs（v1.3.30，节点侧按人计量）：与 MergedSub 同款，见上；
 	// 1.3.35 起生成（新建即生成、已有补生成、删除随记录回收）。
 	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
+	// BackendScope/BackendTargets（v1.4.4，切片 4，四级指派，见
+	// node_assign.go）：该用户在后端节点上的指派级别。"" 或 "all" =
+	// 全部节点（默认）；"group" = 跟所在分组走（targets 是分组 id，
+	// 节点取分组的 BackendNodeIDs）；"node" = 只上 targets 里的节点
+	// id；"inbound" = 只上 targets 里的 "节点id:入站tag" 指定的入站，
+	// 下发时写进 users[].inbounds。空 scope 与空 targets 都按全部算。
+	BackendScope   string   `json:"backend_scope,omitempty"`
+	BackendTargets []string `json:"backend_targets,omitempty"`
 }
 
 // UserForward 一条按人转发（v1.3.25，按订阅限流量 A）：一个订阅在
@@ -748,11 +765,12 @@ type Server struct {
 	clientSessions        *clientSessionStore // 客户端会话令牌（v1.3.45，只存 SHA-256 哈希）
 	opMu                  sync.Mutex          // 写操作锁（TryLock，占用时返回 409）
 	traffic               *trafficStore
-	userTraffic           *userTrafficStore  // 每订阅流量累计（v1.3.25，PANEL_HOME/user_traffic.json）
-	nodePushSeen          *nodePushSeenStore // 节点侧推送去重（v1.3.30，PANEL_HOME/node_push_seen.json）
-	nodes                 *nodeBackendStore  // 轻量节点后端（v1.4.0，PANEL_HOME/nodes.json）
-	trafficErrMu          sync.Mutex         // 流量采样失败记录锁（v1.3.27：失败不再静默）
-	trafficErrMsg         string             // 最近一次流量采样/建链失败原因（空 = 正常）
+	userTraffic           *userTrafficStore     // 每订阅流量累计（v1.3.25，PANEL_HOME/user_traffic.json）
+	nodePushSeen          *nodePushSeenStore    // 节点侧推送去重（v1.3.30，PANEL_HOME/node_push_seen.json）
+	nodeTrafficSeen       *nodeTrafficSeenStore // 后端节点流量窗口去重（v1.4.4，PANEL_HOME/node_traffic_seen.json）
+	nodes                 *nodeBackendStore     // 轻量节点后端（v1.4.0，PANEL_HOME/nodes.json）
+	trafficErrMu          sync.Mutex            // 流量采样失败记录锁（v1.3.27：失败不再静默）
+	trafficErrMsg         string                // 最近一次流量采样/建链失败原因（空 = 正常）
 	trafficErrAt          time.Time
 	auditMu               sync.Mutex
 	healthMu              sync.Mutex // 健康基线锁（lastHealthOK/lastHealthAt：healthTick 与模式切换共用）
@@ -795,7 +813,7 @@ func newServer(env Env) (*Server, error) {
 		// 测试环境 REALM_DIR 可能不可写目录已存在则忽略
 		_ = os.MkdirAll(env.RealmDir, 0o755)
 	}
-	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), clientSessions: newClientSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), userTraffic: newUserTrafficStore(filepath.Join(env.PanelHome, "user_traffic.json")), nodePushSeen: newNodePushSeenStore(filepath.Join(env.PanelHome, "node_push_seen.json")), nodes: newNodeBackendStore(env.PanelHome), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}, centralUsersFailAudit: map[string]time.Time{}, centralUserUsage: map[string]*centralUserUsage{}, subFails: map[string]*subFailState{}}
+	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), clientSessions: newClientSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), userTraffic: newUserTrafficStore(filepath.Join(env.PanelHome, "user_traffic.json")), nodePushSeen: newNodePushSeenStore(filepath.Join(env.PanelHome, "node_push_seen.json")), nodeTrafficSeen: newNodeTrafficSeenStore(filepath.Join(env.PanelHome, "node_traffic_seen.json")), nodes: newNodeBackendStore(env.PanelHome), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}, centralUsersFailAudit: map[string]time.Time{}, centralUserUsage: map[string]*centralUserUsage{}, subFails: map[string]*subFailState{}}
 	if err := s.loadConfig(); err != nil {
 		return nil, err
 	}
@@ -805,6 +823,7 @@ func newServer(env Env) (*Server, error) {
 	s.traffic.load()
 	s.userTraffic.load()
 	s.nodePushSeen.load()
+	s.nodeTrafficSeen.load()
 	s.nodes.load()
 	s.latency.load()
 	return s, nil

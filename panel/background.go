@@ -30,6 +30,10 @@ func (s *Server) trafficLoop() {
 	t := time.NewTicker(60 * time.Second)
 	defer t.Stop()
 	for range t.C {
+		// v1.4.4：后端节点限流执法（直连）——管理面板模式也要跑（它
+		// 不依赖本地 relay），所以放在 managesLocalRelay 门前面；跑在
+		// 已有的 60 秒循环里，不新开后台任务与轮询。
+		s.enforceBackendNodeTrafficLimits()
 		if !s.managesLocalRelay() {
 			continue
 		}

@@ -99,6 +99,30 @@ func inboundTransportIsTCP(in NodeInbound) bool {
 
 // validateInbound 校验一条入站的字段（不含端口主人冲突，那个要整
 // 个列表一起看）。返回第一条不对的原因，空表示通过。
+// realityFingerprintPresets REALITY 指纹预设（v1.4.4，切片 4）：
+// 用户亲口定的 UI 预设（chrome、firefox、safari、ios、android、edge、
+// qq、random），前端下拉框列全部预设＋“自定义”出文本框；后端只拦
+// 非法字符，不拦预设外的值（手填自定义指纹要能存）。
+var realityFingerprintPresets = []string{"chrome", "firefox", "safari", "ios", "android", "edge", "qq", "random"}
+
+// sniPresets SNI 预设（v1.4.2 起的五个常用大站，用户亲口定的 UI 预设）。
+var sniPresets = []string{"www.microsoft.com", "www.apple.com", "www.amazon.com", "www.cloudflare.com", "www.bing.com"}
+
+// validateRealityFingerprint 指纹只允许字母数字、下划线、连字符
+// （uTLS 指纹名就这几种字符；空格与其它符号直接 400）。
+func validateRealityFingerprint(fp string) string {
+	for _, r := range fp {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return "REALITY 指纹只能用字母、数字、下划线、连字符"
+	}
+	if len(fp) > 64 {
+		return "REALITY 指纹太长，最多 64 个字"
+	}
+	return ""
+}
+
 func validateInbound(in NodeInbound) string {
 	switch in.Protocol {
 	case "vless":
@@ -159,6 +183,11 @@ func validateInbound(in NodeInbound) string {
 	}
 	if strings.TrimSpace(in.InboundTag) == "" {
 		return "入站 tag 不能为空"
+	}
+	if fp := strings.TrimSpace(in.RealityFingerprint); fp != "" {
+		if msg := validateRealityFingerprint(fp); msg != "" {
+			return msg
+		}
 	}
 	return ""
 }
