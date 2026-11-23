@@ -1320,10 +1320,34 @@ func (s *Server) disableUserForwards(key, reason string) {
 }
 
 // disableUserForwardsLocked 同上，不加锁（调用方已持 opMu）。
+// 审计标题固定写“自动停用订阅”：手动停用走 disableUserForwardsManual。
 func (s *Server) disableUserForwardsLocked(key, reason string) {
+	if s.applyDisableUserForwardsLocked(key, reason) {
+		s.audit("system", "自动停用订阅", key, "成功", "原因："+reason)
+	}
+}
+
+// disableUserForwardsManual 手动停用一条订阅（v1.4.3）：管理员在用户行上
+// 点“停用”。与自动停用共用同一套状态机（applyDisableUserForwardsLocked），
+// 只审计标题与操作人不同；已停用时幂等（apply 返回 false，不重复审计）。
+// 自己加 opMu，不要在已持锁的调用链里调。
+func (s *Server) disableUserForwardsManual(key, actor string) bool {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	if !s.applyDisableUserForwardsLocked(key, "手动停用") {
+		return false
+	}
+	s.audit(actor, "手动停用订阅", key, "成功", "原因：手动停用")
+	return true
+}
+
+// applyDisableUserForwardsLocked 停用的状态机（不审计）：把订阅与转发记成
+// 已停用、保存、撤 endpoints、bump 已指派该用户的节点。返回是否真改了
+// 东西（已停用时返回 false，调用方据此决定要不要记审计）。
+func (s *Server) applyDisableUserForwardsLocked(key, reason string) bool {
 	kind, id, found := strings.Cut(key, ":")
 	if !found {
-		return
+		return false
 	}
 	changed := false
 	if kind == "subuser" {
@@ -1346,14 +1370,32 @@ func (s *Server) disableUserForwardsLocked(key, reason string) {
 		}
 	}
 	if !changed {
-		return
+		return false
 	}
 	_ = s.saveConfig()
 	_ = s.applyUserForwards()
 	// 切片 3：停用会改变节点上的有效用户集合，bump 已指派该用户的
 	// 节点，agent 60 秒内拉到新用户列表（旧 UUID 新连接被拒）。
 	s.bumpBackendNodesForUserLocked(key)
-	s.audit("system", "自动停用订阅", key, "成功", "原因："+reason)
+	return true
+}
+
+// userDisabledReason 取一条订阅当前的停用原因（"" = 未停用或不存在）。
+func (s *Server) userDisabledReason(key string) string {
+	kind, id, found := strings.Cut(key, ":")
+	if !found {
+		return ""
+	}
+	if kind == "subuser" {
+		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
+			return u.DisabledReason
+		}
+	} else if kind == "merged" {
+		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
+			return ms.DisabledReason
+		}
+	}
+	return ""
 }
 
 // userUsageSummary 给列表行用的用量摘要：used 是按模式算的已用字节

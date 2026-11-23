@@ -1863,15 +1863,18 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 		// 本面板上还没该订阅的用量（例如管理面板模式）；disabled 是
 		// 超量停用；forward_count 是本面板上的转发条数（有限流但
 		// 0 条 = 转发没建起来，重新保存一次）。
-		LimitMB      int64  `json:"traffic_limit_mb"`
-		LimitMode    string `json:"traffic_limit_mode,omitempty"`
-		ResetMode    string `json:"reset_mode,omitempty"`
-		ResetDay     int    `json:"reset_day,omitempty"`
-		NextResetAt  string `json:"next_reset_at,omitempty"`
-		Used         int64  `json:"traffic_used"`
-		HasUsed      bool   `json:"has_used"`
-		Disabled     bool   `json:"traffic_disabled"`
-		ForwardCount int    `json:"forward_count"`
+		// v1.4.3：disabled_reason 是停用原因原文（"手动停用"／"traffic"／
+		// "expired"／"both"，空 = 老记录，显示时按流量用完 fallback）。
+		LimitMB        int64  `json:"traffic_limit_mb"`
+		LimitMode      string `json:"traffic_limit_mode,omitempty"`
+		ResetMode      string `json:"reset_mode,omitempty"`
+		ResetDay       int    `json:"reset_day,omitempty"`
+		NextResetAt    string `json:"next_reset_at,omitempty"`
+		Used           int64  `json:"traffic_used"`
+		HasUsed        bool   `json:"has_used"`
+		Disabled       bool   `json:"traffic_disabled"`
+		DisabledReason string `json:"disabled_reason,omitempty"`
+		ForwardCount   int    `json:"forward_count"`
 		// v1.3.27：流量采样失败提示（空 = 正常；有值时列表用量不可信）。
 		TrafficWarn string `json:"traffic_warn,omitempty"`
 		// v1.3.27：限流的远程版本警告（远程面板低于 1.3.25 时限流不生效）。
@@ -1898,7 +1901,7 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 		if u.TrafficLimitBytes > 0 {
 			limitWarn = s.userLimitVersionWarn(s.effectiveSelectionForSubUser(&u))
 		}
-		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode, Selection: u.Selection, ExpiresAt: u.ExpiresAt, LimitMB: u.TrafficLimitBytes / 1024 / 1024, LimitMode: u.TrafficLimitMode, ResetMode: u.ResetMode, ResetDay: u.ResetDay, NextResetAt: u.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: u.Disabled, ForwardCount: len(s.userForwardsFor(userSubKey("subuser", u.ID))), TrafficWarn: s.userTrafficWarnFor(userSubKey("subuser", u.ID), s.effectiveSelectionForSubUser(&u)), LimitWarn: limitWarn, GroupID: u.GroupID, GroupName: s.groupNameOf(u.GroupID)})
+		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode, Selection: u.Selection, ExpiresAt: u.ExpiresAt, LimitMB: u.TrafficLimitBytes / 1024 / 1024, LimitMode: u.TrafficLimitMode, ResetMode: u.ResetMode, ResetDay: u.ResetDay, NextResetAt: u.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: u.Disabled, DisabledReason: u.DisabledReason, ForwardCount: len(s.userForwardsFor(userSubKey("subuser", u.ID))), TrafficWarn: s.userTrafficWarnFor(userSubKey("subuser", u.ID), s.effectiveSelectionForSubUser(&u)), LimitWarn: limitWarn, GroupID: u.GroupID, GroupName: s.groupNameOf(u.GroupID)})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"users": items}))
 }
@@ -2630,15 +2633,17 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 		Mode      string         `json:"mode"`                 // both|relay|direct，老记录空 = 全部
 		ExpiresAt string         `json:"expires_at,omitempty"` // v1.3.20：RFC3339，空 = 永久
 		// 流量上限（v1.3.25）：与订阅用户列表同一套字段含义。
-		LimitMB      int64  `json:"traffic_limit_mb"`
-		LimitMode    string `json:"traffic_limit_mode,omitempty"`
-		ResetMode    string `json:"reset_mode,omitempty"`
-		ResetDay     int    `json:"reset_day,omitempty"`
-		NextResetAt  string `json:"next_reset_at,omitempty"`
-		Used         int64  `json:"traffic_used"`
-		HasUsed      bool   `json:"has_used"`
-		Disabled     bool   `json:"traffic_disabled"`
-		ForwardCount int    `json:"forward_count"`
+		// v1.4.3：disabled_reason 见订阅用户列表（停用原因原文）。
+		LimitMB        int64  `json:"traffic_limit_mb"`
+		LimitMode      string `json:"traffic_limit_mode,omitempty"`
+		ResetMode      string `json:"reset_mode,omitempty"`
+		ResetDay       int    `json:"reset_day,omitempty"`
+		NextResetAt    string `json:"next_reset_at,omitempty"`
+		Used           int64  `json:"traffic_used"`
+		HasUsed        bool   `json:"has_used"`
+		Disabled       bool   `json:"traffic_disabled"`
+		DisabledReason string `json:"disabled_reason,omitempty"`
+		ForwardCount   int    `json:"forward_count"`
 		// v1.3.27：流量采样失败提示（空 = 正常；有值时列表用量不可信）。
 		TrafficWarn string `json:"traffic_warn,omitempty"`
 		// v1.3.27：限流的远程版本警告（远程面板低于 1.3.25 时限流不生效）。
@@ -2662,7 +2667,7 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 		if ms.TrafficLimitBytes > 0 {
 			limitWarn = s.userLimitVersionWarn(s.effectiveSelectionForMerged(&ms))
 		}
-		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: summary, HasLink: ms.TokenEnc != "", Mode: ms.Mode, ExpiresAt: ms.ExpiresAt, LimitMB: ms.TrafficLimitBytes / 1024 / 1024, LimitMode: ms.TrafficLimitMode, ResetMode: ms.ResetMode, ResetDay: ms.ResetDay, NextResetAt: ms.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: ms.Disabled, ForwardCount: len(s.userForwardsFor(userSubKey("merged", ms.ID))), TrafficWarn: s.userTrafficWarnFor(userSubKey("merged", ms.ID), s.effectiveSelectionForMerged(&ms)), LimitWarn: limitWarn, GroupID: ms.GroupID, GroupName: s.groupNameOf(ms.GroupID)})
+		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: summary, HasLink: ms.TokenEnc != "", Mode: ms.Mode, ExpiresAt: ms.ExpiresAt, LimitMB: ms.TrafficLimitBytes / 1024 / 1024, LimitMode: ms.TrafficLimitMode, ResetMode: ms.ResetMode, ResetDay: ms.ResetDay, NextResetAt: ms.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: ms.Disabled, DisabledReason: ms.DisabledReason, ForwardCount: len(s.userForwardsFor(userSubKey("merged", ms.ID))), TrafficWarn: s.userTrafficWarnFor(userSubKey("merged", ms.ID), s.effectiveSelectionForMerged(&ms)), LimitWarn: limitWarn, GroupID: ms.GroupID, GroupName: s.groupNameOf(ms.GroupID)})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"subs": items}))
 }
@@ -3122,16 +3127,20 @@ func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) 
 // resumeSub 手动恢复一条订阅（超量停用后）：先看当前用量——仍超上限
 // 就不恢复（恢复了下一分钟也会再停用，提示先调高上限或等下个周期）；
 // 已在上限以下就清停用、把 endpoints 加回去。没开限流的也不用恢复。
+// v1.4.3：手动停用不走限流门——没开限流也能停、也能恢复；恢复后下次
+// 采样不会再自动停（采样只按超量／到期执法）。
 func (s *Server) resumeSub(kind, id string) error {
 	key := userSubKey(kind, id)
-	limit, mode, _, _, _, _, ok := s.userLimitForKey(key)
-	if !ok || limit <= 0 {
-		return fmt.Errorf("这条订阅没开限流，不用恢复")
-	}
-	rec := s.userTraffic.get(key)
-	used := userTrafficUsed(rec, mode)
-	if used >= limit {
-		return fmt.Errorf("流量还没回到上限以下（已用 %s / 上限 %s），恢复了下一分钟也会再停用；请先调高上限或等下个周期", formatBytes(used), formatBytes(limit))
+	if s.userDisabledReason(key) != "手动停用" {
+		limit, mode, _, _, _, _, ok := s.userLimitForKey(key)
+		if !ok || limit <= 0 {
+			return fmt.Errorf("这条订阅没开限流，不用恢复")
+		}
+		rec := s.userTraffic.get(key)
+		used := userTrafficUsed(rec, mode)
+		if used >= limit {
+			return fmt.Errorf("流量还没回到上限以下（已用 %s / 上限 %s），恢复了下一分钟也会再停用；请先调高上限或等下个周期", formatBytes(used), formatBytes(limit))
+		}
 	}
 	return s.resumeUserForwards(key)
 }
@@ -3152,11 +3161,37 @@ func (s *Server) handleSubUsersResume(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, errResp("没有这个订阅用户"))
 		return
 	}
+	manual := s.userDisabledReason(userSubKey("subuser", id)) == "手动停用"
 	if err := s.resumeSub("subuser", id); err != nil {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
 	}
-	s.audit(s.currentUser(r), "手动恢复订阅用户", name, "成功", "流量已回到上限以下，转发已恢复")
+	detail := "流量已回到上限以下，转发已恢复"
+	if manual {
+		detail = "手动停用已解除，转发已恢复"
+	}
+	s.audit(s.currentUser(r), "手动恢复订阅用户", name, "成功", detail)
+	writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name}))
+}
+
+// handleSubUsersDisable 手动停用一个订阅用户（v1.4.3）：复用
+// disableUserForwards，不另发明停用标志；已停用时幂等返回成功。
+func (s *Server) handleSubUsersDisable(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	found := false
+	name := ""
+	for i := range s.cfg.SubUsers {
+		if s.cfg.SubUsers[i].ID == id {
+			found = true
+			name = s.cfg.SubUsers[i].Name
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, 404, errResp("没有这个订阅用户"))
+		return
+	}
+	s.disableUserForwardsManual(userSubKey("subuser", id), s.currentUser(r))
 	writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name}))
 }
 
@@ -3178,6 +3213,7 @@ func (s *Server) handleMergedSubsResume(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 404, errResp("没有这条合并订阅"))
 		return
 	}
+	manual := s.userDisabledReason(userSubKey("merged", id)) == "手动停用"
 	if err := s.resumeSub("merged", id); err != nil {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
@@ -3186,7 +3222,32 @@ func (s *Server) handleMergedSubsResume(w http.ResponseWriter, r *http.Request) 
 	if target == "" {
 		target = s.selectionSummary(sel)
 	}
-	s.audit(s.currentUser(r), "手动恢复合并订阅", target, "成功", "流量已回到上限以下，转发已恢复")
+	detail := "流量已回到上限以下，转发已恢复"
+	if manual {
+		detail = "手动停用已解除，转发已恢复"
+	}
+	s.audit(s.currentUser(r), "手动恢复合并订阅", target, "成功", detail)
+	writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name}))
+}
+
+// handleMergedSubsDisable 手动停用一条合并订阅（v1.4.3）：与单用户停用
+// 同一套状态机；已停用时幂等返回成功。
+func (s *Server) handleMergedSubsDisable(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	found := false
+	name := ""
+	for i := range s.cfg.MergedSubs {
+		if s.cfg.MergedSubs[i].ID == id {
+			found = true
+			name = s.cfg.MergedSubs[i].Name
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, 404, errResp("没有这条合并订阅"))
+		return
+	}
+	s.disableUserForwardsManual(userSubKey("merged", id), s.currentUser(r))
 	writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name}))
 }
 

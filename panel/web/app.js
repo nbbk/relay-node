@@ -48,7 +48,9 @@ function daysLeftText(expiry) {
   return { text: '剩余 ' + days + ' 天', cls: days <= 7 ? 'red' : days <= 30 ? 'yellow' : 'green', days };
 }
 function disabledReasonText(r) {
-  return r === 'expired' ? '已到期' : r === 'traffic' ? '流量用完' : r === 'both' ? '流量用完且已到期' : '';
+  // v1.4.3：手动停用的原因原文就是“手动停用”（disableUserForwardsManual
+  // 传的字面量），老代码里的 'manual' 也认；其它原因沿用旧映射。
+  return r === 'expired' ? '已到期' : r === 'traffic' ? '流量用完' : r === 'both' ? '流量用完且已到期' : r === 'manual' || r === '手动停用' ? '手动停用' : '';
 }
 function copyText(text, btn) {
   const done = () => { toast('已复制'); if (btn) { const t = btn.textContent; btn.textContent = '已复制 ✓'; setTimeout(() => { btn.textContent = t; }, 1500); } };
@@ -3711,7 +3713,10 @@ function resetModeLabel(m) {
 // 列表行里的用量文本：用量/上限、重置日、超量标红、转发未建提醒。
 function userTrafficText(u) {
   const mb = u.traffic_limit_mb || 0;
-  if (!mb) return '流量：不限流（走共享端口）';
+  // v1.4.3：停用徽标不限流用户也要显示（手动停用的用户往往没开限流），
+  // 所以先算出来；原因空（老记录）fallback 到流量用完。
+  const disabledTag = u.traffic_disabled ? ' <span class="badge red">已停用（' + esc(disabledReasonText(u.disabled_reason) || '流量用完') + '）</span>' : '';
+  if (!mb) return '流量：不限流（走共享端口）' + disabledTag;
   const limit = mb * 1048576;
   const used = u.traffic_used || 0;
   const pct = limit > 0 ? Math.round(used / limit * 100) : 0;
@@ -3720,9 +3725,9 @@ function userTrafficText(u) {
     ? '，重置：' + resetModeLabel(u.reset_mode) + (u.next_reset_at ? '（下次 ' + fmtDate(u.next_reset_at) + '）' : '')
     : '';
   const usedTxt = u.has_used ? fmtBytes(used) + ' / ' + fmtBytes(limit) + '（' + pct + '%）' : '上限 ' + fmtBytes(limit) + '（用量未同步）';
-  let tag = '';
-  if (u.traffic_disabled) tag += ' <span class="badge red">已停用（流量用完）</span>';
-  else if (pct >= 80) tag += ' <span class="badge">已用 ' + pct + '%</span>';
+  let tag = disabledTag;
+  // 原来是 if/else if 二选一（停用徽标与 80% 徽标不同时出现），保持。
+  if (!u.traffic_disabled && pct >= 80) tag += ' <span class="badge">已用 ' + pct + '%</span>';
   if (u.forward_count === 0) tag += ' <span class="badge red">转发未建，重新保存一次</span>';
   // v1.3.27：限流版本警告与采样失败警告（有值时用量不可信，另起一行红字提示）。
   let warn = '';
@@ -3730,16 +3735,31 @@ function userTrafficText(u) {
   if (u.traffic_warn) warn += '<br><span class="warn">用量可能不准：' + esc(u.traffic_warn) + '</span>';
   return '流量：' + mode + ' ' + usedTxt + reset + tag + warn;
 }
-// 手动恢复一条超量停用的订阅（订阅用户或合并订阅共用）：
+// 手动恢复一条停用的订阅（订阅用户或合并订阅共用）：
 // kind 是 'users' 或 'merged'，恢复后刷新对应列表。
-async function resumeSubTraffic(kind, id) {
-  const ok = await confirmModal('恢复订阅', '<p>流量回到上限以下才能恢复（已调高上限或到了下个周期）。确定恢复这条订阅的转发吗？</p>', '恢复', true);
+// v1.4.3：手动停用的恢复不看流量，确认文案按原因区分。
+async function resumeSubTraffic(kind, id, reason) {
+  const manual = reason === '手动停用' || reason === 'manual';
+  const ok = await confirmModal('恢复订阅', manual ? '<p>确定恢复这条订阅吗？恢复后节点 60 秒内把这个人加回去。</p>' : '<p>流量回到上限以下才能恢复（已调高上限或到了下个周期）。确定恢复这条订阅的转发吗？</p>', '恢复', true);
   if (!ok) return;
   try {
     await apiPost('/api/v1/subscriptions/' + kind + '/' + encodeURIComponent(id) + '/resume', {});
     toast('已恢复，转发已加回去', 'ok');
     if (kind === 'merged') loadMergedSubsList(); else loadSubUsers();
   } catch (e) { toast('恢复失败：' + e.message, 'err'); }
+}
+
+// 手动停用一条订阅（v1.4.3，订阅用户或合并订阅共用）：停用后节点
+// 60 秒内拿掉这个人、新连接被拒，订阅也取不到节点；恢复用行上的
+// “恢复”按钮。kind 是 'users' 或 'merged'，停用后刷新对应列表。
+async function disableSubTraffic(kind, id) {
+  const ok = await confirmModal('停用订阅', '<p>停用后这个人的节点 60 秒内拿掉他，新连接被拒，订阅也取不到节点。确定停用吗？</p>', '停用', true);
+  if (!ok) return;
+  try {
+    await apiPost('/api/v1/subscriptions/' + kind + '/' + encodeURIComponent(id) + '/disable', {});
+    toast('已停用', 'ok');
+    if (kind === 'merged') loadMergedSubsList(); else loadSubUsers();
+  } catch (e) { toast('停用失败：' + e.message, 'err'); }
 }
 
 async function loadSubUsers() {
@@ -3753,7 +3773,7 @@ async function loadSubUsers() {
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的订阅用户，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, subUserPage);
     subUserPage = pg.cur;
-    list.innerHTML = '<h3>订阅用户</h3>' + pg.slice.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.group_name ? ' <span class="badge">分组：' + esc(u.group_name) + '</span>' : '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 内容' + esc(subModeLabel(u.mode)) + ' · ' + expiryBadge(u.expires_at) + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span><br><span class="small">' + userTrafficText(u) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-edit="' + esc(u.id) + '">编辑</button> ' + (u.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-user-resume="' + esc(u.id) + '">恢复</button> ' : '') + '<button class="btn secondary sm" type="button" data-sub-user-copy="' + esc(u.id) + '">复制</button> <button class="btn secondary sm" type="button" data-sub-user-qr="' + esc(u.id) + '">二维码</button> <button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn secondary sm" type="button" data-sub-user-nodes="' + esc(u.id) + '">发到节点</button> <button class="btn secondary sm" type="button" data-sub-user-rotate-uuid="' + esc(u.id) + '">轮换 UUID</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
+    list.innerHTML = '<h3>订阅用户</h3>' + pg.slice.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.group_name ? ' <span class="badge">分组：' + esc(u.group_name) + '</span>' : '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 内容' + esc(subModeLabel(u.mode)) + ' · ' + expiryBadge(u.expires_at) + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span><br><span class="small">' + userTrafficText(u) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-edit="' + esc(u.id) + '">编辑</button> ' + (u.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-user-resume="' + esc(u.id) + '">恢复</button> ' : '<button class="btn secondary sm" type="button" data-sub-user-disable="' + esc(u.id) + '">停用</button> ') + '<button class="btn secondary sm" type="button" data-sub-user-copy="' + esc(u.id) + '">复制</button> <button class="btn secondary sm" type="button" data-sub-user-qr="' + esc(u.id) + '">二维码</button> <button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn secondary sm" type="button" data-sub-user-nodes="' + esc(u.id) + '">发到节点</button> <button class="btn secondary sm" type="button" data-sub-user-rotate-uuid="' + esc(u.id) + '">轮换 UUID</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'subuser') +
       '<p class="muted small">编辑只改勾选与内容，链接不变；撤销只影响那个人，其他人的链接照常；轮换后旧链接立即失效。</p>';
     if (pg.totalPages > 1) wirePager(list, 'subuser', pg.cur, pg.totalPages, (p) => { subUserPage = p; loadSubUsers(); });
@@ -3762,7 +3782,8 @@ async function loadSubUsers() {
       if (!u) return;
       openSubEditModal({ kind: 'user', id: u.id, name: u.name, note: u.note, selection: u.selection || [], mode: u.mode, expires_at: u.expires_at, traffic_limit_mb: u.traffic_limit_mb, traffic_limit_mode: u.traffic_limit_mode, reset_mode: u.reset_mode, reset_day: u.reset_day, group_id: u.group_id || '' });
     }));
-    $$('[data-sub-user-resume]', list).forEach((b) => b.addEventListener('click', () => resumeSubTraffic('users', b.dataset.subUserResume)));
+    $$('[data-sub-user-resume]', list).forEach((b) => b.addEventListener('click', () => { const u = users.find((x) => x.id === b.dataset.subUserResume); resumeSubTraffic('users', b.dataset.subUserResume, u && u.disabled_reason); }));
+    $$('[data-sub-user-disable]', list).forEach((b) => b.addEventListener('click', () => disableSubTraffic('users', b.dataset.subUserDisable)));
     $$('[data-sub-user-copy]', list).forEach((b) => b.addEventListener('click', async () => {
       try {
         const r = await fetchSubLink('user', b.dataset.subUserCopy);
@@ -4867,7 +4888,7 @@ async function loadMergedSubsList() {
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的合并订阅，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, mergedSubPage);
     mergedSubPage = pg.cur;
-    list.innerHTML = '<h3>已生成的合并订阅</h3>' + pg.slice.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + (s.group_name ? '<span class="badge">分组：' + esc(s.group_name) + '</span> ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span><br><span class="small">' + userTrafficText(s) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-edit-merged="' + esc(s.id) + '">编辑</button> ' + (s.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-resume-merged="' + esc(s.id) + '">恢复</button> ' : '') + '<button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-mode-merged="' + esc(s.mode || '') + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn secondary sm" type="button" data-sub-nodes-merged="' + esc(s.id) + '">发到节点</button> <button class="btn secondary sm" type="button" data-sub-rotate-uuid-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换 UUID</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
+    list.innerHTML = '<h3>已生成的合并订阅</h3>' + pg.slice.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + (s.group_name ? '<span class="badge">分组：' + esc(s.group_name) + '</span> ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span><br><span class="small">' + userTrafficText(s) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-edit-merged="' + esc(s.id) + '">编辑</button> ' + (s.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-resume-merged="' + esc(s.id) + '">恢复</button> ' : '<button class="btn secondary sm" type="button" data-sub-disable-merged="' + esc(s.id) + '">停用</button> ') + '<button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-mode-merged="' + esc(s.mode || '') + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn secondary sm" type="button" data-sub-nodes-merged="' + esc(s.id) + '">发到节点</button> <button class="btn secondary sm" type="button" data-sub-rotate-uuid-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换 UUID</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'mergedsub') +
       '<p class="muted small">编辑只改勾选与内容，链接不变；每条订阅都有“复制”按钮，链接加密存在面板里，随时能重新复制；重新勾选生成（不填名称时同一选择重新生成会轮换；填了名称是新起一条，各归各人）。</p>';
     if (pg.totalPages > 1) wirePager(list, 'mergedsub', pg.cur, pg.totalPages, (p) => { mergedSubPage = p; loadMergedSubsList(); });
@@ -4876,7 +4897,8 @@ async function loadMergedSubsList() {
       if (!s) return;
       openSubEditModal({ kind: 'merged', id: s.id, name: s.name, selection: s.selection || [], mode: s.mode, expires_at: s.expires_at, traffic_limit_mb: s.traffic_limit_mb, traffic_limit_mode: s.traffic_limit_mode, reset_mode: s.reset_mode, reset_day: s.reset_day, group_id: s.group_id || '' });
     }));
-    $$('[data-sub-resume-merged]', list).forEach((b) => b.addEventListener('click', () => resumeSubTraffic('merged', b.dataset.subResumeMerged)));
+    $$('[data-sub-resume-merged]', list).forEach((b) => b.addEventListener('click', () => { const s = subs.find((x) => x.id === b.dataset.subResumeMerged); resumeSubTraffic('merged', b.dataset.subResumeMerged, s && s.disabled_reason); }));
+    $$('[data-sub-disable-merged]', list).forEach((b) => b.addEventListener('click', () => disableSubTraffic('merged', b.dataset.subDisableMerged)));
     $$('[data-sub-copy-merged]', list).forEach((b) => b.addEventListener('click', async () => {
       try {
         const r = await fetchSubLink('merged', b.dataset.subCopyMerged);

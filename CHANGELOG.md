@@ -525,3 +525,12 @@
 - 1.4.2 UI 清单：入站编辑改弹窗（点编辑弹 modal，不在页面最下方展开表单）；编辑可改全部字段，包括入站 tag（PUT 改 tag 即改名，同一条入站换名，不用删了重建；协议、端口、监听地址、SNI、SS 方法／密码、SOCKS5 用户名／密码、flow、倍率、启用都能改）；协议下拉框去掉 SS、SS2022、SOCKS5 的“（备用）”后缀，十个协议一视同仁；入站 tag 字段标签改成“入站 tag/名称”；SNI 字段用 datalist，内置预设 www.microsoft.com、www.apple.com、www.amazon.com、www.cloudflare.com、www.bing.com（用户亲口定的 UI 预设，写进前端是允许的唯一例外），可点选也可手填自定义；入站行加“一键换端口”按钮（随机抽 10000–60000 的空闲端口，避开同节点其它已启用入站的端口，换完走全表校验，bump 配置版本号，订阅自动更新）；管理面板模式也显示节点页（MANAGER_PAGES 加 'nodes'）。
 - 测试：go test -race 全过（新增 panel_1402_test.go：指派 nil／[]／null／非空语义与落盘区分、轮换只换已指派节点且两节点 UUID 不同、停用／恢复只 bump 已指派节点、一键换端口范围与不撞端口、SNI 同步含实测 bug 场景与 TLS 边界、三件套一致性、版本断言 1.4.2；gofmt 干净、go vet 过）；jsdom test-1402.js 全过（弹窗编辑、去（备用）、tag 标签、SNI datalist 预设、一键换端口按钮、管理模式节点页出现），test-1400.js 与 test-1401.js 对 1.4.2 回归全过。未测：真机（试点真机上改 SNI 后 agent 拉到的渲染应跟 SNI 走、Xray 应起来；停用／轮换后 60 秒内新连接被拒）、iPhone Safari。
 - 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。升完后试点节点把 SNI 改回 www.microsoft.com 保存一次，旧 dest 即同步过来，agent 下次拉取就用新 dest。
+### v1.4.3 更新
+
+- 订阅用户手动停用：订阅用户与合并订阅每行加“停用”按钮（未停用时显示，停用后变回“恢复”）。点停用要确认：停用后这个人的节点 60 秒内拿掉他、新连接被拒，订阅也取不到节点。
+- 新接口：POST /api/v1/subscriptions/users/{id}/disable（单用户）与 POST /api/v1/subscriptions/merged/{id}/disable（合并订阅），复用 disableUserForwards，不另发明停用标志；已停用时重复调幂等返回成功。审计写“手动停用订阅”，与自动停用的“自动停用订阅”区分。
+- 恢复修了一个分支：以前 resumeSub 只认超量停用（没开限流的直接报错“不用恢复”），手动停用的用户恢复不了；现在停用原因是“手动停用”时不走限流门，直接恢复。恢复的审计与确认文案也按原因区分（手动：手动停用已解除；超量：流量已回到上限以下）。
+- 徽标按原因显示：列表接口补 disabled_reason 字段，行上“已停用（手动停用）”与“已停用（流量用完）”分开显示；原因空的老记录 fallback 到流量用完。
+- 停用用户的订阅：与超量停用一致，订阅链接照常返回、但中转端口已死（endpoints 已撤），且停用的用户不再进后端节点配置（nodeBackendUsersForNode 跳过 Disabled 用户，agent 下次拉取经 AlterInbound 热删）；后端节点本身还不进订阅（切片 10 的事），本版不动订阅渲染。
+- 测试：go test -race 全过（新增 panel_1403_test.go：单用户与合并订阅的停用／恢复走接口、版本涨两次、节点用户列表进出、幂等、404／401、版本断言 1.4.3）；jsdom test-1403.js 全过（停用按钮、确认弹窗文案、手动停用徽标、流量用完徽标、老记录 fallback、合并订阅行、恢复确认文案），test-1400／1401／1402 对 1.4.3 回归全过。未测：真机（试点真机上点停用后 agent 日志应 users 7→6 与 AlterInbound -1、Xray PID 不变；点恢复后 users 6→7 与 +1）、iPhone Safari。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。切片 4 剩余的面板工作（流量上报与计量、错误日志上报、REALITY 指纹预设、下拉改真正下拉框）顺延到 1.4.4。
