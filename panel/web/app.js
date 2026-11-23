@@ -1918,6 +1918,57 @@ async function switchPanelMode(toManager) {
     setTimeout(() => location.reload(), 600);
   } catch (e) { toast('切换失败：' + e.message, 'err'); }
 }
+/* ---------- HTTPS 开关后跳协议（v1.3.48） ---------- */
+// 根因：api() 用的全是相对路径，请求都发往页面当前 origin；开关成功后
+// 只调 loadSettingsPage()、从来不跳协议，页面就还停在旧协议上，之后所有
+// 请求都握手失败报 Failed to fetch（面板本身没事）。所以开关成功后必须
+// 跳到新协议。目标地址：新协议 + location.host（端口不变）+ 当前
+// path+query，回到设置页。
+// 测试可覆盖的定时（默认：每 1 秒探测一次、最多等 30 秒；关闭成功后旧
+// origin 断开再多等 1.5 秒才跳，等新进程起来）。
+var httpsJumpPollMs = 1000;
+var httpsJumpTimeoutMs = 30000;
+var httpsJumpGraceMs = 1500;
+function httpsTargetURL(enable) {
+  return (enable ? 'https:' : 'http:') + '//' + location.host + location.pathname + location.search;
+}
+function httpsProbeURL(enable) {
+  return (enable ? 'https:' : 'http:') + '//' + location.host + '/api/v1/me';
+}
+// 跳转入口（包一层只为测试能 stub 掉真导航：jsdom 不实现 location 跳转）。
+function jumpToURL(url) { location.href = url; }
+// 探测新地址通了再跳。开启（→https）时从 http 页探 https 可行；关闭
+// （→http）时从 https 页探 http 会被浏览器当混合内容拦掉，所以改探旧
+// origin：旧 origin 一断（面板已重启）再等一个 grace 就跳。
+async function waitAndJumpHTTPS(enable) {
+  const target = httpsTargetURL(enable);
+  const scheme = enable ? 'https://' : 'http://';
+  const status = $('#https-status');
+  if (status) status.textContent = '面板正在重启并切换到 ' + scheme + '…，稍后自动跳转';
+  toast('面板正在重启并切换到 ' + scheme + '…，稍后自动跳转', 'ok');
+  const deadline = Date.now() + httpsJumpTimeoutMs;
+  if (enable) {
+    // 探新 origin：no-cors 下只要服务器有响应（哪怕 401/404）就算通，
+    // 握手/联网失败才会 reject。
+    while (Date.now() < deadline) {
+      try { await fetch(httpsProbeURL(true), { mode: 'no-cors' }); jumpToURL(target); return; }
+      catch (e) { /* 还没起来，继续等 */ }
+      await new Promise((r) => setTimeout(r, httpsJumpPollMs));
+    }
+  } else {
+    // 探旧 origin：还通说明面板没重启；一断说明已重启，再等 grace 才跳。
+    while (Date.now() < deadline) {
+      try { await fetch('/api/v1/me'); }
+      catch (e) { await new Promise((r) => setTimeout(r, httpsJumpGraceMs)); jumpToURL(target); return; }
+      await new Promise((r) => setTimeout(r, httpsJumpPollMs));
+    }
+  }
+  // 超时：给手动打开的链接（弹窗里可点）。
+  const m = openModal('<h2>面板还没起来</h2><div><p>等了 ' + Math.round(httpsJumpTimeoutMs / 1000) + ' 秒还没探测到 ' + scheme + ' 的面板，请稍后手动打开：</p>' +
+    '<p><a href="' + esc(target) + '" target="_blank" rel="noopener">' + esc(target) + '</a></p></div>' +
+    '<div class="btn-row"><button class="btn" id="https-jump-ok" type="button">知道了</button></div>');
+  onIn(m, '#https-jump-ok', 'click', () => closeModal());
+}
 function initSettings() {
   initSettingsTabs(); // v1.3.12：选项卡栏绑定 + 恢复上次选项卡
   initRemoteBackupTabs(); // v1.3.13：异地备份卡片内子选项卡绑定 + 恢复上次子选项卡
@@ -2022,6 +2073,12 @@ function initSettings() {
   on('#https-enable', 'click', async () => {
     const domain = $('#https-domain').value.trim();
     if (domain && !/^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(domain)) { toast('域名格式不正确', 'err'); return; }
+    const btn = $('#https-enable');
+    const oldText = btn ? btn.textContent : '';
+    // 带域名开启会同步跑 ACME DNS-01（DNS 传播 10 秒＋两轮最多各 150 秒轮询），
+    // 请求可能挂几分钟：先禁用按钮并给等待提示，别让用户以为卡死而重复点。
+    if (btn) { btn.disabled = true; if (domain) btn.textContent = '正在申请证书…'; }
+    if (domain) toast('正在申请证书，请稍等（可能需要几分钟），不要重复点击', 'ok');
     try {
       const r = await apiPost('/api/v1/settings/https', { enable: true, domain });
       // v1.3.14：真证书申请失败时后端回 warning（以前前端只读 r.msg，警告被吞了，
@@ -2029,8 +2086,11 @@ function initSettings() {
       // 失败原因还会常驻显示在 HTTPS 卡片上。
       if (r.warning) toast(r.warning, 'err');
       else toast('HTTPS 已开启' + (r.msg ? '：' + r.msg : ''), 'ok');
-      loadSettingsPage();
-    } catch (err) { toast('开启失败：' + err.message + '（已保留原有方式，面板未中断）', 'err'); }
+      await waitAndJumpHTTPS(true);
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = oldText; }
+      toast('开启失败：' + err.message + '（已保留原有方式，面板未中断）', 'err');
+    }
   });
   // v1.3.14：重试签发就是再调一次开启接口（域名取输入框当前值）。
   on('#https-retry', 'click', async () => {
@@ -2040,7 +2100,7 @@ function initSettings() {
   on('#https-disable', 'click', async () => {
     const ok = await confirmModal('关闭 HTTPS', '<p>关闭后回到 HTTP 明文访问。确定吗？</p>', '关闭 HTTPS');
     if (!ok) return;
-    try { await apiPost('/api/v1/settings/https', { enable: false, domain: '' }); toast('已关闭 HTTPS', 'ok'); loadSettingsPage(); }
+    try { await apiPost('/api/v1/settings/https', { enable: false, domain: '' }); toast('已关闭 HTTPS', 'ok'); await waitAndJumpHTTPS(false); }
     catch (err) { toast('操作失败：' + err.message, 'err'); }
   });
   on('#tg-form', 'submit', async (e) => {

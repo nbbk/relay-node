@@ -14,6 +14,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -254,6 +255,47 @@ func (a *acmeClient) get(url string) (int, []byte, error) {
 }
 
 // cloudflareTXT 写/删 _acme-challenge TXT 记录，返回记录 ID。
+// truncateCFBody 把 Cloudflare 的错误响应体截断到 500 字符再拼进报错里：
+// 响应体里才有真正原因，但整段贴会把 PanelCertLastErr 和前端 toast 撑爆。
+func truncateCFBody(b []byte) string {
+	s := strings.TrimSpace(string(b))
+	if r := []rune(s); len(r) > 500 {
+		s = string(r[:500]) + "…"
+	}
+	return s
+}
+
+// cleanupStaleChallengeTXT 删掉该 zone 里残留的 _acme-challenge.<域名> TXT
+// 记录，再建新的（v1.3.48）：上次签发留下的同名记录不删，再建会报 400。
+// 安全边界：只删名字与类型都完全对得上的记录，其它任何记录一律不动；
+// 删除是 best-effort——查不到、删失败都只记日志，继续走建新记录的流程，
+// 不因此报错（建记录失败时自有报错透出逻辑，会把真正原因报出来）。
+func cleanupStaleChallengeTXT(token, zoneID, name string) {
+	code, b, err := cfReq(token, "GET", "https://api.cloudflare.com/client/v4/zones/"+zoneID+"/dns_records?type=TXT&name="+name+"&per_page=100", nil)
+	if err != nil || code >= 300 {
+		log.Printf("清理残留的 ACME TXT 记录失败（跳过，继续建新记录）：%v", err)
+		return
+	}
+	var list struct {
+		Result []struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(b, &list) != nil {
+		return
+	}
+	for _, r := range list.Result {
+		if r.Type != "TXT" || r.Name != name {
+			continue
+		}
+		if code, _, err := cfReq(token, "DELETE", "https://api.cloudflare.com/client/v4/zones/"+zoneID+"/dns_records/"+r.ID, nil); err != nil || code >= 300 {
+			log.Printf("删残留的 ACME TXT 记录 %s 失败（跳过，继续建新记录）：%v", r.ID, err)
+		}
+	}
+}
+
 func (s *Server) cloudflareTXT(domain, value string, deleteID string) (string, error) {
 	token := s.cfg.CloudflareToken
 	if token == "" {
@@ -286,10 +328,19 @@ func (s *Server) cloudflareTXT(domain, value string, deleteID string) (string, e
 		return "", nil
 	}
 	name := "_acme-challenge." + domain
+	// 先清残留（v1.3.48）：上次签发留下的同名 TXT 记录不删，再建会报 400。
+	cleanupStaleChallengeTXT(token, zoneID, name)
 	code, b, err := cfReq(token, "POST", "https://api.cloudflare.com/client/v4/zones/"+zoneID+"/dns_records",
 		map[string]any{"type": "TXT", "name": name, "content": value, "ttl": 60})
-	if err != nil || code >= 300 {
-		return "", fmt.Errorf("Cloudflare 写 TXT 记录失败（HTTP %d）", code)
+	if err != nil {
+		return "", fmt.Errorf("Cloudflare 写 TXT 记录失败：%v", err)
+	}
+	if code >= 300 {
+		// 响应体里才有真正原因（记录已存在、权限不足、TTL 不合法等），
+		// 以前只报 HTTP 状态码，PanelCertLastErr 和前端 toast 都没法定位。
+		// 再追加一句手动指引：自动清理是第一道，万一它没成功，用户按这句
+		// 去 Cloudflare DNS 删残留记录再重试。
+		return "", fmt.Errorf("Cloudflare 写 TXT 记录失败（HTTP %d）：%s。请到 Cloudflare DNS 删除残留的 _acme-challenge.%s TXT 记录后再重试签发", code, truncateCFBody(b), domain)
 	}
 	var r struct {
 		Result struct {
@@ -302,7 +353,8 @@ func (s *Server) cloudflareTXT(domain, value string, deleteID string) (string, e
 	return "", fmt.Errorf("Cloudflare 返回解析失败")
 }
 
-func cfReq(token, method, url string, payload any) (int, []byte, error) {
+// cfReq 是包级变量只为测试能替身（默认就是调 Cloudflare API 的真实现）。
+var cfReq = func(token, method, url string, payload any) (int, []byte, error) {
 	var body io.Reader
 	if payload != nil {
 		b, _ := json.Marshal(payload)
