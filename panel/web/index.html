@@ -695,8 +695,9 @@
                 <button class="btn secondary sm" id="gateway-copy" type="button">复制代码</button>
                 <button class="btn secondary sm" id="gateway-check" type="button">检测网关</button>
               </div>
+              <div class="btn-row" id="gateway-downloads" style="margin-top:8px"></div>
               <div id="gateway-check-results" style="margin-top:8px"></div>
-              <p class="small">Worker 部署步骤：Cloudflare 后台 → Workers → 找到绑订阅对外域名那个 → Edit code → 粘贴代码 → Save and deploy。Caddy 容器：把 Caddyfile 与 docker-compose.yml 放同一目录，docker compose up -d。脚本直装：一条命令跑 install.sh。部署后订阅链接不变，令牌和参数都不变。</p>
+              <p class="small">Worker 部署步骤：Cloudflare 后台 → Workers → 找到绑订阅对外域名那个 → Edit code → 粘贴代码 → Save and deploy（用 wrangler 的话下好 worker.js 与 wrangler.toml 放同一目录再 wrangler deploy）。Caddy 容器：下面把 docker-compose.yml 与 Caddyfile 两个文件下好、放同一目录，命令在那个目录里执行，docker compose up -d。脚本直装：下好 install.sh，用 root 跑 sudo bash install.sh。部署后订阅链接不变，令牌和参数都不变。</p>
             </div>
           </div>
             </div>

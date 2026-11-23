@@ -1,7 +1,7 @@
 // 订阅网关 Cloudflare Worker（选项 A，现有部署的完整版）
 //
 // 三条路，全部挂在一个域名下：
-//   /sub/*                -> 面板回源 ORIGIN（订阅拉取）
+//   /<SUB_PATH>/* 与 /sub/* -> 面板回源 ORIGIN（订阅拉取）
 //   /api/v1/public-info    -> 面板回源 ORIGIN（公告）
 //   /client-config.json    -> 上游签名文件 CONFIG_UPSTREAM（例如 GitHub Raw）
 //
@@ -12,6 +12,10 @@
 //   ORIGIN          面板回源地址，例如 https://ccpanel.example.com:11111
 //                   协议必须跟面板当前状态一致：面板 HTTP 时填 http://，面板 HTTPS 时填 https://
 //                   面板开关 HTTPS 后要同步改这里（改完重新部署，不用改客户端）。
+//   SUB_PATH        面板自定义订阅路径段（面板 1.3.20 反特征），例如 x9f2；没改过就填 sub。
+//                   订阅路由同时接 SUB_PATH 与默认 /sub/：路径改了之后老链接还能走 /sub/，
+//                   新链接走 /<SUB_PATH>/，两条都转发到回源同路径。面板改了订阅路径后要同步改这里（改完重新部署）。
+//                   面板生成版：已按面板当前值填好，不用再填，面板改了路径后重新生成一次。
 //   CONFIG_UPSTREAM 签好的 client-config.json 的直链，例如
 //                   https://raw.githubusercontent.com/example/example/main/client-config.json
 //
@@ -24,10 +28,15 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const origin = (env.ORIGIN || "").replace(/\/$/, "");
+    // 订阅路径段：套件通用版用 env.SUB_PATH（默认 sub），面板生成版直接填面板当前值。
+    const subPath = (env.SUB_PATH || "sub").replace(/^\/+|\/+$/g, "") || "sub";
 
     let target = null;
-    if (url.pathname.startsWith("/sub/")) {
-      // 订阅拉取：路径里的令牌与查询参数原样带上
+    if (url.pathname.startsWith("/" + subPath + "/") || url.pathname.startsWith("/sub/")) {
+      // 订阅拉取：自定义路径与默认 /sub/ 都转发，路径里的令牌与查询参数原样带上。
+      // 自定义路径是反特征（面板 1.3.20，订阅路径可改）；/sub/ 是兜底——
+      // 2026-11-23 真机教训：新版 Worker 只写了 /sub/，面板订阅路径是自定义的
+      // /x9f2/，订阅经 Worker 全是 404、直连面板却是 200。两条都写就不会再断。
       target = origin + url.pathname + url.search;
     } else if (url.pathname === "/api/v1/public-info") {
       target = origin + url.pathname + url.search;

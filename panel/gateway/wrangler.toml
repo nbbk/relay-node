@@ -1,0 +1,16 @@
+# 订阅网关 Worker 的 wrangler 配置（示例）
+# 部署：npm i -g wrangler && wrangler deploy
+# 注意：不要把真实的面板地址写进公开仓库；正式用时把 ORIGIN 改成 wrangler secret
+# 或在 Cloudflare 后台 Settings -> Variables 里填（变量值在公开仓库里不可见）。
+
+name = "subscription-gateway"
+main = "worker.js"
+compatibility_date = "2026-11-23"
+
+[vars]
+# 面板回源地址：协议必须跟面板当前状态一致（面板 HTTP 填 http://，HTTPS 填 https://）
+ORIGIN = "https://ccpanel.example.com:11111"
+# 面板自定义订阅路径段（面板 1.3.20 反特征）：没改过填 sub，改了填改的值，例如 x9f2
+SUB_PATH = "sub"
+# 签好的 client-config.json 的直链（GitHub Raw 等）
+CONFIG_UPSTREAM = "https://raw.githubusercontent.com/example/example/main/client-config.json"

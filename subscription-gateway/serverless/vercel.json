@@ -1,0 +1,1 @@
+{"$schema":"https://openapi.vercel.sh/vercel.json","rewrites":[{"destination":"https://ccpanel.example.com:11111/sub/:path*","source":"/sub/:path*"},{"destination":"https://ccpanel.example.com:11111/api/v1/public-info","source":"/api/v1/public-info"},{"destination":"https://raw.githubusercontent.com/example/example/main/client-config.json","source":"/client-config.json"}]}

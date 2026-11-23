@@ -3807,6 +3807,22 @@ async function loadGatewayCode(type) {
   try {
     const r = await api('/api/v1/settings/gateway/code?type=' + encodeURIComponent(type));
     pre.textContent = r.content || '';
+    // 每个部署文件一个下载按钮（用已取到的内容生成 Blob 下，不用新接口）：
+    // Worker 是 worker.js＋wrangler.toml，Caddy 是 docker-compose.yml 与
+    // Caddyfile 两个，脚本直装是 install.sh 一个。
+    const dlBox = $('#gateway-downloads');
+    if (dlBox) {
+      dlBox.innerHTML = '';
+      (r.files || []).forEach((f) => {
+        if (!f || !f.name) return;
+        const b = document.createElement('button');
+        b.className = 'btn secondary sm'; b.type = 'button';
+        b.textContent = '下载 ' + f.name;
+        b.setAttribute('data-gateway-download', f.name);
+        b.addEventListener('click', () => downloadTextFile(f.name, f.content || ''));
+        dlBox.appendChild(b);
+      });
+    }
     const noteEl = $('#gateway-code-note');
     if (noteEl) {
       if (r.note) { noteEl.textContent = r.note; noteEl.classList.remove('hidden'); noteEl.hidden = false; }
@@ -3831,10 +3847,25 @@ async function checkGateway() {
     const label = { 'public-info': '公告', 'client-config': '远程配置', 'subscription': '订阅拉取' };
     box.innerHTML = r.checks.map((c) => {
       const st = c.ok ? '<b>通</b>' : '<span class="warn">不通</span>';
-      const extra = (c.name === 'subscription' && c.ok) ? '，' + (c.nodes || 0) + ' 个节点' : '';
       const ms = (c.ms != null) ? '（' + c.ms + 'ms）' : '';
+      if (c.name === 'subscription' && c.subs && c.subs.length) {
+        // 订阅那一项下分三行：每类一行，写清类型、状态与数量（中转/直连/其它）；
+        // 没有令牌的那类只报“无此类型订阅”，不算不通。通的那行直接显示理由，
+        // 理由里已写明节点数与分类（通，2 个节点（中转 1，直连 1））。
+        const rows = c.subs.map((s) => {
+          const name = esc(s.label || s.kind || '');
+          if (s.skipped) return '<div style="margin-left:16px">' + name + '：无此类型订阅</div>';
+          if (s.ok) return '<div style="margin-left:16px">' + name + '：' + esc(s.reason || '通') + '</div>';
+          return '<div style="margin-left:16px">' + name + '：<span class="warn">不通</span> —— ' + esc(s.reason || '') + '</div>';
+        }).join('');
+        return '<div>' + (label[c.name] || c.name) + '：' + st + ms + '</div>' + rows;
+      }
+      if (c.name === 'subscription' && c.ok) {
+        // 旧形状（没有 subs）：订阅通时直接显示理由。
+        return '<div>' + (label[c.name] || c.name) + '：' + st + ms + ' —— ' + esc(c.reason || '') + '</div>';
+      }
       const why = c.ok ? '' : ' —— ' + esc(c.reason || '');
-      return '<div>' + (label[c.name] || c.name) + '：' + st + extra + ms + why + '</div>';
+      return '<div>' + (label[c.name] || c.name) + '：' + st + ms + why + '</div>';
     }).join('');
   } catch (err) {
     box.innerHTML = '<span class="warn">检测失败：' + esc(err.message) + '</span>';

@@ -11,6 +11,7 @@
 #   GATEWAY_DOMAIN=example.com PANEL_ORIGIN=https://ccpanel.example.com:11111 bash install.sh
 #   GATEWAY_DOMAIN        网关域名（必填；须先把 A 记录指到这台服务器 IP）
 #   PANEL_ORIGIN          面板回源地址（默认 https://127.0.0.1:11111）
+#   SUB_PATH              面板自定义订阅路径段（默认 sub；改了填改的值，例如 x9f2；面板生成版已按面板当前值预填，不用再填）
 #   PANEL_SELF_SIGNED     面板证书是不是自签的（y/N，默认 N；自签时放行证书校验，有中间人风险）
 #   CONFIG_UPSTREAM       远程配置的上游直链（可空；填了会记下来供 update-config.sh 定时同步用）
 #   CADDY_VERSION         要装的 Caddy 版本（默认 2.10.2）
@@ -58,6 +59,12 @@ if [ -z "${PANEL_ORIGIN:-}" ]; then
 fi
 PANEL_ORIGIN="${PANEL_ORIGIN:-https://127.0.0.1:11111}"
 
+echo "面板自定义订阅路径段（面板 1.3.20 反特征，设置页订阅选项卡里改的那个值；没改过就直接回车就是默认值 sub，改了填改的值，例如 x9f2）："
+if [ -z "${SUB_PATH:-}" ]; then
+  read -r SUB_PATH
+fi
+SUB_PATH="${SUB_PATH:-sub}"
+
 echo "面板证书是不是自签的（自签时网关要放行证书校验，有中间人风险，仅过渡期用；直接回车就是默认值 N）："
 if [ -z "${PANEL_SELF_SIGNED:-}" ]; then
   read -r PANEL_SELF_SIGNED
@@ -77,6 +84,7 @@ CADDY_VERSION="${CADDY_VERSION_INPUT:-$CADDY_VERSION}"
 
 say "网关域名：$GATEWAY_DOMAIN"
 say "面板回源：$PANEL_ORIGIN"
+say "订阅路径：$SUB_PATH"
 say "面板自签：$PANEL_SELF_SIGNED"
 say "Caddy 版本：$CADDY_VERSION"
 
@@ -114,7 +122,9 @@ say "写 Caddyfile：$CADDYFILE"
 mkdir -p "$(dirname "$CADDYFILE")" "$CONFIG_DIR"
 cat > "$CADDYFILE" <<EOF
 # 订阅网关 Caddyfile（由 scripts/install.sh 生成；容器版见 caddy/Caddyfile，两者同款）
-# 三条路：/sub/* 与 /api/v1/public-info 反代到面板，/client-config.json 只读本地签名文件。
+# 三条路：/<SUB_PATH>/* 与 /sub/* 反代到面板，/api/v1/public-info 反代到面板，/client-config.json 只读本地签名文件。
+# 自定义订阅路径与默认 /sub/ 都接：2026-11-23 真机教训，只写 /sub/ 时面板订阅路径是自定义的
+# /x9f2/，订阅经网关全是 404、直连面板却是 200。SUB_PATH 没填时默认 sub，两条就是同一条路。
 # 注意：这里不做 gzip，client-config.json 要求字节精确，不压缩最稳妥。
 
 ${GATEWAY_DOMAIN} {
@@ -130,6 +140,17 @@ ${GATEWAY_DOMAIN} {
 	}
 
 	handle /api/v1/public-info {
+		reverse_proxy ${PANEL_ORIGIN} {
+			header_up Host {http.reverse_proxy.upstream.hostport}
+			# @SELF_SIGNED_BEGIN@
+			# transport http {
+			# 	tls_insecure_skip_verify
+			# }
+			# @SELF_SIGNED_END@
+		}
+	}
+
+	handle /${SUB_PATH}/* {
 		reverse_proxy ${PANEL_ORIGIN} {
 			header_up Host {http.reverse_proxy.upstream.hostport}
 			# @SELF_SIGNED_BEGIN@

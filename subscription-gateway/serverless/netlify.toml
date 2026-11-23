@@ -1,0 +1,22 @@
+# Netlify 一键部署（选项 E）：纯声明式跳转，不用写代码
+# 部署：把本目录连到 Netlify（或拖进 Netlify Drop），改下面三处的目标地址即可。
+# 注意：status = 200 表示反代（不是 301 跳转），浏览器地址栏不变；:splat 是通配部分。
+# 面板是自签证书时反代会失败（Netlify 要验上游证书），须先给面板签真证书。
+
+[[redirects]]
+  from = "/sub/*"
+  to = "https://ccpanel.example.com:11111/sub/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/v1/public-info"
+  to = "https://ccpanel.example.com:11111/api/v1/public-info"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/client-config.json"
+  to = "https://raw.githubusercontent.com/example/example/main/client-config.json"
+  status = 200
+  force = true

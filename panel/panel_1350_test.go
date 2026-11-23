@@ -55,7 +55,7 @@ func setGatewayCfg1350(s *Server, httpsOn bool, certDomain, publicDomain string)
 func TestGatewayCodeWorker1350(t *testing.T) {
 	s := newTestServer1350(t)
 	setGatewayCfg1350(s, true, "ccpanel.example.com", "gw.example.com")
-	filename, content, note, err := s.gatewayCode("worker")
+	filename, content, note, _, err := s.gatewayCode("worker")
 	if err != nil {
 		t.Fatalf("gatewayCode(worker): %v", err)
 	}
@@ -70,14 +70,16 @@ func TestGatewayCodeWorker1350(t *testing.T) {
 	}
 	if kit, ok := kitGatewayFile(t, "worker/worker.js"); ok {
 		want := strings.Replace(kit, `env.ORIGIN || ""`, `env.ORIGIN || "https://ccpanel.example.com:11111"`, 1)
+		// 订阅路径行整行换成填好值的常量（本测试里 SubPath 未设，主路径是默认 sub）。
+		want = strings.Replace(want, `const subPath = (env.SUB_PATH || "sub").replace(/^\/+|\/+$/g, "") || "sub";`, `const subPath = "sub";`, 1)
 		if content != want {
-			t.Fatal("生成的 worker.js 与套件模板不一致（除 ORIGIN 默认值外应逐字相同）")
+			t.Fatal("生成的 worker.js 与套件模板不一致（除 ORIGIN 默认值与订阅路径行外应逐字相同）")
 		}
 	}
 
 	// HTTP 面板：协议跟着走 http。
 	setGatewayCfg1350(s, false, "ccpanel.example.com", "gw.example.com")
-	_, content, _, err = s.gatewayCode("worker")
+	_, content, _, _, err = s.gatewayCode("worker")
 	if err != nil {
 		t.Fatalf("gatewayCode(worker/http): %v", err)
 	}
@@ -87,7 +89,7 @@ func TestGatewayCodeWorker1350(t *testing.T) {
 
 	// 没配证书域名：占位符 + 提示替换。
 	setGatewayCfg1350(s, true, "", "gw.example.com")
-	_, content, note, err = s.gatewayCode("worker")
+	_, content, note, _, err = s.gatewayCode("worker")
 	if err != nil {
 		t.Fatalf("gatewayCode(worker/无域名): %v", err)
 	}
@@ -99,7 +101,7 @@ func TestGatewayCodeWorker1350(t *testing.T) {
 	}
 
 	// 未知类型拒绝。
-	if _, _, _, err := s.gatewayCode("bogus"); err == nil {
+	if _, _, _, _, err := s.gatewayCode("bogus"); err == nil {
 		t.Fatal("未知 type 应报错")
 	}
 }
@@ -107,7 +109,7 @@ func TestGatewayCodeWorker1350(t *testing.T) {
 func TestGatewayCodeCaddy1350(t *testing.T) {
 	s := newTestServer1350(t)
 	setGatewayCfg1350(s, true, "ccpanel.example.com", "gw.example.com")
-	filename, content, note, err := s.gatewayCode("caddy")
+	filename, content, note, _, err := s.gatewayCode("caddy")
 	if err != nil {
 		t.Fatalf("gatewayCode(caddy): %v", err)
 	}
@@ -117,12 +119,13 @@ func TestGatewayCodeCaddy1350(t *testing.T) {
 	if note != "" {
 		t.Fatalf("值都填好了，note 应为空，实际 %q", note)
 	}
-	// 合并内容三节：docker-compose.yml、 Caddyfile、执行命令，按顺序出现。
+	// 合并内容四节：docker-compose.yml、Caddyfile、目录说明、执行命令，按顺序出现。
 	secCompose := strings.Index(content, "# ================= docker-compose.yml =================")
 	secCaddy := strings.Index(content, "# ================= Caddyfile =================")
+	secDir := strings.Index(content, "# ================= 目录说明 =================")
 	secCmd := strings.Index(content, "# ================= 执行命令 =================")
-	if secCompose < 0 || secCaddy < 0 || secCmd < 0 || !(secCompose < secCaddy && secCaddy < secCmd) {
-		t.Fatal("Caddy 档内容应按顺序分三节：docker-compose.yml、Caddyfile、执行命令")
+	if secCompose < 0 || secCaddy < 0 || secDir < 0 || secCmd < 0 || !(secCompose < secCaddy && secCaddy < secDir && secDir < secCmd) {
+		t.Fatal("Caddy 档内容应按顺序分四节：docker-compose.yml、Caddyfile、目录说明、执行命令")
 	}
 	// 执行命令 exact：建配置目录、放配置文件、up、两条自测。
 	for _, cmd := range []string{
@@ -155,6 +158,7 @@ func TestGatewayCodeCaddy1350(t *testing.T) {
 			{"{$GATEWAY_DOMAIN}", "gw.example.com"},
 			{"{$PANEL_ORIGIN}", "https://ccpanel.example.com:11111"},
 			{"{$CONFIG_DIR}", "/data/config"},
+			{"{$SUB_PATH}", "sub"},
 		} {
 			wantCaddy = strings.ReplaceAll(wantCaddy, kv[0], kv[1])
 		}
@@ -165,7 +169,7 @@ func TestGatewayCodeCaddy1350(t *testing.T) {
 
 	// 没填订阅对外域名：网关域名占位符 + 提示。
 	setGatewayCfg1350(s, true, "ccpanel.example.com", "")
-	_, content, note, err = s.gatewayCode("caddy")
+	_, content, note, _, err = s.gatewayCode("caddy")
 	if err != nil {
 		t.Fatalf("gatewayCode(caddy/无网关域名): %v", err)
 	}
@@ -177,7 +181,7 @@ func TestGatewayCodeCaddy1350(t *testing.T) {
 	}
 
 	// compose 不再是独立一档（已并进 caddy），未知类型拒绝。
-	if _, _, _, err := s.gatewayCode("compose"); err == nil {
+	if _, _, _, _, err := s.gatewayCode("compose"); err == nil {
 		t.Fatal("compose 已并进 caddy，单独传 compose 应报错")
 	}
 }
@@ -185,7 +189,7 @@ func TestGatewayCodeCaddy1350(t *testing.T) {
 func TestGatewayCodeInstall1350(t *testing.T) {
 	s := newTestServer1350(t)
 	setGatewayCfg1350(s, true, "ccpanel.example.com", "gw.example.com")
-	filename, content, note, err := s.gatewayCode("install")
+	filename, content, note, _, err := s.gatewayCode("install")
 	if err != nil {
 		t.Fatalf("gatewayCode(install): %v", err)
 	}
@@ -195,18 +199,20 @@ func TestGatewayCodeInstall1350(t *testing.T) {
 	if note != "" {
 		t.Fatalf("值都填好了，note 应为空，实际 %q", note)
 	}
-	// 合并内容两节：install.sh、执行命令，按顺序出现。
+	// 合并内容三节：install.sh、目录说明、执行命令，按顺序出现。
 	secScript := strings.Index(content, "# ================= install.sh =================")
+	secDir := strings.Index(content, "# ================= 目录说明 =================")
 	secCmd := strings.Index(content, "# ================= 执行命令 =================")
-	if secScript < 0 || secCmd < 0 || !(secScript < secCmd) {
-		t.Fatal("脚本档内容应按顺序分两节：install.sh、执行命令")
+	if secScript < 0 || secDir < 0 || secCmd < 0 || !(secScript < secDir && secDir < secCmd) {
+		t.Fatal("脚本档内容应按顺序分三节：install.sh、目录说明、执行命令")
 	}
 	// 执行命令 exact：交互、环境变量非交互、DRY_RUN 干跑、curl 一行到底。
+	// 正式安装必须用 root 跑（sudo），干跑不用。
 	for _, cmd := range []string{
-		"bash install.sh",
-		"GATEWAY_DOMAIN=gw.example.com PANEL_ORIGIN=https://ccpanel.example.com:11111 bash install.sh",
+		"sudo bash install.sh",
+		"sudo GATEWAY_DOMAIN=gw.example.com PANEL_ORIGIN=https://ccpanel.example.com:11111 SUB_PATH=sub bash install.sh",
 		"DRY_RUN=1 ROOT_DIR=/tmp/gw-dryrun bash install.sh",
-		"curl -fsSL https://example.com/subscription-gateway-kit/scripts/install.sh | bash",
+		"curl -fsSL https://example.com/subscription-gateway-kit/scripts/install.sh | sudo bash",
 	} {
 		if !strings.Contains(content, cmd) {
 			t.Fatalf("脚本档执行命令里缺了 %q", cmd)
@@ -214,14 +220,15 @@ func TestGatewayCodeInstall1350(t *testing.T) {
 	}
 	// 脚本档第一节：与套件逐字对照（除插入的默认值段外应逐字相同），且
 	// 必须是完整可执行的：bash -n 语法检查过。提取时跳过分节标题与
-	// “保存成”说明行，剩下的就是用户要保存的脚本本身。
+	// “保存成”说明行，到目录说明节为止，剩下的就是用户要保存的脚本本身。
 	scriptHeader := "# ================= install.sh =================\n# 保存成 install.sh（值已按面板当前值填好，交互提示保留）\n"
-	script := content[secScript+len(scriptHeader) : secCmd]
+	script := content[secScript+len(scriptHeader) : secDir]
 	kit, ok := kitGatewayFile(t, "scripts/install.sh")
 	if ok {
-		block := "\n# ---- 由面板生成：下面两行是按面板当前值填好的默认值（环境变量优先） ----\n" +
+		block := "\n# ---- 由面板生成：下面三行是按面板当前值填好的默认值（环境变量优先） ----\n" +
 			"GATEWAY_DOMAIN=\"${GATEWAY_DOMAIN:-gw.example.com}\"\n" +
-			"PANEL_ORIGIN=\"${PANEL_ORIGIN:-https://ccpanel.example.com:11111}\"\n"
+			"PANEL_ORIGIN=\"${PANEL_ORIGIN:-https://ccpanel.example.com:11111}\"\n" +
+			"SUB_PATH=\"${SUB_PATH:-sub}\"\n"
 		want := strings.Replace(kit, "set -euo pipefail\n", "set -euo pipefail\n"+block, 1)
 		if script != want {
 			t.Fatal("脚本档里的 install.sh 与套件不一致（除加一段默认值外应逐字相同）")
@@ -268,7 +275,7 @@ func TestGatewayCodeNoToken1350(t *testing.T) {
 	s.cfg.SubUsers = []SubUser{{ID: "u1", Name: "甲", TokenEnc: enc}}
 	s.cfg.MergedSubs = []MergedSub{{ID: "m1", TokenEnc: enc}}
 	for _, typ := range []string{"worker", "caddy", "install"} {
-		_, content, _, err := s.gatewayCode(typ)
+		_, content, _, _, err := s.gatewayCode(typ)
 		if err != nil {
 			t.Fatalf("gatewayCode(%s): %v", typ, err)
 		}
@@ -353,7 +360,7 @@ func TestGatewayCheckAllOK1350(t *testing.T) {
 	srv := httptest.NewServer(stub)
 	defer srv.Close()
 
-	items := s.runGatewayChecks(srv.URL, checkClient1350())
+	items := s.runGatewayChecks(srv.URL, "", checkClient1350())
 	if len(items) != 3 {
 		t.Fatalf("应返回 3 条检测，实际 %d 条", len(items))
 	}
@@ -405,7 +412,7 @@ func TestGatewayCheckOldWorker1350(t *testing.T) {
 	srv := httptest.NewServer(stub)
 	defer srv.Close()
 
-	items := s.runGatewayChecks(srv.URL, checkClient1350())
+	items := s.runGatewayChecks(srv.URL, "", checkClient1350())
 	if items[0].OK || !strings.Contains(items[0].Reason, "旧版") {
 		t.Fatalf("公告 404 Not Found 应报旧版 Worker，实际 ok=%v reason=%q", items[0].OK, items[0].Reason)
 	}
@@ -434,7 +441,7 @@ func TestGatewayCheckNoUpstream1350(t *testing.T) {
 	srv := httptest.NewServer(stub)
 	defer srv.Close()
 
-	items := s.runGatewayChecks(srv.URL, checkClient1350())
+	items := s.runGatewayChecks(srv.URL, "", checkClient1350())
 	if items[1].OK || !strings.Contains(items[1].Reason, "CONFIG_UPSTREAM") {
 		t.Fatalf("配置 404 upstream not configured 应报未配上游，实际 ok=%v reason=%q", items[1].OK, items[1].Reason)
 	}
@@ -458,7 +465,7 @@ func TestGatewayCheckNoSub1350(t *testing.T) {
 	srv := httptest.NewServer(stub)
 	defer srv.Close()
 
-	items := s.runGatewayChecks(srv.URL, checkClient1350())
+	items := s.runGatewayChecks(srv.URL, "", checkClient1350())
 	if items[2].OK || !strings.Contains(items[2].Reason, "无订阅可测") {
 		t.Fatalf("没有订阅时订阅项应报“无订阅可测”，实际 ok=%v reason=%q", items[2].OK, items[2].Reason)
 	}
