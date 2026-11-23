@@ -2914,6 +2914,7 @@ function initTraffic() {
 
 /* ---------- 集中管理（v1.2.0） ---------- */
 let centralRemotes = [];
+let centralNodeStats = null; // v1.3.52：集中管理页顶部的节点统计（/api/v1/central/remotes 回的 node_stats）
 let centralDetailId = null;
 let centralDetailPage = 1;
 let centralDetailLandings = [];
@@ -4193,11 +4194,46 @@ async function loadCentral() {
   try {
     const r = await api('/api/v1/central/remotes');
     centralRemotes = r.remotes || [];
+    centralNodeStats = r.node_stats || null;
+    renderCentralNodeStats();
     renderCentralSubTabs();
   } catch (e) {
+    centralNodeStats = null;
+    renderCentralNodeStats();
     const holder = $('#central-sub-panels');
     if (holder) holder.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
   }
+}
+
+// ---------- 节点统计（v1.3.52） ----------
+// 集中管理页顶部的节点统计：总数（中转/直连/其它）+ 按面板分行
+// （本机一行、每台远程面板一行）。只计数，不标在线/离线——在线探测
+// 只是 TCP 握手，标了会误导；远程失联时行上注明“离线，显示上次数据”，
+// 数字是上次拉到的，不清零；从没拉成功过的标“尚未拉取”。
+function centralNodeCountText(c) {
+  c = c || {};
+  const relay = Number(c.relay) || 0, direct = Number(c.direct) || 0, other = Number(c.other) || 0;
+  return '共 ' + (relay + direct + other) + ' 个（中转 ' + relay + ' · 直连 ' + direct + ' · 其它 ' + other + '）';
+}
+function centralNodeStatsRowHtml(row) {
+  const c = row.count || {};
+  const relay = Number(c.relay) || 0, direct = Number(c.direct) || 0, other = Number(c.other) || 0;
+  let note = '';
+  if (row.never_polled) note = '（尚未拉取）';
+  else if (row.offline) note = '（离线，显示上次数据）';
+  return '<div class="mini-row"><span>' + esc(row.name || '—') + '</span><b>' + (relay + direct + other) + ' 个（中转 ' + relay + ' · 直连 ' + direct + ' · 其它 ' + other + '）' + esc(note) + '</b></div>';
+}
+function renderCentralNodeStats() {
+  const box = $('#central-node-stats');
+  if (!box) return;
+  const st = centralNodeStats;
+  if (!st) { box.innerHTML = ''; return; }
+  let h = '<div class="card" style="margin-bottom:12px"><h3 style="margin:0 0 8px">节点统计</h3>' +
+    '<div class="mini-row"><span>全部节点</span><b>' + esc(centralNodeCountText(st.total)) + '</b></div>';
+  h += centralNodeStatsRowHtml(st.local || { name: '本机', count: {} });
+  (st.remotes || []).forEach((row) => { h += centralNodeStatsRowHtml(row); });
+  h += '<p class="small muted" style="margin:8px 0 0">只计数，不标在线/离线；数字跟着登记走，增删落地后刷新就变。</p></div>';
+  box.innerHTML = h;
 }
 
 // ---------- 集中管理详情弹窗（v1.3.4） ----------

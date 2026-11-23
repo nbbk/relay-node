@@ -143,6 +143,10 @@ type remoteLandingSummary struct {
 	Disabled          bool          `json:"disabled"`
 	DisabledReason    string        `json:"disabled_reason"`
 	SubNodes          []SubNode     `json:"subnodes"`
+	// Links 该落地的节点链接（remote central/status 下发的 links：中转+
+	// 直连，按 Label 分中转/直连/任意门；节点统计按它计数。远程面板本来
+	// 就下发，这里只是接住、不再丢掉，不新增轮询与探测）。
+	Links []labelledLink `json:"links"`
 }
 
 // centralAlertState 远程面板离线提醒的去重状态（复用延迟探测/监控告警的模式：
@@ -542,7 +546,10 @@ func (s *Server) handleCentralRemotesList(w http.ResponseWriter, r *http.Request
 			out = append(out, RemoteStatusSnapshot{ID: rem.ID, Name: rem.Name, BaseURL: rem.BaseURL, Landings: []remoteLandingSummary{}})
 		}
 	}
-	writeJSON(w, 200, okResp(map[string]any{"remotes": out}))
+	// 节点统计（v1.3.52）：总数 + 本机一行 + 每台远程一行，只计数；
+	// 本机读 nodes.txt、远程用快照里落地自带的 links，都是已有登记，
+	// 不新增轮询与探测。
+	writeJSON(w, 200, okResp(map[string]any{"remotes": out, "node_stats": computeNodeStats(s.localNodeCount(), out)}))
 }
 
 func (s *Server) handleCentralRemotesAdd(w http.ResponseWriter, r *http.Request) {
