@@ -437,3 +437,10 @@
   - 前端：fixIssue / centralFixIssue 收到 need_manual 时弹“需要手动处理”展示原因 + 指引，不再误 toast“修复已执行”；渲染 issues 时只有可修复的才画“一键修复”按钮，没有修复办法的（fix=manual，如指纹不一致）改成“查看原因”按钮，点开直接弹原因文案、不发修复请求。本地体检与远程体检两处同款逻辑。
 - 测试：go test -race 全过（443 个测试函数，1346 文件新增 16 个：NEEDS_UDP 计算与解析、删落地重排后值跟着走、编辑重建写回、use_udp 读写与同步、tls_unreachable 四档分流——被占用/没人监听/直连正常/直连也失败、udp_disabled 修复与已开着不再重启、补原始链接重算 NEEDS_UDP、check.sh --json 四档——跳过 UDP/报真因/直连正常/被占用、tls_unreachable 不再 400；版本断言同步改到 1.3.46；gofmt 干净、go vet 过）；jsdom test-1346.js 19 项全过（本地与远程体检的按钮渲染、查看原因、need_manual 弹窗、修复成功 toast）。check.sh 另有 9 档 bash 模拟验证全过（桩 ss/openssl/systemctl + 真 TCP 监听：跳过 UDP、use_udp 关着报真因、老 relay.conf 两档、TLS 直连正常/直连失败/SNI 问题/被 nginx 占用/realm 在监听但握手失败）。未测：真机、香港 2 真机复核、iPhone Safari、远程面板联调、干净机器。
 - 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。已装好的老 relay.conf 没有 NEEDS_UDP 标记，升级后下次加落地/编辑落地/补原始链接时面板会自动补上，在此之前 UDP 检查按旧行为走；中转机上 install.sh 新装的落地自带启发值。
+
+### v1.3.47 更新
+
+- 修删落地丢配置：删一个落地时 `rebuildRelayConfAfterDelete` 重建 relay.conf，会把其余落地的证书签发方式（CERT_MODE）与流量倍率（MULTIPLIER）丢掉——承载落地的结构里没有这两个字段，重建后的新编号块不写它们；更糟的是 `fieldKeys` 里也没有这两项，旧行以“非落地行”残留下来，编号重排后错配到别的落地（例如删 2 号后，3 号前移成 2 号，却背上了 2 号的倍率）。修法：按 1.3.46 接 NEEDS_UDP 的同款方式，把 CERT_MODE 与 MULTIPLIER 接进删落地重建的完整链路——进结构、写回、进 fieldKeys；删后其余落地的值原样保留、旧行不残留。回收站恢复同款问题一起修：恢复时只写回了 CERT_MODE，没写 MULTIPLIER（RecycleItem 里根本没存倍率），现在删除时把倍率存进回收站记录，恢复时写回（=1 不存键，默认；1.3.46 之前删进回收站的旧记录没存倍率，恢复按 1 算）。
+- 核查过的其它重写 relay.conf 的路径：编辑落地（`rebuildRelayConfForEdit`）本来就带 CERT_MODE 与 MULTIPLIER 写回，没丢；加落地、补原始链接、改任意门地址都是单行 `setRelayConfValue`/`setMultiplierLine`，只动一个键，不动其余字段；从备份整文件恢复是全量回写，不丢字段。以上均不丢值，不用修。
+- 测试：go test -race 全过（447 个测试函数，1347 文件新增 4 个：三落地删中间/删首个后 CERT_MODE 与 MULTIPLIER 跟着落地走且旧行不残留、fieldKeys 含这两项、编辑重建回归、回收站记录存倍率与恢复写回；版本断言同步改到 1.3.47；gofmt 干净、go vet 过）。未测：真机、iPhone Safari。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。已经丢掉的值不会自动恢复：升级后检查一下各落地的流量倍率与证书签发方式，丢了就重填（倍率在落地编辑页，证书签发方式在加落地/编辑落地时选）。另外：恢复落地时 PRESET、NAME、NEEDS_UDP 目前也不写回（恢复后是默认值），与本次无关，下一版再看。

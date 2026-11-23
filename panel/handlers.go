@@ -2322,7 +2322,7 @@ func endpointsForLanding(data []byte, landing string) string {
 // rebuildRelayConfAfterDelete 删落地后重建 relay.conf：被删编号之后的前移一位，LANDING_COUNT-1。
 func rebuildRelayConfAfterDelete(rc *RelayConf, delIndex int) []string {
 	// 收集各落地字段
-	type lf struct{ landing, isDomain, domain, cert, preset, mode, doorMode, ports, name, needsUDP string }
+	type lf struct{ landing, isDomain, domain, cert, certMode, multiplier, preset, mode, doorMode, ports, name, needsUDP string }
 	var list []lf
 	for _, l := range rc.Landings {
 		if l.Index == delIndex {
@@ -2333,7 +2333,7 @@ func rebuildRelayConfAfterDelete(rc *RelayConf, delIndex int) []string {
 			suffix = "_" + strconv.Itoa(l.Index)
 		}
 		get := func(f string) string { return rc.Raw[f+suffix] }
-		list = append(list, lf{get("LANDING"), get("LANDING_IS_DOMAIN"), get("DOMAIN"), get("CERT_DOMAIN"), get("PRESET"), get("MODE_NOTE"), get("MODE"), get("PORTS"), get("NAME"), get("NEEDS_UDP")})
+		list = append(list, lf{get("LANDING"), get("LANDING_IS_DOMAIN"), get("DOMAIN"), get("CERT_DOMAIN"), get("CERT_MODE"), get("MULTIPLIER"), get("PRESET"), get("MODE_NOTE"), get("MODE"), get("PORTS"), get("NAME"), get("NEEDS_UDP")})
 	}
 	// 保留非落地行
 	landingKeys := map[string]bool{}
@@ -2377,6 +2377,15 @@ func rebuildRelayConfAfterDelete(rc *RelayConf, delIndex int) []string {
 		// 不写的话删一个落地会把其余 door 落地的模式丢掉。
 		if f.doorMode != "" {
 			lines = append(lines, "MODE"+suffix+"="+f.doorMode)
+		}
+		// CERT_MODE 同理：只在有值时写回，删落地不丢其余落地的证书签发方式
+		if f.certMode != "" {
+			lines = append(lines, `CERT_MODE`+suffix+`="`+f.certMode+`"`)
+		}
+		// MULTIPLIER 同理：只在有值时写回（=1 不存键，见 setMultiplierLine；
+		// 这里原样带回存过的值，不重新归一化），删落地不丢其余落地的流量倍率
+		if f.multiplier != "" {
+			lines = append(lines, "MULTIPLIER"+suffix+"="+f.multiplier)
 		}
 		// NAME 同理：只在非空时写回，删落地不丢其余落地的名称
 		if f.name != "" {
@@ -2472,7 +2481,7 @@ func (s *Server) handleDeleteLanding(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	s.state.Recycle = append(s.state.Recycle, RecycleItem{
 		ID: id, Landing: l.Landing, Domain: l.Domain, Ports: l.PortsRaw, ModeNote: l.ModeNote, Mode: l.Mode,
-		CertDomain: l.CertDomain, CertMode: l.CertMode, DeletedAt: now.Format(time.RFC3339),
+		CertDomain: l.CertDomain, CertMode: l.CertMode, TrafficMultiplier: l.multiplier(), DeletedAt: now.Format(time.RFC3339),
 		ExpiresAt:        now.Add(7 * 24 * time.Hour).Format(time.RFC3339),
 		RelayConfSnippet: strings.Join(snippet, "\n"), ConfigEndpoints: endpointsText, Ext: ext,
 	})
@@ -2591,6 +2600,8 @@ func (s *Server) handleRecycleRestore(w http.ResponseWriter, r *http.Request) {
 	if it.CertMode != "" {
 		lines = append(lines, "CERT_MODE"+suffix+"=\""+it.CertMode+"\"")
 	}
+	// 恢复流量倍率（=1 不存键，默认；旧回收站记录没存时按 1 算，不写）
+	lines = setMultiplierLine(lines, suffix, it.TrafficMultiplier)
 	lines = setRelayConfValue(lines, "LANDING_COUNT", strconv.Itoa(newIdx))
 	// ALL_PORTS 合并
 	all := rc.AllPorts

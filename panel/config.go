@@ -368,19 +368,20 @@ type LandingExt struct {
 }
 
 type RecycleItem struct {
-	ID               string     `json:"id"`
-	Landing          string     `json:"landing"`
-	Domain           string     `json:"domain"`
-	Ports            string     `json:"ports"`
-	ModeNote         string     `json:"mode_note"`
-	Mode             string     `json:"mode"`
-	CertDomain       string     `json:"cert_domain"`
-	CertMode         string     `json:"cert_mode"`
-	DeletedAt        string     `json:"deleted_at"`
-	ExpiresAt        string     `json:"expires_at"`
-	RelayConfSnippet string     `json:"relay_conf_snippet"`
-	ConfigEndpoints  string     `json:"config_endpoints"`
-	Ext              LandingExt `json:"ext"`
+	ID                string     `json:"id"`
+	Landing           string     `json:"landing"`
+	Domain            string     `json:"domain"`
+	Ports             string     `json:"ports"`
+	ModeNote          string     `json:"mode_note"`
+	Mode              string     `json:"mode"`
+	CertDomain        string     `json:"cert_domain"`
+	CertMode          string     `json:"cert_mode"`
+	TrafficMultiplier float64    `json:"traffic_multiplier"`
+	DeletedAt         string     `json:"deleted_at"`
+	ExpiresAt         string     `json:"expires_at"`
+	RelayConfSnippet  string     `json:"relay_conf_snippet"`
+	ConfigEndpoints   string     `json:"config_endpoints"`
+	Ext               LandingExt `json:"ext"`
 }
 
 type PanelState struct {
@@ -606,7 +607,7 @@ func (rc *RelayConf) fieldKeys(index int) []string {
 	if index != 1 {
 		suffix = "_" + strconv.Itoa(index)
 	}
-	return []string{"LANDING" + suffix, "LANDING_IS_DOMAIN" + suffix, "DOMAIN" + suffix, "CERT_DOMAIN" + suffix, "PRESET" + suffix, "MODE_NOTE" + suffix, "MODE" + suffix, "PORTS" + suffix, "NAME" + suffix, "NEEDS_UDP" + suffix}
+	return []string{"LANDING" + suffix, "LANDING_IS_DOMAIN" + suffix, "DOMAIN" + suffix, "CERT_DOMAIN" + suffix, "CERT_MODE" + suffix, "MULTIPLIER" + suffix, "PRESET" + suffix, "MODE_NOTE" + suffix, "MODE" + suffix, "PORTS" + suffix, "NAME" + suffix, "NEEDS_UDP" + suffix}
 }
 
 // needsUDPKey NEEDS_UDP 键名（编号 1 用平铺键，>=2 用 _N 后缀，v1.3.46）。
