@@ -190,6 +190,7 @@ const PAGES = [
   { id: 'overview', title: '总览', icon: '🏠' },
   { id: 'add', title: '添加落地', icon: '➕' },
   { id: 'manage', title: '落地管理', icon: '🗂️' },
+  { id: 'nodes', title: '节点', icon: '🖧' },
   { id: 'links', title: '节点链接', icon: '🔗' },
   { id: 'certs', title: '证书', icon: '🔒' },
   { id: 'service', title: '服务与日志', icon: '⚙️' },
@@ -275,6 +276,7 @@ function loadPage(page) {
   stopLogsTimer();
   if (page === 'overview') return loadOverview();
   else if (page === 'manage') return loadManage();
+  else if (page === 'nodes') return loadNodes();
   else if (page === 'links') return loadLinks();
   else if (page === 'certs') return loadCerts();
   else if (page === 'service') return loadService();
@@ -949,6 +951,83 @@ async function loadRecycle(page) {
   } catch (e) {
     wrap.innerHTML = '<div class="empty">回收站不可用：' + esc(e.message) + '</div>';
   }
+}
+/* ---------- 节点（轻量节点后端，v1.4.0 切片 1） ---------- */
+function nodeHealthLabel(h) {
+  if (h === 'online') return '在线';
+  if (h === 'offline') return '离线';
+  return '尚未入网';
+}
+async function loadNodes() {
+  const wrap = $('#nodes-list');
+  if (!wrap) return;
+  try {
+    const r = await api('/api/v1/nodes');
+    const nodes = r.nodes || [];
+    if (!nodes.length) { wrap.innerHTML = '<div class="empty">还没有节点。上面填名字与地址，生成入网令牌后去新落地机上跑安装命令。</div>'; return; }
+    wrap.innerHTML = nodes.map((n) => '<div class="card" style="margin-bottom:12px"><div class="kv"><span>节点</span><b>' + esc(n.name || '') + '（' + esc(n.address || '') + '）</b></div>' +
+      '<div class="kv"><span>健康</span><b>' + esc(nodeHealthLabel(n.health)) + '</b></div>' +
+      '<div class="kv"><span>agent 版本</span><b>' + esc(n.agent_version || '—') + '</b></div>' +
+      '<div class="kv"><span>最后在线</span><b>' + esc(n.last_seen ? fmtDate(n.last_seen) : '—') + '</b></div>' +
+      '<div class="kv"><span>已应用配置版本</span><b>' + esc(String(n.config_version == null ? '—' : n.config_version)) + '</b></div>' +
+      '<div class="kv"><span>入网</span><b>' + (n.joined ? '已入网' : '未入网') + '</b></div>' +
+      '<div class="btn-row"><button class="btn secondary sm" type="button" data-regen="' + esc(String(n.id)) + '">重新生成入网令牌</button>' +
+      '<button class="btn danger sm" type="button" data-delnodes="' + esc(String(n.id)) + '" data-delname="' + esc(n.name || '') + '">删除</button></div></div>').join('');
+    $$('[data-regen]', wrap).forEach((b) => b.addEventListener('click', async () => {
+      try {
+        const r2 = await apiPost('/api/v1/nodes/' + encodeURIComponent(b.dataset.regen) + '/join-token', {});
+        showNodesOnce(r2.join_token || '', r2.install_command || '');
+        toast('已重新生成入网令牌，旧令牌立即作废', 'ok');
+      } catch (e) { toast('重新生成失败：' + e.message, 'err'); }
+    }));
+    $$('[data-delnodes]', wrap).forEach((b) => b.addEventListener('click', () => deleteNode(b.dataset.delnodes, b.dataset.delname)));
+  } catch (e) {
+    wrap.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
+  }
+}
+function showNodesOnce(token, cmd) {
+  const box = $('#nodes-once');
+  if (!box) return;
+  $('#nodes-once-token').value = token;
+  $('#nodes-once-cmd').value = cmd;
+  box.classList.remove('hidden'); box.hidden = false;
+  window.scrollTo(0, 0);
+}
+async function deleteNode(id, name) {
+  const ok = await confirmModal('删除节点', '<p>确定删除节点 <b>' + esc(name || id) + '</b> 吗？</p><p>删除后节点下次拉配置会拿到空配置并自停；流量历史保留。</p>', '删除', true);
+  if (!ok) return;
+  try {
+    await api('/api/v1/nodes/' + encodeURIComponent(id), { method: 'DELETE', body: JSON.stringify({}) });
+    toast('已删除', 'ok'); loadNodes();
+  } catch (e) {
+    if (String(e.message || '').indexOf('中转路由') !== -1) {
+      const ok2 = await confirmModal('有中转路由指向该节点', '<p>有中转路由指向该节点，一起删除这些路由吗？</p>', '一起删除', true);
+      if (!ok2) return;
+      try {
+        await api('/api/v1/nodes/' + encodeURIComponent(id), { method: 'DELETE', body: JSON.stringify({ delete_routes: true }) });
+        toast('已删除（路由一起删了）', 'ok'); loadNodes();
+      } catch (e2) { toast('删除失败：' + e2.message, 'err'); }
+      return;
+    }
+    toast('删除失败：' + e.message, 'err');
+  }
+}
+function initNodes() {
+  on('#nodes-create-form', 'submit', async (e) => {
+    e.preventDefault();
+    const name = $('#nodes-name').value.trim();
+    const address = $('#nodes-address').value.trim();
+    if (!name || !address) { toast('名字与地址都要填', 'err'); return; }
+    if (name.length > 64) { toast('节点名称不能超过 64 字', 'err'); return; }
+    try {
+      const r = await apiPost('/api/v1/nodes', { name, address });
+      showNodesOnce(r.join_token || '', r.install_command || '');
+      toast('节点已建，入网令牌只显示一次', 'ok');
+      loadNodes();
+    } catch (err) { toast('建节点失败：' + err.message, 'err'); }
+  });
+  on('#nodes-once-token-copy', 'click', (e) => copyText($('#nodes-once-token').value, e.target));
+  on('#nodes-once-cmd-copy', 'click', (e) => copyText($('#nodes-once-cmd').value, e.target));
 }
 async function deleteLanding(index) {
   const l = landingsCache.find((x) => x.index === index);
@@ -5321,6 +5400,7 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initFirewall);
   safeInit(initTraffic);
   safeInit(initCentral);
+  safeInit(initNodes); // v1.4.0：节点页建节点表单与复制按钮绑定
   let refreshing = false;
   const refreshBtn = on('#refresh-btn', 'click', async () => {
     if (refreshing || !refreshBtn) return; // 正在刷时再点无效

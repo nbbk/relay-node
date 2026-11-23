@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -221,7 +222,10 @@ func main() {
 		// 客户端登录监听（v1.3.45）：9870-9880，HTTPS，只服务 /api/v1/client/*。
 		// 自签证书时监听照常起，客户端证书校验过不了、连不上，这是契约预期行为。
 		s.startClientLoginListeners(tlsCert, tlsKey)
-		srv = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+		// 轻量节点后端（v1.4.0）：主监听要客户端证书（RequestClientCert——
+		// 只“要”不“强制”：没证书的浏览器与旧 agent 照常握手，校验在
+		// handleNodeConfigDispatch 里手工做，验不过就走旧接口）。
+		srv = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, TLSConfig: &tls.Config{ClientAuth: tls.RequestClientCert}}
 		log.Printf("relay-panel %s 监听 https://%s", Version, addr)
 		serveWithRetry(srv, tlsCert, tlsKey)
 		return

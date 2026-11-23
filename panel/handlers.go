@@ -166,7 +166,16 @@ func (s *Server) routes() http.Handler {
 	// 节点侧 agent（v1.3.30，D10）：rpt_ 令牌认证，与 central/* 同一套。
 	mux.HandleFunc("GET /api/v1/node/users", s.requireCentralToken(s.handleNodeUsers))
 	mux.HandleFunc("POST /api/v1/node/push", s.requireCentralToken(s.handleNodePush))
-	mux.HandleFunc("GET /api/v1/node/config", s.requireCentralToken(s.handleNodeConfig))
+	// GET /api/v1/node/config：v1.4.0 起按证书分流——带有效节点证书的
+	// 请求走轻量节点后端新配置，否则走旧 D10 接口（行为不变）。
+	mux.HandleFunc("GET /api/v1/node/config", s.handleNodeConfigDispatch)
+	// 轻量节点后端（v1.4.0，切片 1）：节点管理（会话认证）＋入网换证。
+	mux.HandleFunc("POST /api/v1/nodes", s.requireAuth(s.handleNodesCreate))
+	mux.HandleFunc("GET /api/v1/nodes", s.requireAuth(s.handleNodesList))
+	mux.HandleFunc("GET /api/v1/nodes/{id}", s.requireAuth(s.handleNodesGet))
+	mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.requireAuth(s.handleNodesDelete))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/join-token", s.requireAuth(s.handleNodesRegenJoinToken))
+	mux.HandleFunc("POST /api/v1/node-backend/join", s.handleNodeBackendJoin)
 	mux.HandleFunc("GET /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesList))
 	mux.HandleFunc("POST /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesAdd))
 	mux.HandleFunc("DELETE /api/v1/central/remotes/{id}", s.requireAuth(s.handleCentralRemotesDelete))

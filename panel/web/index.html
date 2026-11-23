@@ -170,6 +170,29 @@
         <div id="recycle-list"></div>
       </section>
 
+      <!-- 节点（轻量节点后端，v1.4.0 切片 1） -->
+      <section class="page" id="page-nodes">
+        <div class="page-head"><h1>节点</h1></div>
+        <p class="muted">轻量节点后端的落地节点：面板是唯一的事实来源，节点上的 agent 每 60 秒拉一次配置。旧落地（Docker＋Caddy＋Xray/sing-box）不在这里管，还在“落地管理”里。</p>
+        <div class="card">
+          <h2>入网新节点</h2>
+          <form id="nodes-create-form">
+            <div class="form-grid">
+              <div><label for="nodes-name">节点名称 <span class="hint">必填，最多 64 个字，如 新落地-01</span></label><input id="nodes-name" placeholder="新落地-01" maxlength="64" required></div>
+              <div><label for="nodes-address">节点地址 <span class="hint">必填，落地机的 IP 或域名</span></label><input id="nodes-address" placeholder="203.0.113.1" required></div>
+            </div>
+            <div class="btn-row"><button class="btn" type="submit">生成入网令牌</button></div>
+          </form>
+          <div id="nodes-once" class="hidden" hidden>
+            <div class="warn-box">入网令牌只显示一次，30 分钟过期，刷新页面后不再显示；请现在就复制安装命令去新落地机上跑。</div>
+            <div><label for="nodes-once-token">入网令牌</label><input id="nodes-once-token" readonly><div class="btn-row"><button class="btn secondary sm" type="button" id="nodes-once-token-copy">复制令牌</button></div></div>
+            <div><label for="nodes-once-cmd">一键安装命令 <span class="hint">在新落地机上以 root 跑这一行</span></label><input id="nodes-once-cmd" readonly><div class="btn-row"><button class="btn secondary sm" type="button" id="nodes-once-cmd-copy">复制安装命令</button></div></div>
+          </div>
+        </div>
+        <h2 style="margin-top:20px">节点列表</h2>
+        <div id="nodes-list"></div>
+      </section>
+
       <!-- 节点链接 -->
       <section class="page" id="page-links">
         <div class="page-head"><h1>节点链接</h1></div>

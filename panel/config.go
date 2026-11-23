@@ -750,6 +750,7 @@ type Server struct {
 	traffic               *trafficStore
 	userTraffic           *userTrafficStore  // 每订阅流量累计（v1.3.25，PANEL_HOME/user_traffic.json）
 	nodePushSeen          *nodePushSeenStore // 节点侧推送去重（v1.3.30，PANEL_HOME/node_push_seen.json）
+	nodes                 *nodeBackendStore  // 轻量节点后端（v1.4.0，PANEL_HOME/nodes.json）
 	trafficErrMu          sync.Mutex         // 流量采样失败记录锁（v1.3.27：失败不再静默）
 	trafficErrMsg         string             // 最近一次流量采样/建链失败原因（空 = 正常）
 	trafficErrAt          time.Time
@@ -794,7 +795,7 @@ func newServer(env Env) (*Server, error) {
 		// 测试环境 REALM_DIR 可能不可写目录已存在则忽略
 		_ = os.MkdirAll(env.RealmDir, 0o755)
 	}
-	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), clientSessions: newClientSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), userTraffic: newUserTrafficStore(filepath.Join(env.PanelHome, "user_traffic.json")), nodePushSeen: newNodePushSeenStore(filepath.Join(env.PanelHome, "node_push_seen.json")), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}, centralUsersFailAudit: map[string]time.Time{}, centralUserUsage: map[string]*centralUserUsage{}, subFails: map[string]*subFailState{}}
+	s := &Server{env: env, cfgPath: filepath.Join(env.PanelHome, "config.json"), sessions: newSessionStore(), clientSessions: newClientSessionStore(), traffic: newTrafficStore(filepath.Join(env.PanelHome, "traffic.json")), userTraffic: newUserTrafficStore(filepath.Join(env.PanelHome, "user_traffic.json")), nodePushSeen: newNodePushSeenStore(filepath.Join(env.PanelHome, "node_push_seen.json")), nodes: newNodeBackendStore(env.PanelHome), lastHealthOK: true, monitorAlerts: map[string]*monitorAlertState{}, latency: newLatencyStore(filepath.Join(env.PanelHome, "latency.json")), latencyAlerts: map[string]*latencyAlertState{}, centralCache: map[string]*RemoteStatusSnapshot{}, centralAlert: map[string]*centralAlertState{}, centralUsersFailAudit: map[string]time.Time{}, centralUserUsage: map[string]*centralUserUsage{}, subFails: map[string]*subFailState{}}
 	if err := s.loadConfig(); err != nil {
 		return nil, err
 	}
@@ -804,6 +805,7 @@ func newServer(env Env) (*Server, error) {
 	s.traffic.load()
 	s.userTraffic.load()
 	s.nodePushSeen.load()
+	s.nodes.load()
 	s.latency.load()
 	return s, nil
 }
