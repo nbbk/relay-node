@@ -960,6 +960,13 @@ function nodeHealthLabel(h) {
   if (h === 'offline') return '离线';
   return '尚未入网';
 }
+// 健康圆点（v1.4.5）：在线绿点、离线红点、尚未入网灰点；与文字同义，
+// 颜色只做一眼区分，不替代文字（色弱用户仍能读文字）。
+function nodeHealthDot(h) {
+  if (h === 'online') return '<span class="dot green"></span>';
+  if (h === 'offline') return '<span class="dot red"></span>';
+  return '<span class="dot grey"></span>';
+}
 async function loadNodes() {
   const wrap = $('#nodes-list');
   if (!wrap) return;
@@ -968,7 +975,7 @@ async function loadNodes() {
     const nodes = r.nodes || [];
     if (!nodes.length) { wrap.innerHTML = '<div class="empty">还没有节点。上面填名字与地址，生成入网令牌后去新落地机上跑安装命令。</div>'; return; }
     wrap.innerHTML = nodes.map((n) => '<div class="card" style="margin-bottom:12px"><div class="kv"><span>节点</span><b>' + esc(n.name || '') + '（' + esc(n.address || '') + '）</b></div>' +
-      '<div class="kv"><span>健康</span><b>' + esc(nodeHealthLabel(n.health)) + '</b></div>' +
+      '<div class="kv"><span>健康</span><b>' + nodeHealthDot(n.health) + esc(nodeHealthLabel(n.health)) + '</b></div>' +
       '<div class="kv"><span>上报健康</span><b>' + esc((n.backend_health && n.backend_health.detail) || '尚未上报') + '</b></div>' +
       '<div class="kv"><span>agent 版本</span><b>' + esc(n.agent_version || '—') + '</b></div>' +
       '<div class="kv"><span>最后在线</span><b>' + esc(n.last_seen ? fmtDate(n.last_seen) : '—') + '</b></div>' +
@@ -1014,7 +1021,7 @@ async function openNodeDetailModal(nodeId, nodeName) {
   const inbounds = tr.inbounds || [];
   const m = openModal('<h2>节点详情：' + esc(nodeName || n.name || nodeId) + '</h2>' +
     '<h3>上报健康</h3>' +
-    '<div class="kv"><span>状态</span><b>' + esc(bh.detail || '尚未上报') + '</b></div>' +
+    '<div class="kv"><span>状态</span><b>' + nodeHealthDot(bh.status) + esc(bh.detail || '尚未上报') + '</b></div>' +
     '<div class="kv"><span>最后上报</span><b>' + esc(bh.last_traffic_at ? fmtDate(typeof bh.last_traffic_at === 'number' ? bh.last_traffic_at * 1000 : bh.last_traffic_at) : '—') + '</b></div>' +
     (bh.last_error ? '<div class="kv"><span>最后错误</span><b>' + esc(bh.last_error) + '</b></div>' : '') +
     '<div class="kv"><span>Xray 重启次数</span><b>' + esc(String(bh.xray_restarts == null ? '—' : bh.xray_restarts)) + '</b></div>' +
