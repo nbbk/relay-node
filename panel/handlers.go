@@ -183,6 +183,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/nodes/{id}/inbounds/{inbound_id}", s.requireAuth(s.handleNodeInboundsDelete))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/inbounds/default-trio", s.requireAuth(s.handleNodeInboundsDefaultTrio))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/inbounds/{inbound_id}/rotate-reality-key", s.requireAuth(s.handleNodeInboundRotateRealityKey))
+	// 轻量节点后端（v1.4.2，切片 3）：一键换端口＋每节点用户指派＋轮换 UUID（会话认证）。
+	mux.HandleFunc("POST /api/v1/nodes/{id}/inbounds/{inbound_id}/change-port", s.requireAuth(s.handleNodeInboundChangePort))
+	mux.HandleFunc("GET /api/v1/nodes/{id}/users", s.requireAuth(s.handleNodeUsersList))
+	mux.HandleFunc("PUT /api/v1/nodes/{id}/users", s.requireAuth(s.handleNodeUsersUpdate))
+	mux.HandleFunc("POST /api/v1/users/{user_id}/rotate-uuid", s.requireAuth(s.handleUserRotateNodeUUID))
 	mux.HandleFunc("GET /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesList))
 	mux.HandleFunc("POST /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesAdd))
 	mux.HandleFunc("DELETE /api/v1/central/remotes/{id}", s.requireAuth(s.handleCentralRemotesDelete))

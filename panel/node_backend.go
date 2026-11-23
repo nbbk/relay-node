@@ -53,19 +53,26 @@ const (
 
 // BackendNode 一个后端节点（§4.6 字段＋入网字段）。
 type BackendNode struct {
-	ID               int64         `json:"id"`
-	Name             string        `json:"name"`
-	Address          string        `json:"address"`
-	AgentVersion     string        `json:"agent_version"`
-	XrayVersion      string        `json:"xray_version"`
-	SingBoxVersion   string        `json:"singbox_version"`
-	LastSeen         int64         `json:"last_seen"` // unix 秒，0＝从没拉过配置
-	ConfigVersion    int64         `json:"config_version"`
-	Inbounds         []NodeInbound `json:"inbounds,omitempty"` // §4.3，切片 1 恒为空
-	JoinTokenHash    string        `json:"join_token_hash,omitempty"`
-	JoinTokenExpires int64         `json:"join_token_expires_at"`
-	Joined           bool          `json:"joined"`
-	CreatedAt        int64         `json:"created_at"`
+	ID             int64         `json:"id"`
+	Name           string        `json:"name"`
+	Address        string        `json:"address"`
+	AgentVersion   string        `json:"agent_version"`
+	XrayVersion    string        `json:"xray_version"`
+	SingBoxVersion string        `json:"singbox_version"`
+	LastSeen       int64         `json:"last_seen"` // unix 秒，0＝从没拉过配置
+	ConfigVersion  int64         `json:"config_version"`
+	Inbounds       []NodeInbound `json:"inbounds,omitempty"` // §4.3，切片 1 恒为空
+	// UserIDs 每节点用户指派（v1.4.2，切片 3）：存用户键
+	// "subuser:su-…" / "merged:ms-…"（见 nodeBackendUsersForNode）。
+	// 语义：nil = 全部未停用用户（切片 2 行为，已有节点不受影响）；
+	// 非 nil = 只发这些用户；空数组 [] = 一个不发。
+	// 注意：字段不能加 omitempty——nil 要落盘成 null、[] 要落盘成 []，
+	// 两者在 nodes.json 里必须分得清，否则“全部”与“一个不发”会混掉。
+	UserIDs          []string `json:"user_ids"`
+	JoinTokenHash    string   `json:"join_token_hash,omitempty"`
+	JoinTokenExpires int64    `json:"join_token_expires_at"`
+	Joined           bool     `json:"joined"`
+	CreatedAt        int64    `json:"created_at"`
 }
 
 // nodeHealth 健康：online／offline／never（§4.6 口径）。
@@ -513,9 +520,24 @@ func (n *nodeBackendStore) configDocOf(node *BackendNode, users []NodeConfigUser
 	}
 }
 
-// nodeBackendUsersForNode 该节点的用户列表（切片 2：全部未停用的订阅
-// 用户都上节点；按节点发是切片 3 的事）。UUID 按节点地址取 NodeUUIDs，
-// 缺失时现生成并写回 config（只补不剪，与 ensureNodeUUIDs 同款语义）。
+// nodeHasUser 该节点发不发这个用户（v1.4.2，切片 3）：
+// UserIDs 为 nil = 全部用户；非 nil = 只看列表里有没有这个键。
+func nodeHasUser(node *BackendNode, key string) bool {
+	if node.UserIDs == nil {
+		return true
+	}
+	for _, k := range node.UserIDs {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
+// nodeBackendUsersForNode 该节点的用户列表（v1.4.2，切片 3：按
+// BackendNode.UserIDs 指派过滤；nil = 全部未停用用户，保留切片 2
+// 行为）。UUID 按节点地址取 NodeUUIDs，缺失时现生成并写回 config
+// （只补不剪，与 ensureNodeUUIDs 同款语义）。
 // 调用方须持有 opMu（写 config 用）；返回 changed 表示 config 被改过，
 // 调用方负责 saveConfig 落盘。
 func (s *Server) nodeBackendUsersForNode(node *BackendNode) ([]NodeConfigUser, bool) {
@@ -524,6 +546,9 @@ func (s *Server) nodeBackendUsersForNode(node *BackendNode) ([]NodeConfigUser, b
 	for i := range s.cfg.SubUsers {
 		u := &s.cfg.SubUsers[i]
 		if u.Disabled {
+			continue
+		}
+		if !nodeHasUser(node, userSubKey("subuser", u.ID)) {
 			continue
 		}
 		uuids, c := ensureNodeUUIDs(u.NodeUUIDs, []string{node.Address})
@@ -540,6 +565,9 @@ func (s *Server) nodeBackendUsersForNode(node *BackendNode) ([]NodeConfigUser, b
 	for i := range s.cfg.MergedSubs {
 		m := &s.cfg.MergedSubs[i]
 		if m.Disabled {
+			continue
+		}
+		if !nodeHasUser(node, userSubKey("merged", m.ID)) {
 			continue
 		}
 		uuids, c := ensureNodeUUIDs(m.NodeUUIDs, []string{node.Address})
@@ -604,6 +632,9 @@ func (s *Server) handleNodesCreate(w http.ResponseWriter, r *http.Request) {
 		Address:          addr,
 		ConfigVersion:    1,
 		Inbounds:         []NodeInbound{},
+		// UserIDs 显式空（§5.3：老用户不自动上新节点，须在“发到节点”
+		// 里手动勾；nil = 全部用户只留给 1.4.2 之前建的老节点）。
+		UserIDs:          []string{},
 		JoinTokenHash:    hashJoinToken(token),
 		JoinTokenExpires: time.Now().Add(nodeBackendJoinTokenTTL).Unix(),
 		CreatedAt:        time.Now().Unix(),

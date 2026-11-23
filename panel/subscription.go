@@ -2074,6 +2074,8 @@ func (s *Server) handleSubUsersDelete(w http.ResponseWriter, r *http.Request) {
 			// （本机 + 各远程面板）。
 			s.opMu.Lock()
 			recErr := s.removeUserForwards("subuser", id)
+			// 切片 3：删用户会改变节点上的有效用户集合，bump 已指派该用户的节点。
+			s.bumpBackendNodesForUserLocked(userSubKey("subuser", id))
 			s.opMu.Unlock()
 			var warns []string
 			if recErr != nil {
@@ -2933,6 +2935,8 @@ func (s *Server) handleMergedSubsDelete(w http.ResponseWriter, r *http.Request) 
 			// （本机 + 各远程面板）。
 			s.opMu.Lock()
 			recErr := s.removeUserForwards("merged", id)
+			// 切片 3：删用户会改变节点上的有效用户集合，bump 已指派该用户的节点。
+			s.bumpBackendNodesForUserLocked(userSubKey("merged", id))
 			s.opMu.Unlock()
 			var warns []string
 			if recErr != nil {

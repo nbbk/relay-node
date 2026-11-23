@@ -464,7 +464,19 @@ func TestNodeBackendUsers1401(t *testing.T) {
 	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: "su-test2", Name: "停用用户", Disabled: true})
 	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: "ms-test1", Name: "合并用户"})
 
+	// 新建节点默认一个用户不发（§5.3：老用户不自动上新节点，须手动勾）。
 	users, changed := s.nodeBackendUsersForNode(node)
+	if changed {
+		t.Fatalf("新建节点默认不发用户，不应生成 UUID（changed 应 false）")
+	}
+	if len(users) != 0 {
+		t.Fatalf("新建节点默认一个用户不发，实际 %d", len(users))
+	}
+	// 指派两个用户后才下发。
+	if code, body := authed1400(t, h, cookie, "PUT", "/api/v1/nodes/1/users", `{"user_ids":["subuser:su-test1","merged:ms-test1"]}`); code != 200 {
+		t.Fatalf("指派应 200，实际 %d：%s", code, body)
+	}
+	users, changed = s.nodeBackendUsersForNode(node)
 	if !changed {
 		t.Fatalf("第一次取用户应生成新 UUID（changed=true）")
 	}
@@ -548,7 +560,7 @@ func TestInboundListen1401(t *testing.T) {
 // ---------- 9. 版本断言 ----------
 
 func TestVersion1401(t *testing.T) {
-	if Version != "1.4.1" {
-		t.Fatalf("VERSION 应是 1.4.1，实际 %q", Version)
+	if Version != "1.4.2" {
+		t.Fatalf("VERSION 应是 1.4.2，实际 %q", Version)
 	}
 }

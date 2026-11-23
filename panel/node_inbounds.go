@@ -23,6 +23,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"strconv"
@@ -55,6 +56,33 @@ func newRealityShortID() string {
 		panic("生成 REALITY short id 失败：" + err.Error())
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// syncRealitySNIFields REALITY/XHTTP 入站的 SNI 同步（v1.4.2，修 SNI
+// 编辑不同步）：SNI 是唯一事实来源，RealityDest 与 RealityServerName
+// 都从 SNI 派生（dest = SNI:443，serverNames = SNI 去端口后的主机名）。
+// 只对 transport 为 reality/xhttp 的入站做；TLS 入站的 SNI 有独立语义，
+// 不动。新建与编辑都调：旧数据（SNI 改了、dest 还停在旧值）下次编辑即
+// 自愈。agent 渲染 dest/serverNames 用的是这两个字段，不用 SNI，
+// 不同步就会出现“列表显示新 SNI、节点实际跑的还是旧 dest”的断服。
+func syncRealitySNIFields(in *NodeInbound) {
+	if in.Transport != "reality" && in.Transport != "xhttp" {
+		return
+	}
+	sni := strings.TrimSpace(in.SNI)
+	if sni == "" {
+		return
+	}
+	host := sni
+	if h, _, err := net.SplitHostPort(sni); err == nil && h != "" {
+		host = h
+	}
+	in.RealityServerName = host
+	if strings.Contains(sni, ":") {
+		in.RealityDest = sni
+	} else {
+		in.RealityDest = sni + ":443"
+	}
 }
 
 // ---------- 入站校验 ----------
@@ -359,13 +387,15 @@ func (s *Server) handleNodeInboundsCreate(w http.ResponseWriter, r *http.Request
 	}
 	in := NodeInbound{NodeID: id, Enabled: true}
 	applyInboundRequest(&in, req, true)
-	// REALITY 入站没带 SNI／dest 时填占位默认值（真实值部署时再改）。
+	// REALITY 入站没带 SNI／dest 时填占位默认值（真实值部署时再改），
+	// 再从 SNI 同步 dest 与 serverNames（SNI 是唯一事实来源，v1.4.2）。
 	if (in.Transport == "reality" || in.Transport == "xhttp") && in.SNI == "" {
 		in.SNI = realityDefaultSNI
 	}
 	if (in.Transport == "reality" || in.Transport == "xhttp") && in.RealityDest == "" {
 		in.RealityDest = realityDefaultDest
 	}
+	syncRealitySNIFields(&in)
 	// REALITY 入站新建时生成密钥对。
 	if in.Transport == "reality" || in.Transport == "xhttp" {
 		priv, pub, err := generateRealityKeypair()
@@ -376,9 +406,6 @@ func (s *Server) handleNodeInboundsCreate(w http.ResponseWriter, r *http.Request
 		in.RealityPrivateKey = priv
 		in.RealityPublicKey = pub
 		in.RealityShortID = newRealityShortID()
-	}
-	if in.RealityServerName == "" && (in.Transport == "reality" || in.Transport == "xhttp") {
-		in.RealityServerName = in.SNI
 	}
 	in.InboundID = s.nodes.nextInboundIDLocked()
 	candidate := append(append([]NodeInbound{}, node.Inbounds...), in)
@@ -439,6 +466,10 @@ func (s *Server) handleNodeInboundsUpdate(w http.ResponseWriter, r *http.Request
 	}
 	updated := node.Inbounds[idx]
 	applyInboundRequest(&updated, req, false)
+	// SNI 是唯一事实来源：REALITY/XHTTP 入站改 SNI 时 dest 与
+	// serverNames 跟着同步（v1.4.2 修 SNI 编辑不同步；只改端口等
+	// 其它字段时也同步一次，旧数据即自愈）。
+	syncRealitySNIFields(&updated)
 	candidate := append([]NodeInbound{}, node.Inbounds...)
 	candidate[idx] = updated
 	if msg := validateInboundList(candidate); msg != "" {
@@ -666,5 +697,97 @@ func (s *Server) handleNodeInboundRotateRealityKey(w http.ResponseWriter, r *htt
 	writeJSON(w, 200, okResp(map[string]any{
 		"inbound": sanitizedInbound(*in),
 		"note":    "密钥已换，旧订阅链接失效，用户须重新导入",
+	}))
+}
+
+// ---------- 一键换端口（v1.4.2，切片 3） ----------
+
+// randomFreeInboundPort 在 10000–60000 里随机抽一个空闲端口：避开
+// 同节点其它已启用入站占的端口（TCP 与 UDP 端口是两个名字空间，这里
+// 从严：两个都避开，换出来的端口一定不撞）；抽 100 次抽不到就报错，
+// 调用方直接 500。特权端口（<1024）不抽，443 不在抽取范围里。
+func randomFreeInboundPort(inbounds []NodeInbound, excludeID int64) (int, error) {
+	used := map[int]bool{}
+	for _, in := range inbounds {
+		if in.InboundID == excludeID || !in.Enabled {
+			continue
+		}
+		used[in.Port] = true
+	}
+	for i := 0; i < 100; i++ {
+		n, err := rand.Int(rand.Reader, big.NewInt(50001))
+		if err != nil {
+			return 0, err
+		}
+		port := 10000 + int(n.Int64())
+		if !used[port] {
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("抽 100 次没抽到空闲端口")
+}
+
+// handleNodeInboundChangePort POST /api/v1/nodes/{id}/inbounds/{inbound_id}/change-port：
+// 一键换端口。给该入站换一个随机空闲端口（避开已占用端口，换完走
+// validateInboundList 全表校验——443 冲突等一样拦得住），bump 配置
+// 版本号，节点 60 秒内应用；订阅按配置渲染，自动跟着更新，不用另做。
+func (s *Server) handleNodeInboundChangePort(w http.ResponseWriter, r *http.Request) {
+	id, ok := nodeIDFromPath(r)
+	if !ok {
+		writeJSON(w, 400, errResp("节点 id 不对"))
+		return
+	}
+	inboundID, err := strconv.ParseInt(r.PathValue("inbound_id"), 10, 64)
+	if err != nil || inboundID <= 0 {
+		writeJSON(w, 400, errResp("入站 id 不对"))
+		return
+	}
+	if !s.tryOpLock(w) {
+		return
+	}
+	defer s.opMu.Unlock()
+	s.nodes.mu.Lock()
+	defer s.nodes.mu.Unlock()
+	node := s.nodes.getNode(id)
+	if node == nil {
+		writeJSON(w, 404, errResp("节点不存在"))
+		return
+	}
+	idx := -1
+	for i := range node.Inbounds {
+		if node.Inbounds[i].InboundID == inboundID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		writeJSON(w, 404, errResp("入站不存在"))
+		return
+	}
+	oldPort := node.Inbounds[idx].Port
+	newPort, err := randomFreeInboundPort(node.Inbounds, inboundID)
+	if err != nil {
+		writeJSON(w, 500, errResp("换端口失败："+err.Error()))
+		return
+	}
+	updated := node.Inbounds[idx]
+	updated.Port = newPort
+	candidate := append([]NodeInbound{}, node.Inbounds...)
+	candidate[idx] = updated
+	if msg := validateInboundList(candidate); msg != "" {
+		writeJSON(w, 400, errResp(msg))
+		return
+	}
+	node.Inbounds = candidate
+	s.nodes.bumpNodeConfigVersionLocked(node)
+	if err := s.nodes.saveLocked(); err != nil {
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	s.audit(s.currentUser(r), "入站换端口", fmt.Sprintf("节点 %d 入站 %s 端口 %d→%d", node.ID, updated.InboundTag, oldPort, newPort), "成功", "")
+	writeJSON(w, 200, okResp(map[string]any{
+		"inbound":  sanitizedInbound(updated),
+		"old_port": oldPort, "new_port": newPort,
+		"note": "端口已换，节点 60 秒内应用，订阅自动更新",
 	}))
 }

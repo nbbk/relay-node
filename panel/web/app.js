@@ -207,7 +207,7 @@ let logsTimer = null;
 // 管理面板模式（v1.2.8）：true = 这台面板只做集中管理；本地页全部隐藏，
 // 只留集中管理与设置；由 /api/v1/me 下发，设置页可切换（切完整页刷新）。
 let managerOnly = false;
-const MANAGER_PAGES = ['central', 'settings'];
+const MANAGER_PAGES = ['central', 'nodes', 'settings'];
 function visiblePages() {
   if (!managerOnly) return PAGES;
   // 管理面板模式：按 MANAGER_PAGES 的顺序排（集中管理在前，设置在后），
@@ -1089,6 +1089,7 @@ function renderNodeInbounds(inbounds) {
       '<div class="btn-row">' +
       '<button class="btn secondary sm" type="button" data-ib-toggle="' + esc(String(inb.inbound_id)) + '" data-ib-enabled="' + (inb.enabled ? '1' : '0') + '">' + (inb.enabled ? '停用' : '启用') + '</button>' +
       '<button class="btn secondary sm" type="button" data-ib-edit="' + esc(String(inb.inbound_id)) + '">编辑</button>' +
+      '<button class="btn secondary sm" type="button" data-ib-change-port="' + esc(String(inb.inbound_id)) + '" data-ib-tag="' + esc(inb.inbound_tag || '') + '">换端口</button>' +
       (isReality ? '<button class="btn secondary sm" type="button" data-ib-rotate="' + esc(String(inb.inbound_id)) + '" data-ib-tag="' + esc(inb.inbound_tag || '') + '">轮换密钥</button>' : '') +
       '<button class="btn danger sm" type="button" data-ib-del="' + esc(String(inb.inbound_id)) + '" data-ib-tag="' + esc(inb.inbound_tag || '') + '">删除</button></div></div>';
   }).join('');
@@ -1102,14 +1103,16 @@ function renderNodeInbounds(inbounds) {
   $$('[data-ib-edit]', wrap).forEach((b) => b.addEventListener('click', () => {
     const inb = inbounds.find((x) => String(x.inbound_id) === String(b.dataset.ibEdit));
     if (!inb) return;
-    currentEditInboundId = inb.inbound_id;
-    $('#nodes-ib-edit-tag').textContent = inb.inbound_tag || '';
-    $('#nodes-ib-edit-port').value = inb.port;
-    $('#nodes-ib-edit-listen').value = inb.listen || '0.0.0.0';
-    $('#nodes-ib-edit-sni').value = inb.sni || inb.domain || '';
-    $('#nodes-ib-edit-enabled').value = inb.enabled ? 'true' : 'false';
-    const box = $('#nodes-inbound-edit');
-    box.classList.remove('hidden'); box.hidden = false;
+    openInboundEditModal(inb);
+  }));
+  $$('[data-ib-change-port]', wrap).forEach((b) => b.addEventListener('click', async () => {
+    const ok = await confirmModal('一键换端口', '<p>确定给入站 <b>' + esc(b.dataset.ibTag || '') + '</b> 换一个随机空闲端口吗？</p><p>换完节点 60 秒内应用，订阅自动更新，不用重新导入。</p>', '换端口', false);
+    if (!ok) return;
+    try {
+      const r = await apiPost('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/' + encodeURIComponent(b.dataset.ibChangePort) + '/change-port', {});
+      toast('端口已换成 ' + r.new_port + '，节点 60 秒内应用，订阅自动更新', 'ok');
+      loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+    } catch (e) { showInboundsError(e.message); }
   }));
   $$('[data-ib-del]', wrap).forEach((b) => b.addEventListener('click', async () => {
     const ok = await confirmModal('删除入站', '<p>确定删除入站 <b>' + esc(b.dataset.ibTag || b.dataset.ibDel) + '</b> 吗？</p><p>节点 60 秒内下线该入站。</p>', '删除', true);
@@ -1128,6 +1131,113 @@ function renderNodeInbounds(inbounds) {
       loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
     } catch (e) { showInboundsError(e.message); }
   }));
+}
+function ibCompositeValue(inb) {
+  if (inb.protocol === 'vless' && inb.transport === 'reality') return 'vless-reality';
+  if (inb.protocol === 'vless' && inb.transport === 'xhttp') return 'vless-xhttp';
+  if (inb.protocol === 'vless' && inb.security === 'tls') return 'vless-tls';
+  if (inb.protocol === 'vless') return 'vless-tls';
+  if (inb.protocol === 'shadowsocks') return (String(inb.ss_method || '').indexOf('2022-') === 0 ? 'ss2022' : 'shadowsocks');
+  if (inb.protocol === 'hysteria2') return 'hysteria2';
+  if (inb.protocol === 'tuic') return 'tuic';
+  if (inb.protocol === 'anytls') return 'anytls';
+  if (inb.protocol === 'trojan') return 'trojan';
+  if (inb.protocol === 'socks') return 'socks';
+  return 'vless-reality';
+}
+// 编辑入站（v1.4.2，切片 3）：点编辑弹 modal 对话框改，不在页面最下方
+// 展开表单。能改全部字段，包括入站 tag（改名后端按 PUT 改 tag 处理，
+// 同一条入站换名，订阅跟着新 tag 走，不用删了重建）。
+// SNI 输入带 datalist 预设（常用大站下拉＋手填自定义）；改 SNI 时后端
+// 同步 dest 与 serverNames（SNI 是唯一事实来源，见 syncRealitySNIFields）。
+function openInboundEditModal(inb) {
+  currentEditInboundId = inb.inbound_id;
+  const proto = ibCompositeValue(inb);
+  const opt = (v, label) => '<option value="' + v + '"' + (v === proto ? ' selected' : '') + '>' + label + '</option>';
+  const m = openModal('<h2>编辑入站</h2>' +
+    '<form id="nodes-inbound-edit-form">' +
+    '<div class="form-grid">' +
+    '<div><label for="nodes-ib-edit-tag">入站 tag/名称 <span class="hint">必填，节点内唯一；改名即换 tag</span></label><input id="nodes-ib-edit-tag" value="' + esc(inb.inbound_tag || '') + '" maxlength="64" required></div>' +
+    '<div><label for="nodes-ib-edit-protocol">协议</label><select id="nodes-ib-edit-protocol">' +
+    opt('vless-reality', 'VLESS＋REALITY＋Vision（TCP）') + opt('vless-xhttp', 'VLESS＋REALITY＋XHTTP（TCP）') +
+    opt('vless-tls', 'VLESS＋TLS＋Vision（TCP）') + opt('trojan', 'Trojan（TCP＋TLS）') +
+    opt('hysteria2', 'Hysteria2（UDP）') + opt('tuic', 'TUIC（UDP）') + opt('anytls', 'AnyTLS（TCP＋TLS）') +
+    opt('shadowsocks', 'Shadowsocks') + opt('ss2022', 'Shadowsocks 2022') + opt('socks', 'SOCKS5') +
+    '</select></div>' +
+    '<div><label for="nodes-ib-edit-port">端口 <span class="hint">必填，1–65535</span></label><input id="nodes-ib-edit-port" type="number" min="1" max="65535" value="' + esc(String(inb.port)) + '" required></div>' +
+    '<div><label for="nodes-ib-edit-listen">监听地址 <span class="hint">0.0.0.0 = 全部网卡</span></label><input id="nodes-ib-edit-listen" value="' + esc(inb.listen || '0.0.0.0') + '" placeholder="0.0.0.0"></div>' +
+    '<div><label for="nodes-ib-edit-sni">SNI / 域名 <span class="hint">点下拉选常用大站，也可手填</span></label><input id="nodes-ib-edit-sni" value="' + esc(inb.sni || inb.domain || '') + '" placeholder="example.com" list="nodes-sni-presets"></div>' +
+    '<div id="nodes-ib-edit-ss-method-wrap"><label for="nodes-ib-edit-ss-method">SS 加密方法</label><select id="nodes-ib-edit-ss-method">' +
+    ['aes-256-gcm', 'aes-128-gcm', 'chacha20-poly1305', '2022-blake3-aes-128-gcm', '2022-blake3-aes-256-gcm', '2022-blake3-chacha20-poly1305'].map((mm) => '<option value="' + mm + '"' + (inb.ss_method === mm ? ' selected' : '') + '>' + mm + '</option>').join('') +
+    '</select></div>' +
+    '<div id="nodes-ib-edit-ss-pw-wrap"><label for="nodes-ib-edit-ss-password">SS 密码 <span class="hint">留空不改</span></label><input id="nodes-ib-edit-ss-password" placeholder="留空不改"></div>' +
+    '<div id="nodes-ib-edit-socks-user-wrap"><label for="nodes-ib-edit-socks-username">SOCKS5 用户名</label><input id="nodes-ib-edit-socks-username" value="' + esc(inb.socks_username || '') + '"></div>' +
+    '<div id="nodes-ib-edit-socks-pw-wrap"><label for="nodes-ib-edit-socks-password">SOCKS5 密码 <span class="hint">留空不改</span></label><input id="nodes-ib-edit-socks-password" placeholder="留空不改"></div>' +
+    '<div id="nodes-ib-edit-flow-wrap"><label for="nodes-ib-edit-flow">VLESS flow <span class="hint">Vision 入站填 xtls-rprx-vision，空着不填也行</span></label><input id="nodes-ib-edit-flow" value="' + esc(inb.flow || '') + '" placeholder="xtls-rprx-vision"></div>' +
+    '<div id="nodes-ib-edit-reality-dest-wrap"><label for="nodes-ib-edit-reality-dest">REALITY 回落目标 <span class="hint">默认跟着 SNI 走（SNI:443），一般不用改</span></label><input id="nodes-ib-edit-reality-dest" value="' + esc(inb.reality_dest || '') + '" placeholder="www.example.com:443"></div>' +
+    '<div id="nodes-ib-edit-reality-sn-wrap"><label for="nodes-ib-edit-reality-server-names">REALITY serverNames <span class="hint">默认跟着 SNI 走，一般不用改</span></label><input id="nodes-ib-edit-reality-server-names" value="' + esc(inb.reality_server_names || '') + '" placeholder="www.example.com"></div>' +
+    '<div id="nodes-ib-edit-reality-fp-wrap"><label for="nodes-ib-edit-reality-fingerprint">REALITY 指纹</label><input id="nodes-ib-edit-reality-fingerprint" value="' + esc(inb.reality_fingerprint || 'chrome') + '" placeholder="chrome"></div>' +
+    '<div><label for="nodes-ib-edit-multiplier">流量倍率 <span class="hint">默认 1，0.1–100</span></label><input id="nodes-ib-edit-multiplier" type="number" min="0.1" max="100" step="0.1" value="' + esc(String(inb.multiplier == null ? 1 : inb.multiplier)) + '"></div>' +
+    '<div><label for="nodes-ib-edit-enabled">启用 <span class="hint">关掉后节点 60 秒内下线该入站</span></label><select id="nodes-ib-edit-enabled"><option value="true"' + (inb.enabled ? ' selected' : '') + '>启用</option><option value="false"' + (!inb.enabled ? ' selected' : '') + '>停用</option></select></div>' +
+    '</div>' +
+    '<div class="btn-row"><button class="btn" type="submit">保存修改</button><button class="btn secondary" type="button" id="nodes-ib-edit-cancel">取消</button></div>' +
+    '</form>');
+  if (!m) return;
+  const syncEdit = () => {
+    const v = $('#nodes-ib-edit-protocol', m).value;
+    const ss = v === 'shadowsocks' || v === 'ss2022';
+    const sk = v === 'socks';
+    const rl = v === 'vless-reality' || v === 'vless-xhttp';
+    const vl = v === 'vless-reality' || v === 'vless-xhttp' || v === 'vless-tls';
+    const show = (id, on) => { const el = $(id, m); if (el) el.style.display = on ? '' : 'none'; };
+    show('#nodes-ib-edit-ss-method-wrap', ss);
+    show('#nodes-ib-edit-ss-pw-wrap', ss);
+    show('#nodes-ib-edit-socks-user-wrap', sk);
+    show('#nodes-ib-edit-socks-pw-wrap', sk);
+    show('#nodes-ib-edit-flow-wrap', vl);
+    show('#nodes-ib-edit-reality-dest-wrap', rl);
+    show('#nodes-ib-edit-reality-sn-wrap', rl);
+    show('#nodes-ib-edit-reality-fp-wrap', rl);
+    if (v === 'ss2022' && $('#nodes-ib-edit-ss-method', m).value.indexOf('2022-') !== 0) $('#nodes-ib-edit-ss-method', m).value = '2022-blake3-aes-128-gcm';
+    if (v === 'shadowsocks' && $('#nodes-ib-edit-ss-method', m).value.indexOf('2022-') === 0) $('#nodes-ib-edit-ss-method', m).value = 'aes-256-gcm';
+  };
+  syncEdit();
+  onIn(m, '#nodes-ib-edit-protocol', 'change', syncEdit);
+  onIn(m, '#nodes-ib-edit-cancel', 'click', closeModal);
+  onIn(m, '#nodes-inbound-edit-form', 'submit', async (e) => {
+    e.preventDefault();
+    if (!currentInboundsNodeId || !currentEditInboundId) return;
+    const tag = $('#nodes-ib-edit-tag', m).value.trim();
+    const port = parseInt($('#nodes-ib-edit-port', m).value, 10);
+    if (!tag) { toast('入站 tag/名称不能为空', 'err'); return; }
+    if (!port || port < 1 || port > 65535) { toast('端口要在 1–65535 之间', 'err'); return; }
+    const p = IB_PROTOCOLS[$('#nodes-ib-edit-protocol', m).value];
+    const sni = $('#nodes-ib-edit-sni', m).value.trim();
+    const body = { inbound_tag: tag, protocol: p.protocol, transport: p.transport, security: p.security, port, listen: $('#nodes-ib-edit-listen', m).value.trim(), sni, enabled: $('#nodes-ib-edit-enabled', m).value === 'true' };
+    const mult = parseFloat($('#nodes-ib-edit-multiplier', m).value);
+    if (mult) body.multiplier = mult;
+    if (p.protocol === 'vless' && $('#nodes-ib-edit-flow', m).value.trim()) body.flow = $('#nodes-ib-edit-flow', m).value.trim();
+    if (p.protocol === 'hysteria2' || p.protocol === 'tuic' || p.protocol === 'anytls' || p.protocol === 'trojan' || (p.protocol === 'vless' && p.security === 'tls')) body.domain = sni;
+    if ($('#nodes-ib-edit-protocol', m).value === 'shadowsocks' || $('#nodes-ib-edit-protocol', m).value === 'ss2022') {
+      body.ss_method = $('#nodes-ib-edit-ss-method', m).value;
+      if ($('#nodes-ib-edit-ss-password', m).value.trim()) body.ss_password = $('#nodes-ib-edit-ss-password', m).value.trim();
+    }
+    if ($('#nodes-ib-edit-protocol', m).value === 'socks') {
+      if ($('#nodes-ib-edit-socks-username', m).value.trim()) body.socks_username = $('#nodes-ib-edit-socks-username', m).value.trim();
+      if ($('#nodes-ib-edit-socks-password', m).value.trim()) body.socks_password = $('#nodes-ib-edit-socks-password', m).value.trim();
+    }
+    if (p.transport === 'reality' || p.transport === 'xhttp') {
+      if ($('#nodes-ib-edit-reality-dest', m).value.trim()) body.reality_dest = $('#nodes-ib-edit-reality-dest', m).value.trim();
+      if ($('#nodes-ib-edit-reality-server-names', m).value.trim()) body.reality_server_names = $('#nodes-ib-edit-reality-server-names', m).value.trim();
+      if ($('#nodes-ib-edit-reality-fingerprint', m).value.trim()) body.reality_fingerprint = $('#nodes-ib-edit-reality-fingerprint', m).value.trim();
+    }
+    try {
+      await api('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/' + encodeURIComponent(currentEditInboundId), { method: 'PUT', body: JSON.stringify(body) });
+      toast('已保存，节点 60 秒内应用', 'ok');
+      closeModal();
+      loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+    } catch (err2) { showInboundsError(err2.message); closeModal(); }
+  });
 }
 function randomPassword1401(n) {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
@@ -1194,23 +1304,8 @@ function initNodes() {
       loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
     } catch (err2) { showInboundsError(err2.message); }
   });
-  on('#nodes-inbound-edit-form', 'submit', async (e) => {
-    e.preventDefault();
-    if (!currentInboundsNodeId || !currentEditInboundId) return;
-    const port = parseInt($('#nodes-ib-edit-port').value, 10);
-    if (!port || port < 1 || port > 65535) { toast('端口要在 1–65535 之间', 'err'); return; }
-    try {
-      await api('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/' + encodeURIComponent(currentEditInboundId), { method: 'PUT', body: JSON.stringify({ port, listen: $('#nodes-ib-edit-listen').value.trim(), sni: $('#nodes-ib-edit-sni').value.trim(), enabled: $('#nodes-ib-edit-enabled').value === 'true' }) });
-      toast('已保存，节点 60 秒内应用', 'ok');
-      const box = $('#nodes-inbound-edit');
-      box.classList.add('hidden'); box.hidden = true;
-      loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
-    } catch (err2) { showInboundsError(err2.message); }
-  });
-  on('#nodes-ib-edit-cancel', 'click', () => {
-    const box = $('#nodes-inbound-edit');
-    box.classList.add('hidden'); box.hidden = true;
-  });
+  // 入站编辑走弹窗（v1.4.2，切片 3）：openInboundEditModal 里绑提交与取消，
+  // 这里不再绑页面底部的编辑表单（已删）。
 }
 async function deleteLanding(index) {
   const l = landingsCache.find((x) => x.index === index);
@@ -3658,7 +3753,7 @@ async function loadSubUsers() {
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的订阅用户，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, subUserPage);
     subUserPage = pg.cur;
-    list.innerHTML = '<h3>订阅用户</h3>' + pg.slice.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.group_name ? ' <span class="badge">分组：' + esc(u.group_name) + '</span>' : '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 内容' + esc(subModeLabel(u.mode)) + ' · ' + expiryBadge(u.expires_at) + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span><br><span class="small">' + userTrafficText(u) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-edit="' + esc(u.id) + '">编辑</button> ' + (u.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-user-resume="' + esc(u.id) + '">恢复</button> ' : '') + '<button class="btn secondary sm" type="button" data-sub-user-copy="' + esc(u.id) + '">复制</button> <button class="btn secondary sm" type="button" data-sub-user-qr="' + esc(u.id) + '">二维码</button> <button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
+    list.innerHTML = '<h3>订阅用户</h3>' + pg.slice.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.group_name ? ' <span class="badge">分组：' + esc(u.group_name) + '</span>' : '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 内容' + esc(subModeLabel(u.mode)) + ' · ' + expiryBadge(u.expires_at) + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span><br><span class="small">' + userTrafficText(u) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-edit="' + esc(u.id) + '">编辑</button> ' + (u.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-user-resume="' + esc(u.id) + '">恢复</button> ' : '') + '<button class="btn secondary sm" type="button" data-sub-user-copy="' + esc(u.id) + '">复制</button> <button class="btn secondary sm" type="button" data-sub-user-qr="' + esc(u.id) + '">二维码</button> <button class="btn secondary sm" type="button" data-sub-user-rotate="' + esc(u.id) + '">轮换</button> <button class="btn secondary sm" type="button" data-sub-user-nodes="' + esc(u.id) + '">发到节点</button> <button class="btn secondary sm" type="button" data-sub-user-rotate-uuid="' + esc(u.id) + '">轮换 UUID</button> <button class="btn danger sm" type="button" data-sub-user-revoke="' + esc(u.id) + '">撤销</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'subuser') +
       '<p class="muted small">编辑只改勾选与内容，链接不变；撤销只影响那个人，其他人的链接照常；轮换后旧链接立即失效。</p>';
     if (pg.totalPages > 1) wirePager(list, 'subuser', pg.cur, pg.totalPages, (p) => { subUserPage = p; loadSubUsers(); });
@@ -3695,6 +3790,16 @@ async function loadSubUsers() {
       try { await rotateSubUser(b.dataset.subUserRotate); }
       catch (e) { toast('轮换失败：' + e.message, 'err'); }
     }));
+    $$('[data-sub-user-nodes]', list).forEach((b) => b.addEventListener('click', () => {
+      const u = users.find((x) => x.id === b.dataset.subUserNodes);
+      if (!u) return;
+      openNodeAssignModal('subuser', u.id, u.name);
+    }));
+    $$('[data-sub-user-rotate-uuid]', list).forEach((b) => b.addEventListener('click', () => {
+      const u = users.find((x) => x.id === b.dataset.subUserRotateUuid);
+      if (!u) return;
+      rotateNodeUUID('subuser', u.id, u.name);
+    }));
     $$('[data-sub-user-revoke]', list).forEach((b) => b.addEventListener('click', async () => {
       const ok = await confirmModal('撤销订阅用户', '<p>撤销后这个人的订阅链接立即失效，其他人照常。确定吗？</p>', '撤销', true);
       if (!ok) return;
@@ -3712,6 +3817,73 @@ async function rotateSubUser(id) {
   if (box) { box.classList.remove('hidden'); box.hidden = false; }
   toast('已轮换，旧链接已失效', 'ok'); loadSubUsers();
   return r;
+}
+// ---------- 节点用户指派与轮换 UUID（v1.4.2，切片 3） ----------
+// “发到节点”弹窗：每节点一个复选框，勾上的节点才有这个用户。
+// 指派语义（与后端 PUT /api/v1/nodes/{id}/users 一致）：user_ids 为 null
+// = 全部用户，[] = 一个不发。节点是“全部用户”模式时取消勾选会把它改成
+// 显式列表（全部有效用户去掉这一个）；勾上时全部模式不用改，显式列表
+// 里加上他。只对勾选变了的节点发 PUT。
+async function openNodeAssignModal(kind, id, name) {
+  const key = kind + ':' + id;
+  let nodes = [];
+  try { const r = await api('/api/v1/nodes'); nodes = r.nodes || []; }
+  catch (e) { toast('拉节点列表失败：' + e.message, 'err'); return; }
+  if (!nodes.length) { toast('还没有节点，先在节点页建一个', 'err'); return; }
+  const states = [];
+  for (const n of nodes) {
+    try {
+      const r = await api('/api/v1/nodes/' + encodeURIComponent(n.id) + '/users');
+      const all = r.all_users === true;
+      const ids = r.user_ids || null;
+      const eff = (r.users || []).map((u) => u.user_id);
+      states.push({ node: n, all, ids, eff, checked: all || (ids && ids.indexOf(key) !== -1) });
+    } catch (e) { states.push({ node: n, error: true, checked: false }); }
+  }
+  const m = openModal('<h2>发到节点：' + esc(name || id) + '</h2>' +
+    '<p class="muted">勾上的节点才有这个用户；不勾的节点 60 秒内把他下掉。节点没单独指派过人时默认发全部用户，取消勾选会把该节点改成“只发勾选的人”。</p>' +
+    states.map((st, i) => '<label class="checkbox-row"><input type="checkbox" data-assign-node="' + i + '"' + (st.checked ? ' checked' : '') + (st.error ? ' disabled' : '') + '><span>' + esc(st.node.name || '') + '（' + esc(st.node.address || '') + '）' + (st.all ? ' · 全部用户' : '') + (st.error ? ' · 拉取失败' : '') + '</span></label>').join('') +
+    '<div class="btn-row"><button class="btn" id="assign-ok" type="button">保存</button><button class="btn secondary" id="assign-cancel" type="button">取消</button></div>');
+  if (!m) return;
+  onIn(m, '#assign-cancel', 'click', closeModal);
+  onIn(m, '#assign-ok', 'click', async () => {
+    try {
+      for (let i = 0; i < states.length; i++) {
+        const st = states[i];
+        if (st.error) continue;
+        const box = m.querySelector('[data-assign-node="' + i + '"]');
+        const want = !!(box && box.checked);
+        if (want === st.checked) continue;
+        let list;
+        if (want) {
+          if (st.all) continue; // 全部用户模式本来就有他，不用改
+          list = (st.ids || []).slice();
+          if (list.indexOf(key) === -1) list.push(key);
+        } else {
+          const base = st.all ? st.eff.slice() : (st.ids || []).slice();
+          list = base.filter((k) => k !== key);
+        }
+        await api('/api/v1/nodes/' + encodeURIComponent(st.node.id) + '/users', { method: 'PUT', body: JSON.stringify({ user_ids: list }) });
+      }
+      closeModal();
+      toast('已保存，节点 60 秒内应用', 'ok');
+      if (kind === 'merged') loadMergedSubsList(); else loadSubUsers();
+    } catch (e) { toast('保存失败：' + e.message, 'err'); }
+  });
+}
+// 轮换一个用户在已指派节点上的 UUID（与“轮换”订阅链接是两回事：
+// 这个换的是节点侧 VLESS 身份，订阅链接本身不动，下次取订阅即新 UUID）。
+async function rotateNodeUUID(kind, id, name) {
+  const key = kind + ':' + id;
+  const ok = await confirmModal('轮换节点 UUID', '<p>确定轮换 <b>' + esc(name || id) + '</b> 在已指派节点上的 UUID 吗？</p><p>旧 UUID 在节点下次拉取（60 秒内）应用后失效，客户端须重新导入新 UUID。</p>', '轮换', true);
+  if (!ok) return;
+  try {
+    const r = await apiPost('/api/v1/users/' + encodeURIComponent(key) + '/rotate-uuid', {});
+    const uuids = r.uuids || {};
+    const rows = Object.keys(uuids).map((nid) => '<div class="kv"><span>节点 ' + esc(nid) + '</span><b style="word-break:break-all">' + esc(uuids[nid]) + '</b></div>').join('');
+    const m2 = openModal('<h2>UUID 已轮换</h2>' + (rows || '<p class="muted">该用户没有发到任何节点，无需轮换。</p>') + '<p class="muted">' + esc(r.note || '') + '</p><div class="btn-row"><button class="btn secondary" id="rot-uuid-close" type="button">知道了</button></div>');
+    if (m2) onIn(m2, '#rot-uuid-close', 'click', closeModal);
+  } catch (e) { toast('轮换失败：' + e.message, 'err'); }
 }
 async function subUserCreate() {
   const name = $('#sub-user-name').value.trim();
@@ -4695,7 +4867,7 @@ async function loadMergedSubsList() {
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的合并订阅，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, mergedSubPage);
     mergedSubPage = pg.cur;
-    list.innerHTML = '<h3>已生成的合并订阅</h3>' + pg.slice.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + (s.group_name ? '<span class="badge">分组：' + esc(s.group_name) + '</span> ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span><br><span class="small">' + userTrafficText(s) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-edit-merged="' + esc(s.id) + '">编辑</button> ' + (s.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-resume-merged="' + esc(s.id) + '">恢复</button> ' : '') + '<button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-mode-merged="' + esc(s.mode || '') + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
+    list.innerHTML = '<h3>已生成的合并订阅</h3>' + pg.slice.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + (s.group_name ? '<span class="badge">分组：' + esc(s.group_name) + '</span> ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span><br><span class="small">' + userTrafficText(s) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-edit-merged="' + esc(s.id) + '">编辑</button> ' + (s.traffic_disabled ? '<button class="btn secondary sm" type="button" data-sub-resume-merged="' + esc(s.id) + '">恢复</button> ' : '') + '<button class="btn secondary sm" type="button" data-sub-copy-merged="' + esc(s.id) + '" data-sub-mode-merged="' + esc(s.mode || '') + '" data-sub-name-merged="' + esc(s.name || '') + '">复制</button> <button class="btn secondary sm" type="button" data-sub-rotate-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换</button> <button class="btn secondary sm" type="button" data-sub-nodes-merged="' + esc(s.id) + '">发到节点</button> <button class="btn secondary sm" type="button" data-sub-rotate-uuid-merged="' + esc(s.id) + '" data-sub-name-merged="' + esc(s.name || '') + '">轮换 UUID</button> <button class="btn danger sm" type="button" data-sub-revoke-merged="' + esc(s.id) + '">撤销</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'mergedsub') +
       '<p class="muted small">编辑只改勾选与内容，链接不变；每条订阅都有“复制”按钮，链接加密存在面板里，随时能重新复制；重新勾选生成（不填名称时同一选择重新生成会轮换；填了名称是新起一条，各归各人）。</p>';
     if (pg.totalPages > 1) wirePager(list, 'mergedsub', pg.cur, pg.totalPages, (p) => { mergedSubPage = p; loadMergedSubsList(); });
@@ -4717,6 +4889,14 @@ async function loadMergedSubsList() {
       if (!ok) return;
       try { await rotateMergedSub(b.dataset.subRotateMerged, b.dataset.subNameMerged || undefined); }
       catch (e) { toast('轮换失败：' + e.message, 'err'); }
+    }));
+    $$('[data-sub-nodes-merged]', list).forEach((b) => b.addEventListener('click', () => {
+      const s = subs.find((x) => x.id === b.dataset.subNodesMerged);
+      if (!s) return;
+      openNodeAssignModal('merged', s.id, s.name || s.summary);
+    }));
+    $$('[data-sub-rotate-uuid-merged]', list).forEach((b) => b.addEventListener('click', () => {
+      rotateNodeUUID('merged', b.dataset.subRotateUuidMerged, b.dataset.subNameMerged || undefined);
     }));
     $$('[data-sub-revoke-merged]', list).forEach((b) => b.addEventListener('click', async () => {
       const ok = await confirmModal('撤销合并订阅', '<p>撤销后这条订阅链接立即失效。确定吗？</p>', '撤销', true);

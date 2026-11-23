@@ -1350,6 +1350,9 @@ func (s *Server) disableUserForwardsLocked(key, reason string) {
 	}
 	_ = s.saveConfig()
 	_ = s.applyUserForwards()
+	// 切片 3：停用会改变节点上的有效用户集合，bump 已指派该用户的
+	// 节点，agent 60 秒内拉到新用户列表（旧 UUID 新连接被拒）。
+	s.bumpBackendNodesForUserLocked(key)
 	s.audit("system", "自动停用订阅", key, "成功", "原因："+reason)
 }
 
@@ -1459,19 +1462,28 @@ func (s *Server) syncUserForwardsWarning(kind, id, name string, sel []SubSelecti
 // clearUserDisabled 解除一个订阅的停用（编辑调高上限、周期翻转后调用）：
 // 订阅记录与转发记录上的停用标志都清掉，下次 apply 时 endpoints 加
 // 回去。只改内存里的配置字段，保存由调用方负责。
+// 切片 3：停用解除同样改变节点上的有效用户集合，bump 已指派该用户的
+// 节点（调用方须持有 opMu；bump 自己拿 nodes.mu 落盘）。
 func (s *Server) clearUserDisabled(key string) {
 	kind, id, found := strings.Cut(key, ":")
 	if !found {
 		return
 	}
+	wasDisabled := false
 	if kind == "subuser" {
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
+			if u.Disabled {
+				wasDisabled = true
+			}
 			u.Disabled = false
 			u.DisabledReason = ""
 			u.TrafficWarned100 = false
 		}
 	} else if kind == "merged" {
 		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
+			if ms.Disabled {
+				wasDisabled = true
+			}
 			ms.Disabled = false
 			ms.DisabledReason = ""
 			ms.TrafficWarned100 = false
@@ -1481,6 +1493,9 @@ func (s *Server) clearUserDisabled(key string) {
 		if s.cfg.UserForwards[i].Key == key {
 			s.cfg.UserForwards[i].Disabled = false
 		}
+	}
+	if wasDisabled {
+		s.bumpBackendNodesForUserLocked(key)
 	}
 }
 
@@ -1556,6 +1571,8 @@ func (s *Server) resumeUserForwardsLocked(key string) error {
 	if err := s.saveConfig(); err != nil {
 		return err
 	}
+	// 切片 3：恢复会改变节点上的有效用户集合，bump 已指派该用户的节点。
+	s.bumpBackendNodesForUserLocked(key)
 	return s.applyUserForwards()
 }
 
