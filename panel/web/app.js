@@ -1786,21 +1786,30 @@ async function loadSettingsPage() {
     $('#whitelist-input').value = (st.ip_whitelist || []).join('\n');
     $('#https-domain').value = st.https_domain || '';
     $('#https-status').textContent = st.https_enabled ? 'HTTPS 已开启' + (st.https_domain ? '（域名：' + st.https_domain + '）' : '（自签证书）') : '当前为 HTTP，未开启 HTTPS。';
-    // 面板自身证书状态（v1.3.14）：证书信息、无令牌提示、上次失败原因常驻显示。
+    // DNS 服务商（v1.3.49）：下拉框回填 + 只显示所选服务商的凭证表单 + 已配置状态。
+    renderDNSProvider(st);
+    // 面板自身证书状态（v1.3.14）：证书信息、无凭证提示、上次失败原因常驻显示。
     const pc = st.panel_cert || {};
+    const provider = dnsCurrentProvider(st);
     const certInfo = $('#https-cert-info');
     if (certInfo) {
       if (!st.https_enabled) certInfo.textContent = '';
       else if (!pc.exists) certInfo.textContent = '证书：未生成，重启面板后会自动生成。';
       else if (pc.self_signed) certInfo.textContent = '证书：自签证书（浏览器会报不安全），真证书没签下来。';
-      else certInfo.textContent = '证书：真证书，剩余 ' + (pc.days_left ?? '?') + ' 天（到期 ' + (pc.expires || '?') + '），剩余 ≤30 天自动续签。';
+      else certInfo.textContent = '证书：真证书，剩余 ' + (pc.days_left ?? '?') + ' 天（到期 ' + (pc.expires || '?') + '）' + (provider === 'manual' ? '，手动模式不自动续签，到期前请手动重新签发。' : '，剩余 ≤30 天自动续签。');
     }
     const tokenHint = $('#https-token-hint');
     if (tokenHint) {
-      const noToken = !(st.cloudflare || {}).has_token;
-      const show = !!(st.https_domain && noToken);
-      tokenHint.textContent = show ? '未填 Cloudflare Token，真证书签不下来：去本页下方的 Cloudflare Token 卡片填写，填好后点“重试签发”。' : '';
-      setVisible(tokenHint, show);
+      let hint = '';
+      if (st.https_domain && provider === 'manual') {
+        hint = '手动模式：点开启后按提示加 TXT 记录再继续验证（不自动续签，到期前手动重新签发）。';
+      } else if (st.https_domain && !dnsIsConfigured(st, provider)) {
+        hint = provider === 'cloudflare'
+          ? '未填 Cloudflare Token，真证书签不下来：在上方选 Cloudflare 并填写 Token，填好后点“重试签发”。'
+          : '未填 ' + dnsProviderDisplay(provider) + ' 凭证，真证书签不下来：在上方填写凭证，填好后点“重试签发”。';
+      }
+      tokenHint.textContent = hint;
+      setVisible(tokenHint, !!hint);
     }
     const certErr = $('#https-cert-error');
     const retryRow = $('#https-retry-row');
@@ -1810,8 +1819,8 @@ async function loadSettingsPage() {
       setVisible(certErr, !!lastErr);
     }
     if (retryRow) setVisible(retryRow, !!(lastErr && st.https_domain));
-    const cf = st.cloudflare || {};
-    $('#cf-status').textContent = cf.has_token ? '已保存 Cloudflare Token（绑域名开 HTTPS 可用）' : '未保存 Token（绑域名开 HTTPS 前要先填）';
+    // 手动签发进行中的订单（v1.3.49）：回填 TXT 名与值 + 继续/取消按钮。
+    renderManualPending(st);
     $('#door-addr').value = st.relay_addr || '';
     $('#door-status').textContent = st.relay_addr ? '当前任意门地址：' + st.relay_addr : '未设置：下次加任意门落地时自动探测中转机公网 IP';
     const tg = st.telegram || {};
@@ -1937,6 +1946,53 @@ function httpsProbeURL(enable) {
 }
 // 跳转入口（包一层只为测试能 stub 掉真导航：jsdom 不实现 location 跳转）。
 function jumpToURL(url) { location.href = url; }
+// ---------- DNS 服务商（v1.3.49） ----------
+// id 到中文名的映射（与后端 dnsProviderNames 一致）。
+const DNS_PROVIDER_NAMES = {
+  cloudflare: 'Cloudflare', aliyun: '阿里云 DNS', dnspod: '腾讯云 DNSPod',
+  route53: 'AWS Route 53', godaddy: 'GoDaddy', namecheap: 'Namecheap', manual: '手动模式',
+};
+function dnsProviderDisplay(id) { return DNS_PROVIDER_NAMES[id] || id; }
+// 当前选中的服务商（后端没给或给了空值时默认 cloudflare，老 payload 兼容）。
+function dnsCurrentProvider(st) {
+  const p = (st && st.dns_provider) || '';
+  return DNS_PROVIDER_NAMES[p] ? p : 'cloudflare';
+}
+// 某服务商凭证是否配齐（后端没给 dns_configured 时，老 payload 只认 cloudflare 的 has_token）。
+function dnsIsConfigured(st, provider) {
+  if (provider === 'manual') return true;
+  const m = (st && st.dns_configured) || {};
+  if (m[provider] !== undefined) return !!m[provider];
+  if (provider === 'cloudflare') return !!((st && st.cloudflare) || {}).has_token;
+  return false;
+}
+// 渲染服务商下拉框与凭证表单：选哪个显示哪个，状态行写已配置/未配置。
+function renderDNSProvider(st) {
+  const provider = dnsCurrentProvider(st);
+  const sel = $('#dns-provider');
+  if (sel) sel.value = provider;
+  document.querySelectorAll('.dns-form').forEach((f) => {
+    setVisible(f, f.id === 'dns-form-' + provider);
+  });
+  const status = $('#dns-cred-status');
+  if (status) {
+    status.textContent = provider === 'manual'
+      ? '手动模式，无需凭证'
+      : (dnsIsConfigured(st, provider) ? '已配置 ' + dnsProviderDisplay(provider) + ' 凭证（绑域名开 HTTPS 可用）' : '未配置 ' + dnsProviderDisplay(provider) + ' 凭证（绑域名开 HTTPS 前要先填）');
+  }
+}
+// 渲染手动签发进行中的订单（有 pending 才显示 TXT 名与值）。
+function renderManualPending(st) {
+  const box = $('#manual-pending-box');
+  if (!box) return;
+  const p = (st && st.manual_pending) || null;
+  if (!p) { setVisible(box, false); return; }
+  const d = $('#manual-pending-domain'); if (d) d.textContent = p.domain || '';
+  const e = $('#manual-pending-expires'); if (e) e.textContent = p.expires_at ? String(p.expires_at).replace('T', ' ').slice(0, 16) : '';
+  const n = $('#manual-pending-name'); if (n) n.textContent = p.txt_name || '';
+  const v = $('#manual-pending-value'); if (v) v.textContent = p.txt_value || '';
+  setVisible(box, true);
+}
 // 探测新地址通了再跳。开启（→https）时从 http 页探 https 可行；关闭
 // （→http）时从 https 页探 http 会被浏览器当混合内容拦掉，所以改探旧
 // origin：旧 origin 一断（面板已重启）再等一个 grace 就跳。
@@ -2075,6 +2131,23 @@ function initSettings() {
     if (domain && !/^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(domain)) { toast('域名格式不正确', 'err'); return; }
     const btn = $('#https-enable');
     const oldText = btn ? btn.textContent : '';
+    const provider = ($('#dns-provider') || {}).value || 'cloudflare';
+    // 手动模式 + 有域名：走两步走（先切到 manual 再下单拿 TXT 值，不重启面板；
+    // TXT 值显示在下方卡片里，用户去 DNS 后台加上再点“已添加，继续验证”）。
+    if (domain && provider === 'manual') {
+      if (btn) { btn.disabled = true; btn.textContent = '正在下单…'; }
+      try {
+        await apiPost('/api/v1/settings/dns-provider', { provider: 'manual' });
+        await apiPost('/api/v1/settings/https/manual/start', { domain });
+        toast('订单已下：去 DNS 后台加 TXT 记录，再点“已添加，继续验证”', 'ok');
+        await loadSettingsPage();
+      } catch (err) {
+        toast('下单失败：' + err.message, 'err');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = oldText; }
+      }
+      return;
+    }
     // 带域名开启会同步跑 ACME DNS-01（DNS 传播 10 秒＋两轮最多各 150 秒轮询），
     // 请求可能挂几分钟：先禁用按钮并给等待提示，别让用户以为卡死而重复点。
     if (btn) { btn.disabled = true; if (domain) btn.textContent = '正在申请证书…'; }
@@ -2113,14 +2186,60 @@ function initSettings() {
       toast('Telegram 设置已保存', 'ok'); $('#tg-token').value = '';
     } catch (err) { toast('保存失败：' + err.message, 'err'); }
   });
-  on('#cf-form', 'submit', async (e) => {
-    e.preventDefault();
-    const token = $('#cf-token').value.trim();
-    if (!token) { toast('请先填写 Token', 'err'); return; }
+  // DNS 服务商（v1.3.49）：下拉框只切 UI（显示对应凭证表单），真正保存
+  // 靠提交凭证表单（服务商 + 凭证一起存）；手动模式点开启时先调接口切到 manual。
+  on('#dns-provider', 'change', () => {
+    const sel = $('#dns-provider');
+    if (!sel) return;
+    const st = Object.assign({}, settingsCache || {}, { dns_provider: sel.value });
+    renderDNSProvider(st);
+  });
+  // 凭证表单通用绑定：收集填了的字段（密码留空 = 保持原值），连同服务商一起存。
+  function bindDNSForm(formSel, provider, fieldMap) {
+    on(formSel, 'submit', async (e) => {
+      e.preventDefault();
+      const body = { provider };
+      for (const [inputId, key] of Object.entries(fieldMap)) {
+        const el = $(inputId);
+        const v = el ? el.value.trim() : '';
+        if (v) body[key] = v;
+      }
+      try {
+        const r = await apiPost('/api/v1/settings/dns-provider', body);
+        toast(dnsProviderDisplay(provider) + ' 凭证已保存' + (r.warning ? '：' + r.warning : ''), 'ok');
+        for (const inputId of Object.keys(fieldMap)) { const el = $(inputId); if (el) el.value = ''; }
+        await loadSettingsPage();
+      } catch (err) { toast('保存失败：' + err.message, 'err'); }
+    });
+  }
+  bindDNSForm('#dns-form-cloudflare', 'cloudflare', { '#dns-cf-token': 'token' });
+  bindDNSForm('#dns-form-aliyun', 'aliyun', { '#dns-aliyun-id': 'access_key_id', '#dns-aliyun-secret': 'access_key_secret' });
+  bindDNSForm('#dns-form-dnspod', 'dnspod', { '#dns-dnspod-id': 'token_id', '#dns-dnspod-token': 'token' });
+  bindDNSForm('#dns-form-route53', 'route53', { '#dns-route53-id': 'access_key_id', '#dns-route53-secret': 'secret_access_key' });
+  bindDNSForm('#dns-form-godaddy', 'godaddy', { '#dns-godaddy-pat': 'pat' });
+  bindDNSForm('#dns-form-namecheap', 'namecheap', { '#dns-namecheap-user': 'api_user', '#dns-namecheap-key': 'api_key', '#dns-namecheap-ip': 'client_ip' });
+  // 手动签发第二步：已添加，继续验证（长请求，带等待状态；成功后跳新协议）。
+  on('#manual-continue', 'click', async () => {
+    const domain = $('#https-domain').value.trim();
+    const btn = $('#manual-continue');
+    const oldText = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '正在验证证书…'; }
+    toast('正在验证证书，请稍等（可能需要几分钟），不要重复点击', 'ok');
     try {
-      const r = await apiPost('/api/v1/settings/cloudflare', { token });
-      toast('Cloudflare Token 已保存' + (r.warning ? '：' + r.warning : ''), 'ok'); $('#cf-token').value = ''; loadSettingsPage();
-    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+      const r = await apiPost('/api/v1/settings/https/manual/confirm', { domain });
+      if (r.warning) toast(r.warning, 'err');
+      else toast('HTTPS 已开启' + (r.msg ? '：' + r.msg : ''), 'ok');
+      await waitAndJumpHTTPS(true);
+    } catch (err) {
+      toast('验证失败：' + err.message, 'err');
+      await loadSettingsPage();
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = oldText; }
+    }
+  });
+  on('#manual-cancel', 'click', async () => {
+    try { await apiPost('/api/v1/settings/https/manual/cancel', {}); toast('已取消本次签发', 'ok'); await loadSettingsPage(); }
+    catch (err) { toast('取消失败：' + err.message, 'err'); }
   });
   on('#door-form', 'submit', async (e) => {
     e.preventDefault();
@@ -3973,6 +4092,7 @@ function renderCentralSubTabs() {
   holder.querySelectorAll('[data-central-detail]').forEach((b) => b.addEventListener('click', () => openCentralDetail(b.dataset.centralDetail)));
   holder.querySelectorAll('[data-central-del]').forEach((b) => b.addEventListener('click', () => centralDeregister(b.dataset.centralDel)));
   holder.querySelectorAll('[data-central-token]').forEach((b) => b.addEventListener('click', () => centralChangeToken(b.dataset.centralToken)));
+  holder.querySelectorAll('[data-central-edit]').forEach((b) => b.addEventListener('click', () => centralEditRemote(b.dataset.centralEdit)));
   let saved = null;
   try { saved = localStorage.getItem(CENTRAL_SUB_TAB_KEY); } catch (e) { /* 读不到就用第一个 */ }
   showCentralSubTab(saved);
@@ -4005,6 +4125,7 @@ function centralRemoteCardHtml(rm) {
     '<div class="btn-row">' +
     '<button class="btn sm" type="button" data-central-detail="' + esc(rm.id) + '">查看详情</button>' +
     '<button class="btn secondary sm" type="button" data-central-open="' + esc(rm.base_url) + '">打开远程面板 ↗</button>' +
+    '<button class="btn secondary sm" type="button" data-central-edit="' + esc(rm.id) + '">编辑</button>' +
     '<button class="btn secondary sm" type="button" data-central-token="' + esc(rm.id) + '">更换令牌</button>' +
     '<button class="btn danger sm" type="button" data-central-del="' + esc(rm.id) + '">取消登记</button></div></div>';
 }
@@ -4983,6 +5104,39 @@ async function centralChangeToken(id) {
       if (d.ok === false) { showErr(centralOpError(d)); return; }
       closeModal();
       toast('令牌已更换', 'ok');
+      loadCentral();
+    } catch (e) { showErr(e.message); }
+  });
+}
+// 编辑一台已登记远程面板的名字与地址（v1.3.49）：弹窗预填当前名字与
+// 地址，只改这两项，ID 与令牌不动；保存后后端拿存的令牌当场连一次新
+// 地址，验过才保存，验不过原值不动、错误显示在弹窗里不关闭。只改管理
+// 面板去拉远程的地址，不动订阅链接本身，客户端不用重新导入。
+async function centralEditRemote(id) {
+  const rm = centralRemotes.find((x) => x.id === id);
+  if (!rm) { toast('找不到这台远程面板', 'err'); return; }
+  const m = openModal('<h2>编辑远程面板</h2>' +
+    '<p class="muted">只改名字与地址，令牌不变。保存后会拿存的令牌当场连一次新地址，验过才保存，验不过原值不动。订阅链接本身不受影响，客户端不用重新导入。</p>' +
+    '<label>名称 <span class="hint">必填，最多 64 个字</span></label><input id="central-edit-name" type="text" value="' + esc(rm.name || '') + '" maxlength="64">' +
+    '<label>地址 <span class="hint">必填，写到端口为止，如 https://域名:11111</span></label><input id="central-edit-url" type="text" value="' + esc(rm.base_url || '') + '">' +
+    '<div class="error-box hidden" id="central-edit-err"></div>' +
+    '<div class="btn-row"><button class="btn" id="central-edit-save" type="button">保存</button><button class="btn secondary" id="central-edit-cancel" type="button">取消</button></div>');
+  if (!m) return;
+  onIn(m, '#central-edit-cancel', 'click', () => closeModal());
+  onIn(m, '#central-edit-save', 'click', async () => {
+    const nameEl = $('#central-edit-name', m);
+    const urlEl = $('#central-edit-url', m);
+    const name = nameEl ? nameEl.value.trim() : '';
+    const baseUrl = urlEl ? urlEl.value.trim() : '';
+    const errBox = $('#central-edit-err', m);
+    const showErr = (msg) => { if (errBox) { errBox.textContent = msg; errBox.classList.remove('hidden'); } };
+    if (!name) { showErr('请填名称'); return; }
+    if (!baseUrl) { showErr('请填地址'); return; }
+    try {
+      const d = await apiRaw('/api/v1/central/remotes/' + encodeURIComponent(id), { method: 'POST', body: JSON.stringify({ name, base_url: baseUrl }) });
+      if (d.ok === false) { showErr(centralOpError(d)); return; }
+      closeModal();
+      toast('远程面板已更新', 'ok');
       loadCentral();
     } catch (e) { showErr(e.message); }
   });

@@ -49,6 +49,11 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		},
 		"remotes_count": len(s.cfg.Remotes),
 		"cloudflare":    map[string]any{"has_token": s.cfg.CloudflareToken != ""},
+		// DNS-01 服务商（v1.3.49）：当前选中的服务商、各家凭证是否配齐、
+		// 进行中的手动签发订单（有则回填 TXT 名与值）。
+		"dns_provider":   s.dnsProviderID(),
+		"dns_configured": s.dnsConfiguredMap(),
+		"manual_pending": s.manualPendingStatus(),
 		// 每用户端口段（v1.3.25）：返回生效值（没设过 = 默认 30000–39999）。
 		"user_ports": func() map[string]any {
 			start, end := s.userPortRange()
@@ -580,6 +585,12 @@ func (s *Server) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Enable {
 		if req.Domain != "" {
+			// 手动模式不能走自动签发：handleHTTPS 不碰它，前端点开启时走
+			// 手动第一步接口；这里是第二道防线（直接调接口也拦住）。
+			if s.dnsProviderID() == "manual" {
+				writeJSON(w, 400, errResp("当前 DNS 服务商是手动模式：请点“开始手动签发”，按两步走（先下单拿 TXT 值，去 DNS 后台加上，再点继续验证）"))
+				return
+			}
 			// 有域名：尝试 ACME DNS-01；失败保留自签并返回错误说明，
 			// 失败原因写进 config 常驻显示在 HTTPS 卡片上（不只是 toast 一闪而过）。
 			s.certMu.Lock()

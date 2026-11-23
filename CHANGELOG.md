@@ -453,3 +453,19 @@
 - 申请前自动清理残留 TXT 记录：上次签发留下的 `_acme-challenge.<域名>` TXT 记录不删，再建会报 400。现在建新记录之前，面板自己先查该 zone 里同名 TXT 记录并删掉再建，以后重开不用手动去删。安全边界：只删名字与类型都完全对得上的记录，其它记录一律不动；删除是 best-effort，查不到、删失败都只记日志，继续建新记录、不因此报错。
 - 测试：go test -race 全过（454 个测试函数，1348 文件新增 7 个：Cloudflare 写 TXT 失败带响应体摘要、超长截断到 500 字符、失败带手动清理提醒、自动清理先删后建、删失败不阻塞建记录（HTTP 500 与网络报错两档）、其它名字/类型的记录不动；版本断言同步改到 1.3.48；gofmt 干净、go vet 过）；jsdom test-1348.js 33 项全过（目标地址计算、开启等待状态、warning 照样跳、失败恢复按钮、无域名开启、重试签发走开启流程、关闭跳回 http、探测超时弹手动打开链接）。未测：真机、iPhone Safari。
 - 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。之前卡住的用户：先用 http:// 打开面板再开 HTTPS（或等升到 1.3.48 后再开关，页面会自动跳）。
+
+### v1.3.49 更新
+
+- ACME DNS-01 多服务商：以前面板申请真证书只有 Cloudflare 一条路，域名不在 Cloudflare 就签不了（报“找不到 Zone”回落自签）。现在设置页 HTTPS 卡片加了服务商下拉框：Cloudflare（默认）、阿里云 DNS、腾讯云 DNSPod、AWS Route 53、GoDaddy、Namecheap，再加手动模式当通用兜底。选哪个就显示哪个的凭证输入框；凭证存 config.json（600 权限），只存、不回显明文（只显示“已配置/未配置”）；切服务商记审计；默认 cloudflare，老用户已配的 CF Token 不受影响。
+- 各服务商要填什么凭证、去哪申请（详见仓库里的 DNS_PROVIDERS.md）：
+  - Cloudflare：API Token（Zone:DNS:Edit 权限，cfut_ 开头），不变。
+  - 阿里云 DNS：AccessKey ID＋AccessKey Secret（阿里云控制台 → AccessKey 管理；HMAC-SHA1 签名，dns.aliyuncs.com）。
+  - 腾讯云 DNSPod：经典 API Token 的 Token ID＋Token（DNSPod 控制台 → 我的账号 → API Token；dnsapi.cn）。
+  - AWS Route 53：AccessKey ID＋Secret Access Key（IAM 里建只带 AmazonRoute53FullAccess 或更小权限的用户；SigV4 签名，域名要先在 Route 53 建公有 Hosted Zone）。
+  - GoDaddy：Personal Access Token（GoDaddy 开发者后台开，需 domains.domain:read 与 domains.dns:update 权限）。注意：用 v3＋PAT，不用 v1 的 sso-key——v1 已被 GoDaddy 官方列为计划废弃（through 2026），v3 于 2026-08-10 发布。v3 是单条记录增删，不会一把冲掉别人的记录。
+  - Namecheap：API User＋API Key＋Client IP（Namecheap 后台 Profile → Security → API Access 开 API、拿 Key）。坑：调用方 IPv4 必须在 Namecheap 后台白名单里（Client IP 填本机公网 IPv4），否则 API 直接拒绝，报错里会明说白名单这一点；只支持用 Namecheap BasicDNS 的域名（PremiumDNS/FreeDNS、或指到别家 DNS 的管不了）；它的 DNS 改法是先读整组记录再整体回写，面板会把其它记录原样带回去，不会删掉。
+- 手动模式（通用兜底，域名在哪都能签）：不用填凭证。点“开启 HTTPS”后面板先下单，把 TXT 记录名与值显示在 HTTPS 卡片上，你去任意 DNS 后台加上，再点“已添加，继续验证”。订单状态落盘（$PANEL_HOME/certs/acme-pending.json，600 权限），面板重启后还在；订单 1 小时过期，过期作废、请重新开始。点继续前面板先查本机 DNS 能不能看到这条 TXT（最多等 2 分钟），看不到就报错但不提交（pending 还能用，等几分钟再点）；一旦提交后验证失败，订单作废、须重新开始。手动模式不自动续签（要人加 TXT），到期前请手动重新签发。
+- 自动清理残留记录与报错透出通用到所有 API 服务商（1.3.48 只给 Cloudflare 做了）：建新记录前先查同名 TXT 删掉（只删名字与类型都对得上的，其它记录不动，删失败只记日志、不阻塞建记录）；失败时报错里带上对方返回的原始信息摘要（截断到 500 字符）再加一句去对应 DNS 后台删残留记录的手动提醒。手动模式没有自动清理，失败提示里写手动去删再重试。
+- 已登记远程面板加“编辑”：集中管理每张远程卡片上“更换令牌”旁边多了“编辑”按钮，点开预填当前名字与地址，改名、改地址都能改（ID 与令牌不动）。保存前先拿存的令牌当场连一次新地址：连不上、令牌不对、版本太旧都直接拒绝、原值不动；新地址与另一台已登记远程撞了也拒绝。只改管理面板去拉远程的地址，不动订阅链接本身——原先的订阅链接与令牌不变，客户端不用重新导入；改完地址、探通后节点会回到同一条订阅里。改完旧地址拉回来的快照作废并当场重探一次，列表立刻显示新状态。场景：中转面板改了域名并开了 HTTPS，管理面板登记的还是旧 http 地址、拉不到节点，点“编辑”改成新地址即可，不用取消登记再重登。
+- 测试：go test -race 全过（1349 文件新增：服务商注册与凭证配齐判断、切服务商不影响旧 CF 配置、阿里云签名验算与建/删/查/清理/报错透出、DNSPod 表单与状态码校验、Route 53 的 SigV4 头与 UPSERT/DELETE（多值保留）、GoDaddy v3 的 PAT 头与按 recordId 删、Namecheap 的整组回写合并与白名单报错、手动模式两步走（下单存 pending、重启后读回继续、过期作废、错域名拒绝）、版本断言同步改到 1.3.49；另加 TestCentralRemotesUpdate1349：只改名、改地址探通、探不通拒绝且原值不动、地址撞了拒绝、格式校验、Token 与 ID 不变、审计不含令牌；gofmt 干净、go vet 过）；jsdom test-1349.js 全过（服务商下拉切换、凭证框显示与已配置状态、保存后状态更新、手动 pending 展示与继续/取消、开启等待状态回归；另加远程编辑弹窗：卡片上有编辑按钮且在更换令牌前面、打开预填、保存后列表更新、验不过时弹窗里显示错误且不关闭）。未测：真机、真服务商账号联调（本机没有各家 API 密钥，联调要用户在真机上拿真实凭证走一遍）、iPhone Safari。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。已配 CF Token 的用户升级后默认还是 Cloudflare，什么都不用做；域名不在 Cloudflare 的，升级后去设置页选自家服务商、填凭证，再点“重试签发”。

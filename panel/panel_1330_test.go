@@ -91,8 +91,8 @@ func TestNodeUsersFieldsAndAuth1330(t *testing.T) {
 		t.Fatalf("下发应带 ETag 头")
 	}
 	resp := decodeNode1330(t, rec)
-	if resp["panel_version"] != "1.3.48" {
-		t.Fatalf("panel_version 应为 1.3.48，实际 %v", resp["panel_version"])
+	if resp["panel_version"] != "1.3.49" {
+		t.Fatalf("panel_version 应为 1.3.49，实际 %v", resp["panel_version"])
 	}
 	if resp["generic_email"] != "generic@node" {
 		t.Fatalf("generic_email 应为 generic@node，实际 %v", resp["generic_email"])
@@ -187,8 +187,8 @@ func TestNodeConfigFields1330(t *testing.T) {
 	if resp["enforce"] != false {
 		t.Fatalf("本版 enforce 应为 false，实际 %v", resp["enforce"])
 	}
-	if resp["panel_version"] != "1.3.48" {
-		t.Fatalf("panel_version 应为 1.3.48，实际 %v", resp["panel_version"])
+	if resp["panel_version"] != "1.3.49" {
+		t.Fatalf("panel_version 应为 1.3.49，实际 %v", resp["panel_version"])
 	}
 	st, _ := resp["agent_status"].(map[string]any)
 	if st == nil {

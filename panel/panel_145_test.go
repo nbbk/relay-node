@@ -275,6 +275,9 @@ func driveObtain145(t *testing.T, s *Server, m *mockACME145) (writes []string, d
 		return "fake-record-id", nil
 	}
 	defer func() { cfTXTFunc = oldTXT }()
+	// v1.3.49：obtainACMECert 先查当前服务商凭证是否配齐（Cloudflare 默认），
+	// 没配会先报错、不走 ACME 流程；测试里把 Token 配上。
+	s.cfg.CloudflareToken = "cfut_testtoken145"
 	if err := s.obtainACMECert("example.com"); err != nil {
 		t.Fatalf("obtainACMECert 失败：%v", err)
 	}
@@ -408,6 +411,7 @@ func TestObtainACMECertMissingAccountLocation145(t *testing.T) {
 	oldTXT := cfTXTFunc
 	cfTXTFunc = func(s *Server, domain, value, deleteID string) (string, error) { return "fake-record-id", nil }
 	defer func() { cfTXTFunc = oldTXT }()
+	s.cfg.CloudflareToken = "cfut_testtoken145" // v1.3.49：obtainACMECert 先查凭证是否配齐
 
 	err := s.obtainACMECert("example.com")
 	if err == nil {
@@ -434,6 +438,7 @@ func TestObtainACMECertMissingOrderLocation145(t *testing.T) {
 	oldTXT := cfTXTFunc
 	cfTXTFunc = func(s *Server, domain, value, deleteID string) (string, error) { return "fake-record-id", nil }
 	defer func() { cfTXTFunc = oldTXT }()
+	s.cfg.CloudflareToken = "cfut_testtoken145" // v1.3.49：obtainACMECert 先查凭证是否配齐
 
 	err := s.obtainACMECert("example.com")
 	if err == nil {
@@ -462,6 +467,7 @@ func TestObtainACMECertOrderNeverValid145(t *testing.T) {
 	oldTXT := cfTXTFunc
 	cfTXTFunc = func(s *Server, domain, value, deleteID string) (string, error) { return "fake-record-id", nil }
 	defer func() { cfTXTFunc = oldTXT }()
+	s.cfg.CloudflareToken = "cfut_testtoken145" // v1.3.49：obtainACMECert 先查凭证是否配齐
 
 	err := s.obtainACMECert("example.com")
 	if err == nil {

@@ -142,10 +142,12 @@ func (s *Server) panelCertInfo() panelCertInfo {
 }
 
 // shouldRenewPanelCert 面板自身真证书自动续签的纯决策（好测）：HTTPS 开着、
-// 有域名、有 Token、证书存在且是真证书、剩余 ≤30 天才续；自签的不续
-// （自签是签发失败的回落态，留给用户在 HTTPS 卡片点“重试签发”手动处理）。
-func shouldRenewPanelCert(httpsEnabled bool, domain, token string, info panelCertInfo) bool {
-	if !httpsEnabled || domain == "" || token == "" {
+// 有域名、当前服务商的凭证配齐了、证书存在且是真证书、剩余 ≤30 天才续；
+// 自签的不续（自签是签发失败的回落态，留给用户在 HTTPS 卡片点“重试签发”
+// 手动处理）；手动模式不自动续签（要人加 TXT，providerConfigured 恒 false
+// 之外——见 maybeRenewPanelCert，那里直接跳过 manual）。
+func shouldRenewPanelCert(httpsEnabled bool, domain string, providerConfigured bool, info panelCertInfo) bool {
+	if !httpsEnabled || domain == "" || !providerConfigured {
 		return false
 	}
 	if !info.Exists || info.SelfSigned {
@@ -377,13 +379,42 @@ var cfReq = func(token, method, url string, payload any) (int, []byte, error) {
 	return resp.StatusCode, b, nil
 }
 
-// obtainACMECert 为 domain 申请 Let's Encrypt 证书（DNS-01），存到 certs/。
-func (s *Server) obtainACMECert(domain string) error {
-	dir := filepath.Join(s.env.PanelHome, "certs")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	// 账户密钥（复用）
+// ---------- ACME 订单分阶段（v1.3.49：手动模式两步走） ----------
+//
+// obtainACMECert 原先是一整段同步流程（下单→建 TXT→提交挑战→finalize）。
+// 手动模式要分两步走：第一步下单并返回 TXT 值（用户去 DNS 后台加记录），
+// 第二步用户点继续后才提交挑战、finalize、下证书。所以拆成三段：
+// startACMEOrder（下单＋取各 authz 的 dns-01 挑战值）、
+// submitAndPollChallenge（提交挑战＋轮询 authz）、
+// finalizeACMEOrder（CSR＋finalize＋轮询订单＋下载证书）。
+// API 服务商的流程是三段连着跑；手动模式第一步只跑 startACMEOrder，
+// 把订单状态存进 pending 文件，第二步读回 pending 再跑后两段。
+
+// acmeAuthzState 是一条 DNS-01 授权的状态。
+type acmeAuthzState struct {
+	AuthzURL     string
+	ChallengeURL string
+	Token        string
+	TXTName      string // _acme-challenge.<domain>
+	TXTValue     string // 43 字符的 keyAuthorization 哈希
+}
+
+// acmeOrderState 是一次 ACME 下单的完整状态（内存里用）。
+type acmeOrderState struct {
+	Domain      string
+	OrderURL    string
+	FinalizeURL string
+	Authz       []acmeAuthzState
+	CSRKey      *rsa.PrivateKey // finalize 用的 CSR 密钥（内存里）
+	CSRKeyPEM   []byte          // 同上（PEM，存 pending 用）
+}
+
+// errACMEValidationFailed 是 DNS-01 验证失败的哨兵错误：验证一旦 invalid，
+// 订单就作废了，手动模式的确认接口收到它要删 pending、让用户重新开始。
+var errACMEValidationFailed = fmt.Errorf("ACME DNS-01 验证失败")
+
+// loadOrCreateACMEKey 读/生成 ACME 账户密钥（certs/acme-key.pem，600 权限）。
+func (s *Server) loadOrCreateACMEKey(dir string) (*rsa.PrivateKey, error) {
 	keyPath := filepath.Join(dir, "acme-key.pem")
 	var key *rsa.PrivateKey
 	if b, err := os.ReadFile(keyPath); err == nil {
@@ -395,17 +426,31 @@ func (s *Server) obtainACMECert(domain string) error {
 		var err error
 		key, err = rsa.GenerateKey(rand.Reader, 2048)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		_ = writeFileAtomic(keyPath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0o600)
+	}
+	return key, nil
+}
+
+// startACMEOrder 下单：拉目录、注册（拿 kid）、下单、取每个 authz 的
+// dns-01 挑战并算出 TXT 值、生成 CSR 密钥。返回订单状态与 ACME 客户端。
+func (s *Server) startACMEOrder(domain string) (*acmeOrderState, *acmeClient, error) {
+	dir := filepath.Join(s.env.PanelHome, "certs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, nil, err
+	}
+	key, err := s.loadOrCreateACMEKey(dir)
+	if err != nil {
+		return nil, nil, err
 	}
 	ac := &acmeClient{http: &http.Client{Timeout: 30 * time.Second}, key: key, dirURL: acmeDirectoryURL}
 	code, b, err := ac.get(ac.dirURL)
 	if err != nil {
-		return fmt.Errorf("ACME 目录拉不到：%v", err)
+		return nil, nil, fmt.Errorf("ACME 目录拉不到：%v", err)
 	}
 	if code != 200 {
-		return fmt.Errorf("ACME 目录拉不到（HTTP %d）", code)
+		return nil, nil, fmt.Errorf("ACME 目录拉不到（HTTP %d）", code)
 	}
 	ac.dir = map[string]string{}
 	_ = json.Unmarshal(b, &ac.dir)
@@ -413,49 +458,40 @@ func (s *Server) obtainACMECert(domain string) error {
 	// 在 Location 头里，之后除注册外的所有请求都必须用这个 kid 签名。
 	code, b, hdr, err := ac.post(ac.dir["newAccount"], map[string]any{"termsOfServiceAgreed": true})
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if code != 200 && code != 201 {
-		return fmt.Errorf("ACME 注册失败（HTTP %d）：%s", code, string(b))
+		return nil, nil, fmt.Errorf("ACME 注册失败（HTTP %d）：%s", code, string(b))
 	}
 	ac.kid = hdr.Get("Location")
 	if ac.kid == "" {
-		return fmt.Errorf("ACME 注册成功但没返回账户地址（Location 头为空），无法继续")
+		return nil, nil, fmt.Errorf("ACME 注册成功但没返回账户地址（Location 头为空），无法继续")
 	}
 	// newOrder：订单 URL 在 Location 头里，finalize 后要轮询它等证书。
 	code, b, hdr, err = ac.post(ac.dir["newOrder"], map[string]any{"identifiers": []map[string]string{{"type": "dns", "value": domain}}})
 	if err != nil || code >= 300 {
-		return fmt.Errorf("ACME 下单失败（HTTP %d）：%s", code, string(b))
+		return nil, nil, fmt.Errorf("ACME 下单失败（HTTP %d）：%s", code, string(b))
 	}
 	orderURL := hdr.Get("Location")
 	if orderURL == "" {
-		return fmt.Errorf("ACME 下单成功但没返回订单地址（Location 头为空），无法继续")
+		return nil, nil, fmt.Errorf("ACME 下单成功但没返回订单地址（Location 头为空），无法继续")
 	}
 	var order struct {
 		Authorizations []string `json:"authorizations"`
 		Finalize       string   `json:"finalize"`
 	}
 	if err := json.Unmarshal(b, &order); err != nil {
-		return fmt.Errorf("ACME 订单解析失败")
+		return nil, nil, fmt.Errorf("ACME 订单解析失败")
 	}
 	thumb, err := ac.jwkThumbprint()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	// 处理每个 authz 的 dns-01
-	type cleanup struct {
-		zone, id string
-	}
-	var cleanups []cleanup
-	defer func() {
-		for _, c := range cleanups {
-			_, _ = cfTXTFunc(s, domain, "", c.id)
-		}
-	}()
+	st := &acmeOrderState{Domain: domain, OrderURL: orderURL, FinalizeURL: order.Finalize}
 	for _, authzURL := range order.Authorizations {
 		code, b, _, err := ac.post(authzURL, nil)
 		if err != nil || code >= 300 {
-			return fmt.Errorf("ACME 授权查询失败")
+			return nil, nil, fmt.Errorf("ACME 授权查询失败")
 		}
 		var az struct {
 			Challenges []struct {
@@ -477,53 +513,76 @@ func (s *Server) obtainACMECert(domain string) error {
 			}
 		}
 		if dnsCh == nil {
-			return fmt.Errorf("ACME 没给 dns-01 挑战")
+			return nil, nil, fmt.Errorf("ACME 没给 dns-01 挑战")
 		}
 		keyAuth := dnsCh.Token + "." + thumb
 		h := sha256.Sum256([]byte(keyAuth))
-		txtVal := b64url(h[:])
-		recID, err := cfTXTFunc(s, domain, txtVal, "")
-		if err != nil {
-			return err
-		}
-		cleanups = append(cleanups, cleanup{domain, recID})
-		// 等 DNS 传播
-		acmeSleep(10 * time.Second)
-		code, b, _, err = ac.post(dnsCh.URL, map[string]any{})
-		if err != nil || code >= 300 {
-			return fmt.Errorf("ACME 挑战提交失败（HTTP %d）", code)
-		}
-		// 轮询 authz 状态
-		for i := 0; i < 30; i++ {
-			acmeSleep(5 * time.Second)
-			code, b, _, err = ac.post(authzURL, nil)
-			if err != nil {
-				continue
-			}
-			var st struct {
-				Status string `json:"status"`
-			}
-			_ = json.Unmarshal(b, &st)
-			if st.Status == "valid" {
-				break
-			}
-			if st.Status == "invalid" {
-				return fmt.Errorf("ACME DNS-01 验证失败：TXT 记录可能没生效或 Token 权限不对")
-			}
-			_ = code
-		}
+		st.Authz = append(st.Authz, acmeAuthzState{
+			AuthzURL: authzURL, ChallengeURL: dnsCh.URL, Token: dnsCh.Token,
+			TXTName: "_acme-challenge." + domain, TXTValue: b64url(h[:]),
+		})
 	}
-	// CSR
+	// CSR 密钥现在就生成（旧流程在挑战后才生成，效果一样）：手动模式要把
+	// 它存进 pending，第二步 finalize 时用同一把密钥。
 	csrKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	csrTmpl := &x509.CertificateRequest{Subject: pkix.Name{CommonName: domain}, DNSNames: []string{domain}}
+	st.CSRKey = csrKey
+	st.CSRKeyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(csrKey)})
+	return st, ac, nil
+}
+
+// submitAndPollChallenge 提交一条 dns-01 挑战并轮询 authz（最多 30×5 秒）。
+// manual=true 时报错文案按手动模式写（记录没加好/没生效＋订单作废）。
+func submitAndPollChallenge(ac *acmeClient, az acmeAuthzState, manual bool) error {
+	code, _, _, err := ac.post(az.ChallengeURL, map[string]any{})
+	if err != nil || code >= 300 {
+		return fmt.Errorf("ACME 挑战提交失败（HTTP %d）", code)
+	}
+	for i := 0; i < 30; i++ {
+		acmeSleep(5 * time.Second)
+		code, b, _, err := ac.post(az.AuthzURL, nil)
+		if err != nil {
+			continue
+		}
+		var st struct {
+			Status string `json:"status"`
+		}
+		_ = json.Unmarshal(b, &st)
+		if st.Status == "valid" {
+			return nil
+		}
+		if st.Status == "invalid" {
+			if manual {
+				return fmt.Errorf("%w：TXT 记录可能没加好或还没生效（请确认 %s 的 TXT 值与面板显示的一致）。本次订单已作废，请重新开始手动签发", errACMEValidationFailed, az.TXTName)
+			}
+			return fmt.Errorf("%w：TXT 记录可能没生效或 Token 权限不对", errACMEValidationFailed)
+		}
+		_ = code
+	}
+	// 30 次都没 valid 也不报错（旧行为）：交给 finalize 兜底。
+	return nil
+}
+
+// finalizeACMEOrder 生成 CSR、finalize、轮询订单等证书、下载并写 certs/。
+func (s *Server) finalizeACMEOrder(ac *acmeClient, st *acmeOrderState) error {
+	dir := filepath.Join(s.env.PanelHome, "certs")
+	csrKey := st.CSRKey
+	if csrKey == nil && len(st.CSRKeyPEM) > 0 {
+		if blk, _ := pem.Decode(st.CSRKeyPEM); blk != nil {
+			csrKey, _ = x509.ParsePKCS1PrivateKey(blk.Bytes)
+		}
+	}
+	if csrKey == nil {
+		return fmt.Errorf("CSR 密钥丢了，请重新签发")
+	}
+	csrTmpl := &x509.CertificateRequest{Subject: pkix.Name{CommonName: st.Domain}, DNSNames: []string{st.Domain}}
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, csrTmpl, csrKey)
 	if err != nil {
 		return err
 	}
-	code, b, _, err = ac.post(order.Finalize, map[string]any{"csr": b64url(csrDER)})
+	code, b, _, err := ac.post(st.FinalizeURL, map[string]any{"csr": b64url(csrDER)})
 	if err != nil || code >= 300 {
 		return fmt.Errorf("ACME finalize 失败（HTTP %d）", code)
 	}
@@ -532,7 +591,7 @@ func (s *Server) obtainACMECert(domain string) error {
 	var certURL string
 	for i := 0; i < 30; i++ {
 		acmeSleep(5 * time.Second)
-		code, b, _, err = ac.post(orderURL, nil)
+		code, b, _, err := ac.post(st.OrderURL, nil)
 		if err != nil {
 			continue
 		}
@@ -562,4 +621,189 @@ func (s *Server) obtainACMECert(domain string) error {
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(csrKey)})
 	return writeFileAtomic(filepath.Join(dir, "key.pem"), keyPEM, 0o600)
+}
+
+// obtainACMECert 为 domain 申请 Let's Encrypt 证书（DNS-01），存到 certs/。
+// 走配置选中的 DNS 服务商；手动模式不能自动签发（handleHTTPS 会提前拦，
+// 这里是第二道防线）；凭证没配齐时先报错，不浪费一次 ACME 下单。
+func (s *Server) obtainACMECert(domain string) error {
+	provider := s.dnsProvider()
+	if provider.ID() == "manual" {
+		return fmt.Errorf("当前 DNS 服务商是手动模式，不能自动签发：请在设置页 HTTPS 卡片点“开始手动签发”，按两步走")
+	}
+	if !s.dnsProviderConfigured(provider.ID()) {
+		return fmt.Errorf("请先在设置页 DNS 服务商卡片填写 %s 的凭证", dnsProviderName(provider.ID()))
+	}
+	st, ac, err := s.startACMEOrder(domain)
+	if err != nil {
+		return err
+	}
+	type cleanup struct {
+		id, value string
+	}
+	var cleanups []cleanup
+	defer func() {
+		for _, c := range cleanups {
+			_ = provider.Delete(s, domain, c.id, c.value)
+		}
+	}()
+	for _, az := range st.Authz {
+		recID, err := provider.Create(s, domain, az.TXTValue)
+		if err != nil {
+			return err
+		}
+		cleanups = append(cleanups, cleanup{recID, az.TXTValue})
+		// 等 DNS 传播
+		acmeSleep(10 * time.Second)
+		if err := submitAndPollChallenge(ac, az, false); err != nil {
+			return err
+		}
+	}
+	return s.finalizeACMEOrder(ac, st)
+}
+
+// ---------- 手动模式 pending 订单（v1.3.49） ----------
+//
+// 手动模式分两步走：第一步下单后把订单状态落盘（$PANEL_HOME/certs/
+// acme-pending.json，600 权限），面板重启后 pending 还在，不放内存；
+// 第二步用户点继续后读回 pending、提交挑战、finalize、下证书。
+// 订单 1 小时过期（与 ACME 订单本身的有效期同量级），过期作废。
+
+// acmePendingTTL 是手动 pending 订单的有效期。
+const acmePendingTTL = time.Hour
+
+// acmePendingAuthz 是 pending 里一条授权的状态。
+type acmePendingAuthz struct {
+	AuthzURL     string `json:"authz_url"`
+	ChallengeURL string `json:"challenge_url"`
+	Token        string `json:"token"`
+	TXTName      string `json:"txt_name"`
+	TXTValue     string `json:"txt_value"`
+}
+
+// acmePendingOrder 是落盘的手动签发订单。
+type acmePendingOrder struct {
+	Version     int                `json:"version"`
+	Domain      string             `json:"domain"`
+	OrderURL    string             `json:"order_url"`
+	FinalizeURL string             `json:"finalize_url"`
+	Authz       []acmePendingAuthz `json:"authz"`
+	CSRKeyPEM   string             `json:"csr_key_pem"`
+	CreatedAt   time.Time          `json:"created_at"`
+	ExpiresAt   time.Time          `json:"expires_at"`
+}
+
+// pendingOrderPath 返回 pending 文件路径。
+func (s *Server) pendingOrderPath() string {
+	return filepath.Join(s.env.PanelHome, "certs", "acme-pending.json")
+}
+
+// savePendingOrder 把订单状态写盘（原子写，600 权限）。
+func (s *Server) savePendingOrder(p *acmePendingOrder) error {
+	dir := filepath.Join(s.env.PanelHome, "certs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(s.pendingOrderPath(), data, 0o600)
+}
+
+// loadPendingOrder 读回 pending（没有、解析失败、过期都返回错误）。
+func (s *Server) loadPendingOrder() (*acmePendingOrder, error) {
+	b, err := os.ReadFile(s.pendingOrderPath())
+	if err != nil {
+		return nil, fmt.Errorf("没有进行中的手动签发订单（请先点“开始手动签发”）")
+	}
+	var p acmePendingOrder
+	if json.Unmarshal(b, &p) != nil {
+		return nil, fmt.Errorf("手动签发订单损坏，请重新开始")
+	}
+	if p.Version != 1 || p.Domain == "" || p.OrderURL == "" || p.FinalizeURL == "" || len(p.Authz) == 0 {
+		return nil, fmt.Errorf("手动签发订单不完整，请重新开始")
+	}
+	if time.Now().After(p.ExpiresAt) {
+		return nil, fmt.Errorf("手动签发订单已过期（超过 1 小时），请重新开始")
+	}
+	return &p, nil
+}
+
+// clearPendingOrder 删 pending 文件（签发成功、订单作废、用户取消时调；
+// 文件不存在也不报错）。
+func (s *Server) clearPendingOrder() {
+	_ = os.Remove(s.pendingOrderPath())
+}
+
+// pendingToState 把落盘的 pending 转成内存里的订单状态（finalize 用）。
+func pendingToState(p *acmePendingOrder) *acmeOrderState {
+	st := &acmeOrderState{
+		Domain: p.Domain, OrderURL: p.OrderURL, FinalizeURL: p.FinalizeURL,
+		CSRKeyPEM: []byte(p.CSRKeyPEM),
+	}
+	for _, a := range p.Authz {
+		st.Authz = append(st.Authz, acmeAuthzState{
+			AuthzURL: a.AuthzURL, ChallengeURL: a.ChallengeURL, Token: a.Token,
+			TXTName: a.TXTName, TXTValue: a.TXTValue,
+		})
+	}
+	return st
+}
+
+// resumeACMEClient 恢复 ACME 客户端（手动模式第二步用）：账户密钥存在
+// acme-key.pem 里，同一把密钥重新注册会拿到同一个账户地址（kid）。
+func (s *Server) resumeACMEClient() (*acmeClient, error) {
+	dir := filepath.Join(s.env.PanelHome, "certs")
+	key, err := s.loadOrCreateACMEKey(dir)
+	if err != nil {
+		return nil, err
+	}
+	ac := &acmeClient{http: &http.Client{Timeout: 30 * time.Second}, key: key, dirURL: acmeDirectoryURL}
+	code, b, err := ac.get(ac.dirURL)
+	if err != nil {
+		return nil, fmt.Errorf("ACME 目录拉不到：%v", err)
+	}
+	if code != 200 {
+		return nil, fmt.Errorf("ACME 目录拉不到（HTTP %d）", code)
+	}
+	ac.dir = map[string]string{}
+	_ = json.Unmarshal(b, &ac.dir)
+	code, b, hdr, err := ac.post(ac.dir["newAccount"], map[string]any{"termsOfServiceAgreed": true})
+	if err != nil {
+		return nil, err
+	}
+	if code != 200 && code != 201 {
+		return nil, fmt.Errorf("ACME 注册失败（HTTP %d）：%s", code, string(b))
+	}
+	ac.kid = hdr.Get("Location")
+	if ac.kid == "" {
+		return nil, fmt.Errorf("ACME 注册成功但没返回账户地址（Location 头为空），无法继续")
+	}
+	return ac, nil
+}
+
+// acmeLookupTXT 是 net.LookupTXT 的包级替身（测试用）。
+var acmeLookupTXT = func(name string) ([]string, error) {
+	return net.LookupTXT(name)
+}
+
+// waitForTXTVisible 等 TXT 记录生效（手动模式第二步提交挑战之前）：
+// 先查面板本机的 DNS 能不能看到这条 TXT（最多等 2 分钟），看不到就报错
+// 但不提交挑战——pending 还能用，用户等几分钟再点继续验证。
+// 注意：这只是启发式检查（面板的解析器与 Let's Encrypt 的不一定相同），
+// 能看到大概率能过，看不到则一定别急着提交（提交失败订单就作废了）。
+func waitForTXTVisible(name, value string) error {
+	for i := 0; i < 24; i++ {
+		vals, err := acmeLookupTXT(name)
+		if err == nil {
+			for _, v := range vals {
+				if v == value {
+					return nil
+				}
+			}
+		}
+		acmeSleep(5 * time.Second)
+	}
+	return fmt.Errorf("TXT 记录还没生效：面板的 DNS 还查不到 %s（已等 2 分钟），请确认记录加对了、等几分钟再点“继续验证”", name)
 }

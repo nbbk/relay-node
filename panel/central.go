@@ -689,6 +689,77 @@ func (s *Server) handleCentralRemotesUpdateToken(w http.ResponseWriter, r *http.
 	writeJSON(w, 200, okResp(nil))
 }
 
+// handleCentralRemotesUpdate 编辑一台已登记远程面板的名字与地址（v1.3.49）：
+// 只改 Name 与 BaseURL，ID、Token、CreatedAt 不动。提交后先拿存的令牌
+// 当场调一次新地址的 /api/v1/central/status（与登记、换令牌同一套
+// fetchRemoteStatus 校验）：连不上、令牌不对、版本太旧都直接拒绝，
+// 原值不动；新地址与其它已登记远程撞了也拒绝；验过才保存并记审计。
+// 只改管理面板去拉远程的地址，不动订阅链接本身——原先的订阅链接与
+// 令牌不变，客户端不用重新导入；改完地址、探通后节点会回到同一条订阅里。
+func (s *Server) handleCentralRemotesUpdate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rem := s.remoteByID(id)
+	if rem == nil {
+		writeJSON(w, 404, errResp("没有登记过这台远程面板"))
+		return
+	}
+	var req struct {
+		Name    string `json:"name"`
+		BaseURL string `json:"base_url"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeJSON(w, 400, errResp("名称不能为空"))
+		return
+	}
+	if len(name) > 64 {
+		writeJSON(w, 400, errResp("名称太长，最多 64 个字"))
+		return
+	}
+	baseURL, err := normalizeRemoteBaseURL(req.BaseURL)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	for _, x := range s.cfg.Remotes {
+		if x.ID != id && x.BaseURL == baseURL {
+			writeJSON(w, 400, errResp("这个地址已经登记过另一台远程面板了"))
+			return
+		}
+	}
+	candidate := *rem
+	candidate.Name = name
+	candidate.BaseURL = baseURL
+	if _, err := s.fetchRemoteStatus(candidate); err != nil {
+		side, msg := remoteSideOf(err)
+		writeJSON(w, 200, map[string]any{"ok": false, "error": msg, "side": side})
+		return
+	}
+	oldName, oldURL := rem.Name, rem.BaseURL
+	rem.Name = name
+	rem.BaseURL = baseURL
+	if err := s.saveConfig(); err != nil {
+		// 保存失败时内存里也还原，不留半截状态。
+		rem.Name = oldName
+		rem.BaseURL = oldURL
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	// 地址变了，旧地址拉回来的快照与离线提醒状态都作废（复用取消登记那两行），
+	// 再当场重探一次新地址，列表立刻显示新状态。
+	s.centralMu.Lock()
+	delete(s.centralCache, id)
+	delete(s.centralAlert, id)
+	s.centralMu.Unlock()
+	s.pollOneRemote(*rem)
+	s.audit(s.currentUser(r), "编辑远程面板", oldName+"（"+oldURL+"）", "成功", "改为 "+name+"（"+baseURL+"）")
+	writeJSON(w, 200, okResp(nil))
+}
+
 func (s *Server) handleCentralRemotesPoll(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	rem := s.remoteByID(id)

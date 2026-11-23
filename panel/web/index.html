@@ -384,32 +384,94 @@
               <div class="btn-row"><button class="btn" type="submit">保存白名单</button></div>
             </form>
           </div>
-              <div class="card">
+              <div class="card" id="card-https">
             <h2>HTTPS</h2>
             <p class="muted">无域名时生成自签证书（浏览器首次会提示一次，点继续访问即可）；绑域名后自动申请真证书（DNS 验证，不占 80 端口）。</p>
             <form id="https-form">
               <label for="https-domain">域名 <span class="hint">可空，留空 = 自签证书</span></label>
               <input id="https-domain" placeholder="example.com">
+              <label for="dns-provider">DNS 服务商 <span class="hint">绑域名签真证书时用它写 TXT 记录</span></label>
+              <select id="dns-provider">
+                <option value="cloudflare">Cloudflare（默认）</option>
+                <option value="aliyun">阿里云 DNS</option>
+                <option value="dnspod">腾讯云 DNSPod</option>
+                <option value="route53">AWS Route 53</option>
+                <option value="godaddy">GoDaddy</option>
+                <option value="namecheap">Namecheap</option>
+                <option value="manual">手动添加 TXT（通用兜底）</option>
+              </select>
               <div class="btn-row">
                 <button class="btn" id="https-enable" type="button">开启 HTTPS</button>
                 <button class="btn secondary" id="https-disable" type="button">关闭 HTTPS（回 HTTP）</button>
               </div>
             </form>
+            <div id="dns-forms">
+              <form id="dns-form-cloudflare" class="dns-form">
+                <label for="dns-cf-token">API Token <span class="hint">只保存，不回显</span></label>
+                <input id="dns-cf-token" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">在 Cloudflare 后台开 Zone:DNS:Edit 权限的 Token（cfut_ 开头）。详见仓库里的 CLOUDFLARE_TOKEN.md。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 Cloudflare 凭证</button></div>
+              </form>
+              <form id="dns-form-aliyun" class="dns-form hidden" hidden>
+                <label for="dns-aliyun-id">AccessKey ID</label>
+                <input id="dns-aliyun-id" placeholder="LTAI…" autocomplete="off">
+                <label for="dns-aliyun-secret">AccessKey Secret <span class="hint">只保存，不回显</span></label>
+                <input id="dns-aliyun-secret" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">阿里云控制台 → AccessKey 管理。域名要先在阿里云 DNS 解析控制台添加。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存阿里云凭证</button></div>
+              </form>
+              <form id="dns-form-dnspod" class="dns-form hidden" hidden>
+                <label for="dns-dnspod-id">Token ID</label>
+                <input id="dns-dnspod-id" placeholder="数字 ID" autocomplete="off">
+                <label for="dns-dnspod-token">Token <span class="hint">只保存，不回显</span></label>
+                <input id="dns-dnspod-token" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">DNSPod 控制台 → 我的账号 → API Token（经典版）。域名要先在 DNSPod 添加。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 DNSPod 凭证</button></div>
+              </form>
+              <form id="dns-form-route53" class="dns-form hidden" hidden>
+                <label for="dns-route53-id">AccessKey ID</label>
+                <input id="dns-route53-id" placeholder="AKIA…" autocomplete="off">
+                <label for="dns-route53-secret">Secret Access Key <span class="hint">只保存，不回显</span></label>
+                <input id="dns-route53-secret" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">AWS 控制台 → IAM 建用户拿 AccessKey（建议只给 Route53 相关权限）。域名要先在 Route 53 建公有 Hosted Zone。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 Route 53 凭证</button></div>
+              </form>
+              <form id="dns-form-godaddy" class="dns-form hidden" hidden>
+                <label for="dns-godaddy-pat">Personal Access Token <span class="hint">只保存，不回显</span></label>
+                <input id="dns-godaddy-pat" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">GoDaddy 开发者后台开 PAT，权限要含 domains.domain:read 与 domains.dns:update。域名要在 GoDaddy 的 DNS 托管。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 GoDaddy 凭证</button></div>
+              </form>
+              <form id="dns-form-namecheap" class="dns-form hidden" hidden>
+                <label for="dns-namecheap-user">API User</label>
+                <input id="dns-namecheap-user" placeholder="用户名" autocomplete="off">
+                <label for="dns-namecheap-key">API Key <span class="hint">只保存，不回显</span></label>
+                <input id="dns-namecheap-key" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <label for="dns-namecheap-ip">Client IP <span class="hint">本机公网 IPv4</span></label>
+                <input id="dns-namecheap-ip" placeholder="203.0.113.1" autocomplete="off">
+                <p class="muted">Namecheap 后台 → Profile → Security → API Access：开 API、拿 Key、把本机公网 IPv4 加进白名单（不加白名单 API 直接拒绝）。只支持 BasicDNS 的域名。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 Namecheap 凭证</button></div>
+              </form>
+              <div id="dns-form-manual" class="dns-form hidden" hidden>
+                <p class="muted">手动模式不用填凭证：点“开启 HTTPS”后，面板先下单并在下方给出 TXT 记录名与值，你去任意 DNS 后台加上，再点“已添加，继续验证”。订单 1 小时内有效，面板重启后仍可继续；不自动续签，到期前手动重新签发。</p>
+              </div>
+            </div>
+            <div id="dns-cred-status" class="small"></div>
             <div id="https-status" class="small"></div>
             <div id="https-cert-info" class="small"></div>
             <div id="https-token-hint" class="small warn hidden" hidden></div>
             <div id="https-cert-error" class="small warn hidden" hidden></div>
             <div class="btn-row hidden" id="https-retry-row" hidden><button class="btn secondary" id="https-retry" type="button">重试签发</button></div>
-          </div>
-              <div class="card" id="card-cloudflare">
-            <h2>Cloudflare Token</h2>
-            <p class="muted">绑域名开 HTTPS 时用它签证书（DNS 验证）。只用 IP 访问（自签证书）不用填。令牌怎么开见仓库里的 CLOUDFLARE_TOKEN.md。</p>
-            <form id="cf-form">
-              <label for="cf-token">API Token <span class="hint">只保存，不回显</span></label>
-              <input id="cf-token" type="password" placeholder="留空 = 保持原值" autocomplete="off">
-              <div class="small" id="cf-status"></div>
-              <div class="btn-row"><button class="btn" type="submit">保存 Token</button></div>
-            </form>
+            <div id="manual-pending-box" class="hidden" hidden>
+              <div class="warn-box">手动签发进行中：域名 <b id="manual-pending-domain"></b>，订单 <span id="manual-pending-expires"></span> 前有效。</div>
+              <div class="kv"><span>TXT 记录名</span><b class="mono" id="manual-pending-name"></b></div>
+              <div class="kv"><span>TXT 记录值</span><b class="mono" id="manual-pending-value" style="word-break:break-all"></b></div>
+              <p class="muted">去 DNS 后台加上面这条 TXT 记录（类型 TXT），等几分钟让它生效再点继续验证。</p>
+              <div class="btn-row">
+                <button class="btn" id="manual-continue" type="button">已添加，继续验证</button>
+                <button class="btn secondary" id="manual-cancel" type="button">取消本次签发</button>
+              </div>
+            </div>
           </div>
               <div class="card">
             <h2>远程管理令牌</h2>

@@ -29,6 +29,21 @@ type PanelConfig struct {
 	HTTPSEnabled    bool   `json:"https_enabled"`
 	HTTPSDomain     string `json:"https_domain"`
 	CloudflareToken string `json:"cloudflare_token"`
+	// DNS-01 服务商（v1.3.49）：绑域名签真证书时，用哪个 DNS 写 _acme-challenge
+	// TXT 记录。空 = cloudflare（老用户已配 CF Token 的不受影响；没配过的新用户
+	// 默认也是 cloudflare，选别的再填）。凭证只存不回显，跟 CloudflareToken
+	// 同等待遇（config.json 600 权限，不随导出走）。
+	DNSProvider            string `json:"dns_provider,omitempty"`
+	AliyunAccessKeyID      string `json:"aliyun_access_key_id,omitempty"`
+	AliyunAccessKeySecret  string `json:"aliyun_access_key_secret,omitempty"`
+	DNSPodTokenID          string `json:"dnspod_token_id,omitempty"`
+	DNSPodToken            string `json:"dnspod_token,omitempty"`
+	Route53AccessKeyID     string `json:"route53_access_key_id,omitempty"`
+	Route53SecretAccessKey string `json:"route53_secret_access_key,omitempty"`
+	GoDaddyPAT             string `json:"godaddy_pat,omitempty"`
+	NamecheapAPIUser       string `json:"namecheap_api_user,omitempty"`
+	NamecheapAPIKey        string `json:"namecheap_api_key,omitempty"`
+	NamecheapClientIP      string `json:"namecheap_client_ip,omitempty"`
 	// 面板自身真证书（v1.3.14）：自动续签的上次失败原因，常驻显示在 HTTPS 卡片上
 	// （成功后清掉）；续签失败的 Telegram 去重标志，成功续签后清掉，下次再越过
 	// 阈值重新提醒。错误文案只含域名与 ACME 报错，不含任何令牌，可安全显示。

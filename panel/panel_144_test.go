@@ -218,25 +218,25 @@ func TestShouldRenewPanelCert144(t *testing.T) {
 	selfSigned := panelCertInfo{Exists: true, SelfSigned: true, DaysLeft: 10}
 	missing := panelCertInfo{}
 	cases := []struct {
-		name    string
-		enabled bool
-		domain  string
-		token   string
-		info    panelCertInfo
-		want    bool
+		name       string
+		enabled    bool
+		domain     string
+		configured bool
+		info       panelCertInfo
+		want       bool
 	}{
-		{"HTTPS 没开不续", false, "example.com", "cfut_x", real10, false},
-		{"没域名不续", true, "", "cfut_x", real10, false},
-		{"没令牌不续", true, "example.com", "", real10, false},
-		{"没证书不续", true, "example.com", "cfut_x", missing, false},
-		{"自签的不续", true, "example.com", "cfut_x", selfSigned, false},
-		{"真证书剩 31 天不续", true, "example.com", "cfut_x", real31, false},
-		{"真证书剩 30 天续", true, "example.com", "cfut_x", real30, true},
-		{"真证书剩 10 天续", true, "example.com", "cfut_x", real10, true},
-		{"真证书已过期续", true, "example.com", "cfut_x", realExpired, true},
+		{"HTTPS 没开不续", false, "example.com", true, real10, false},
+		{"没域名不续", true, "", true, real10, false},
+		{"凭证没配齐不续", true, "example.com", false, real10, false},
+		{"没证书不续", true, "example.com", true, missing, false},
+		{"自签的不续", true, "example.com", true, selfSigned, false},
+		{"真证书剩 31 天不续", true, "example.com", true, real31, false},
+		{"真证书剩 30 天续", true, "example.com", true, real30, true},
+		{"真证书剩 10 天续", true, "example.com", true, real10, true},
+		{"真证书已过期续", true, "example.com", true, realExpired, true},
 	}
 	for _, c := range cases {
-		if got := shouldRenewPanelCert(c.enabled, c.domain, c.token, c.info); got != c.want {
+		if got := shouldRenewPanelCert(c.enabled, c.domain, c.configured, c.info); got != c.want {
 			t.Errorf("%s：shouldRenew=%v want %v", c.name, got, c.want)
 		}
 	}
