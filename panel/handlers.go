@@ -176,6 +176,13 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.requireAuth(s.handleNodesDelete))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/join-token", s.requireAuth(s.handleNodesRegenJoinToken))
 	mux.HandleFunc("POST /api/v1/node-backend/join", s.handleNodeBackendJoin)
+	// 轻量节点后端（v1.4.1，切片 2）：入站模板（会话认证）。
+	mux.HandleFunc("GET /api/v1/nodes/{id}/inbounds", s.requireAuth(s.handleNodeInboundsList))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/inbounds", s.requireAuth(s.handleNodeInboundsCreate))
+	mux.HandleFunc("PUT /api/v1/nodes/{id}/inbounds/{inbound_id}", s.requireAuth(s.handleNodeInboundsUpdate))
+	mux.HandleFunc("DELETE /api/v1/nodes/{id}/inbounds/{inbound_id}", s.requireAuth(s.handleNodeInboundsDelete))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/inbounds/default-trio", s.requireAuth(s.handleNodeInboundsDefaultTrio))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/inbounds/{inbound_id}/rotate-reality-key", s.requireAuth(s.handleNodeInboundRotateRealityKey))
 	mux.HandleFunc("GET /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesList))
 	mux.HandleFunc("POST /api/v1/central/remotes", s.requireAuth(s.handleCentralRemotesAdd))
 	mux.HandleFunc("DELETE /api/v1/central/remotes/{id}", s.requireAuth(s.handleCentralRemotesDelete))

@@ -84,13 +84,16 @@ func nodeHealth(n *BackendNode) string {
 // NodeInbound 一条入站（§4.3 字段全表；切片 1 只有模型与存储，
 // 入站列表恒为空，渲染 Xray／sing-box 配置是切片 2 的事）。
 type NodeInbound struct {
-	NodeID             int64   `json:"node_id"`
-	InboundID          int64   `json:"inbound_id"`
-	InboundTag         string  `json:"inbound_tag"`
-	Protocol           string  `json:"protocol"`
-	Transport          string  `json:"transport"`
-	Security           string  `json:"security"`
-	Port               int     `json:"port"`
+	NodeID     int64  `json:"node_id"`
+	InboundID  int64  `json:"inbound_id"`
+	InboundTag string `json:"inbound_tag"`
+	Protocol   string `json:"protocol"`
+	Transport  string `json:"transport"`
+	Security   string `json:"security"`
+	Port       int    `json:"port"`
+	// Listen 监听地址（变量原则 2026-11-23：随部署变化的值走配置，不写
+	// 死；空或 0.0.0.0 = 监听全部网卡，多 IP 机器可填指定 IP）。
+	Listen             string  `json:"listen,omitempty"`
 	SNI                string  `json:"sni"`
 	Domain             string  `json:"domain"`
 	RealityPrivateKey  string  `json:"reality_private_key,omitempty"`
@@ -145,11 +148,12 @@ type BackendCertificate struct {
 // ---------- 存储：$PANEL_HOME/nodes.json（600） ----------
 
 type nodeBackendStoreData struct {
-	NextID     int64                `json:"next_node_id"`
-	Nodes      []*BackendNode       `json:"nodes"`
-	DeletedIDs []int64              `json:"deleted_ids"` // 删节点的墓碑：agent 再来拉时认得出“已删”，回空配置让它自停
-	Routes     []BackendRelayRoute  `json:"routes"`
-	Certs      []BackendCertificate `json:"certs"`
+	NextID        int64                `json:"next_node_id"`
+	NextInboundID int64                `json:"next_inbound_id"`
+	Nodes         []*BackendNode       `json:"nodes"`
+	DeletedIDs    []int64              `json:"deleted_ids"` // 删节点的墓碑：agent 再来拉时认得出“已删”，回空配置让它自停
+	Routes        []BackendRelayRoute  `json:"routes"`
+	Certs         []BackendCertificate `json:"certs"`
 }
 
 type nodeBackendStore struct {
@@ -178,6 +182,9 @@ func (n *nodeBackendStore) load() {
 	}
 	if d.NextID < 1 {
 		d.NextID = 1
+	}
+	if d.NextInboundID < 1 {
+		d.NextInboundID = 1
 	}
 	if d.Nodes == nil {
 		d.Nodes = []*BackendNode{}
@@ -445,13 +452,28 @@ func (n *nodeBackendStore) verifyNodeClientCert(r *http.Request) (nodeID int64, 
 
 // ---------- 配置文档与 ETag ----------
 
+// NodeConfigUser 下发给 agent 的一条用户记录（§4.1 字段子集）：
+// 订阅记录的计量子集。UserID 与面板内部的订阅标识一致
+// （"subuser:su-…" / "merged:ms-…"）；VLESSUUID 是该用户在这个
+// 节点上的 UUID（按节点地址从 NodeUUIDs 里取，缺失时现生成并写回
+// config，只补不剪）；Email 是 Xray user>>> 统计钥匙。
+type NodeConfigUser struct {
+	UserID    string `json:"user_id"`
+	Kind      string `json:"kind"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Email     string `json:"email"`
+	VLESSUUID string `json:"vless_uuid"`
+	Disabled  bool   `json:"disabled"`
+}
+
 // nodeBackendConfigDoc 下发给 agent 的配置文档（§6.4 形状；
-// 切片 1 入站、用户、证书三张表恒为空）。
+// 切片 2：入站与用户都下发，证书表恒为空（签发与下发是切片 7 的事）。
 type nodeBackendConfigDoc struct {
-	ConfigVersion int64         `json:"config_version"`
-	Inbounds      []NodeInbound `json:"inbounds"`
-	Users         []any         `json:"users"`
-	Certs         []any         `json:"certs"`
+	ConfigVersion int64            `json:"config_version"`
+	Inbounds      []NodeInbound    `json:"inbounds"`
+	Users         []NodeConfigUser `json:"users"`
+	Certs         []any            `json:"certs"`
 }
 
 // configETag 配置文档的强 ETag：版本＋内容哈希。
@@ -473,18 +495,65 @@ func etagMatches(inm, etag string) bool {
 	return false
 }
 
-// configDocOf 该节点的配置文档（切片 1：只有版本号，表全空）。
-func (n *nodeBackendStore) configDocOf(node *BackendNode) nodeBackendConfigDoc {
+// configDocOf 该节点的配置文档（切片 2：入站与用户都下发）。
+// users 由调用方从订阅用户表组装（见 nodeBackendUsersForNode）。
+func (n *nodeBackendStore) configDocOf(node *BackendNode, users []NodeConfigUser) nodeBackendConfigDoc {
 	inbounds := node.Inbounds
 	if inbounds == nil {
 		inbounds = []NodeInbound{}
 	}
+	if users == nil {
+		users = []NodeConfigUser{}
+	}
 	return nodeBackendConfigDoc{
 		ConfigVersion: node.ConfigVersion,
 		Inbounds:      inbounds,
-		Users:         []any{},
+		Users:         users,
 		Certs:         []any{},
 	}
+}
+
+// nodeBackendUsersForNode 该节点的用户列表（切片 2：全部未停用的订阅
+// 用户都上节点；按节点发是切片 3 的事）。UUID 按节点地址取 NodeUUIDs，
+// 缺失时现生成并写回 config（只补不剪，与 ensureNodeUUIDs 同款语义）。
+// 调用方须持有 opMu（写 config 用）；返回 changed 表示 config 被改过，
+// 调用方负责 saveConfig 落盘。
+func (s *Server) nodeBackendUsersForNode(node *BackendNode) ([]NodeConfigUser, bool) {
+	changed := false
+	users := make([]NodeConfigUser, 0, len(s.cfg.SubUsers)+len(s.cfg.MergedSubs))
+	for i := range s.cfg.SubUsers {
+		u := &s.cfg.SubUsers[i]
+		if u.Disabled {
+			continue
+		}
+		uuids, c := ensureNodeUUIDs(u.NodeUUIDs, []string{node.Address})
+		if c {
+			u.NodeUUIDs = uuids
+			changed = true
+		}
+		users = append(users, NodeConfigUser{
+			UserID: userSubKey("subuser", u.ID), Kind: "subuser", ID: u.ID,
+			Name: u.Name, Email: nodeUserEmail("subuser", u.ID),
+			VLESSUUID: uuids[node.Address],
+		})
+	}
+	for i := range s.cfg.MergedSubs {
+		m := &s.cfg.MergedSubs[i]
+		if m.Disabled {
+			continue
+		}
+		uuids, c := ensureNodeUUIDs(m.NodeUUIDs, []string{node.Address})
+		if c {
+			m.NodeUUIDs = uuids
+			changed = true
+		}
+		users = append(users, NodeConfigUser{
+			UserID: userSubKey("merged", m.ID), Kind: "merged", ID: m.ID,
+			Name: m.Name, Email: nodeUserEmail("merged", m.ID),
+			VLESSUUID: uuids[node.Address],
+		})
+	}
+	return users, changed
 }
 
 // ---------- 管理接口（会话认证） ----------
@@ -608,10 +677,8 @@ func (s *Server) handleNodesGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row := nodeRowForList(*node)
-	inbounds := node.Inbounds
-	if inbounds == nil {
-		inbounds = []NodeInbound{}
-	}
+	// 入站列表走管理接口视图：私钥不返回（切片 2）。
+	inbounds := sanitizedInbounds(node.Inbounds)
 	s.nodes.mu.Unlock()
 	writeJSON(w, 200, okResp(map[string]any{
 		"node": row, "inbounds": inbounds, "users": []any{},
@@ -792,14 +859,15 @@ func (s *Server) handleNodeConfigDispatch(w http.ResponseWriter, r *http.Request
 // 200 回配置文档；If-None-Match 对得上回 304；已删节点回 deleted:true
 // 的空配置，agent 收到后自停；证书有效但节点不存在回 404。
 func (s *Server) handleNodeBackendConfig(w http.ResponseWriter, r *http.Request, nodeID int64) {
+	// 先看节点在不在（只短暂持锁）。
 	s.nodes.mu.Lock()
 	node := s.nodes.getNode(nodeID)
 	deleted := false
 	if node == nil {
 		deleted = s.nodes.isDeleted(nodeID)
 	}
+	s.nodes.mu.Unlock()
 	if deleted {
-		s.nodes.mu.Unlock()
 		writeJSON(w, 200, okResp(map[string]any{
 			"node_id": nodeID, "config_version": 0, "etag": `"deleted"`,
 			"deleted": true, "inbounds": []any{}, "users": []any{}, "certs": []any{},
@@ -807,11 +875,32 @@ func (s *Server) handleNodeBackendConfig(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if node == nil {
-		s.nodes.mu.Unlock()
 		writeJSON(w, 404, errResp("节点不存在"))
 		return
 	}
-	doc := s.nodes.configDocOf(node)
+	// 用户表：按节点地址取每人 UUID，缺失时现生成并写回 config。
+	// 拿 opMu 写 config；占用时回 409，agent 下个周期再拉。
+	if !s.tryOpLock(w) {
+		return
+	}
+	users, changed := s.nodeBackendUsersForNode(node)
+	if changed {
+		_ = s.saveConfig()
+	}
+	s.opMu.Unlock()
+	// 组装配置文档并更新心跳。
+	s.nodes.mu.Lock()
+	node = s.nodes.getNode(nodeID)
+	if node == nil {
+		// 两步之间节点被删了：按已删处理。
+		s.nodes.mu.Unlock()
+		writeJSON(w, 200, okResp(map[string]any{
+			"node_id": nodeID, "config_version": 0, "etag": `"deleted"`,
+			"deleted": true, "inbounds": []any{}, "users": []any{}, "certs": []any{},
+		}))
+		return
+	}
+	doc := s.nodes.configDocOf(node, users)
 	etag := configETag(doc)
 	// 拉配置即心跳：更新最后在线时间与 agent 版本（请求头带的）。
 	node.LastSeen = time.Now().Unix()

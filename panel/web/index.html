@@ -191,6 +191,59 @@
         </div>
         <h2 style="margin-top:20px">节点列表</h2>
         <div id="nodes-list"></div>
+        <div class="card hidden" id="nodes-inbounds-card" hidden>
+          <h2 id="nodes-inbounds-title">入站模板</h2>
+          <p class="muted" id="nodes-443-owner"></p>
+          <div class="form-grid">
+            <div><label for="nodes-trio-domain">HY2 域名 <span class="hint">选填；不填只生成 REALITY＋XHTTP 两条</span></label><input id="nodes-trio-domain" placeholder="example.com"></div>
+          </div>
+          <div class="btn-row"><button class="btn" type="button" id="nodes-trio-btn">一键生成默认三件套</button></div>
+          <div id="nodes-inbounds-error" class="error-box hidden" hidden></div>
+          <div id="nodes-inbounds-list"></div>
+          <h3 style="margin-top:16px">添加入站</h3>
+          <form id="nodes-inbound-add-form">
+            <div class="form-grid">
+              <div><label for="nodes-ib-tag">入站 tag <span class="hint">必填，节点内唯一，如 ss-8388</span></label><input id="nodes-ib-tag" placeholder="ss-8388" maxlength="64" required></div>
+              <div><label for="nodes-ib-protocol">协议 <span class="hint">选一个；SS、SS2022、SOCKS5 是备用协议，默认不开，需要才加</span></label><select id="nodes-ib-protocol">
+                <option value="vless-reality" selected>VLESS＋REALITY＋Vision（TCP）</option>
+                <option value="vless-xhttp">VLESS＋REALITY＋XHTTP（TCP）</option>
+                <option value="vless-tls">VLESS＋TLS＋Vision（TCP）</option>
+                <option value="trojan">Trojan（TCP＋TLS）</option>
+                <option value="hysteria2">Hysteria2（UDP）</option>
+                <option value="tuic">TUIC（UDP）</option>
+                <option value="anytls">AnyTLS（TCP＋TLS）</option>
+                <option value="shadowsocks">Shadowsocks（备用）</option>
+                <option value="ss2022">Shadowsocks 2022（备用）</option>
+                <option value="socks">SOCKS5（备用）</option>
+              </select></div>
+              <div><label for="nodes-ib-port">端口 <span class="hint">必填，1–65535；TCP 443 与 UDP 443 各只能一个入站占</span></label><input id="nodes-ib-port" type="number" min="1" max="65535" placeholder="8443" required></div>
+              <div><label for="nodes-ib-listen">监听地址 <span class="hint">留空 = 0.0.0.0，监听全部网卡；多 IP 机器可填指定 IP</span></label><input id="nodes-ib-listen" placeholder="0.0.0.0"></div>
+              <div><label for="nodes-ib-sni">SNI / 域名 <span class="hint">REALITY、TLS、HY2、TUIC、AnyTLS、Trojan 必填；REALITY 不填用占位值 www.example.com</span></label><input id="nodes-ib-sni" placeholder="example.com"></div>
+              <div id="nodes-ib-ss-method-wrap"><label for="nodes-ib-ss-method">SS 加密方法</label><select id="nodes-ib-ss-method">
+                <option value="aes-256-gcm" selected>aes-256-gcm</option>
+                <option value="aes-128-gcm">aes-128-gcm</option>
+                <option value="chacha20-poly1305">chacha20-poly1305</option>
+                <option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option>
+                <option value="2022-blake3-aes-256-gcm">2022-blake3-aes-256-gcm</option>
+                <option value="2022-blake3-chacha20-poly1305">2022-blake3-chacha20-poly1305</option>
+              </select></div>
+              <div id="nodes-ib-ss-pw-wrap"><label for="nodes-ib-ss-password">SS 密码 <span class="hint">留空自动生成 16 位随机密码</span></label><input id="nodes-ib-ss-password" placeholder="留空自动生成"></div>
+            </div>
+            <div class="btn-row"><button class="btn" type="submit">添加入站</button></div>
+          </form>
+          <div id="nodes-inbound-edit" class="hidden" hidden>
+            <h3>编辑入站 <span id="nodes-ib-edit-tag"></span></h3>
+            <form id="nodes-inbound-edit-form">
+              <div class="form-grid">
+                <div><label for="nodes-ib-edit-port">端口 <span class="hint">必填，1–65535</span></label><input id="nodes-ib-edit-port" type="number" min="1" max="65535" required></div>
+                <div><label for="nodes-ib-edit-listen">监听地址 <span class="hint">0.0.0.0 = 全部网卡</span></label><input id="nodes-ib-edit-listen" placeholder="0.0.0.0"></div>
+                <div><label for="nodes-ib-edit-sni">SNI / 域名</label><input id="nodes-ib-edit-sni" placeholder="example.com"></div>
+                <div><label for="nodes-ib-edit-enabled">启用 <span class="hint">关掉后节点 60 秒内下线该入站</span></label><select id="nodes-ib-edit-enabled"><option value="true">启用</option><option value="false">停用</option></select></div>
+              </div>
+              <div class="btn-row"><button class="btn" type="submit">保存修改</button><button class="btn secondary" type="button" id="nodes-ib-edit-cancel">取消</button></div>
+            </form>
+          </div>
+        </div>
       </section>
 
       <!-- 节点链接 -->

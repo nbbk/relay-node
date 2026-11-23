@@ -531,8 +531,8 @@ func TestNodeConfigTLSHandshake1400(t *testing.T) {
 // ---------- 7. 版本断言 ----------
 
 func TestVersion1400(t *testing.T) {
-	if Version != "1.4.0" {
-		t.Fatalf("VERSION 应是 1.4.0，实际 %q", Version)
+	if Version != "1.4.1" {
+		t.Fatalf("VERSION 应是 1.4.1，实际 %q", Version)
 	}
 }
 

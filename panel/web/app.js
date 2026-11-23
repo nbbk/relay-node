@@ -971,8 +971,10 @@ async function loadNodes() {
       '<div class="kv"><span>最后在线</span><b>' + esc(n.last_seen ? fmtDate(n.last_seen) : '—') + '</b></div>' +
       '<div class="kv"><span>已应用配置版本</span><b>' + esc(String(n.config_version == null ? '—' : n.config_version)) + '</b></div>' +
       '<div class="kv"><span>入网</span><b>' + (n.joined ? '已入网' : '未入网') + '</b></div>' +
-      '<div class="btn-row"><button class="btn secondary sm" type="button" data-regen="' + esc(String(n.id)) + '">重新生成入网令牌</button>' +
+      '<div class="btn-row"><button class="btn secondary sm" type="button" data-inbounds="' + esc(String(n.id)) + '" data-inbname="' + esc(n.name || '') + '">入站模板</button>' +
+      '<button class="btn secondary sm" type="button" data-regen="' + esc(String(n.id)) + '">重新生成入网令牌</button>' +
       '<button class="btn danger sm" type="button" data-delnodes="' + esc(String(n.id)) + '" data-delname="' + esc(n.name || '') + '">删除</button></div></div>').join('');
+    $$('[data-inbounds]', wrap).forEach((b) => b.addEventListener('click', () => loadNodeInbounds(Number(b.dataset.inbounds), b.dataset.inbname)));
     $$('[data-regen]', wrap).forEach((b) => b.addEventListener('click', async () => {
       try {
         const r2 = await apiPost('/api/v1/nodes/' + encodeURIComponent(b.dataset.regen) + '/join-token', {});
@@ -1012,6 +1014,129 @@ async function deleteNode(id, name) {
     toast('删除失败：' + e.message, 'err');
   }
 }
+/* ---------- 入站模板（v1.4.1 切片 2） ---------- */
+let currentInboundsNodeId = null;
+let currentInboundsNodeName = '';
+let currentEditInboundId = null;
+
+const IB_PROTOCOLS = {
+  'vless-reality': { protocol: 'vless', transport: 'reality', security: 'reality' },
+  'vless-xhttp': { protocol: 'vless', transport: 'xhttp', security: 'reality' },
+  'vless-tls': { protocol: 'vless', transport: 'tcp', security: 'tls' },
+  'trojan': { protocol: 'trojan', transport: 'tcp', security: 'tls' },
+  'hysteria2': { protocol: 'hysteria2', transport: 'quic', security: 'tls' },
+  'tuic': { protocol: 'tuic', transport: 'quic', security: 'tls' },
+  'anytls': { protocol: 'anytls', transport: 'tcp', security: 'tls' },
+  'shadowsocks': { protocol: 'shadowsocks', transport: 'tcp', security: 'none' },
+  'ss2022': { protocol: 'shadowsocks', transport: 'tcp', security: 'none' },
+  'socks': { protocol: 'socks', transport: 'tcp', security: 'none' },
+};
+function ibProtocolLabel(inb) {
+  if (inb.protocol === 'vless' && inb.transport === 'reality') return 'VLESS＋REALITY＋Vision';
+  if (inb.protocol === 'vless' && inb.transport === 'xhttp') return 'VLESS＋REALITY＋XHTTP';
+  if (inb.protocol === 'vless' && inb.security === 'tls') return 'VLESS＋TLS＋Vision';
+  if (inb.protocol === 'vless') return 'VLESS';
+  if (inb.protocol === 'shadowsocks') return (String(inb.ss_method || '').indexOf('2022-') === 0 ? 'Shadowsocks 2022' : 'Shadowsocks');
+  if (inb.protocol === 'hysteria2') return 'Hysteria2';
+  if (inb.protocol === 'tuic') return 'TUIC';
+  if (inb.protocol === 'anytls') return 'AnyTLS';
+  if (inb.protocol === 'trojan') return 'Trojan';
+  if (inb.protocol === 'socks') return 'SOCKS5';
+  return inb.protocol || '';
+}
+function ibIsTCP(inb) { return ['tcp', 'reality', 'xhttp', 'tls'].indexOf(inb.transport) !== -1; }
+function showInboundsError(msg) {
+  const box = $('#nodes-inbounds-error');
+  if (!box) return;
+  if (!msg) { box.classList.add('hidden'); box.hidden = true; box.textContent = ''; return; }
+  box.textContent = msg; box.classList.remove('hidden'); box.hidden = false;
+}
+async function loadNodeInbounds(nodeId, nodeName) {
+  currentInboundsNodeId = nodeId; currentInboundsNodeName = nodeName || '';
+  const card = $('#nodes-inbounds-card');
+  if (!card) return;
+  $('#nodes-inbounds-title').textContent = '入站模板 —— ' + currentInboundsNodeName;
+  card.classList.remove('hidden'); card.hidden = false;
+  showInboundsError('');
+  try {
+    const r = await api('/api/v1/nodes/' + encodeURIComponent(nodeId) + '/inbounds');
+    renderNodeInbounds(r.inbounds || []);
+  } catch (e) { showInboundsError('加载入站失败：' + e.message); }
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function renderNodeInbounds(inbounds) {
+  const wrap = $('#nodes-inbounds-list');
+  if (!wrap) return;
+  // 443 端口主人：TCP 443 与 UDP 443 各是谁在占。
+  let tcp443 = null, udp443 = null;
+  inbounds.forEach((inb) => {
+    if (!inb.enabled || inb.port !== 443) return;
+    if (ibIsTCP(inb) && !tcp443) tcp443 = inb;
+    if (inb.transport === 'quic' && !udp443) udp443 = inb;
+  });
+  $('#nodes-443-owner').textContent = 'TCP 443：' + (tcp443 ? tcp443.inbound_tag + ' 占用' : '空闲') + '；UDP 443：' + (udp443 ? udp443.inbound_tag + ' 占用' : '空闲') + '。TCP 443 与 UDP 443 各只能一个入站占，冲突时保存会报错并写明是哪两个入站。';
+  if (!inbounds.length) { wrap.innerHTML = '<div class="empty">还没有入站。点“一键生成默认三件套”，或下面手动添加。</div>'; return; }
+  wrap.innerHTML = inbounds.map((inb) => {
+    const isReality = inb.transport === 'reality' || inb.transport === 'xhttp';
+    return '<div class="card" style="margin-bottom:12px"><div class="kv"><span>入站</span><b>' + esc(inb.inbound_tag || '') + '</b></div>' +
+      '<div class="kv"><span>协议</span><b>' + esc(ibProtocolLabel(inb)) + '</b></div>' +
+      '<div class="kv"><span>端口</span><b>' + esc(String(inb.port)) + '（' + (ibIsTCP(inb) ? 'TCP' : (inb.transport === 'quic' ? 'UDP' : inb.transport)) + '）</b></div>' +
+      '<div class="kv"><span>监听地址</span><b>' + esc(inb.listen || '0.0.0.0') + '</b></div>' +
+      '<div class="kv"><span>SNI / 域名</span><b>' + esc(inb.sni || inb.domain || '—') + '</b></div>' +
+      (isReality ? '<div class="kv"><span>REALITY 公钥</span><b style="word-break:break-all">' + esc(inb.reality_public_key || '—') + '</b></div><div class="kv"><span>short id</span><b>' + esc(inb.reality_short_id || '—') + '</b></div>' : '') +
+      (inb.protocol === 'shadowsocks' ? '<div class="kv"><span>加密方法</span><b>' + esc(inb.ss_method || '—') + '</b></div>' : '') +
+      '<div class="kv"><span>状态</span><b>' + (inb.enabled ? '启用' : '停用') + '</b></div>' +
+      '<div class="btn-row">' +
+      '<button class="btn secondary sm" type="button" data-ib-toggle="' + esc(String(inb.inbound_id)) + '" data-ib-enabled="' + (inb.enabled ? '1' : '0') + '">' + (inb.enabled ? '停用' : '启用') + '</button>' +
+      '<button class="btn secondary sm" type="button" data-ib-edit="' + esc(String(inb.inbound_id)) + '">编辑</button>' +
+      (isReality ? '<button class="btn secondary sm" type="button" data-ib-rotate="' + esc(String(inb.inbound_id)) + '" data-ib-tag="' + esc(inb.inbound_tag || '') + '">轮换密钥</button>' : '') +
+      '<button class="btn danger sm" type="button" data-ib-del="' + esc(String(inb.inbound_id)) + '" data-ib-tag="' + esc(inb.inbound_tag || '') + '">删除</button></div></div>';
+  }).join('');
+  $$('[data-ib-toggle]', wrap).forEach((b) => b.addEventListener('click', async () => {
+    try {
+      await api('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/' + encodeURIComponent(b.dataset.ibToggle), { method: 'PUT', body: JSON.stringify({ enabled: b.dataset.ibEnabled !== '1' }) });
+      toast('已' + (b.dataset.ibEnabled === '1' ? '停用' : '启用') + '，节点 60 秒内应用', 'ok');
+      loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+    } catch (e) { showInboundsError(e.message); }
+  }));
+  $$('[data-ib-edit]', wrap).forEach((b) => b.addEventListener('click', () => {
+    const inb = inbounds.find((x) => String(x.inbound_id) === String(b.dataset.ibEdit));
+    if (!inb) return;
+    currentEditInboundId = inb.inbound_id;
+    $('#nodes-ib-edit-tag').textContent = inb.inbound_tag || '';
+    $('#nodes-ib-edit-port').value = inb.port;
+    $('#nodes-ib-edit-listen').value = inb.listen || '0.0.0.0';
+    $('#nodes-ib-edit-sni').value = inb.sni || inb.domain || '';
+    $('#nodes-ib-edit-enabled').value = inb.enabled ? 'true' : 'false';
+    const box = $('#nodes-inbound-edit');
+    box.classList.remove('hidden'); box.hidden = false;
+  }));
+  $$('[data-ib-del]', wrap).forEach((b) => b.addEventListener('click', async () => {
+    const ok = await confirmModal('删除入站', '<p>确定删除入站 <b>' + esc(b.dataset.ibTag || b.dataset.ibDel) + '</b> 吗？</p><p>节点 60 秒内下线该入站。</p>', '删除', true);
+    if (!ok) return;
+    try {
+      await api('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/' + encodeURIComponent(b.dataset.ibDel), { method: 'DELETE' });
+      toast('已删除', 'ok'); loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+    } catch (e) { showInboundsError(e.message); }
+  }));
+  $$('[data-ib-rotate]', wrap).forEach((b) => b.addEventListener('click', async () => {
+    const ok = await confirmModal('轮换 REALITY 密钥', '<p>确定轮换入站 <b>' + esc(b.dataset.ibTag || '') + '</b> 的 REALITY 密钥吗？</p><p>轮换后旧订阅链接失效，用户须重新导入。</p>', '轮换', true);
+    if (!ok) return;
+    try {
+      const r = await apiPost('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/' + encodeURIComponent(b.dataset.ibRotate) + '/rotate-reality-key', {});
+      toast(r.note || '密钥已换，旧订阅链接失效', 'ok');
+      loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+    } catch (e) { showInboundsError(e.message); }
+  }));
+}
+function randomPassword1401(n) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  const buf = new Uint32Array(n || 16);
+  window.crypto.getRandomValues(buf);
+  let out = '';
+  for (let i = 0; i < buf.length; i++) out += chars[buf[i] % chars.length];
+  return out;
+}
 function initNodes() {
   on('#nodes-create-form', 'submit', async (e) => {
     e.preventDefault();
@@ -1028,6 +1153,64 @@ function initNodes() {
   });
   on('#nodes-once-token-copy', 'click', (e) => copyText($('#nodes-once-token').value, e.target));
   on('#nodes-once-cmd-copy', 'click', (e) => copyText($('#nodes-once-cmd').value, e.target));
+  // 入站模板（v1.4.1 切片 2）：三件套、添加、编辑表单的绑定。
+  const ssMethodWrap = $('#nodes-ib-ss-method-wrap');
+  const ssPwWrap = $('#nodes-ib-ss-pw-wrap');
+  if (ssMethodWrap) ssMethodWrap.style.display = 'none';
+  if (ssPwWrap) ssPwWrap.style.display = 'none';
+  on('#nodes-trio-btn', 'click', async () => {
+    if (!currentInboundsNodeId) { toast('先在上面点一个节点的“入站模板”', 'err'); return; }
+    try {
+      const r = await apiPost('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/default-trio', { domain: $('#nodes-trio-domain').value.trim() });
+      toast('已生成 ' + (r.created || []).length + ' 条入站' + (r.note ? '：' + r.note : ''), 'ok');
+      loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+    } catch (e) { showInboundsError(e.message); }
+  });
+  on('#nodes-ib-protocol', 'change', () => {
+    const v = $('#nodes-ib-protocol').value;
+    const ss = v === 'shadowsocks' || v === 'ss2022';
+    if (ssMethodWrap) ssMethodWrap.style.display = ss ? '' : 'none';
+    if (ssPwWrap) ssPwWrap.style.display = ss ? '' : 'none';
+    if (v === 'ss2022') $('#nodes-ib-ss-method').value = '2022-blake3-aes-128-gcm';
+    if (v === 'shadowsocks') $('#nodes-ib-ss-method').value = 'aes-256-gcm';
+  });
+  on('#nodes-inbound-add-form', 'submit', async (e) => {
+    e.preventDefault();
+    if (!currentInboundsNodeId) { toast('先在上面点一个节点的“入站模板”', 'err'); return; }
+    const proto = $('#nodes-ib-protocol').value;
+    const m = IB_PROTOCOLS[proto];
+    const tag = $('#nodes-ib-tag').value.trim();
+    const port = parseInt($('#nodes-ib-port').value, 10);
+    if (!tag || !port || port < 1 || port > 65535) { toast('tag 与端口（1–65535）都要填', 'err'); return; }
+    const body = { inbound_tag: tag, protocol: m.protocol, transport: m.transport, security: m.security, port, listen: $('#nodes-ib-listen').value.trim(), sni: $('#nodes-ib-sni').value.trim() };
+    if (proto === 'shadowsocks' || proto === 'ss2022') {
+      body.ss_method = $('#nodes-ib-ss-method').value;
+      body.ss_password = $('#nodes-ib-ss-password').value.trim() || randomPassword1401(16);
+    }
+    try {
+      await apiPost('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds', body);
+      toast('入站已添加，节点 60 秒内应用', 'ok');
+      $('#nodes-inbound-add-form').reset();
+      loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+    } catch (err2) { showInboundsError(err2.message); }
+  });
+  on('#nodes-inbound-edit-form', 'submit', async (e) => {
+    e.preventDefault();
+    if (!currentInboundsNodeId || !currentEditInboundId) return;
+    const port = parseInt($('#nodes-ib-edit-port').value, 10);
+    if (!port || port < 1 || port > 65535) { toast('端口要在 1–65535 之间', 'err'); return; }
+    try {
+      await api('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/' + encodeURIComponent(currentEditInboundId), { method: 'PUT', body: JSON.stringify({ port, listen: $('#nodes-ib-edit-listen').value.trim(), sni: $('#nodes-ib-edit-sni').value.trim(), enabled: $('#nodes-ib-edit-enabled').value === 'true' }) });
+      toast('已保存，节点 60 秒内应用', 'ok');
+      const box = $('#nodes-inbound-edit');
+      box.classList.add('hidden'); box.hidden = true;
+      loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+    } catch (err2) { showInboundsError(err2.message); }
+  });
+  on('#nodes-ib-edit-cancel', 'click', () => {
+    const box = $('#nodes-inbound-edit');
+    box.classList.add('hidden'); box.hidden = true;
+  });
 }
 async function deleteLanding(index) {
   const l = landingsCache.find((x) => x.index === index);
