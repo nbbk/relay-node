@@ -1,0 +1,71 @@
+# 订阅网关 Caddyfile
+#
+# 三条路，全部挂在一个域名下：
+#   /sub/*                -> 面板回源（订阅拉取，原样透传）
+#   /api/v1/public-info    -> 面板回源（公告）
+#   /client-config.json    -> 本地签名文件（file_server，字节精确）
+#   /healthz               -> 网关自检（容器健康检查用）
+#
+# 环境变量（docker-compose 用 .env 注入；脚本直装由 install.sh 写入）：
+#   GATEWAY_DOMAIN  网关域名，例如 example.com；本地测试可填 http://127.0.0.1:18080
+#   PANEL_ORIGIN    面板回源地址，例如 https://ccpanel.example.com:11111
+#                   协议必须跟面板当前状态一致：面板 HTTP 时填 http://，面板 HTTPS 时填 https://
+#                   面板开关 HTTPS 后要同步改这里（改完 docker compose restart / caddy reload）
+#   CONFIG_DIR      client-config.json 所在的目录（容器内默认 /data/config，脚本直装默认 /etc/sub-gateway/config）
+#
+# HTTPS：域名写裸域名时 Caddy 自动签证书（HTTP-01，需 80 端口放行且域名 A 记录已指过来）。
+# 如需证书到期提醒，可加一行 tls：
+#   tls admin@example.com
+#
+# 注意：这里不做 gzip（encode）。订阅内容本来就不大；client-config.json 要求字节精确，
+# 不压缩最稳妥，客户端拿到什么字节、验签就验什么字节。
+
+{$GATEWAY_DOMAIN} {
+
+	# 网关自检：docker healthcheck 与排障用
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# 远程配置：只读本地签好的文件。文件不存在时返回 404，绝不回源、绝不返回旧文件。
+	# 文件由 scripts/update-config.sh 同步（本地上传签好的 JSON，或从上游 URL 拉取）。
+	handle /client-config.json {
+		file_server {
+			root {$CONFIG_DIR}
+		}
+	}
+
+	# 公告：反代到面板同路径
+	handle /api/v1/public-info {
+		reverse_proxy {$PANEL_ORIGIN} {
+			# Host 写回源地址（与 Cloudflare Worker 的 fetch 行为一致），
+			# 让面板看到的 Host 就是回源地址本身，不带网关域名。
+			header_up Host {http.reverse_proxy.upstream.hostport}
+
+			# 面板是自签证书时，取消下面三行的注释（有中间人风险，仅自签过渡期用）：
+			# transport http {
+			# 	tls_insecure_skip_verify
+			# }
+		}
+	}
+
+	# 订阅拉取：反代到面板同路径。
+	# 路径里的令牌、?format=singbox/clash 等查询参数、Caddy 原样透传，不改不动；
+	# 响应头（subscription-userinfo、Content-Disposition 文件名）也原样回传。
+	# 这里不加任何自定义头，不给订阅加机场特征。
+	handle /sub/* {
+		reverse_proxy {$PANEL_ORIGIN} {
+			header_up Host {http.reverse_proxy.upstream.hostport}
+
+			# 面板是自签证书时，取消下面三行的注释（有中间人风险，仅自签过渡期用）：
+			# transport http {
+			# 	tls_insecure_skip_verify
+			# }
+		}
+	}
+
+	# 其它路径一律 404，不暴露面板其它接口。
+	handle {
+		respond "Not Found" 404
+	}
+}

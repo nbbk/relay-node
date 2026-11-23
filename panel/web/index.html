@@ -679,20 +679,24 @@
             <details class="small muted"><summary>订阅路径详细说明</summary>想让订阅链接更不像机场，就改成别的单段路径（例如 x9f2，链接变成 https://域名/x9f2/&lt;令牌&gt;）。Worker 反代代码也要按新路径重新生成、重新部署。路径只允许字母开头、字母数字与 - _、1–32 个字符；api 与 logo 是保留段，不能用。留空保存 = 恢复默认 sub。</details>
           </div>
               <div class="card">
-            <h2>Worker 反代（防封订阅）</h2>
-            <p class="muted">订阅链接直接由面板出时，客户端看到的是面板真实地址；套一层 Cloudflare Worker 反代后，客户端只看到 Worker 自己的域名，面板真实地址只出现在 Worker 代码里（你的 Cloudflare 账号内可见）。部署后把订阅链接里的面板地址换成 Worker 地址，令牌和参数都不变。</p>
-            <div class="btn-row">
-              <label class="small">面板源站地址（选填）：<input id="worker-origin" type="text" placeholder="留空 = 现在打开面板的地址" style="width:280px"></label>
-              <button class="btn" id="worker-generate" type="button">生成 Worker 代码</button>
+            <h2>订阅网关</h2>
+            <p class="muted">订阅、公告、远程配置三条路挂在一个域名下。选一种部署方式，面板按当前值生成代码，复制后部署；部署完点“检测网关”，看三条路通不通。</p>
+            <p class="small">当前订阅对外域名：<b class="mono" id="gateway-domain-now">未配置</b></p>
+            <div class="btn-row" role="group" aria-label="部署方式">
+              <button class="btn secondary sm" type="button" data-gateway-type="worker">Worker</button>
+              <button class="btn secondary sm" type="button" data-gateway-type="caddy">Caddy 一键容器</button>
+              <button class="btn secondary sm" type="button" data-gateway-type="install">脚本直装</button>
             </div>
-            <p class="small muted">选填，留空就用你现在打开面板的地址（IP:端口），直接能用；Worker 反代是可选项，只有想藏面板 IP、走 HTTPS 订阅时才需要配域名。如果面板对外是另一个地址（例如绑了域名、走了反代），填那个地址再生成；填一次就记住，下次打开自动填上。源站地址必须是域名、不能是 IP（Worker 的 fetch() 不能直接用 IP 回源，会报 Cloudflare error 1003）；必须是 http:// 开头（面板是明文 HTTP，没有 HTTPS）。源站地址只出现在 Worker 代码里（你的 Cloudflare 账号内可见），客户端看不到面板真实地址。</p>
-            <div id="worker-code-box" class="hidden" style="margin-top:10px">
-              <div id="worker-code-warn" class="warn-box hidden"></div>
-              <pre id="worker-code" class="mono" style="white-space:pre-wrap;word-break:break-all"></pre>
+            <p class="small muted">静态托管只放 client-config.json（GitHub Pages 或任意静态空间），订阅和公告仍要走上面的反代，不单独生成代码。生成的代码里不含令牌与密钥，可放心复制。</p>
+            <div id="gateway-code-box" class="hidden" style="margin-top:10px">
+              <div id="gateway-code-note" class="warn-box hidden"></div>
+              <pre id="gateway-code" class="mono" style="white-space:pre-wrap;word-break:break-all"></pre>
               <div class="btn-row">
-                <button class="btn secondary sm" id="worker-copy" type="button">复制代码</button>
+                <button class="btn secondary sm" id="gateway-copy" type="button">复制代码</button>
+                <button class="btn secondary sm" id="gateway-check" type="button">检测网关</button>
               </div>
-              <p class="small">部署步骤：Cloudflare 后台 → Workers → 新建 Worker → 粘贴代码 → 部署；可选在触发器里绑一个自定义域名。部署后订阅链接 = <b class="mono" id="worker-example-link">https://&lt;Worker 域名&gt;/sub/&lt;令牌&gt;</b>，其余参数不变。Worker 免费额度够订阅拉取用（每天少量请求）。</p>
+              <div id="gateway-check-results" style="margin-top:8px"></div>
+              <p class="small">Worker 部署步骤：Cloudflare 后台 → Workers → 找到绑订阅对外域名那个 → Edit code → 粘贴代码 → Save and deploy。Caddy 容器：把 Caddyfile 与 docker-compose.yml 放同一目录，docker compose up -d。脚本直装：一条命令跑 install.sh。部署后订阅链接不变，令牌和参数都不变。</p>
             </div>
           </div>
             </div>

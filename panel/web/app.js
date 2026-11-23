@@ -1860,9 +1860,9 @@ async function loadSettingsPage() {
     // 订阅文件名称（v1.3.22）：存过就回填；留空就是回落面板名。
     const sfn = $('#sub-file-name');
     if (sfn) sfn.value = sub.file_name || '';
-    // Worker 源站地址（v1.3.5）：存过就回填到输入框；留空就是默认用法。
-    const wo = $('#worker-origin');
-    if (wo) { wo.value = sub.worker_origin || ''; wo.placeholder = '留空 = ' + location.origin; }
+    // 订阅网关卡片：当前订阅对外域名（v1.3.50）。
+    const gdn = $('#gateway-domain-now');
+    if (gdn) gdn.textContent = sub.public_domain || '未配置';
     // 自动定时备份（v1.3.6）：设置接口下发的排程填进表单。
     const bk = st.backup || {};
     const bke = $('#bk-enabled'); if (bke) bke.checked = bk.enabled !== false;
@@ -1892,7 +1892,6 @@ async function loadSettingsPage() {
         : '未配置 Telegram：先在“Telegram 提醒”卡片里配好 Bot Token 和 Chat ID，再回来开这个开关。';
     }
     renderSecurityCard(sec);
-    updateWorkerExampleLink(sub.public_domain || '');
     // 订阅到期时间（v1.3.20）：通用订阅的到期时间回填到设置页；永久时
     // 日期框置灰、勾选永久。
     const subExpDate = $('#sub-expiry-date');
@@ -2341,8 +2340,9 @@ function initSettings() {
   on('#sub-user-copy-clash', 'click', (e) => { copyText(subLinkWithMode($('#sub-user-url-value').textContent, 'clash'), e.target); });
   on('#sub-user-copy-plain', 'click', (e) => { copyText(subLinkWithMode($('#sub-user-url-value').textContent, 'plain'), e.target); });
   on('#sub-user-qr', 'click', async () => { await showSubQrModal('user'); });
-  on('#worker-generate', 'click', async () => { await loadWorkerCode(); });
-  on('#worker-copy', 'click', (e) => { copyText($('#worker-code').textContent, e.target); });
+  document.querySelectorAll('[data-gateway-type]').forEach((b) => b.addEventListener('click', async () => { await loadGatewayCode(b.dataset.gatewayType); }));
+  on('#gateway-copy', 'click', (e) => { copyText($('#gateway-code').textContent, e.target); });
+  on('#gateway-check', 'click', async () => { await checkGateway(); });
   on('#update-check', 'click', async () => {
     try {
       const r = await api('/api/v1/update/check');
@@ -3267,7 +3267,8 @@ async function saveSubPublicDomain() {
     const r = await apiPost('/api/v1/settings/subscription-domain', { domain });
     input.value = r.domain || '';
     rebaseShownSubUrls(r.domain || '');
-    updateWorkerExampleLink(r.domain || '');
+    const gdn = $('#gateway-domain-now');
+    if (gdn) gdn.textContent = r.domain || '未配置';
     toast(r.domain ? '订阅对外域名已保存，订阅链接改用 https://' + r.domain + '/' + currentSubPath() + '/…' : '订阅对外域名已清除，订阅链接恢复成面板自己的地址', 'ok');
     loadSettingsPage();
   } catch (err) { toast('保存失败：' + err.message, 'err'); }
@@ -3299,13 +3300,6 @@ function rebaseShownSubUrls(domain) {
       el.textContent = base + u.pathname + u.search + u.hash;
     } catch (e) { /* 不是合法 URL 就不动 */ }
   });
-}
-// Worker 卡片里的示例订阅链接：填了订阅对外域名就用它，没填时用面板自己的地址。
-// 路径段走当前订阅路径（v1.3.20 可自定义）。
-function updateWorkerExampleLink(domain) {
-  const el = $('#worker-example-link');
-  if (!el) return;
-  el.textContent = domain ? 'https://' + domain + '/' + currentSubPath() + '/<令牌>' : location.origin + '/' + currentSubPath() + '/<令牌>';
 }
 // ---------- 订阅用户：一人一条（v1.3.0） ----------
 // 列表只含名字与生成时间，不含令牌；每行都有“复制”按钮，随时能重新拿链接。
@@ -3797,22 +3791,54 @@ async function loadEditForwards(m, opts) {
     box.innerHTML = '<span class="warn">转发列表加载失败：' + esc(e.message) + '</span>';
   }
 }
-// ---------- Worker 反代代码生成（v1.3.0） ----------
-async function loadWorkerCode() {
-  const origin = $('#worker-origin').value.trim();
-  const box = $('#worker-code-box'), pre = $('#worker-code');
+// ---------- 订阅网关代码生成与检测（v1.3.50） ----------
+// 部署方式三档：worker（Cloudflare Worker）/ caddy（Caddy 一键容器）/
+// install（脚本直装）。点哪档就向后端要哪档的代码（值已按面板当前值填好）。
+let gatewayType = '';
+async function loadGatewayCode(type) {
+  gatewayType = type;
+  document.querySelectorAll('[data-gateway-type]').forEach((b) => {
+    const on = b.dataset.gatewayType === type;
+    b.classList.toggle('btn', on);
+    b.classList.toggle('secondary', !on);
+  });
+  const box = $('#gateway-code-box'), pre = $('#gateway-code');
   if (!box || !pre) return;
   try {
-    const r = await api('/api/v1/subscriptions/worker?origin=' + encodeURIComponent(origin));
-    pre.textContent = r.code || '';
-    const warn = $('#worker-code-warn');
-    if (warn) {
-      if (r.warning) { warn.textContent = r.warning; warn.classList.remove('hidden'); warn.hidden = false; }
-      else { warn.textContent = ''; warn.classList.add('hidden'); warn.hidden = true; }
+    const r = await api('/api/v1/settings/gateway/code?type=' + encodeURIComponent(type));
+    pre.textContent = r.content || '';
+    const noteEl = $('#gateway-code-note');
+    if (noteEl) {
+      if (r.note) { noteEl.textContent = r.note; noteEl.classList.remove('hidden'); noteEl.hidden = false; }
+      else { noteEl.textContent = ''; noteEl.classList.add('hidden'); noteEl.hidden = true; }
     }
     box.classList.remove('hidden'); box.hidden = false;
-    toast('Worker 代码已生成，复制后去 Cloudflare 部署', 'ok');
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
+}
+// 检测网关三条路：服务端去请求订阅对外域名，逐条返回状态；
+// 令牌只留在服务端，返回里只有状态与节点数。
+async function checkGateway() {
+  const btn = $('#gateway-check'), box = $('#gateway-check-results');
+  if (!btn || !box) return;
+  btn.disabled = true;
+  const old = btn.textContent; btn.textContent = '检测中…';
+  try {
+    const r = await apiPost('/api/v1/settings/gateway/check', {});
+    if (!r.checks || !r.checks.length) {
+      box.innerHTML = '<span class="warn">' + esc(r.reason || '检测失败') + '</span>';
+      return;
+    }
+    const label = { 'public-info': '公告', 'client-config': '远程配置', 'subscription': '订阅拉取' };
+    box.innerHTML = r.checks.map((c) => {
+      const st = c.ok ? '<b>通</b>' : '<span class="warn">不通</span>';
+      const extra = (c.name === 'subscription' && c.ok) ? '，' + (c.nodes || 0) + ' 个节点' : '';
+      const ms = (c.ms != null) ? '（' + c.ms + 'ms）' : '';
+      const why = c.ok ? '' : ' —— ' + esc(c.reason || '');
+      return '<div>' + (label[c.name] || c.name) + '：' + st + extra + ms + why + '</div>';
+    }).join('');
+  } catch (err) {
+    box.innerHTML = '<span class="warn">检测失败：' + esc(err.message) + '</span>';
+  } finally { btn.disabled = false; btn.textContent = old; }
 }
 // 合并订阅弹窗：显示一条刚生成/轮换的订阅链接，带复制、
 // 二维码、模式选择，以及轮换/撤销按钮。opts: {title, rotated, name, mergedId, mode}

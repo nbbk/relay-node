@@ -114,6 +114,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/cloudflare", s.requireAuth(s.handleCloudflare))
 	// DNS-01 服务商（v1.3.49）：选服务商＋存凭证、手动模式三步接口。
 	mux.HandleFunc("POST /api/v1/settings/dns-provider", s.requireAuth(s.handleDNSProvider))
+	// 订阅网关代码生成与检测（v1.3.50）。
+	mux.HandleFunc("GET /api/v1/settings/gateway/code", s.requireAuth(s.handleGatewayCode))
+	mux.HandleFunc("POST /api/v1/settings/gateway/check", s.requireAuth(s.handleGatewayCheck))
 	mux.HandleFunc("POST /api/v1/settings/https/manual/start", s.requireAuth(s.handleManualStart))
 	mux.HandleFunc("POST /api/v1/settings/https/manual/confirm", s.requireAuth(s.handleManualConfirm))
 	mux.HandleFunc("POST /api/v1/settings/https/manual/cancel", s.requireAuth(s.handleManualCancel))

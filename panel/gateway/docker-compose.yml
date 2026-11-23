@@ -1,0 +1,37 @@
+# 订阅网关：Caddy 一键容器
+#
+# 用法（在 caddy/ 目录下）：
+#   1. cp .env.example .env，填好三个值
+#   2. 把签好的 client-config.json 放进 data/config/（没有就先空着，/client-config.json 会 404）
+#   3. docker compose up -d
+#   4. curl 检查三条路（见 README.md）
+#
+# 换部署方式不用改客户端：网关域名不变，背后换 Worker / 脚本直装 / 静态托管都行，
+# 只改 DNS A 记录指向（或面板订阅对外域名填网关域名）。
+
+services:
+  gateway:
+    image: caddy:2-alpine
+    container_name: sub-gateway
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/config:/data/config:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    env_file:
+      - .env
+    healthcheck:
+      # Caddy 管理接口（容器内 127.0.0.1:2019），不走 TLS，健康检查不依赖证书。
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  caddy_data:
+  caddy_config:
