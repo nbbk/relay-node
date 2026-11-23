@@ -556,3 +556,11 @@
 - 修列表健康标题与详情打架（1.4.5 真机实测）：Xray 停掉后详情弹窗正确显示红字“Xray 未运行：...”，但节点列表标题仍是绿点“在线”——列表标题只看最后拉配置的时间（n.health，agent 还在拉配置就判在线），详情看的是上报健康（backend_health.status）。改成：列表标题优先跟上报健康——上报 online 显示绿“在线”，上报 offline 且详情以“Xray 未运行”开头显示红“Xray 未运行”，上报 offline 其他原因（失联）显示红“离线”；没上报过时回退到 LastSeen 口径（n.health）。详情弹窗不动。
 - 测试：新增 jsdom test-1406.js（Xray 未运行节点列表标题变红“Xray 未运行”、失联节点红“离线”、正常节点绿“在线”、未上报回退口径、详情弹窗不变），test-1405 的列表断言按新行为更新（原“两个在线节点绿点”里含一个 Xray 未运行节点，现为红点），test-1404 对 1.4.6 回归全过；无 Go 改动。
 - 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。
+
+### v1.4.7 更新
+
+- sing-box 健康进上报与详情（轻量节点后端切片 5 面板半边）：agent 0.1.5 的 health 块新增 singbox_running／singbox_restarts／singbox_version，面板落盘进节点，节点详情的“上报健康”块多一行 sing-box（运行中／未运行＋重启次数＋版本）；只在节点配了 HY2／TUIC／AnyTLS 入站时显示，无 sing-box 入站的节点不显示（agent 本就不起 sing-box，Running=false 不是故障）。列表标题口径不变（仍按上报健康＋LastSeen，Xray 驱动）。
+- sing-box 流量按人计量已定（见实施方案 §9.4）：V2Ray API stats 的 user>>> 计数器实测精确（AnyTLS 端到端 10MB 记下行 10485966 字节），HY2／TUIC／AnyTLS 的流量按人计入限流，与 Xray 侧同口径；面板不再写“总量，未按人分”。另：此前“Clash API 七组对照全为 0、证死”的结论已勘误——是测试方法错了（沙箱 no_proxy 绕过了 curl 的 --socks5，流量根本没经过 sing-box），重测后官方二进制 /connections 的累计值完全正确；Clash 只给全局总量所以仍不用它计量。
+- 顺带修：全量 Go 测试里 11 处写死的旧版本断言（panel_version／VERSION 应为 1.4.4）自 1.4.5 起就没跟上版本号，1.4.5 与 1.4.6 发版时没跑全量测试所以没发现；本次一并改成 1.4.7，全量测试重新全绿（见下）。
+- 测试：新增 Go panel_1407_test.go（sing-box 健康字段随上报落盘、详情回得来、再报一窗跟着变）与 jsdom test-1407.js（详情弹窗 sing-box 行显示／隐藏），test-1404 对 1.4.7 回归全过；面板 `TZ=UTC go test -race` 全量 543 项全过（417.8 秒，0 失败）。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。agent 0.1.5 另行发布（Release 资产含自编译 sing-box 1.14.4 二进制，官方二进制缺 with_v2ray_api）。

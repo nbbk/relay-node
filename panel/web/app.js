@@ -1039,12 +1039,18 @@ async function openNodeDetailModal(nodeId, nodeName) {
   const tr = d.traffic || { users: [], inbounds: [], up_period: 0, down_period: 0, up_total: 0, down_total: 0 };
   const users = tr.users || [];
   const inbounds = tr.inbounds || [];
+  // sing-box 行（v1.4.7，切片 5）：只在节点配了 sing-box 入站
+  // （HY2／TUIC／AnyTLS）时显示；无 sing-box 入站的节点上 agent
+  // 本就不起 sing-box，Running=false 不是故障，不显示。
+  const hasSingbox = (d.inbounds || []).some((ib) => ib.protocol === 'hysteria2' || ib.protocol === 'tuic' || ib.protocol === 'anytls');
+  const sbRow = hasSingbox ? '<div class="kv"><span>sing-box</span><b>' + esc(bh.singbox_running ? '运行中' : '未运行') + '（重启 ' + esc(String(bh.singbox_restarts == null ? '—' : bh.singbox_restarts)) + ' 次' + (bh.singbox_version ? '，' + esc(bh.singbox_version) : '') + '）</b></div>' : '';
   const m = openModal('<h2>节点详情：' + esc(nodeName || n.name || nodeId) + '</h2>' +
     '<h3>上报健康</h3>' +
     '<div class="kv"><span>状态</span><b>' + nodeHealthDot(bh.status) + esc(bh.detail || '尚未上报') + '</b></div>' +
     '<div class="kv"><span>最后上报</span><b>' + esc(bh.last_traffic_at ? fmtDate(typeof bh.last_traffic_at === 'number' ? bh.last_traffic_at * 1000 : bh.last_traffic_at) : '—') + '</b></div>' +
     (bh.last_error ? '<div class="kv"><span>最后错误</span><b>' + esc(bh.last_error) + '</b></div>' : '') +
     '<div class="kv"><span>Xray 重启次数</span><b>' + esc(String(bh.xray_restarts == null ? '—' : bh.xray_restarts)) + '</b></div>' +
+    sbRow +
     '<div class="kv"><span>CPU／内存</span><b>' + esc(bh.cpu_percent == null ? '—' : String(bh.cpu_percent) + '% ／ ' + String(bh.mem_mb == null ? '—' : bh.mem_mb) + ' MB') + '</b></div>' +
     '<h3>流量（本期按人合计）</h3>' +
     '<div class="kv"><span>本期上行／下行</span><b>' + esc(fmtBytes(tr.up_period || 0)) + ' ／ ' + esc(fmtBytes(tr.down_period || 0)) + '</b></div>' +

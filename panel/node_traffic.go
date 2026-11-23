@@ -84,15 +84,17 @@ type nodeTrafficOnlineEntry struct {
 }
 
 type nodeTrafficHealth struct {
-	AgentVersion   string  `json:"agent_version"`
-	XrayVersion    string  `json:"xray_version"`
-	SingBoxVersion string  `json:"singbox_version"`
-	XrayRunning    bool    `json:"xray_running"`
-	XrayRestarts   int64   `json:"xray_restarts"`
-	ConfigVersion  int64   `json:"config_version"`
-	LastError      string  `json:"last_error"`
-	CPUPercent     float64 `json:"cpu_percent"`
-	MemMB          float64 `json:"mem_mb"`
+	AgentVersion    string  `json:"agent_version"`
+	XrayVersion     string  `json:"xray_version"`
+	SingBoxVersion  string  `json:"singbox_version"`
+	XrayRunning     bool    `json:"xray_running"`
+	XrayRestarts    int64   `json:"xray_restarts"`
+	SingboxRunning  bool    `json:"singbox_running"`
+	SingboxRestarts int64   `json:"singbox_restarts"`
+	ConfigVersion   int64   `json:"config_version"`
+	LastError       string  `json:"last_error"`
+	CPUPercent      float64 `json:"cpu_percent"`
+	MemMB           float64 `json:"mem_mb"`
 }
 
 type nodeTrafficReport struct {
@@ -247,6 +249,8 @@ func nodeBackendHealthMap(n *BackendNode, now time.Time) map[string]any {
 		"xray_restarts": n.HealthXrayRestarts, "last_traffic_at": lastTraffic,
 		"config_version": cfgVer,
 		"cpu_percent":    n.HealthCPUPercent, "mem_mb": n.HealthMemMB,
+		"singbox_running": n.HealthSingboxRunning, "singbox_restarts": n.HealthSingboxRestarts,
+		"singbox_version": n.SingBoxVersion,
 	}
 }
 
@@ -346,6 +350,8 @@ func (s *Server) handleNodeBackendTraffic(w http.ResponseWriter, r *http.Request
 			node.HealthAt = now
 			node.HealthXrayRunning = h.XrayRunning
 			node.HealthXrayRestarts = h.XrayRestarts
+			node.HealthSingboxRunning = h.SingboxRunning
+			node.HealthSingboxRestarts = h.SingboxRestarts
 			node.HealthLastError = strings.TrimSpace(h.LastError)
 			node.HealthCPUPercent = h.CPUPercent
 			node.HealthMemMB = h.MemMB

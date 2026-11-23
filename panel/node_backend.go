@@ -83,6 +83,12 @@ type BackendNode struct {
 	// 时间；XrayRunning=false 且 HealthAt!=0 = Xray 未运行。
 	HealthXrayRunning   bool    `json:"health_xray_running,omitempty"`
 	HealthXrayRestarts  int64   `json:"health_xray_restarts,omitempty"`
+	// HealthSingbox* sing-box 健康（v1.4.7，切片 5）：SingboxRunning
+	// = false 且 HealthAt!=0 = sing-box 未运行（无 sing-box 入站时
+	// agent 本就不起 sing-box，此时 Running=false 但不是故障——
+	// 前端只在节点有 sing-box 入站时才显示该行）。
+	HealthSingboxRunning  bool  `json:"health_singbox_running,omitempty"`
+	HealthSingboxRestarts int64 `json:"health_singbox_restarts,omitempty"`
 	HealthLastError     string  `json:"health_last_error,omitempty"`
 	HealthCPUPercent    float64 `json:"health_cpu_percent,omitempty"`
 	HealthMemMB         float64 `json:"health_mem_mb,omitempty"`
