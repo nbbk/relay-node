@@ -967,6 +967,26 @@ function nodeHealthDot(h) {
   if (h === 'offline') return '<span class="dot red"></span>';
   return '<span class="dot grey"></span>';
 }
+// 列表健康标题（v1.4.6）：优先跟上报健康（backend_health.status），
+// 而不是只看最后拉配置的时间（n.health）。agent 还在拉配置但 Xray
+// 停了时，标题应显示红字“Xray 未运行”，而不是绿“在线”——
+// 1.4.5 真机实测：详情已红、列表标题仍绿，两边打架。
+function nodeListHealth(n) {
+  const bh = n.backend_health || {};
+  if (bh.status === 'online') return { status: 'online', label: '在线' };
+  if (bh.status === 'offline') {
+    if ((bh.detail || '').indexOf('Xray 未运行') === 0) return { status: 'offline', label: 'Xray 未运行' };
+    return { status: 'offline', label: '离线' };
+  }
+  // 没上报过：回退到 LastSeen 口径（n.health）。
+  if (n.health === 'online') return { status: 'online', label: '在线' };
+  if (n.health === 'offline') return { status: 'offline', label: '离线' };
+  return { status: 'never', label: '尚未入网' };
+}
+function nodeListHealthHtml(n) {
+  const h = nodeListHealth(n);
+  return nodeHealthDot(h.status) + esc(h.label);
+}
 async function loadNodes() {
   const wrap = $('#nodes-list');
   if (!wrap) return;
@@ -975,7 +995,7 @@ async function loadNodes() {
     const nodes = r.nodes || [];
     if (!nodes.length) { wrap.innerHTML = '<div class="empty">还没有节点。上面填名字与地址，生成入网令牌后去新落地机上跑安装命令。</div>'; return; }
     wrap.innerHTML = nodes.map((n) => '<div class="card" style="margin-bottom:12px"><div class="kv"><span>节点</span><b>' + esc(n.name || '') + '（' + esc(n.address || '') + '）</b></div>' +
-      '<div class="kv"><span>健康</span><b>' + nodeHealthDot(n.health) + esc(nodeHealthLabel(n.health)) + '</b></div>' +
+      '<div class="kv"><span>健康</span><b>' + nodeListHealthHtml(n) + '</b></div>' +
       '<div class="kv"><span>上报健康</span><b>' + esc((n.backend_health && n.backend_health.detail) || '尚未上报') + '</b></div>' +
       '<div class="kv"><span>agent 版本</span><b>' + esc(n.agent_version || '—') + '</b></div>' +
       '<div class="kv"><span>最后在线</span><b>' + esc(n.last_seen ? fmtDate(n.last_seen) : '—') + '</b></div>' +
