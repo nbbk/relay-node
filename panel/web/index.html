@@ -190,7 +190,7 @@
           </div>
         </div>
         <h2 style="margin-top:20px">节点列表</h2>
-        <div class="list-toolbar nodes-toolbar"><input id="nodes-search" class="list-search" type="search" placeholder="搜索节点：名称、地址…" aria-label="搜索节点"><label for="nodes-page-size">每页 <select id="nodes-page-size"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option></select> 条</label></div>
+        <div class="list-toolbar nodes-toolbar"><input id="nodes-search" class="list-search" type="search" placeholder="搜索节点：名称、地址…" aria-label="搜索节点"><label for="nodes-page-size">每页 <select id="nodes-page-size"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option></select> 条</label><button class="btn secondary sm" type="button" id="nodes-view-toggle" aria-pressed="false">列表视图</button></div>
         <div id="nodes-list" class="nodes-list nodes-grid"></div>
         <!-- 入站模板（v1.4.12）：三件套＋入站列表放 <template> 里，点“入站模板”时克隆
              一份放进统一弹窗（见 app.js openNodeInboundsModal），不在页面下方 inline 展开。
@@ -279,7 +279,8 @@
             <div class="kv"><span>TXT 记录值</span><b id="node-cert-manual-txt-value" style="word-break:break-all"></b></div>
             <div class="btn-row"><button class="btn" type="button" id="node-cert-manual-confirm">继续验证</button><button class="btn secondary" type="button" id="node-cert-manual-cancel">取消</button></div>
           </div>
-          <div id="node-certs-list"></div>
+          <div class="list-toolbar"><button class="btn secondary sm" type="button" id="node-certs-view-toggle" aria-pressed="false">列表视图</button></div>
+          <div id="node-certs-list" class="nodes-grid"></div>
         </div>
       </section>
 
@@ -513,10 +514,6 @@
                 <option value="namecheap">Namecheap</option>
                 <option value="manual">手动添加 TXT（通用兜底）</option>
               </select>
-              <div class="btn-row">
-                <button class="btn" id="https-enable" type="button">开启 HTTPS</button>
-                <button class="btn secondary" id="https-disable" type="button">关闭 HTTPS（回 HTTP）</button>
-              </div>
             </form>
             <div id="dns-forms">
               <form id="dns-form-cloudflare" class="dns-form">
@@ -572,6 +569,13 @@
             <div id="dns-cred-status" class="small"></div>
             <div id="https-status" class="small"></div>
             <div id="https-cert-info" class="small"></div>
+            <!-- v1.4.14：开启／关闭 HTTPS 两个按钮移到 DNS 服务商＋凭证组的
+                 下面（保存凭证按钮与状态文案之后），免得把服务商下拉框和
+                 API Token 输入框从中间隔开；只挪位置，功能与 id 不动。 -->
+            <div class="btn-row">
+              <button class="btn" id="https-enable" type="button">开启 HTTPS</button>
+              <button class="btn secondary" id="https-disable" type="button">关闭 HTTPS（回 HTTP）</button>
+            </div>
             <div id="https-token-hint" class="small warn hidden" hidden></div>
             <div id="https-cert-error" class="small warn hidden" hidden></div>
             <div class="btn-row hidden" id="https-retry-row" hidden><button class="btn secondary" id="https-retry" type="button">重试签发</button></div>

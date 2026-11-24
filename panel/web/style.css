@@ -387,6 +387,16 @@ html[data-theme="dark"] .tag.relay{background:#1e3a5f; color:#93c5fd; border-col
 .nodes-grid{display:grid; gap:14px; grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
 .nodes-grid .mini-card{display:flex; flex-direction:column; min-height:260px}
 .nodes-grid .mini-card .btn-row{margin-top:auto}
+/* v1.4.14：列表视图（节点列表与证书列表共用）：紧凑行，一行一条，
+   关键信息横向排、操作按钮靠右；与 .nodes-grid 二选一，由 app.js
+   按 localStorage 里的选择切 class（默认卡片视图）。行内单元格不换行
+   （长名字／长地址／引用列表除外，允许换行不断内容）。 */
+.list-view{display:flex; flex-direction:column; gap:8px}
+.list-row{display:flex; align-items:center; gap:6px 14px; flex-wrap:wrap; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); padding:10px 14px; font-size:14px}
+.list-row .cell{white-space:nowrap}
+.list-row .cell-name{font-weight:600; white-space:normal; word-break:break-all}
+.list-row .cell-wrap{white-space:normal; word-break:break-all}
+.list-row .btn-row{margin-left:auto; display:flex; gap:6px; flex-wrap:wrap}
 .list-search{
   flex:1; max-width:420px; padding:9px 12px; border:1px solid var(--border);
   border-radius:999px; background:var(--surface); color:var(--text); font-size:14px;

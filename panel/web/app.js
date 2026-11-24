@@ -1002,6 +1002,34 @@ let nodesCache = []; // v1.4.12：节点列表全量缓存（搜索／分页都�
 let nodesPage = 1;
 let nodesSearch = '';
 let nodesPageSize = 10; // v1.4.12：每页条数，10／20／50，默认 10
+// v1.4.14：列表视图切换（卡片↔列表）：节点与证书各记一个选择，
+// localStorage 键与设置页／twin 模式同款 relay-panel-* 前缀；
+// 读不到／值不对／隐私模式存不了都回默认卡片视图。
+const NODES_VIEW_KEY = 'relay-panel-nodes-view';
+const CERTS_VIEW_KEY = 'relay-panel-certs-view';
+function loadListView(key) {
+  try { const v = localStorage.getItem(key); return v === 'list' || v === 'card' ? v : 'card'; } catch (e) { return 'card'; }
+}
+function saveListView(key, v) {
+  try { localStorage.setItem(key, v); } catch (e) { /* 存不了就每次回卡片 */ }
+}
+let nodesView = loadListView(NODES_VIEW_KEY);
+let certsView = loadListView(CERTS_VIEW_KEY);
+// syncViewToggle 切换按钮的文案与 aria-pressed：卡片视图时按钮写
+// “列表视图”（点一下切过去），列表视图时写“卡片视图”。
+function syncViewToggle(btnId, view) {
+  const b = $(btnId);
+  if (!b) return;
+  b.textContent = view === 'list' ? '卡片视图' : '列表视图';
+  b.setAttribute('aria-pressed', view === 'list' ? 'true' : 'false');
+}
+// applyListViewClass 列表容器在两种视图间切 class：卡片视图用
+// .nodes-grid（方形小卡片网格），列表视图用 .list-view（紧凑行）。
+function applyListViewClass(wrap, view) {
+  if (!wrap) return;
+  wrap.classList.toggle('nodes-grid', view === 'card');
+  wrap.classList.toggle('list-view', view === 'list');
+}
 // 前端列表按指定条数切页（节点列表每页条数可选，不沿用 PAGE_SIZE=20；
 // 总页数变少、当前页越界时自动落到最后一页，与 paginate 同口径）。
 function paginateSize(list, page, size) {
@@ -1018,6 +1046,15 @@ function paginateSize(list, page, size) {
 // Xray 未运行时标题就是“Xray 未运行”；圆点与文字的相邻写法别改，
 // test-1406／1408 靠它断言）；“上报健康”行保留完整 detail（1.4.4 的
 // 回归断言要读它）；“入网”行不单列——没入网时健康标题就是“尚未入网”。
+// 节点四个操作按钮（v1.4.14：卡片与列表行共用同一套，免得两边 drift）：
+// 详情／入站模板／重新生成入网令牌／删除，data-* 属性与 wireNodeCardButtons
+// 绑的四种一致，行里点了一样生效。
+function nodeActionButtons(n) {
+  return '<button class="btn secondary sm" type="button" data-nodedetail="' + esc(String(n.id)) + '" data-detailname="' + esc(n.name || '') + '">详情</button>' +
+    '<button class="btn secondary sm" type="button" data-inbounds="' + esc(String(n.id)) + '" data-inbname="' + esc(n.name || '') + '" data-inbaddr="' + esc(n.address || '') + '">入站模板</button>' +
+    '<button class="btn secondary sm" type="button" data-regen="' + esc(String(n.id)) + '" data-regenname="' + esc(n.name || '') + '">重新生成入网令牌</button>' +
+    '<button class="btn danger sm" type="button" data-delnodes="' + esc(String(n.id)) + '" data-delname="' + esc(n.name || '') + '">删除</button>';
+}
 function nodeMiniCard(n) {
   const h = nodeListHealth(n);
   return '<div class="mini-card static' + (h.status === 'offline' ? ' offline' : '') + '" data-node-card="' + esc(String(n.id)) + '">' +
@@ -1026,10 +1063,22 @@ function nodeMiniCard(n) {
     '<div class="mini-row"><span>agent 版本</span><b>' + esc(n.agent_version || '—') + '</b></div>' +
     '<div class="mini-row"><span>已应用配置版本</span><b>' + esc(String(n.config_version == null ? '—' : n.config_version)) + '</b></div>' +
     '<div class="mini-row"><span>最后在线</span><b>' + esc(n.last_seen ? fmtDate(n.last_seen) : '—') + '</b></div>' +
-    '<div class="btn-row"><button class="btn secondary sm" type="button" data-nodedetail="' + esc(String(n.id)) + '" data-detailname="' + esc(n.name || '') + '">详情</button>' +
-    '<button class="btn secondary sm" type="button" data-inbounds="' + esc(String(n.id)) + '" data-inbname="' + esc(n.name || '') + '" data-inbaddr="' + esc(n.address || '') + '">入站模板</button>' +
-    '<button class="btn secondary sm" type="button" data-regen="' + esc(String(n.id)) + '" data-regenname="' + esc(n.name || '') + '">重新生成入网令牌</button>' +
-    '<button class="btn danger sm" type="button" data-delnodes="' + esc(String(n.id)) + '" data-delname="' + esc(n.name || '') + '">删除</button></div></div>';
+    '<div class="btn-row">' + nodeActionButtons(n) + '</div></div>';
+}
+// 节点列表行（v1.4.14，列表视图）：紧凑行，一行一条；卡片里的信息
+// 一个不少（名称、地址、健康、上报健康、agent 版本、已应用配置版本、
+// 最后在线、四个操作按钮），只是横向排。健康标题与圆点仍走
+// nodeListHealthHtml（1.4.6 口径，Xray 未运行时标题就是“Xray 未运行”）。
+function nodeListRow(n) {
+  return '<div class="list-row" data-node-row="' + esc(String(n.id)) + '">' +
+    '<span class="cell cell-name">' + esc(n.name || '') + '</span>' +
+    '<span class="cell">' + esc(n.address || '') + '</span>' +
+    '<span class="cell">' + nodeListHealthHtml(n) + '</span>' +
+    '<span class="cell cell-wrap"><span class="muted">上报健康：</span>' + esc((n.backend_health && n.backend_health.detail) || '尚未上报') + '</span>' +
+    '<span class="cell"><span class="muted">agent 版本：</span>' + esc(n.agent_version || '—') + '</span>' +
+    '<span class="cell"><span class="muted">已应用配置版本：</span>' + esc(String(n.config_version == null ? '—' : n.config_version)) + '</span>' +
+    '<span class="cell"><span class="muted">最后在线：</span>' + esc(n.last_seen ? fmtDate(n.last_seen) : '—') + '</span>' +
+    '<span class="btn-row">' + nodeActionButtons(n) + '</span></div>';
 }
 // 节点列表渲染（v1.4.12）：先按搜索词过滤（节点名／地址，前端本地过滤），
 // 再按每页条数切页；搜索后总页数跟着变，当前页越界时 paginateSize 会
@@ -1037,12 +1086,15 @@ function nodeMiniCard(n) {
 function renderNodesList() {
   const wrap = $('#nodes-list');
   if (!wrap) return;
+  // v1.4.14：按记住的视图切容器 class 与切换按钮文案（默认卡片视图）。
+  applyListViewClass(wrap, nodesView);
+  syncViewToggle('#nodes-view-toggle', nodesView);
   if (!nodesCache.length) { wrap.innerHTML = '<div class="empty">还没有节点。上面填名字与地址，生成入网令牌后去新落地机上跑安装命令。</div>'; return; }
   const filtered = nodesCache.filter((n) => matchSubText(nodesSearch, [n.name, n.address]));
   if (!filtered.length) { wrap.innerHTML = '<div class="empty">没有匹配的节点，换个关键词试试。</div>'; return; }
   const pg = paginateSize(filtered, nodesPage, nodesPageSize);
   nodesPage = pg.cur;
-  wrap.innerHTML = pg.slice.map((n) => nodeMiniCard(n)).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'nodes');
+  wrap.innerHTML = pg.slice.map((n) => nodesView === 'list' ? nodeListRow(n) : nodeMiniCard(n)).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'nodes');
   if (pg.totalPages > 1) wirePager(wrap, 'nodes', pg.cur, pg.totalPages, (p) => { nodesPage = p; renderNodesList(); });
   wireNodeCardButtons(wrap);
 }
@@ -1971,6 +2023,14 @@ function initNodes() {
     nodesPageSize = [10, 20, 50].indexOf(v) !== -1 ? v : 10;
     nodesPage = 1; renderNodesList();
   });
+  // v1.4.14：节点列表视图切换（卡片↔列表），点一下换视图、记 localStorage、
+  // 立即重渲染；按钮文案由 renderNodesList 里的 syncViewToggle 跟着改。
+  on('#nodes-view-toggle', 'click', () => {
+    nodesView = nodesView === 'list' ? 'card' : 'list';
+    saveListView(NODES_VIEW_KEY, nodesView);
+    renderNodesList();
+  });
+  syncViewToggle('#nodes-view-toggle', nodesView);
 }
 /* ---------- 节点证书（v1.4.12，切片 7） ---------- */
 // 证书页落在节点页下方：签发（域名＋服务商下拉，六家自动＋手动两步走）、
@@ -1979,6 +2039,10 @@ function initNodes() {
 // 读它；拉不到（旧接口／网络问题）就当作没有证书，不抛错。
 let nodeCertsCache = [];
 let nodeCertProvidersCache = [];
+// v1.4.14：上次见到的手动签发 pending（renderNodeCerts 不带 r 重渲染时
+// 沿用它，免得点视图切换就把“继续验证”那块藏起来；loadNodeCerts 每次
+// 都带 r，值照常刷新）。
+let nodeCertManualPending = null;
 function nodeCertValid(c) {
   if (!c || !c.expires_at) return false;
   const t = new Date(c.expires_at).getTime();
@@ -2032,9 +2096,57 @@ async function loadNodeCerts() {
     return null;
   }
 }
+// 证书状态徽章（v1.4.14：卡片与列表行共用）：valid 绿“有效”、
+// expiring 黄“快到期”、expired 红“已过期”，其余灰“未知”。
+function certStatusOf(c) {
+  const st = c.status || 'unknown';
+  if (st === 'valid') return { badge: 'green', text: '有效' };
+  if (st === 'expiring') return { badge: 'yellow', text: '快到期' };
+  if (st === 'expired') return { badge: 'red', text: '已过期' };
+  return { badge: 'grey', text: '未知' };
+}
+// 证书三个操作按钮（v1.4.14：卡片与列表行共用同一套）：复制域名、
+// 立即续签（手动模式的证书 disabled，须重新走手动签发）、删除。
+function certActionButtons(c) {
+  return '<button class="btn secondary sm" type="button" data-cert-copy="' + esc(c.domain || '') + '">复制</button>' +
+    '<button class="btn secondary sm" type="button" data-cert-renew="' + esc(String(c.ref)) + '"' + (c.provider === 'manual' ? ' disabled title="手动模式的证书不能一键续签，请重新走手动签发"' : '') + '>立即续签</button>' +
+    '<button class="btn danger sm" type="button" data-cert-del="' + esc(String(c.ref)) + '" data-cert-domain="' + esc(c.domain || '') + '">删除</button>';
+}
+// 证书小卡片（v1.4.14）：复用节点页同款 .mini-card，放在 #node-certs-list
+// 的 .nodes-grid 网格里（方形小卡片，min-height 260px、按钮沉底）；
+// 旧 .card＋.kv 那版的全部信息都在：域名（ref）、服务商、状态／到期、
+// 引用它的入站、上次续签失败、复制／续签／删除。
+function certMiniCard(c) {
+  const s = certStatusOf(c);
+  const used = (c.used_by || []).join('、') || '没被入站引用';
+  return '<div class="mini-card static" data-cert-card="' + esc(String(c.ref)) + '">' +
+    '<div class="mini-top"><h3>' + esc(c.domain || '') + '（ref ' + esc(String(c.ref)) + '）</h3><span class="badge ' + s.badge + '">' + s.text + '</span></div>' +
+    '<div class="mini-row"><span>服务商</span><b>' + esc(c.provider_name || c.provider || '') + '</b></div>' +
+    '<div class="mini-row"><span>状态</span><b>' + esc(c.expires_at ? fmtDate(c.expires_at) + '（剩余 ' + String(c.days_left == null ? '—' : c.days_left) + ' 天）' : '—') + '</b></div>' +
+    '<div class="mini-row"><span>引用它的入站</span><b>' + esc(used) + '</b></div>' +
+    (c.last_error ? '<div class="mini-row"><span>上次续签失败</span><b>' + esc(c.last_error) + '</b></div>' : '') +
+    '<div class="btn-row">' + certActionButtons(c) + '</div></div>';
+}
+// 证书列表行（v1.4.14，列表视图）：紧凑行，一行一条；卡片里的信息
+// 一个不少（域名、服务商、状态／到期、引用它的入站、上次续签失败、
+// 复制／续签／删除），只是横向排。
+function certListRow(c) {
+  const s = certStatusOf(c);
+  const used = (c.used_by || []).join('、') || '没被入站引用';
+  return '<div class="list-row" data-cert-row="' + esc(String(c.ref)) + '">' +
+    '<span class="cell cell-name">' + esc(c.domain || '') + '（ref ' + esc(String(c.ref)) + '）</span>' +
+    '<span class="cell">' + esc(c.provider_name || c.provider || '') + '</span>' +
+    '<span class="cell"><span class="badge ' + s.badge + '">' + s.text + '</span> ' + esc(c.expires_at ? fmtDate(c.expires_at) + '（剩余 ' + String(c.days_left == null ? '—' : c.days_left) + ' 天）' : '—') + '</span>' +
+    '<span class="cell cell-wrap"><span class="muted">引用：</span>' + esc(used) + '</span>' +
+    (c.last_error ? '<span class="cell cell-wrap"><span class="muted">上次续签失败：</span>' + esc(c.last_error) + '</span>' : '') +
+    '<span class="btn-row">' + certActionButtons(c) + '</span></div>';
+}
 function renderNodeCerts(r) {
   const wrap = $('#node-certs-list');
   if (!wrap) return;
+  // v1.4.14：按记住的视图切容器 class 与切换按钮文案（默认卡片视图）。
+  applyListViewClass(wrap, certsView);
+  syncViewToggle('#node-certs-view-toggle', certsView);
   // v1.4.13：服务商下拉框只列已配置的服务商＋手动模式（手动恒可用）：
   // 未配置的 option 直接去掉（不是灰掉、不是 disabled，选都选不到才
   // 算数），免得选了点签发报 400。去掉之后如果当前选中的值没了，设成
@@ -2060,7 +2172,9 @@ function renderNodeCerts(r) {
     }
   }
   // 手动签发进行中：回填 TXT 名与值，显示继续验证／取消。
-  const mp = r ? r.manual_pending : null;
+  // v1.4.14：不带 r 重渲染（视图切换）时沿用上次的 pending。
+  const mp = r ? r.manual_pending : nodeCertManualPending;
+  nodeCertManualPending = mp || null;
   const box = $('#node-cert-manual-box');
   if (box) {
     if (mp) {
@@ -2073,21 +2187,7 @@ function renderNodeCerts(r) {
   }
   const certs = nodeCertsCache;
   if (!certs.length) { wrap.innerHTML = '<div class="empty">还没有节点证书。上面填域名、选服务商，签发后 HY2／TUIC／AnyTLS／Trojan／VLESS＋TLS 入站才能用。</div>'; return; }
-  wrap.innerHTML = certs.map((c) => {
-    const st = c.status || 'unknown';
-    const badge = st === 'valid' ? 'green' : st === 'expiring' ? 'yellow' : st === 'expired' ? 'red' : 'grey';
-    const stText = st === 'valid' ? '有效' : st === 'expiring' ? '快到期' : st === 'expired' ? '已过期' : '未知';
-    const used = (c.used_by || []).join('、') || '没被入站引用';
-    return '<div class="card" style="margin-bottom:12px"><div class="kv"><span>证书</span><b>' + esc(c.domain || '') + '（ref ' + esc(String(c.ref)) + '）</b></div>' +
-      '<div class="kv"><span>服务商</span><b>' + esc(c.provider_name || c.provider || '') + '</b></div>' +
-      '<div class="kv"><span>状态</span><b><span class="badge ' + badge + '">' + stText + '</span> ' + esc(c.expires_at ? fmtDate(c.expires_at) + '（剩余 ' + String(c.days_left == null ? '—' : c.days_left) + ' 天）' : '—') + '</b></div>' +
-      '<div class="kv"><span>引用它的入站</span><b>' + esc(used) + '</b></div>' +
-      (c.last_error ? '<div class="kv"><span>上次续签失败</span><b>' + esc(c.last_error) + '</b></div>' : '') +
-      '<div class="btn-row">' +
-      '<button class="btn secondary sm" type="button" data-cert-copy="' + esc(c.domain || '') + '">复制</button>' +
-      '<button class="btn secondary sm" type="button" data-cert-renew="' + esc(String(c.ref)) + '"' + (c.provider === 'manual' ? ' disabled title="手动模式的证书不能一键续签，请重新走手动签发"' : '') + '>立即续签</button>' +
-      '<button class="btn danger sm" type="button" data-cert-del="' + esc(String(c.ref)) + '" data-cert-domain="' + esc(c.domain || '') + '">删除</button></div></div>';
-  }).join('');
+  wrap.innerHTML = certs.map((c) => certsView === 'list' ? certListRow(c) : certMiniCard(c)).join('');
   // v1.4.13：每行一个“复制”按钮，点一下复制该行证书的域名（粘到三件套
   // 的 HY2 域名框或添加／编辑表单的 SNI 框里用；样式与同行的续签／删除
   // 按钮一致，btn secondary sm）。走现成的 copyText，成功自带 toast。
@@ -2160,6 +2260,14 @@ function certGateBlocks(proto, domain, origProto, origDomain) {
   return '';
 }
 function initNodeCerts() {
+  // v1.4.14：证书列表视图切换（卡片↔列表），点一下换视图、记 localStorage、
+  // 用缓存重渲染（不重新拉接口；手动 pending 由 nodeCertManualPending 保住）。
+  on('#node-certs-view-toggle', 'click', () => {
+    certsView = certsView === 'list' ? 'card' : 'list';
+    saveListView(CERTS_VIEW_KEY, certsView);
+    renderNodeCerts();
+  });
+  syncViewToggle('#node-certs-view-toggle', certsView);
   on('#node-cert-issue-form', 'submit', async (e) => {
     e.preventDefault();
     showNodeCertError('');
