@@ -2148,21 +2148,28 @@ function renderNodeCerts(r) {
   applyListViewClass(wrap, certsView);
   syncViewToggle('#node-certs-view-toggle', certsView);
   // v1.4.13：服务商下拉框只列已配置的服务商＋手动模式（手动恒可用）：
-  // 未配置的 option 直接去掉（不是灰掉、不是 disabled，选都选不到才
-  // 算数），免得选了点签发报 400。去掉之后如果当前选中的值没了，设成
-  // 剩下的第一个可用项（有已配置的就选第一个已配置的，没有就选 manual）。
+  // 未配置的不出现（不是灰掉、不是 disabled，选都选不到才算数），免得
+  // 选了点签发报 400。
+  // v1.4.16：每次渲染前按当前 providers 列表重建 option（不只是删）：
+  // 1.4.13 只删不补，同会话内新配好的服务商要刷新页面才出现；重建后
+  // 已配置的出现、未配置的不出现、手动恒保留，顺序与 providers 列表
+  // 一致（后端按 dnsProviderIDs 顺序发，即下拉框顺序）。重建前记下当
+  // 前选中值，建完能留就留，留不住（刚被取消配置）才退到剩下的第一
+  // 个可用项（有已配置的就选第一个已配置的，没有就选 manual）。
   const sel = $('#node-cert-provider');
   if (sel && nodeCertProvidersCache.length) {
     const configuredCount = nodeCertProvidersCache.filter((x) => x.id !== 'manual' && x.configured).length;
-    Array.from(sel.options).forEach((o) => {
-      if (o.value === 'manual') return; // 手动不管 providers 里怎么标都保留
-      const p = nodeCertProvidersCache.find((x) => x.id === o.value);
-      if (!p) return;
-      if (p.configured) { o.textContent = p.name || o.value; return; }
-      o.remove();
+    const prev = sel.value;
+    sel.innerHTML = '';
+    nodeCertProvidersCache.forEach((p) => {
+      if (p.id !== 'manual' && !p.configured) return; // 未配置的不出现
+      const o = document.createElement('option');
+      o.value = p.id;
+      o.textContent = p.name || dnsProviderDisplay(p.id) || p.id;
+      sel.appendChild(o);
     });
-    const stillThere = Array.from(sel.options).some((o) => o.value === sel.value);
-    if (!stillThere && sel.options.length) sel.value = sel.options[0].value;
+    if (Array.from(sel.options).some((o) => o.value === prev)) sel.value = prev;
+    else if (sel.options.length) sel.value = sel.options[0].value;
     // 一个都没配：下拉框只剩手动模式，同时在证书卡片给一句提示。
     const hint = $('#node-cert-provider-hint');
     if (hint) {

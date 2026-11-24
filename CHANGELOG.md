@@ -634,3 +634,10 @@
 - 各家小坑都在实现与 UI 提示里写清了：Vultr／Gandi／deSEC 的 TXT 值须包双引号（面板自动包，用户不用管）；Gandi 域名必须用 LiveDNS 域名服务器，令牌有有效期（7 天–1 年，须定期轮换）；Porkbun 每个域名须先在后台打开 API Access，否则报 API_ACCESS_DISABLED；deSEC 限速极紧（2/秒、15/分钟、100/小时、300/天），遇 429 自动按 Retry-After（没有就 2/4/8 秒）退避重试；CloudNS 错误也回 HTTP 200，须读 body 的 status 字段判成功，账号可能有 IP 白名单；NameSilo 是 GET 式 API（key 放查询串），成功只认 reply.code=300，限速官方未公布（不编数字）；Hetzner 限速 3600 请求/小时/项目。
 - 测试：新增 Go panel_1415_test.go（版本断言 1.4.15；注册与凭证配齐——18 个 id 都能解析、每家配齐逻辑；每家 mock HTTP 测 TXT 增删全流程＋失败路径，不调真实 API；handleDNSProvider 保存新家凭证＋未知服务商 400）；jsdom test-1415（11 家都出现在服务商下拉框、每家凭证字段齐全、未配置的不出现、证书页签发流程仍通）由测试 agent 另行覆盖。未测：真机、iPhone Safari、每家真实凭证签发（留真机，用户自己有账号的才测）。
 - 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。
+
+### v1.4.16 更新
+
+- 证书页服务商下拉框同会话内不刷新问题：1.4.13 的过滤逻辑只删 option、不补回——同会话内在设置页配好一家新 DNS 服务商后，再进节点页、证书页重渲染也不会出现它，须刷新页面才出现（1.4.15 的 jsdom test-1415 E5 当时只敢记 INFO、不敢断言）。改成 renderNodeCerts 每次渲染前按当前 providers 列表重建 option：已配置的出现、未配置的不出现、手动恒保留，顺序与 providers 列表一致（后端按 dnsProviderIDs 顺序发，即下拉框顺序），过滤规则与 1.4.13 相同；重建前记下当前选中值，建完能留就留，留不住（刚被取消配置）才退到剩下的第一个可用项（有已配置的就选第一个已配置的，没有就选 manual）。一个都没配时仍只剩手动模式、提示可见。
+- HTTPS 卡片的 #dns-provider 查过、没动：它从不删 option（renderDNSProvider 只回填选中值），没有同样的问题；未配置的服务商本来就要能选（选了才填得了它的凭证表单），改成只列已配置反而会断掉配凭证的入口。Go 静态断言 panel_1416_test.go 把这条也钉住了（renderDNSProvider 不重建、不删 option）。
+- 测试：新增 Go panel_1416_test.go（版本断言 1.4.16；renderNodeCerts 重建 option 的静态断言——记选中值、清空重建、按 providers 逐个建 option、未配置跳过、手动恒保留、选中值保住、旧的 o.remove() 已不在；renderDNSProvider 不动断言）与 jsdom test-1416.js（同会话内设置页配好新服务商后证书页下拉框立刻出现它、已选中的值在重建后不变、未配置的仍不出现、手动恒保留、证书页与 HTTPS 卡片两个下拉框都覆盖）；test-1404／test-1406（pulse 版）／test-1408／test-1409／test-1410／test-1411／test-1412／test-1413／test-1414／test-1415 回归全过；面板 `TZ=UTC go test -race` 全量全过（版本断言已一并升到 1.4.16）。未测：真机、iPhone Safari。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。

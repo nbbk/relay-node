@@ -35,8 +35,8 @@ import (
 )
 
 func TestVersion1413(t *testing.T) {
-	if Version != "1.4.15" {
-		t.Fatalf("VERSION 应是 1.4.15，实际 %q", Version)
+	if Version != "1.4.16" {
+		t.Fatalf("VERSION 应是 1.4.16，实际 %q", Version)
 	}
 }
 
@@ -381,7 +381,11 @@ func TestNodeCertWildcardFrontend1413(t *testing.T) {
 		"'cert-provider': {",
 		"凭证在设置页 DNS 服务商卡片里配，配好后这里才会出现；手动模式不用配凭证",
 		"configuredCount",
-		"o.remove()",
+		// v1.4.16：只删不补改成每次渲染前按 providers 重建 option
+		//（同会话内新配好的服务商不刷新也能出现），旧的 o.remove()
+		// 写法已不在，改断言成重建的两个标记。
+		"sel.innerHTML = ''",
+		"document.createElement('option')",
 		"node-cert-provider-hint",
 		"if (r.warning) toast(r.warning, 'ok')",
 	} {
