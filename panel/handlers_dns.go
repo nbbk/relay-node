@@ -19,15 +19,19 @@ import (
 func (s *Server) handleDNSProvider(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Provider        string `json:"provider"`
-		Token           string `json:"token"`             // cloudflare
+		Token           string `json:"token"`             // cloudflare / digitalocean / linode / vultr / bunny / hetzner / gandi / namesilo / desec
 		AccessKeyID     string `json:"access_key_id"`     // aliyun / route53
 		AccessKeySecret string `json:"access_key_secret"` // aliyun
 		SecretAccessKey string `json:"secret_access_key"` // route53
 		TokenID         string `json:"token_id"`          // dnspod
 		PAT             string `json:"pat"`               // godaddy
 		APIUser         string `json:"api_user"`          // namecheap
-		APIKey          string `json:"api_key"`           // namecheap
+		APIKey          string `json:"api_key"`           // namecheap / spaceship / porkbun
+		APISecret       string `json:"api_secret"`        // spaceship / porkbun
 		ClientIP        string `json:"client_ip"`         // namecheap
+		AuthID          string `json:"auth_id"`           // cloudns
+		AuthPassword    string `json:"auth_password"`     // cloudns
+		SubAuthUser     string `json:"sub_auth_user"`     // cloudns（子账号，可空）
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, 400, errResp("请求格式不对"))
@@ -35,7 +39,7 @@ func (s *Server) handleDNSProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	provider := strings.TrimSpace(req.Provider)
 	if !validDNSProvider(provider) {
-		writeJSON(w, 400, errResp("服务商不对：应为 cloudflare / aliyun / dnspod / route53 / godaddy / namecheap / manual"))
+		writeJSON(w, 400, errResp("服务商不对：应为 cloudflare / aliyun / dnspod / route53 / godaddy / namecheap / digitalocean / linode / vultr / bunny / hetzner / spaceship / gandi / namesilo / desec / porkbun / cloudns / manual"))
 		return
 	}
 	oldProvider := s.dnsProviderID()
@@ -91,6 +95,62 @@ func (s *Server) handleDNSProvider(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.cfg.NamecheapClientIP = v
+		}
+	case "digitalocean":
+		if v := strings.TrimSpace(req.Token); v != "" {
+			s.cfg.DigitalOceanToken = v
+		}
+	case "linode":
+		if v := strings.TrimSpace(req.Token); v != "" {
+			s.cfg.LinodeToken = v
+		}
+	case "vultr":
+		if v := strings.TrimSpace(req.Token); v != "" {
+			s.cfg.VultrAPIKey = v
+		}
+	case "bunny":
+		if v := strings.TrimSpace(req.Token); v != "" {
+			s.cfg.BunnyAPIKey = v
+		}
+	case "hetzner":
+		if v := strings.TrimSpace(req.Token); v != "" {
+			s.cfg.HetznerToken = v
+		}
+	case "spaceship":
+		if v := strings.TrimSpace(req.APIKey); v != "" {
+			s.cfg.SpaceshipAPIKey = v
+		}
+		if v := strings.TrimSpace(req.APISecret); v != "" {
+			s.cfg.SpaceshipSecret = v
+		}
+	case "gandi":
+		if v := strings.TrimSpace(req.Token); v != "" {
+			s.cfg.GandiToken = v
+		}
+	case "namesilo":
+		if v := strings.TrimSpace(req.Token); v != "" {
+			s.cfg.NameSiloAPIKey = v
+		}
+	case "desec":
+		if v := strings.TrimSpace(req.Token); v != "" {
+			s.cfg.DesecToken = v
+		}
+	case "porkbun":
+		if v := strings.TrimSpace(req.APIKey); v != "" {
+			s.cfg.PorkbunAPIKey = v
+		}
+		if v := strings.TrimSpace(req.APISecret); v != "" {
+			s.cfg.PorkbunSecret = v
+		}
+	case "cloudns":
+		if v := strings.TrimSpace(req.AuthID); v != "" {
+			s.cfg.CloudNSAuthID = v
+		}
+		if v := strings.TrimSpace(req.AuthPassword); v != "" {
+			s.cfg.CloudNSPassword = v
+		}
+		if v := strings.TrimSpace(req.SubAuthUser); v != "" {
+			s.cfg.CloudNSSubUser = v
 		}
 	case "manual":
 		// 手动模式不用凭证。

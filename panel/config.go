@@ -44,6 +44,26 @@ type PanelConfig struct {
 	NamecheapAPIUser       string `json:"namecheap_api_user,omitempty"`
 	NamecheapAPIKey        string `json:"namecheap_api_key,omitempty"`
 	NamecheapClientIP      string `json:"namecheap_client_ip,omitempty"`
+	// DNS-01 服务商第一批扩充（v1.4.15）：DigitalOcean、Linode、Vultr、
+	// Bunny DNS、Hetzner 各 1 字段；Spaceship、Porkbun 各 2 字段；Gandi、
+	// NameSilo、deSEC 各 1 字段；CloudNS 3 字段（auth-id＋auth-password，
+	// 子账号再填 sub-auth-user）。凭证只存不回显，跟 CloudflareToken
+	// 同等待遇（config.json 600 权限，不随导出走）。
+	DigitalOceanToken string `json:"digitalocean_token,omitempty"`
+	LinodeToken       string `json:"linode_token,omitempty"`
+	VultrAPIKey       string `json:"vultr_api_key,omitempty"`
+	BunnyAPIKey       string `json:"bunny_api_key,omitempty"`
+	HetznerToken      string `json:"hetzner_token,omitempty"`
+	SpaceshipAPIKey   string `json:"spaceship_api_key,omitempty"`
+	SpaceshipSecret   string `json:"spaceship_api_secret,omitempty"`
+	GandiToken        string `json:"gandi_token,omitempty"`
+	NameSiloAPIKey    string `json:"namesilo_api_key,omitempty"`
+	DesecToken        string `json:"desec_token,omitempty"`
+	PorkbunAPIKey     string `json:"porkbun_api_key,omitempty"`
+	PorkbunSecret     string `json:"porkbun_secret,omitempty"`
+	CloudNSAuthID     string `json:"cloudns_auth_id,omitempty"`
+	CloudNSPassword   string `json:"cloudns_auth_password,omitempty"`
+	CloudNSSubUser    string `json:"cloudns_sub_auth_user,omitempty"`
 	// 面板自身真证书（v1.3.14）：自动续签的上次失败原因，常驻显示在 HTTPS 卡片上
 	// （成功后清掉）；续签失败的 Telegram 去重标志，成功续签后清掉，下次再越过
 	// 阈值重新提醒。错误文案只含域名与 ACME 报错，不含任何令牌，可安全显示。

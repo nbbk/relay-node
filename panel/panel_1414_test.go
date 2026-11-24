@@ -1,6 +1,6 @@
 package main
 
-// v1.4.14：
+// v1.4.15：
 //   - 证书页改成跟节点一样的小卡片：#node-certs-list 加 nodes-grid 类，
 //     证书卡片复用节点页同款 .mini-card（方形小卡片，min-height 260px、
 //     按钮沉底）；信息一个不少（域名＋ref、服务商、状态／到期、引用它
@@ -12,7 +12,7 @@ package main
 //     默认卡片视图。
 //
 // 覆盖：
-//   - 版本断言 1.4.14。
+//   - 版本断言 1.4.15。
 //   - 前端静态断言：两个切换按钮、证书列表的 nodes-grid 类、卡片／
 //     列表行渲染函数、localStorage 键与默认卡片视图、列表视图样式。
 
@@ -24,12 +24,12 @@ import (
 )
 
 func TestVersion1414(t *testing.T) {
-	if Version != "1.4.14" {
-		t.Fatalf("VERSION 应是 1.4.14，实际 %q", Version)
+	if Version != "1.4.15" {
+		t.Fatalf("VERSION 应是 1.4.15，实际 %q", Version)
 	}
 }
 
-// v1.4.14：设置页 HTTPS 卡片排布——DNS 服务商下拉框和 API Token
+// v1.4.15：设置页 HTTPS 卡片排布——DNS 服务商下拉框和 API Token
 // 输入框是一组，开启／关闭 HTTPS 两个按钮不能夹在中间；按钮移到
 // 整个服务商＋凭证组下面（保存凭证按钮与状态文案之后）。只挪位置，
 // 按钮 id 与功能不动。

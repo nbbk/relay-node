@@ -3312,7 +3312,10 @@ function jumpToURL(url) { location.href = url; }
 // id 到中文名的映射（与后端 dnsProviderNames 一致）。
 const DNS_PROVIDER_NAMES = {
   cloudflare: 'Cloudflare', aliyun: '阿里云 DNS', dnspod: '腾讯云 DNSPod',
-  route53: 'AWS Route 53', godaddy: 'GoDaddy', namecheap: 'Namecheap', manual: '手动模式',
+  route53: 'AWS Route 53', godaddy: 'GoDaddy', namecheap: 'Namecheap',
+  digitalocean: 'DigitalOcean', linode: 'Linode', vultr: 'Vultr', bunny: 'Bunny DNS',
+  hetzner: 'Hetzner', spaceship: 'Spaceship', gandi: 'Gandi', namesilo: 'NameSilo',
+  desec: 'deSEC', porkbun: 'Porkbun', cloudns: 'CloudNS', manual: '手动模式',
 };
 function dnsProviderDisplay(id) { return DNS_PROVIDER_NAMES[id] || id; }
 // 当前选中的服务商（后端没给或给了空值时默认 cloudflare，老 payload 兼容）。
@@ -3580,6 +3583,18 @@ function initSettings() {
   bindDNSForm('#dns-form-route53', 'route53', { '#dns-route53-id': 'access_key_id', '#dns-route53-secret': 'secret_access_key' });
   bindDNSForm('#dns-form-godaddy', 'godaddy', { '#dns-godaddy-pat': 'pat' });
   bindDNSForm('#dns-form-namecheap', 'namecheap', { '#dns-namecheap-user': 'api_user', '#dns-namecheap-key': 'api_key', '#dns-namecheap-ip': 'client_ip' });
+  // v1.4.15：第一批 11 家（简报 §5.1 的顺序）。
+  bindDNSForm('#dns-form-digitalocean', 'digitalocean', { '#dns-do-token': 'token' });
+  bindDNSForm('#dns-form-linode', 'linode', { '#dns-linode-token': 'token' });
+  bindDNSForm('#dns-form-vultr', 'vultr', { '#dns-vultr-key': 'token' });
+  bindDNSForm('#dns-form-bunny', 'bunny', { '#dns-bunny-key': 'token' });
+  bindDNSForm('#dns-form-hetzner', 'hetzner', { '#dns-hetzner-token': 'token' });
+  bindDNSForm('#dns-form-spaceship', 'spaceship', { '#dns-spaceship-key': 'api_key', '#dns-spaceship-secret': 'api_secret' });
+  bindDNSForm('#dns-form-gandi', 'gandi', { '#dns-gandi-token': 'token' });
+  bindDNSForm('#dns-form-namesilo', 'namesilo', { '#dns-namesilo-key': 'token' });
+  bindDNSForm('#dns-form-desec', 'desec', { '#dns-desec-token': 'token' });
+  bindDNSForm('#dns-form-porkbun', 'porkbun', { '#dns-porkbun-key': 'api_key', '#dns-porkbun-secret': 'api_secret' });
+  bindDNSForm('#dns-form-cloudns', 'cloudns', { '#dns-cloudns-id': 'auth_id', '#dns-cloudns-password': 'auth_password', '#dns-cloudns-subuser': 'sub_auth_user' });
   // 手动签发第二步：已添加，继续验证（长请求，带等待状态；成功后跳新协议）。
   on('#manual-continue', 'click', async () => {
     const domain = $('#https-domain').value.trim();

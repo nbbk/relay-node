@@ -46,17 +46,30 @@ type dnsTXTProvider interface {
 }
 
 // dnsProviderIDs 是设置页下拉框里的全部服务商 id（顺序即下拉框顺序）。
-var dnsProviderIDs = []string{"cloudflare", "aliyun", "dnspod", "route53", "godaddy", "namecheap", "manual"}
+// v1.4.15：第一批扩到 11 家（简报 §5.1 的顺序：5 家易的、5 家中的、
+// CloudNS 最后），manual 仍在最后。
+var dnsProviderIDs = []string{"cloudflare", "aliyun", "dnspod", "route53", "godaddy", "namecheap", "digitalocean", "linode", "vultr", "bunny", "hetzner", "spaceship", "gandi", "namesilo", "desec", "porkbun", "cloudns", "manual"}
 
 // dnsProviderNames 是服务商 id 到中文名的映射（报错与前端提示用）。
 var dnsProviderNames = map[string]string{
-	"cloudflare": "Cloudflare",
-	"aliyun":     "阿里云 DNS",
-	"dnspod":     "腾讯云 DNSPod",
-	"route53":    "AWS Route 53",
-	"godaddy":    "GoDaddy",
-	"namecheap":  "Namecheap",
-	"manual":     "手动模式",
+	"cloudflare":   "Cloudflare",
+	"aliyun":       "阿里云 DNS",
+	"dnspod":       "腾讯云 DNSPod",
+	"route53":      "AWS Route 53",
+	"godaddy":      "GoDaddy",
+	"namecheap":    "Namecheap",
+	"digitalocean": "DigitalOcean",
+	"linode":       "Linode",
+	"vultr":        "Vultr",
+	"bunny":        "Bunny DNS",
+	"hetzner":      "Hetzner",
+	"spaceship":    "Spaceship",
+	"gandi":        "Gandi",
+	"namesilo":     "NameSilo",
+	"desec":        "deSEC",
+	"porkbun":      "Porkbun",
+	"cloudns":      "CloudNS",
+	"manual":       "手动模式",
 }
 
 // dnsProviderName 返回服务商的中文名（未知 id 返回原 id）。
@@ -90,6 +103,28 @@ func dnsProviderFor(id string) dnsTXTProvider {
 		return godaddyProvider{}
 	case "namecheap":
 		return namecheapProvider{}
+	case "digitalocean":
+		return digitaloceanProvider{}
+	case "linode":
+		return linodeProvider{}
+	case "vultr":
+		return vultrProvider{}
+	case "bunny":
+		return bunnyProvider{}
+	case "hetzner":
+		return hetznerProvider{}
+	case "spaceship":
+		return spaceshipProvider{}
+	case "gandi":
+		return gandiProvider{}
+	case "namesilo":
+		return namesiloProvider{}
+	case "desec":
+		return desecProvider{}
+	case "porkbun":
+		return porkbunProvider{}
+	case "cloudns":
+		return cloudnsProvider{}
 	case "manual":
 		return manualProvider{}
 	default:
@@ -126,6 +161,28 @@ func (s *Server) dnsProviderConfigured(id string) bool {
 		return s.cfg.GoDaddyPAT != ""
 	case "namecheap":
 		return s.cfg.NamecheapAPIUser != "" && s.cfg.NamecheapAPIKey != "" && s.cfg.NamecheapClientIP != ""
+	case "digitalocean":
+		return s.cfg.DigitalOceanToken != ""
+	case "linode":
+		return s.cfg.LinodeToken != ""
+	case "vultr":
+		return s.cfg.VultrAPIKey != ""
+	case "bunny":
+		return s.cfg.BunnyAPIKey != ""
+	case "hetzner":
+		return s.cfg.HetznerToken != ""
+	case "spaceship":
+		return s.cfg.SpaceshipAPIKey != "" && s.cfg.SpaceshipSecret != ""
+	case "gandi":
+		return s.cfg.GandiToken != ""
+	case "namesilo":
+		return s.cfg.NameSiloAPIKey != ""
+	case "desec":
+		return s.cfg.DesecToken != ""
+	case "porkbun":
+		return s.cfg.PorkbunAPIKey != "" && s.cfg.PorkbunSecret != ""
+	case "cloudns":
+		return s.cfg.CloudNSAuthID != "" && s.cfg.CloudNSPassword != ""
 	case "manual":
 		return true
 	default:
@@ -203,6 +260,52 @@ func dnsHTTPDelete(url string, headers map[string]string) (int, []byte, error) {
 		req.Header.Set(k, v)
 	}
 	return dnsHTTPDo(req)
+}
+
+// dnsHTTPReq 是通用请求（v1.4.15：PUT/PATCH/带 body 的 DELETE 用它；
+// GET/POST/DELETE 沿用上面三个已备好的 helper，不动它们）。
+func dnsHTTPReq(method, url string, body []byte, contentType string, headers map[string]string) (int, []byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var rd io.Reader
+	if body != nil {
+		rd = strings.NewReader(string(body))
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, rd)
+	if err != nil {
+		return 0, nil, err
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	return dnsHTTPDo(req)
+}
+
+// dnsHTTPPut 备一个 PUT 请求走 dnsHTTPDo。
+func dnsHTTPPut(url string, body []byte, contentType string, headers map[string]string) (int, []byte, error) {
+	return dnsHTTPReq("PUT", url, body, contentType, headers)
+}
+
+// dnsHTTPPatch 备一个 PATCH 请求走 dnsHTTPDo。
+func dnsHTTPPatch(url string, body []byte, contentType string, headers map[string]string) (int, []byte, error) {
+	return dnsHTTPReq("PATCH", url, body, contentType, headers)
+}
+
+// dnsHTTPDeleteBody 备一个带 body 的 DELETE 请求走 dnsHTTPDo
+//（Spaceship 的删记录要传记录数组，不能走无 body 的 dnsHTTPDelete）。
+func dnsHTTPDeleteBody(url string, body []byte, contentType string, headers map[string]string) (int, []byte, error) {
+	return dnsHTTPReq("DELETE", url, body, contentType, headers)
+}
+
+// dnsRelativeName 把 _acme-challenge.<domain> 换成 zone 下的相对主机头
+//（v1.4.15：11 家新服务商共用；domain 是子域名时相对名带子域名段，
+// 如 domain=hy2ceshi.example.com、zone=example.com 时是
+// "_acme-challenge.hy2ceshi"，不能写死 "_acme-challenge"）。
+func dnsRelativeName(domain, zone string) string {
+	return strings.TrimSuffix(acmeChallengeName(domain), "."+zone)
 }
 
 // truncateProviderBody 把服务商的错误响应体截断到 500 字符再拼进报错里

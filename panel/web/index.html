@@ -266,6 +266,17 @@
                 <option value="route53">AWS Route 53</option>
                 <option value="godaddy">GoDaddy</option>
                 <option value="namecheap">Namecheap</option>
+                <option value="digitalocean">DigitalOcean</option>
+                <option value="linode">Linode</option>
+                <option value="vultr">Vultr</option>
+                <option value="bunny">Bunny DNS</option>
+                <option value="hetzner">Hetzner</option>
+                <option value="spaceship">Spaceship</option>
+                <option value="gandi">Gandi</option>
+                <option value="namesilo">NameSilo</option>
+                <option value="desec">deSEC</option>
+                <option value="porkbun">Porkbun</option>
+                <option value="cloudns">CloudNS</option>
                 <option value="manual">手动模式</option>
               </select></div>
             </div>
@@ -512,6 +523,17 @@
                 <option value="route53">AWS Route 53</option>
                 <option value="godaddy">GoDaddy</option>
                 <option value="namecheap">Namecheap</option>
+                <option value="digitalocean">DigitalOcean</option>
+                <option value="linode">Linode</option>
+                <option value="vultr">Vultr</option>
+                <option value="bunny">Bunny DNS</option>
+                <option value="hetzner">Hetzner</option>
+                <option value="spaceship">Spaceship</option>
+                <option value="gandi">Gandi</option>
+                <option value="namesilo">NameSilo</option>
+                <option value="desec">deSEC</option>
+                <option value="porkbun">Porkbun</option>
+                <option value="cloudns">CloudNS</option>
                 <option value="manual">手动添加 TXT（通用兜底）</option>
               </select>
             </form>
@@ -561,6 +583,80 @@
                 <input id="dns-namecheap-ip" placeholder="203.0.113.1" autocomplete="off">
                 <p class="muted">Namecheap 后台 → Profile → Security → API Access：开 API、拿 Key、把本机公网 IPv4 加进白名单（不加白名单 API 直接拒绝）。只支持 BasicDNS 的域名。</p>
                 <div class="btn-row"><button class="btn" type="submit">保存 Namecheap 凭证</button></div>
+              </form>
+              <form id="dns-form-digitalocean" class="dns-form hidden" hidden>
+                <label for="dns-do-token">Personal Access Token <span class="hint">只保存，不回显</span></label>
+                <input id="dns-do-token" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">DigitalOcean 控制台 → Account → API 生成（dop_v1_ 开头），权限要含 domain 读写。域名要先在 DigitalOcean 添加。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 DigitalOcean 凭证</button></div>
+              </form>
+              <form id="dns-form-linode" class="dns-form hidden" hidden>
+                <label for="dns-linode-token">Personal Access Token <span class="hint">只保存，不回显</span></label>
+                <input id="dns-linode-token" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">Linode Cloud Manager 生成，scope 要含 domains:read_write。域名要先在 Linode 添加。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 Linode 凭证</button></div>
+              </form>
+              <form id="dns-form-vultr" class="dns-form hidden" hidden>
+                <label for="dns-vultr-key">API Key <span class="hint">只保存，不回显</span></label>
+                <input id="dns-vultr-key" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">Vultr 控制台 API 页生成，每账号一把（无 scope，可用 IP ACL 限制）。域名要先在 Vultr 添加。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 Vultr 凭证</button></div>
+              </form>
+              <form id="dns-form-bunny" class="dns-form hidden" hidden>
+                <label for="dns-bunny-key">API Key <span class="hint">只保存，不回显</span></label>
+                <input id="dns-bunny-key" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">Bunny 控制台 → Account → API Key 生成，每账号一把。域名要先在 Bunny 添加 DNS Zone。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 Bunny DNS 凭证</button></div>
+              </form>
+              <form id="dns-form-hetzner" class="dns-form hidden" hidden>
+                <label for="dns-hetzner-token">API Token <span class="hint">只保存，不回显</span></label>
+                <input id="dns-hetzner-token" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">Hetzner Cloud 项目的 API Token（Hetzner Console 生成；旧 DNS Console 的令牌在新 API 上不可用）。域名要先在 Hetzner Console 添加。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 Hetzner 凭证</button></div>
+              </form>
+              <form id="dns-form-spaceship" class="dns-form hidden" hidden>
+                <label for="dns-spaceship-key">API Key</label>
+                <input id="dns-spaceship-key" placeholder="API Key" autocomplete="off">
+                <label for="dns-spaceship-secret">API Secret <span class="hint">只保存，不回显</span></label>
+                <input id="dns-spaceship-secret" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">Spaceship → API Manager 开，权限勾 dnsrecords:read 与 dnsrecords:write。域名要先在 Spaceship 注册且用它的 DNS。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 Spaceship 凭证</button></div>
+              </form>
+              <form id="dns-form-gandi" class="dns-form hidden" hidden>
+                <label for="dns-gandi-token">Personal Access Token <span class="hint">只保存，不回显</span></label>
+                <input id="dns-gandi-token" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">Gandi 组织 → Sharing 生成，有效期 7 天–1 年（到期须轮换），须勾“Manage domain name technical configurations”。域名必须用 LiveDNS 域名服务器。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 Gandi 凭证</button></div>
+              </form>
+              <form id="dns-form-namesilo" class="dns-form hidden" hidden>
+                <label for="dns-namesilo-key">API Key <span class="hint">只保存，不回显</span></label>
+                <input id="dns-namesilo-key" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">NameSilo → account/api-manager 生成。域名要先在 NameSilo 注册。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 NameSilo 凭证</button></div>
+              </form>
+              <form id="dns-form-desec" class="dns-form hidden" hidden>
+                <label for="dns-desec-token">Token <span class="hint">只保存，不回显</span></label>
+                <input id="dns-desec-token" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">deSEC 的 Token Management 可建带策略的 token，建议限到 _acme-challenge*。deSEC 限速很紧（2/秒），面板遇 429 会自动退避重试。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 deSEC 凭证</button></div>
+              </form>
+              <form id="dns-form-porkbun" class="dns-form hidden" hidden>
+                <label for="dns-porkbun-key">API Key <span class="hint">pk1_ 开头</span></label>
+                <input id="dns-porkbun-key" placeholder="pk1_…" autocomplete="off">
+                <label for="dns-porkbun-secret">Secret <span class="hint">只保存，不回显；sk1_ 开头</span></label>
+                <input id="dns-porkbun-secret" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <p class="muted">Porkbun → Account → API Access 生成。每个域名须先在后台打开 API Access，否则报 API_ACCESS_DISABLED。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 Porkbun 凭证</button></div>
+              </form>
+              <form id="dns-form-cloudns" class="dns-form hidden" hidden>
+                <label for="dns-cloudns-id">Auth ID</label>
+                <input id="dns-cloudns-id" placeholder="主账号的 auth-id" autocomplete="off">
+                <label for="dns-cloudns-password">Auth Password <span class="hint">只保存，不回显</span></label>
+                <input id="dns-cloudns-password" type="password" placeholder="留空 = 保持原值" autocomplete="off">
+                <label for="dns-cloudns-subuser">Sub-auth user <span class="hint">可选；子账号才填</span></label>
+                <input id="dns-cloudns-subuser" placeholder="留空 = 主账号" autocomplete="off">
+                <p class="muted">CloudNS 控制台生成。子账号填 Sub-auth user（用子账号方式认证）。账号可能有 IP 白名单，面板服务器 IP 变化会断。</p>
+                <div class="btn-row"><button class="btn" type="submit">保存 CloudNS 凭证</button></div>
               </form>
               <div id="dns-form-manual" class="dns-form hidden" hidden>
                 <p class="muted">手动模式不用填凭证：点“开启 HTTPS”后，面板先下单并在下方给出 TXT 记录名与值，你去任意 DNS 后台加上，再点“已添加，继续验证”。订单 1 小时内有效，面板重启后仍可继续；不自动续签，到期前手动重新签发。</p>
