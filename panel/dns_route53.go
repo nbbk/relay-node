@@ -268,7 +268,7 @@ func (route53Provider) ListStale(s *Server, domain string) ([]dnsTXTRecord, erro
 	if err != nil {
 		return nil, err
 	}
-	name := "_acme-challenge." + domain
+	name := acmeChallengeName(domain)
 	vals, err := route53ListValues(s, zoneID, name)
 	if err != nil {
 		return nil, err
@@ -285,7 +285,7 @@ func (p route53Provider) Create(s *Server, domain, value string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	name := "_acme-challenge." + domain
+	name := acmeChallengeName(domain)
 	// UPSERT 会整组替换：同名 TXT 里若有上次签发留下的旧挑战值，会被新值
 	// 一并替换掉（等同于 1.3.48 给 Cloudflare 做的“建前清残留”）。
 	body := route53ChangeXML("UPSERT", name, []string{value}, 60)
@@ -300,7 +300,7 @@ func (route53Provider) Delete(s *Server, domain, id, value string) error {
 	if err != nil {
 		return err
 	}
-	name := "_acme-challenge." + domain
+	name := acmeChallengeName(domain)
 	vals, err := route53ListValues(s, zoneID, name)
 	if err != nil {
 		return err

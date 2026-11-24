@@ -215,7 +215,7 @@ func truncateProviderBody(b []byte) string {
 // （1.3.48 给 Cloudflare 的那句通用化）：自动清理是第一道，万一它没成功，
 // 用户按这句去对应 DNS 后台删残留记录再重试。
 func providerManualHint(providerID, domain string) string {
-	return "请到 " + dnsProviderName(providerID) + " 删除残留的 _acme-challenge." + domain + " TXT 记录后再重试签发"
+	return "请到 " + dnsProviderName(providerID) + " 删除残留的 " + acmeChallengeName(domain) + " TXT 记录后再重试签发"
 }
 
 // ---------- Cloudflare（原有实现，包一层适配器） ----------
@@ -263,7 +263,7 @@ func (cloudflareProvider) ListStale(s *Server, domain string) ([]dnsTXTRecord, e
 	if zoneID == "" {
 		return nil, fmt.Errorf("Cloudflare 里找不到域名 %s 的 Zone", domain)
 	}
-	name := "_acme-challenge." + domain
+	name := acmeChallengeName(domain)
 	code, b, err := cfReq(token, "GET", "https://api.cloudflare.com/client/v4/zones/"+zoneID+"/dns_records?type=TXT&name="+name+"&per_page=100", nil)
 	if err != nil {
 		return nil, fmt.Errorf("Cloudflare 查 TXT 记录失败：%v", err)
@@ -306,5 +306,5 @@ func (manualProvider) Delete(s *Server, domain, id, value string) error {
 }
 
 func (manualProvider) ListStale(s *Server, domain string) ([]dnsTXTRecord, error) {
-	return nil, fmt.Errorf("手动模式没有 DNS API，查不到残留记录：请去 DNS 后台确认 _acme-challenge.%s 的 TXT 记录", domain)
+	return nil, fmt.Errorf("手动模式没有 DNS API，查不到残留记录：请去 DNS 后台确认 %s 的 TXT 记录", acmeChallengeName(domain))
 }

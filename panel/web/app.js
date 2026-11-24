@@ -1012,8 +1012,9 @@ function paginateSize(list, page, size) {
   return { slice: list.slice((cur - 1) * per, cur * per), total, totalPages, cur };
 }
 // 紧凑小卡片（v1.4.12）：照抄 landingMiniCard 那套 .mini-card（顶行
-// 名字＋健康、下面几行 mini-row、底部 btn-row 四个小按钮），纵向排成
-// 列表。健康标题与圆点走 nodeListHealthHtml（1.4.6 口径：跟上报健康走，
+// 名字＋健康、下面几行 mini-row、底部 btn-row 四个小按钮），v1.4.13 起
+// 排成方形小卡片网格（#nodes-list 加 nodes-grid 类，见 style.css）。
+// 健康标题与圆点走 nodeListHealthHtml（1.4.6 口径：跟上报健康走，
 // Xray 未运行时标题就是“Xray 未运行”；圆点与文字的相邻写法别改，
 // test-1406／1408 靠它断言）；“上报健康”行保留完整 detail（1.4.4 的
 // 回归断言要读它）；“入网”行不单列——没入网时健康标题就是“尚未入网”。
@@ -1167,18 +1168,89 @@ const IB_PROTOCOLS = {
 const SNI_PRESETS = ['www.microsoft.com', 'www.apple.com', 'www.amazon.com', 'www.cloudflare.com', 'www.bing.com'];
 const REALITY_FP_PRESETS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'qq', 'random'];
 const PRESET_CUSTOM_VALUE = '__custom';
+// presetOptionsHtml 一组预设下拉框的 option 列表（v1.4.13 起 presetSelectHtml
+// 与 rebuildSniSelect 共用）：（留空）＋ extraOptions（已签发证书域名，
+// 在前）＋ presets ＋自定义…。返回 { opts, selVal }：current 在预设或
+// extraOptions 里时选中它，否则落到“自定义”。泛域名条目只用来帮填：
+// current 本身是泛域名（如 *.example.com）时不算“选中了预设”，落到
+// “自定义”文本框里（让用户把 * 改成子域名再提交）。
+function presetOptionsHtml(presets, current, extraOptions) {
+  const cur = String(current || '');
+  const extra = extraOptions || [];
+  const inOptions = presets.indexOf(cur) !== -1 || extra.some((o) => o.value === cur && o.value.slice(0, 2) !== '*.');
+  const selVal = cur === '' ? '' : (inOptions ? cur : PRESET_CUSTOM_VALUE);
+  const opts = '<option value="">（留空）</option>' +
+    extra.map((o) => '<option value="' + esc(o.value) + '"' + (o.value === selVal ? ' selected' : '') + '>' + esc(o.label || o.value) + '</option>').join('') +
+    presets.map((p) => '<option value="' + esc(p) + '"' + (p === selVal ? ' selected' : '') + '>' + esc(p) + '</option>').join('') +
+    '<option value="' + PRESET_CUSTOM_VALUE + '"' + (selVal === PRESET_CUSTOM_VALUE ? ' selected' : '') + '>自定义…</option>';
+  return { opts, selVal };
+}
 // presetSelectHtml 一组“下拉框＋自定义文本框”的 HTML：current 在预设
 // 里时下拉框选中它、文本框隐藏；不在预设里时下拉框选“自定义”、文本
 // 框显示并填 current。selectId／customId 由调用方定（页面与弹窗各
-// 用一套 id，不撞）。
-function presetSelectHtml(selectId, customId, presets, current, customPlaceholder) {
+// 用一套 id，不撞）。extraOptions 可选：插在预设前面的头部选项
+// （v1.4.13：编辑弹窗的 SNI 框传已签发证书域名，见 certSniOptions）。
+function presetSelectHtml(selectId, customId, presets, current, customPlaceholder, extraOptions) {
   const cur = String(current || '');
-  const inPresets = presets.indexOf(cur) !== -1;
-  const selVal = cur === '' ? '' : (inPresets ? cur : PRESET_CUSTOM_VALUE);
-  const opts = '<option value="">（留空）</option>' + presets.map((p) => '<option value="' + esc(p) + '"' + (p === selVal ? ' selected' : '') + '>' + esc(p) + '</option>').join('') +
-    '<option value="' + PRESET_CUSTOM_VALUE + '"' + (selVal === PRESET_CUSTOM_VALUE ? ' selected' : '') + '>自定义…</option>';
-  return '<select id="' + selectId + '">' + opts + '</select>' +
-    '<input id="' + customId + '" placeholder="' + esc(customPlaceholder || '') + '" value="' + esc(inPresets || cur === '' ? '' : cur) + '"' + (selVal === PRESET_CUSTOM_VALUE ? '' : ' style="display:none;margin-top:6px"') + '>';
+  const built = presetOptionsHtml(presets, current, extraOptions);
+  return '<select id="' + selectId + '">' + built.opts + '</select>' +
+    '<input id="' + customId + '" placeholder="' + esc(customPlaceholder || '') + '" value="' + esc(built.selVal === PRESET_CUSTOM_VALUE ? cur : '') + '"' + (built.selVal === PRESET_CUSTOM_VALUE ? '' : ' style="display:none;margin-top:6px"') + '>';
+}
+// certSniOptions 已签发证书域名拼成 SNI 下拉框的头部选项（v1.4.13）：
+// 只列有效的（未过期，nodeCertValid 为真），去重；泛域名条目标出来
+// （如 *.example.com（一级子域名都可用）），option 的 value 必须是
+// 干净的域名，括号说明只放显示文本里。复用 nodeCertsCache，不新存
+// 一份、不新加后端接口。缓存为空时返回 []，下拉框退化成原来的预设＋
+// 自定义，不报错。
+function certSniOptions() {
+  const seen = {};
+  const out = [];
+  nodeCertsCache.forEach((c) => {
+    if (!nodeCertValid(c)) return;
+    const d = String(c.domain || '').trim().toLowerCase();
+    if (!d || seen[d]) return;
+    seen[d] = true;
+    out.push({ value: d, label: d.slice(0, 2) === '*.' ? d + '（一级子域名都可用）' : d });
+  });
+  return out;
+}
+// rebuildSniSelect 把一个已在 DOM 里的 SNI 下拉框重建成“已签发证书域名
+// 在前＋5 个 SNI 预设＋自定义…”（v1.4.13，添加弹窗打开时调一次；证书
+// 列表是 loadNodeInbounds 时 loadNodeCerts 拉过的，缓存是新鲜的）。
+// 当前值能保留就保留：已选证书域名／预设留在下拉框里，手填的值留在
+// 自定义文本框里；缓存为空时退化成原来的预设＋自定义。
+function rebuildSniSelect(sel, cus) {
+  if (!sel) return;
+  const cur = sel.value === PRESET_CUSTOM_VALUE ? (cus ? cus.value : '') : sel.value;
+  const built = presetOptionsHtml(SNI_PRESETS, cur, certSniOptions());
+  sel.innerHTML = built.opts;
+  if (!cus) return;
+  if (built.selVal === PRESET_CUSTOM_VALUE) { cus.value = cur; cus.style.display = ''; }
+  else { cus.value = ''; cus.style.display = 'none'; }
+}
+// wireCertSniSelect 泛域名条目选后的处理（v1.4.13）：选了泛域名不直接
+// 提交——切到“自定义…”，把 *.example.com 预填进自定义文本框，让用户
+// 把 * 改成自己的子域名再提交（入站域名必须是具体子域名）。在
+// wirePresetSelect 之后绑：先让它把自定义框隐藏，再由这里重新显示并
+// 预填（光标落在 * 上，方便直接改）。改完值后照常调一次 syncCertGate，
+// 让置灰按文本框里的具体子域名算。
+// 注意：这里只帮填域名框，不决定用哪张证书——证书绑定是后端下发时
+// nodeCertForDomain 自动匹配（精确优先、再泛域名），下拉选择不影响它，
+// 也不存证书 ref；DNS 解析也不变，每个子域名仍各做 A 记录。
+function wireCertSniSelect(selectId, customId, root) {
+  const sel = (root || document).querySelector('#' + selectId);
+  const cus = (root || document).querySelector('#' + customId);
+  if (!sel || !cus) return;
+  sel.addEventListener('change', () => {
+    const v = sel.value;
+    if (v.slice(0, 2) !== '*.') return;
+    cus.value = v;
+    sel.value = PRESET_CUSTOM_VALUE;
+    cus.style.display = '';
+    cus.focus();
+    try { cus.setSelectionRange(0, 1); } catch (e) { /* 选不中 * 也不影响提交 */ }
+    syncCertGate();
+  });
 }
 // presetSelectValue 读一组预设下拉框的值：选了预设就返回预设，选了
 // “自定义”就返回文本框里手填的值。
@@ -1225,9 +1297,10 @@ function showInboundsError(msg) {
 // 时克隆一份放进弹窗、现场绑定；关弹窗即丢弃，下次打开是全新表单。
 // 帮助提示框 #ib-help-pop 本来就挂在 body 下、position:fixed，不会
 // 被弹窗裁掉。编辑弹窗保存后调 loadNodeInbounds：弹窗已关就重新打开
-// 入站模板弹窗（回到刚才的位置、列表已刷新）；添加表单提交成功后
-// 关闭弹窗并刷新节点列表（v1.4.12 用户定：提交后关闭）；提交失败时
-// 弹窗保持打开，报错显示在弹窗内，表单原样保留不用重填。
+// 入站模板弹窗（回到刚才的位置、列表已刷新）；添加表单在 v1.4.13 起是
+// 单独的弹窗（openNodeIbAddModal），提交成功后同样关掉添加弹窗、调
+// loadNodeInbounds 回到入站模板弹窗；提交失败时弹窗保持打开，报错显示
+// 在弹窗内，表单原样保留不用重填。
 function openNodeInboundsModal() {
   const tpl = document.getElementById('nodes-inbounds-template');
   if (!tpl) return null;
@@ -1242,9 +1315,50 @@ function openNodeInboundsModal() {
   return m;
 }
 function wireNodeInboundsModal(m) {
-  // 入站模板（v1.4.1 切片 2）：三件套、添加、编辑表单的绑定。
+  // 入站模板（v1.4.1 切片 2）：只留三件套按钮与“手动添加入站”按钮
+  // （v1.4.13 起添加表单搬进单独的弹窗，见 openNodeIbAddModal／
+  // wireNodeIbAddModal）。
+  onIn(m, '#nodes-trio-btn', 'click', async () => {
+    if (!currentInboundsNodeId) { toast('先在上面点一个节点的“入站模板”', 'err'); return; }
+    try {
+      const r = await apiPost('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/default-trio', { domain: $('#nodes-trio-domain', m).value.trim() });
+      toast('已生成 ' + (r.created || []).length + ' 条入站' + (r.note ? '：' + r.note : ''), 'ok');
+      loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+    } catch (e) { showInboundsError(e.message); }
+  });
+  onIn(m, '#nodes-ib-add-open', 'click', () => { openNodeIbAddModal(); });
+  syncCertGate();
+}
+// 手动添加入站改单独弹窗（v1.4.13）：以前添加表单嵌在入站模板弹窗里
+// （列表下方、“添加入站” h3 下面），现在拆出来单独成一个弹窗；入站模板
+// 弹窗保持原样（只留三件套＋入站列表），两个入口不合并。表单 HTML 放在
+// index.html 的 <template id="nodes-ib-add-template"> 里，每次打开时克隆
+// 一份放进弹窗、现场绑定；关弹窗即丢弃，下次打开是全新表单。提交成功后
+// 关掉添加弹窗、重新打开入站模板弹窗（列表已刷新，照编辑弹窗
+// openInboundEditModal 的做法）；提交失败时弹窗保持打开，报错显示在
+// 弹窗内，表单原样保留不用重填。
+function openNodeIbAddModal() {
+  const tpl = document.getElementById('nodes-ib-add-template');
+  if (!tpl) return null;
+  const m = openModal('', true);
+  if (!m) return null;
+  const body = m.querySelector('.modal-body');
+  if (!body) return null;
+  body.appendChild(tpl.content.cloneNode(true));
+  const title = body.querySelector('#nodes-ib-add-title');
+  if (title) title.textContent = '手动添加入站 —— ' + currentInboundsNodeName;
+  wireNodeIbAddModal(m);
+  return m;
+}
+function wireNodeIbAddModal(m) {
+  // 添加表单的绑定（v1.4.13 前在 wireNodeInboundsModal 里，整块搬过来）。
   // SNI 与 REALITY 指纹是真正下拉框（v1.4.4）：select＋自定义文本框，见 presetSelectHtml。
+  // v1.4.13：打开时按已签发证书重建 SNI 下拉框（有效证书域名在前＋5 个
+  // 预设＋自定义…；缓存为空时退化成原来的预设＋自定义），泛域名条目选
+  // 后进自定义框（wireCertSniSelect，在 wirePresetSelect 之后绑）。
+  rebuildSniSelect($('#nodes-ib-sni', m), $('#nodes-ib-sni-custom', m));
   wirePresetSelect('nodes-ib-sni', 'nodes-ib-sni-custom', m);
+  wireCertSniSelect('nodes-ib-sni', 'nodes-ib-sni-custom', m);
   wirePresetSelect('nodes-ib-reality-fingerprint', 'nodes-ib-reality-fingerprint-custom', m);
   const ssMethodWrap = $('#nodes-ib-ss-method-wrap', m);
   const ssPwWrap = $('#nodes-ib-ss-pw-wrap', m);
@@ -1254,14 +1368,6 @@ function wireNodeInboundsModal(m) {
   if (ssPwWrap) ssPwWrap.style.display = 'none';
   if (socksUserWrap) socksUserWrap.style.display = 'none';
   if (socksPwWrap) socksPwWrap.style.display = 'none';
-  onIn(m, '#nodes-trio-btn', 'click', async () => {
-    if (!currentInboundsNodeId) { toast('先在上面点一个节点的“入站模板”', 'err'); return; }
-    try {
-      const r = await apiPost('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/default-trio', { domain: $('#nodes-trio-domain', m).value.trim() });
-      toast('已生成 ' + (r.created || []).length + ' 条入站' + (r.note ? '：' + r.note : ''), 'ok');
-      loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
-    } catch (e) { showInboundsError(e.message); }
-  });
   onIn(m, '#nodes-ib-protocol', 'change', () => {
     const v = $('#nodes-ib-protocol', m).value;
     const ss = v === 'shadowsocks' || v === 'ss2022';
@@ -1303,6 +1409,10 @@ function wireNodeInboundsModal(m) {
     // v1.4.12：TLS 入站＋域名没有可用证书就拦住（先在下方节点证书里签发）。
     const block = certGateBlocks(proto, body.sni, '', '');
     if (block) { toast(block, 'err'); return; }
+    // v1.4.13：入站域名不能是泛域名——泛域名条目选后已进自定义框预填，
+    // 用户须把 * 改成具体子域名再提交；原样留着 *. 的直接拦住（后端
+    // validateInbound 只判空，不拦泛域名，这里是唯一一道关）。
+    if (body.sni.slice(0, 2) === '*.') { toast('入站域名不能是泛域名：把 * 改成具体子域名再提交（如 hy2ceshi.example.com）', 'err'); return; }
     const fpAdd = presetSelectValue($('#nodes-ib-reality-fingerprint', m), $('#nodes-ib-reality-fingerprint-custom', m));
     if (fpAdd) body.reality_fingerprint = fpAdd;
     if (proto === 'shadowsocks' || proto === 'ss2022') {
@@ -1323,12 +1433,11 @@ function wireNodeInboundsModal(m) {
     try {
       await apiPost('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds', body);
       toast('入站已添加，节点 60 秒内应用', 'ok');
-      // v1.4.12 用户定：提交成功后关闭弹窗，回到节点列表（列表照常刷新）。
-      // 注意顺序：先关弹窗再 loadNodes；反过来 loadNodeInbounds 会因为
-      // 列表节点没了而把弹窗重新打开。提交失败走 catch，弹窗保持打开、
-      // 报错显示在弹窗内，表单原样保留不用重填。
+      // v1.4.13：提交成功后关掉添加弹窗、重新打开入站模板弹窗（列表已刷新，
+      // 照编辑弹窗 openInboundEditModal 的做法）。提交失败走 catch，弹窗保持
+      // 打开、报错显示在弹窗内，表单原样保留不用重填。
       closeModal();
-      loadNodes();
+      loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
     } catch (err2) { showInboundsError(err2.message); }
   });
   syncCertGate();
@@ -1365,7 +1474,7 @@ function renderNodeInbounds(inbounds) {
     if (inb.transport === 'quic' && !udp443) udp443 = inb;
   });
   $('#nodes-443-owner').textContent = 'TCP 443：' + (tcp443 ? tcp443.inbound_tag + ' 占用' : '空闲') + '；UDP 443：' + (udp443 ? udp443.inbound_tag + ' 占用' : '空闲') + '。TCP 443 与 UDP 443 各只能一个入站占，冲突时保存会报错并写明是哪两个入站。';
-  if (!inbounds.length) { wrap.innerHTML = '<div class="empty">还没有入站。点“一键生成默认三件套”，或下面手动添加。</div>'; return; }
+  if (!inbounds.length) { wrap.innerHTML = '<div class="empty">还没有入站。点“一键生成默认三件套”，或点“手动添加入站”。</div>'; return; }
   wrap.innerHTML = inbounds.map((inb) => {
     const isReality = inb.transport === 'reality' || inb.transport === 'xhttp';
     // 证书列（v1.4.12，切片 7）：REALITY 行显示“无证书”；TLS 入站
@@ -1475,7 +1584,7 @@ function openInboundEditModal(inb) {
     '</select></div>' +
     '<div><label for="nodes-ib-edit-port">端口 <span class="hint">必填，1–65535</span></label><input id="nodes-ib-edit-port" type="number" min="1" max="65535" value="' + esc(String(inb.port)) + '" required></div>' +
     '<div><label for="nodes-ib-edit-listen">监听地址 <span class="hint">0.0.0.0 = 全部网卡</span></label><input id="nodes-ib-edit-listen" value="' + esc(inb.listen || '0.0.0.0') + '" placeholder="0.0.0.0"></div>' +
-    '<div><label for="nodes-ib-edit-sni">SNI / 域名 <span class="hint">点下拉选常用大站，选“自定义”可手填</span></label>' + presetSelectHtml('nodes-ib-edit-sni', 'nodes-ib-edit-sni-custom', SNI_PRESETS, inb.sni || inb.domain || '', '手填 SNI / 域名，如 example.com') + '</div>' +
+    '<div><label for="nodes-ib-edit-sni">SNI / 域名 <span class="hint">点下拉选常用大站，选“自定义”可手填</span></label>' + presetSelectHtml('nodes-ib-edit-sni', 'nodes-ib-edit-sni-custom', SNI_PRESETS, inb.sni || inb.domain || '', '手填 SNI / 域名，如 example.com', certSniOptions()) + '</div>' +
     '<div id="nodes-ib-edit-ss-method-wrap"><label for="nodes-ib-edit-ss-method">SS 加密方法</label><select id="nodes-ib-edit-ss-method">' +
     ['aes-256-gcm', 'aes-128-gcm', 'chacha20-poly1305', '2022-blake3-aes-128-gcm', '2022-blake3-aes-256-gcm', '2022-blake3-chacha20-poly1305'].map((mm) => '<option value="' + mm + '"' + (inb.ss_method === mm ? ' selected' : '') + '>' + mm + '</option>').join('') +
     '</select></div>' +
@@ -1519,6 +1628,7 @@ function openInboundEditModal(inb) {
   };
   syncEdit();
   wirePresetSelect('nodes-ib-edit-sni', 'nodes-ib-edit-sni-custom', m);
+  wireCertSniSelect('nodes-ib-edit-sni', 'nodes-ib-edit-sni-custom', m); // v1.4.13：与添加表单同一套做法
   wirePresetSelect('nodes-ib-edit-reality-fingerprint', 'nodes-ib-edit-reality-fingerprint-custom', m);
   onIn(m, '#nodes-ib-edit-protocol', 'change', syncEdit);
   onIn(m, '#nodes-ib-edit-cancel', 'click', closeModal);
@@ -1535,6 +1645,8 @@ function openInboundEditModal(inb) {
     // 的老入站只改其它字段不拦，免得无证书的老入站连端口都改不了）。
     const block = certGateBlocks($('#nodes-ib-edit-protocol', m).value, sni, ibCompositeValue(inb), inb.domain || inb.sni || '');
     if (block) { toast(block, 'err'); return; }
+    // v1.4.13：入站域名不能是泛域名（与添加表单同一道关，见 wireNodeIbAddModal）。
+    if (sni.slice(0, 2) === '*.') { toast('入站域名不能是泛域名：把 * 改成具体子域名再提交（如 hy2ceshi.example.com）', 'err'); return; }
     const body = { inbound_tag: tag, protocol: p.protocol, transport: p.transport, security: p.security, port, listen: $('#nodes-ib-edit-listen', m).value.trim(), sni, enabled: $('#nodes-ib-edit-enabled', m).value === 'true' };
     const mult = parseFloat($('#nodes-ib-edit-multiplier', m).value);
     if (mult) body.multiplier = mult;
@@ -1581,8 +1693,11 @@ function randomSS2022Key(n) {
   for (let i = 0; i < buf.length; i++) s += String.fromCharCode(buf[i]);
   return btoa(s);
 }
-// ---------- 添加入站表单字段帮助（v1.4.11） ----------
+// ---------- 字段帮助（v1.4.11 入站表单，v1.4.13 起与证书卡片共用） ----------
 // 每个字段 label 旁的 ⓘ 按钮点开一个共享提示框（#ib-help-pop）：
+// 入站表单 10 个字段＋证书卡片 2 个字段（cert-domain／cert-provider）
+// 共用同一套机制（ibHelpWire 是 document 级委托，点任意 [data-ib-help]
+// 都弹提示框；Esc／×／点别处关、一次只开一个都现成，不用另起一套）。
 // 点 ⓘ 打开、再点关、点别处关、Esc 关、一次只开一个。
 // 内容以实现为准：端口／SNI／密码等口径见 node_inbounds.go 的
 // validateInbound 与新建默认值（1.4.10 切片 6）；SS2022 密钥长度是
@@ -1709,6 +1824,22 @@ const IB_HELP = {
       '建议：留空自动生成；手填也行。',
     ],
   },
+  'cert-domain': {
+    title: '证书域名',
+    body: () => [
+      '填什么：要签证书的域名。',
+      '必填。',
+      '建议：填单个子域名（如 hy2ceshi.example.com）只给它自己用；填泛域名（如 *.example.com）一张覆盖该域名下所有一级子域名，两个都有时单个优先；泛域名不覆盖裸域（如 example.com 本身）；签发前须先把 A 记录解析到节点：每个子域名各做一条 A 记录，指到自己节点的 IP（不同节点 IP 不同，一条泛解析指不到多台机器）。',
+    ],
+  },
+  'cert-provider': {
+    title: 'DNS 服务商',
+    body: () => [
+      '填什么：写 TXT 记录验证域名归属的 DNS 服务商。',
+      '必填：下拉选一家。',
+      '建议：凭证在设置页 DNS 服务商卡片里配，配好后这里才会出现；手动模式不用配凭证。Cloudflare 须先在面板设置里配好 Zone DNS Edit 权限的 Token（cfut_ 开头）；手动模式走两步签发（面板给 TXT 值，用户自己去 DNS 加记录，再回来点验证）。',
+    ],
+  },
 };
 let ibHelpOpenKey = null;
 let ibHelpOpenBtn = null;
@@ -1828,9 +1959,10 @@ function initNodes() {
   on('#nodes-once-token-copy', 'click', (e) => copyText($('#nodes-once-token').value, e.target));
   on('#nodes-once-cmd-copy', 'click', (e) => copyText($('#nodes-once-cmd').value, e.target));
   ibHelpWire(); // v1.4.11：添加入站表单字段帮助（ⓘ 按钮＋提示框，document 级委托，弹窗里同样生效）。
-  // 入站模板表单的绑定搬进弹窗（v1.4.12）：wireNodeInboundsModal 在每次打开
-  // 入站模板弹窗时现场绑（三件套／协议联动／提交）；入站编辑走弹窗
-  // （v1.4.2，切片 3）：openInboundEditModal 里绑提交与取消。
+  // 入站模板弹窗的绑定（v1.4.12）：wireNodeInboundsModal 在每次打开入站模板
+  // 弹窗时现场绑（三件套＋“手动添加入站”按钮）；手动添加入站是单独的弹窗
+  // （v1.4.13）：wireNodeIbAddModal 在每次打开时现场绑（协议联动／提交）；
+  // 入站编辑走弹窗（v1.4.2，切片 3）：openInboundEditModal 里绑提交与取消。
   // v1.4.12：节点列表搜索（节点名／地址，前端本地过滤）与每页条数
   // （10／20／50，默认 10）：切了立即生效、回到第 1 页重渲染。
   wireListSearch('#nodes-search', (q) => { nodesSearch = q; nodesPage = 1; renderNodesList(); });
@@ -1852,15 +1984,37 @@ function nodeCertValid(c) {
   const t = new Date(c.expires_at).getTime();
   return !isNaN(t) && t > Date.now();
 }
+// nodeCertDomainMatches 证书域名是否覆盖查询域名（v1.4.13，双模式）：
+// 精确相等算覆盖；泛域名只覆盖一级子域名（*.example.com 覆盖
+// hy2ceshi.example.com，不覆盖裸域 example.com，也不覆盖多级
+// a.b.example.com）。后端 nodeCertDomainMatches 同口径。
+function nodeCertDomainMatches(certDomain, domain) {
+  const c = String(certDomain || '').trim().toLowerCase();
+  const d = String(domain || '').trim().toLowerCase();
+  if (!c || !d) return false;
+  if (c === d) return true;
+  if (c.slice(0, 2) !== '*.') return false;
+  const base = c.slice(2);
+  if (d === base || !d.endsWith('.' + base)) return false;
+  const rest = d.slice(0, d.length - base.length - 1);
+  return rest !== '' && rest.indexOf('.') === -1;
+}
 function nodeCertForDomain(domain) {
   const d = String(domain || '').trim().toLowerCase();
   if (!d) return null;
-  let best = null;
+  let exact = null, wild = null;
   nodeCertsCache.forEach((c) => {
-    if (String(c.domain || '').toLowerCase() !== d || !nodeCertValid(c)) return;
-    if (!best || new Date(c.expires_at) > new Date(best.expires_at)) best = c;
+    if (!nodeCertValid(c)) return;
+    const cd = String(c.domain || '').trim().toLowerCase();
+    if (cd === d) {
+      if (!exact || new Date(c.expires_at) > new Date(exact.expires_at)) exact = c;
+      return;
+    }
+    if (nodeCertDomainMatches(cd, d)) {
+      if (!wild || new Date(c.expires_at) > new Date(wild.expires_at)) wild = c;
+    }
   });
-  return best;
+  return exact || wild; // 精确和泛域名两个都有时精确优先
 }
 async function loadNodeCerts() {
   const wrap = $('#node-certs-list');
@@ -1881,15 +2035,29 @@ async function loadNodeCerts() {
 function renderNodeCerts(r) {
   const wrap = $('#node-certs-list');
   if (!wrap) return;
-  // 服务商下拉框后标注“未配置”（凭证没填的那家签发会 400，先提示）。
+  // v1.4.13：服务商下拉框只列已配置的服务商＋手动模式（手动恒可用）：
+  // 未配置的 option 直接去掉（不是灰掉、不是 disabled，选都选不到才
+  // 算数），免得选了点签发报 400。去掉之后如果当前选中的值没了，设成
+  // 剩下的第一个可用项（有已配置的就选第一个已配置的，没有就选 manual）。
   const sel = $('#node-cert-provider');
   if (sel && nodeCertProvidersCache.length) {
+    const configuredCount = nodeCertProvidersCache.filter((x) => x.id !== 'manual' && x.configured).length;
     Array.from(sel.options).forEach((o) => {
+      if (o.value === 'manual') return; // 手动不管 providers 里怎么标都保留
       const p = nodeCertProvidersCache.find((x) => x.id === o.value);
       if (!p) return;
-      const base = p.name || o.value;
-      o.textContent = p.configured ? base : base + '（未配置）';
+      if (p.configured) { o.textContent = p.name || o.value; return; }
+      o.remove();
     });
+    const stillThere = Array.from(sel.options).some((o) => o.value === sel.value);
+    if (!stillThere && sel.options.length) sel.value = sel.options[0].value;
+    // 一个都没配：下拉框只剩手动模式，同时在证书卡片给一句提示。
+    const hint = $('#node-cert-provider-hint');
+    if (hint) {
+      const show = configuredCount === 0;
+      hint.classList.toggle('hidden', !show);
+      hint.hidden = !show;
+    }
   }
   // 手动签发进行中：回填 TXT 名与值，显示继续验证／取消。
   const mp = r ? r.manual_pending : null;
@@ -1916,9 +2084,14 @@ function renderNodeCerts(r) {
       '<div class="kv"><span>引用它的入站</span><b>' + esc(used) + '</b></div>' +
       (c.last_error ? '<div class="kv"><span>上次续签失败</span><b>' + esc(c.last_error) + '</b></div>' : '') +
       '<div class="btn-row">' +
+      '<button class="btn secondary sm" type="button" data-cert-copy="' + esc(c.domain || '') + '">复制</button>' +
       '<button class="btn secondary sm" type="button" data-cert-renew="' + esc(String(c.ref)) + '"' + (c.provider === 'manual' ? ' disabled title="手动模式的证书不能一键续签，请重新走手动签发"' : '') + '>立即续签</button>' +
       '<button class="btn danger sm" type="button" data-cert-del="' + esc(String(c.ref)) + '" data-cert-domain="' + esc(c.domain || '') + '">删除</button></div></div>';
   }).join('');
+  // v1.4.13：每行一个“复制”按钮，点一下复制该行证书的域名（粘到三件套
+  // 的 HY2 域名框或添加／编辑表单的 SNI 框里用；样式与同行的续签／删除
+  // 按钮一致，btn secondary sm）。走现成的 copyText，成功自带 toast。
+  $$('[data-cert-copy]', wrap).forEach((b) => b.addEventListener('click', () => copyText(b.dataset.certCopy, b)));
   $$('[data-cert-renew]', wrap).forEach((b) => b.addEventListener('click', async () => {
     b.disabled = true;
     try {
@@ -1990,20 +2163,23 @@ function initNodeCerts() {
   on('#node-cert-issue-form', 'submit', async (e) => {
     e.preventDefault();
     showNodeCertError('');
-    const domain = $('#node-cert-domain').value.trim();
+    // v1.4.13：域名 trim＋小写化（泛域名 `*.` 前缀原样保留发给后端）。
+    const domain = $('#node-cert-domain').value.trim().toLowerCase();
     const provider = $('#node-cert-provider').value;
     if (!domain) { toast('证书域名要填', 'err'); return; }
     if (provider === 'manual') {
       try {
-        await apiPost('/api/v1/node-certs/manual/start', { domain });
+        const r = await apiPost('/api/v1/node-certs/manual/start', { domain });
         toast('手动签发已下单：去 DNS 后台加 TXT 记录，再点“继续验证”', 'ok');
+        if (r.warning) toast(r.warning, 'ok'); // v1.4.13：覆盖关系只警告、不拦截
         loadNodeCerts();
       } catch (err) { showNodeCertError(err.message); }
       return;
     }
     try {
-      await apiPost('/api/v1/node-certs', { domain, provider });
+      const r = await apiPost('/api/v1/node-certs', { domain, provider });
       toast('证书已签发，节点 60 秒内拉到', 'ok');
+      if (r.warning) toast(r.warning, 'ok'); // v1.4.13：覆盖关系只警告、不拦截
       $('#node-cert-issue-form').reset();
       loadNodeCerts();
       if (currentInboundsNodeId) loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);

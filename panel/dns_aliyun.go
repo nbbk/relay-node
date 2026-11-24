@@ -146,7 +146,7 @@ func aliyunFindZone(s *Server, domain string) (string, error) {
 
 // aliyunRelativeHost 把 _acme-challenge.<domain> 换成 zone 下的相对主机头。
 func aliyunRelativeHost(domain, zone string) string {
-	return strings.TrimSuffix("_acme-challenge."+domain, "."+zone)
+	return strings.TrimSuffix(acmeChallengeName(domain), "."+zone)
 }
 
 type aliyunProvider struct{}

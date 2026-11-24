@@ -329,7 +329,7 @@ func (s *Server) cloudflareTXT(domain, value string, deleteID string) (string, e
 		_, _, _ = cfReq(token, "DELETE", "https://api.cloudflare.com/client/v4/zones/"+zoneID+"/dns_records/"+deleteID, nil)
 		return "", nil
 	}
-	name := "_acme-challenge." + domain
+	name := acmeChallengeName(domain)
 	// 先清残留（v1.3.48）：上次签发留下的同名 TXT 记录不删，再建会报 400。
 	cleanupStaleChallengeTXT(token, zoneID, name)
 	code, b, err := cfReq(token, "POST", "https://api.cloudflare.com/client/v4/zones/"+zoneID+"/dns_records",
@@ -342,7 +342,7 @@ func (s *Server) cloudflareTXT(domain, value string, deleteID string) (string, e
 		// 以前只报 HTTP 状态码，PanelCertLastErr 和前端 toast 都没法定位。
 		// 再追加一句手动指引：自动清理是第一道，万一它没成功，用户按这句
 		// 去 Cloudflare DNS 删残留记录再重试。
-		return "", fmt.Errorf("Cloudflare 写 TXT 记录失败（HTTP %d）：%s。请到 Cloudflare DNS 删除残留的 _acme-challenge.%s TXT 记录后再重试签发", code, truncateCFBody(b), domain)
+		return "", fmt.Errorf("Cloudflare 写 TXT 记录失败（HTTP %d）：%s。请到 Cloudflare DNS 删除残留的 %s TXT 记录后再重试签发", code, truncateCFBody(b), acmeChallengeName(domain))
 	}
 	var r struct {
 		Result struct {
@@ -433,6 +433,14 @@ func (s *Server) loadOrCreateACMEKey(dir string) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
+// acmeChallengeName ACME dns-01 挑战的 TXT 记录名（v1.4.13，双模式）：
+// 泛域名订单的 TXT 名用去掉 `*.` 后的域名拼（`_acme-challenge.example.com`），
+// 不要拼成 `_acme-challenge.*.example.com`；单域名不变。ACME 订单本身的
+// 域名保持 `*.example.com` 不变，只改 TXT 名。
+func acmeChallengeName(domain string) string {
+	return "_acme-challenge." + strings.TrimPrefix(strings.TrimSpace(domain), "*.")
+}
+
 // startACMEOrder 下单：拉目录、注册（拿 kid）、下单、取每个 authz 的
 // dns-01 挑战并算出 TXT 值、生成 CSR 密钥。返回订单状态与 ACME 客户端。
 func (s *Server) startACMEOrder(domain string) (*acmeOrderState, *acmeClient, error) {
@@ -519,7 +527,7 @@ func (s *Server) startACMEOrder(domain string) (*acmeOrderState, *acmeClient, er
 		h := sha256.Sum256([]byte(keyAuth))
 		st.Authz = append(st.Authz, acmeAuthzState{
 			AuthzURL: authzURL, ChallengeURL: dnsCh.URL, Token: dnsCh.Token,
-			TXTName: "_acme-challenge." + domain, TXTValue: b64url(h[:]),
+			TXTName: acmeChallengeName(domain), TXTValue: b64url(h[:]),
 		})
 	}
 	// CSR 密钥现在就生成（旧流程在挑战后才生成，效果一样）：手动模式要把

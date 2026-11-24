@@ -379,8 +379,14 @@ html[data-theme="dark"] .tag.relay{background:#1e3a5f; color:#93c5fd; border-col
 /* 每页条数下拉框跟搜索框同一行：label 不占整行、select 宽度按内容。 */
 .nodes-toolbar label{margin:0; display:inline-flex; align-items:center; gap:6px; font-weight:400; font-size:14px; color:var(--muted)}
 .nodes-toolbar select{width:auto; padding:9px 10px}
-/* 节点列表：一列紧凑小卡片（复用 .mini-card），纵向排，不用三列网格。 */
-.nodes-list{display:grid; gap:12px}
+/* v1.4.13：节点列表改方形小卡片网格（复用 .mini-card）：auto-fill 按
+   容器宽度自动排，宽屏多列、窄屏自然收成一列，不用另写媒体查询。
+   280px 宽配 260px 最小高就是接近方形；按钮沉底（.btn-row
+   margin-top:auto）；内容比 260px 高时卡片自然长高、不裁内容（长名
+   字／长地址不能溢出），所以用 min-height 而不用 aspect-ratio。 */
+.nodes-grid{display:grid; gap:14px; grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+.nodes-grid .mini-card{display:flex; flex-direction:column; min-height:260px}
+.nodes-grid .mini-card .btn-row{margin-top:auto}
 .list-search{
   flex:1; max-width:420px; padding:9px 12px; border:1px solid var(--border);
   border-radius:999px; background:var(--surface); color:var(--text); font-size:14px;

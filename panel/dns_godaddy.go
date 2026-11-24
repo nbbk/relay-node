@@ -56,7 +56,7 @@ func godaddyFindZone(s *Server, domain string) (zone, relName string, headers ma
 	parts := strings.Split(domain, ".")
 	for i := 0; i < len(parts)-1; i++ {
 		zone = strings.Join(parts[i:], ".")
-		relName = strings.TrimSuffix("_acme-challenge."+domain, "."+zone)
+		relName = strings.TrimSuffix(acmeChallengeName(domain), "."+zone)
 		code, b, err := dnsHTTPGet(godaddyAPI+"/v3/domains/zones/"+zone+"/dns-records?type=TXT&name="+relName, headers)
 		if err != nil {
 			continue

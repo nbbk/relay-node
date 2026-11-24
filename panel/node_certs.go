@@ -133,31 +133,76 @@ func (n *nodeBackendStore) nodeCertByRef(ref int64) *NodeCert {
 	return nil
 }
 
-// nodeCertForDomain 按域名找有效的证书（调用方须持有 n.mu）：域名
-// 大小写不敏感；过期／没到期时间的不算；同域名有多张时取到期最晚的
-// 那张（重复签发留下的旧证不会抢走新证）。
+// validNodeCertDomain 节点证书域名校验（v1.4.13，双模式）：允许泛域名
+// `*.` 开头（去掉 `*.` 后其余口径与 validDomain 相同），单域名走
+// validDomain。只给节点证书的三处签发入口用——落地证书／子域名流程
+// 共用的 validDomain 本身不动，那几路不要突然接受泛域名。
+func validNodeCertDomain(domain string) bool {
+	if strings.HasPrefix(domain, "*.") {
+		return validDomain(strings.TrimPrefix(domain, "*."))
+	}
+	return validDomain(domain)
+}
+
+// nodeCertDomainMatches 证书域名是否覆盖查询域名（v1.4.13，双模式）：
+// 精确相等算覆盖；泛域名只覆盖一级子域名（`*.example.com` 覆盖
+// `hy2ceshi.example.com`，不覆盖裸域 `example.com`，也不覆盖多级
+// `a.b.example.com`）。大小写不敏感。前端 app.js 的同名函数同口径。
+func nodeCertDomainMatches(certDomain, domain string) bool {
+	certDomain = strings.ToLower(strings.TrimSpace(certDomain))
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if certDomain == "" || domain == "" {
+		return false
+	}
+	if certDomain == domain {
+		return true
+	}
+	if !strings.HasPrefix(certDomain, "*.") {
+		return false
+	}
+	base := strings.TrimPrefix(certDomain, "*.")
+	if domain == base || !strings.HasSuffix(domain, "."+base) {
+		return false
+	}
+	rest := strings.TrimSuffix(domain, "."+base)
+	return rest != "" && !strings.Contains(rest, ".")
+}
+
+// nodeCertForDomain 按域名找有效的证书（调用方须持有 n.mu）：先精确
+// 匹配，再泛域名匹配（精确和泛域名两个都有时精确优先）；过期／没到期
+// 时间的不算；同口径多张时取到期最晚的那张（重复签发留下的旧证不会
+// 抢走新证）。域名大小写不敏感。
 func (n *nodeBackendStore) nodeCertForDomain(domain string, now time.Time) *NodeCert {
-	var best *NodeCert
+	domain = strings.TrimSpace(domain)
+	var exact, wild *NodeCert
 	for i := range n.data.NodeCerts {
 		c := &n.data.NodeCerts[i]
-		if !strings.EqualFold(strings.TrimSpace(c.Domain), strings.TrimSpace(domain)) {
-			continue
-		}
 		if nodeCertStatus(time.Unix(c.ExpiresAt, 0), now) == "expired" {
 			continue
 		}
-		if best == nil || c.ExpiresAt > best.ExpiresAt {
-			best = c
+		if strings.EqualFold(strings.TrimSpace(c.Domain), domain) {
+			if exact == nil || c.ExpiresAt > exact.ExpiresAt {
+				exact = c
+			}
+			continue
+		}
+		if nodeCertDomainMatches(c.Domain, domain) {
+			if wild == nil || c.ExpiresAt > wild.ExpiresAt {
+				wild = c
+			}
 		}
 	}
-	return best
+	if exact != nil {
+		return exact
+	}
+	return wild
 }
 
 // nodeCertUsedBy 哪些入站在引用这张证书（调用方须持有 n.mu）：
 // 返回 "节点名 / 入站 tag" 列表（删证书时拦住并列出来）。引用按域名
-// 算（绑定在下发时按域名解析，入站里不存 ref）：只要某节点有 TLS
-// 入站的域名等于这张证书的域名，就算引用，不论启用还是停用——
-// 停用的入站随时可能再启用，删了证书它就起不来了。
+// 的覆盖关系算（绑定在下发时按域名解析，入站里不存 ref）：泛域名证书
+// 覆盖到的入站也算引用，不论启用还是停用——停用的入站随时可能再启用，
+// 删了证书它就起不来了。
 func (n *nodeBackendStore) nodeCertUsedBy(ref int64) []string {
 	cert := n.nodeCertByRef(ref)
 	if cert == nil {
@@ -170,7 +215,7 @@ func (n *nodeBackendStore) nodeCertUsedBy(ref int64) []string {
 			if !ok {
 				continue
 			}
-			if strings.EqualFold(d, cert.Domain) {
+			if nodeCertDomainMatches(cert.Domain, d) {
 				out = append(out, node.Name+" / "+in.InboundTag)
 			}
 		}
@@ -180,19 +225,64 @@ func (n *nodeBackendStore) nodeCertUsedBy(ref int64) []string {
 
 // bumpNodesUsingCertDomainLocked 该域名的证书续签后，把用到它的节点
 // 的配置版本都＋1（调用方须持有 n.mu；改完调用方负责 saveLocked）：
-// agent 60 秒内拉到新证书。按入站域名算，不论该入站之前有没有拿到
-// 证书——之前过期拿不到的，续签后也要能拿到。
+// agent 60 秒内拉到新证书。按入站域名与证书域名的覆盖关系算（泛域名
+// 证书续签时，被它覆盖的入站所在节点也要 bump），不论该入站之前有没
+// 有拿到证书——之前过期拿不到的，续签后也要能拿到。
 func (n *nodeBackendStore) bumpNodesUsingCertDomainLocked(domain string) {
 	for _, node := range n.data.Nodes {
 		for _, in := range node.Inbounds {
 			d, ok := inboundCertDomain(in)
-			if !ok || !strings.EqualFold(d, domain) {
+			if !ok || !nodeCertDomainMatches(domain, d) {
 				continue
 			}
 			n.bumpNodeConfigVersionLocked(node)
 			break
 		}
 	}
+}
+
+// nodeCertDupCheckLocked 待签域名的去重检查（v1.4.13，调用方须持有 n.mu）：
+// 完全相同的域名已有可用证书时返回该证书（调用方 400 拦住，文案不变）；
+// 只是覆盖关系时返回警告文案（签发继续走，警告随响应返回，前端 toast
+// 显示）：已有泛域名覆盖待签域名，或待签泛域名覆盖已有单域名。过期
+// 的证书不算（它已失效，不拦也不警告）。
+func (n *nodeBackendStore) nodeCertDupCheckLocked(domain string, now time.Time) (*NodeCert, string) {
+	domain = strings.TrimSpace(domain)
+	for i := range n.data.NodeCerts {
+		c := &n.data.NodeCerts[i]
+		if nodeCertStatus(time.Unix(c.ExpiresAt, 0), now) == "expired" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(c.Domain), domain) {
+			return c, ""
+		}
+	}
+	for i := range n.data.NodeCerts {
+		c := &n.data.NodeCerts[i]
+		if nodeCertStatus(time.Unix(c.ExpiresAt, 0), now) == "expired" {
+			continue
+		}
+		if nodeCertDomainMatches(c.Domain, domain) {
+			return nil, fmt.Sprintf("已有泛域名证书 %s 覆盖该域名，两个证书并存，匹配时单个优先", c.Domain)
+		}
+	}
+	var covered []string
+	for i := range n.data.NodeCerts {
+		c := &n.data.NodeCerts[i]
+		if nodeCertStatus(time.Unix(c.ExpiresAt, 0), now) == "expired" {
+			continue
+		}
+		if nodeCertDomainMatches(domain, c.Domain) {
+			covered = append(covered, c.Domain)
+		}
+	}
+	if len(covered) > 0 {
+		if len(covered) == 1 {
+			return nil, fmt.Sprintf("已有单域名证书 %s 被该泛域名覆盖，两个证书并存，匹配时单个优先", covered[0])
+		}
+		return nil, fmt.Sprintf("已有单域名证书 %s 被该泛域名覆盖，证书并存，匹配时单个优先", strings.Join(covered, "、"))
+	}
+	return nil, ""
 }
 
 // nodeCertFilePaths 证书文件路径（$PANEL_HOME/certs/node-<ref>.crt/.key）。
@@ -445,8 +535,10 @@ func (s *Server) handleNodeCertsList(w http.ResponseWriter, r *http.Request) {
 
 // handleNodeCertsIssue POST /api/v1/node-certs：按域名签发（自动服务商）。
 // 手动模式不走这里（400，提示走两步签发）；同域名已有可用证书时 400
-// （请用续签，不要重复签发）。签发成功返回证书行；ACME 流程要几十秒，
-// 前端提交后等它返回（与面板 HTTPS 签发同款同步接口）。
+// （请用续签，不要重复签发）；只是覆盖关系时（已有泛域名再签其中一个
+// 子域名，或已有单域名再签覆盖它的泛域名）只警告、不拦截，签发继续走，
+// 返回里带 warning 字段，前端签发成功时 toast 显示。签发成功返回证书行；
+// ACME 流程要几十秒，前端提交后等它返回（与面板 HTTPS 签发同款同步接口）。
 func (s *Server) handleNodeCertsIssue(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Domain   string `json:"domain"`
@@ -459,7 +551,7 @@ func (s *Server) handleNodeCertsIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	domain := strings.TrimSpace(req.Domain)
 	provider := strings.TrimSpace(req.Provider)
-	if domain == "" || !validDomain(domain) {
+	if domain == "" || !validNodeCertDomain(domain) {
 		writeJSON(w, 400, errResp("域名格式不对"))
 		return
 	}
@@ -476,12 +568,13 @@ func (s *Server) handleNodeCertsIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.nodes.mu.Lock()
-	if dup := s.nodes.nodeCertForDomain(domain, time.Now()); dup != nil {
+	if dup, _ := s.nodes.nodeCertDupCheckLocked(domain, time.Now()); dup != nil {
 		ref, exp := dup.Ref, time.Unix(dup.ExpiresAt, 0).Format("2006-01-02")
 		s.nodes.mu.Unlock()
 		writeJSON(w, 400, errResp(fmt.Sprintf("域名 %s 已有可用证书（ref %d，到期 %s），请用“立即续签”，不要重复签发", domain, ref, exp)))
 		return
 	}
+	_, warning := s.nodes.nodeCertDupCheckLocked(domain, time.Now())
 	ref := s.nodes.nextCertRefLocked()
 	if err := s.nodes.saveLocked(); err != nil {
 		s.nodes.mu.Unlock()
@@ -510,7 +603,11 @@ func (s *Server) handleNodeCertsIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	s.nodes.mu.Unlock()
 	s.audit(s.currentUser(r), "签发节点证书", fmt.Sprintf("域名 %s（ref %d，%s）", domain, ref, dnsProviderName(provider)), "成功", "")
-	writeJSON(w, 200, okResp(map[string]any{"cert": row}))
+	resp := map[string]any{"cert": row}
+	if warning != "" {
+		resp["warning"] = warning
+	}
+	writeJSON(w, 200, okResp(resp))
 }
 
 // handleNodeCertsRenew POST /api/v1/node-certs/{ref}/renew：立即续签。
@@ -619,7 +716,7 @@ func (s *Server) handleNodeCertsManualStart(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	domain := strings.TrimSpace(req.Domain)
-	if domain == "" || !validDomain(domain) {
+	if domain == "" || !validNodeCertDomain(domain) {
 		writeJSON(w, 400, errResp("域名格式不对"))
 		return
 	}
@@ -632,12 +729,13 @@ func (s *Server) handleNodeCertsManualStart(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.nodes.mu.Lock()
-	if dup := s.nodes.nodeCertForDomain(domain, time.Now()); dup != nil {
+	if dup, _ := s.nodes.nodeCertDupCheckLocked(domain, time.Now()); dup != nil {
 		ref, exp := dup.Ref, time.Unix(dup.ExpiresAt, 0).Format("2006-01-02")
 		s.nodes.mu.Unlock()
 		writeJSON(w, 400, errResp(fmt.Sprintf("域名 %s 已有可用证书（ref %d，到期 %s），请用“立即续签”，不要重复签发", domain, ref, exp)))
 		return
 	}
+	_, warning := s.nodes.nodeCertDupCheckLocked(domain, time.Now())
 	ref := s.nodes.nextCertRefLocked()
 	if err := s.nodes.saveLocked(); err != nil {
 		s.nodes.mu.Unlock()
@@ -674,10 +772,14 @@ func (s *Server) handleNodeCertsManualStart(w http.ResponseWriter, r *http.Reque
 		txtName = pend.Authz[0].TXTName
 		txtValue = pend.Authz[0].TXTValue
 	}
-	writeJSON(w, 200, okResp(map[string]any{
+	resp := map[string]any{
 		"ref": ref, "domain": domain, "txt_name": txtName, "txt_value": txtValue,
 		"expires_at": pend.ExpiresAt.Format(time.RFC3339),
-	}))
+	}
+	if warning != "" {
+		resp["warning"] = warning
+	}
+	writeJSON(w, 200, okResp(resp))
 }
 
 // handleNodeCertsManualConfirm 手动签发第二步：读回 pending，先等
@@ -694,7 +796,7 @@ func (s *Server) handleNodeCertsManualConfirm(w http.ResponseWriter, r *http.Req
 		return
 	}
 	domain := strings.TrimSpace(req.Domain)
-	if domain == "" || !validDomain(domain) {
+	if domain == "" || !validNodeCertDomain(domain) {
 		writeJSON(w, 400, errResp("域名格式不对"))
 		return
 	}

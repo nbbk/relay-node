@@ -217,7 +217,7 @@ func (namecheapProvider) ListStale(s *Server, domain string) ([]dnsTXTRecord, er
 	if err != nil {
 		return nil, err
 	}
-	relName := strings.TrimSuffix("_acme-challenge."+domain, "."+sld+"."+tld)
+	relName := strings.TrimSuffix(acmeChallengeName(domain), "."+sld+"."+tld)
 	var out []dnsTXTRecord
 	for _, h := range resp.Hosts.HostList {
 		if h.Type != "TXT" || h.Name != relName {
@@ -233,7 +233,7 @@ func (p namecheapProvider) Create(s *Server, domain, value string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	relName := strings.TrimSuffix("_acme-challenge."+domain, "."+sld+"."+tld)
+	relName := strings.TrimSuffix(acmeChallengeName(domain), "."+sld+"."+tld)
 	resp, err := namecheapGetHosts(s, sld, tld)
 	if err != nil {
 		return "", err
@@ -262,7 +262,7 @@ func (namecheapProvider) Delete(s *Server, domain, id, value string) error {
 	if err != nil {
 		return err
 	}
-	relName := strings.TrimSuffix("_acme-challenge."+domain, "."+sld+"."+tld)
+	relName := strings.TrimSuffix(acmeChallengeName(domain), "."+sld+"."+tld)
 	resp, err := namecheapGetHosts(s, sld, tld)
 	if err != nil {
 		return err

@@ -79,7 +79,7 @@ func dnspodFindDomainID(s *Server, domain string) (zone string, domainID string,
 
 // dnspodRelativeHost 把 _acme-challenge.<domain> 换成 zone 下的相对主机头。
 func dnspodRelativeHost(domain, zone string) string {
-	return strings.TrimSuffix("_acme-challenge."+domain, "."+zone)
+	return strings.TrimSuffix(acmeChallengeName(domain), "."+zone)
 }
 
 type dnspodProvider struct{}
