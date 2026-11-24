@@ -962,8 +962,10 @@ function nodeHealthLabel(h) {
 }
 // 健康圆点（v1.4.5）：在线绿点、离线红点、尚未入网灰点；与文字同义，
 // 颜色只做一眼区分，不替代文字（色弱用户仍能读文字）。
+// v1.4.8：在线绿点改成呼吸式（.dot.green.pulse，CSS 脉动动画），
+// 列表与详情弹窗都走这个函数，一处改全覆盖；红点与灰点保持静态。
 function nodeHealthDot(h) {
-  if (h === 'online') return '<span class="dot green"></span>';
+  if (h === 'online') return '<span class="dot green pulse"></span>';
   if (h === 'offline') return '<span class="dot red"></span>';
   return '<span class="dot grey"></span>';
 }

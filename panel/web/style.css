@@ -126,6 +126,29 @@ p{margin:6px 0}
 .dot{display:inline-block; width:11px; height:11px; border-radius:50%; margin-right:6px; vertical-align:middle}
 .dot.green{background:var(--green)} .dot.yellow{background:var(--yellow)}
 .dot.red{background:var(--red)} .dot.grey{background:var(--grey)}
+/* ---- v1.4.8：呼吸式绿点（雷达／声呐脉冲） ---- */
+/* 中心是小小的实心绿点（不动），外面两圈半透明绿环不断向外扩散、淡出、
+   再重新开始：::before 与 ::after 是同一套波纹，::after 晚 1 秒出发，
+   2 秒一个周期，任意时刻都有一圈环在扩散。红点（离线）与灰点
+   （尚未入网）没有 pulse 类，保持静态。判定逻辑不动。 */
+.dot.green.pulse{position:relative}
+.dot.green.pulse::before,
+.dot.green.pulse::after{
+  content:""; position:absolute; inset:0; border-radius:50%;
+  border:2px solid rgba(22,163,74,.5); pointer-events:none;
+  animation:dotRipple 2s ease-out infinite;
+}
+.dot.green.pulse::after{animation-delay:1s}
+@keyframes dotRipple {
+  0%   { transform:scale(1); opacity:.55; }
+  100% { transform:scale(2.6); opacity:0; }
+}
+html[data-theme="dark"] .dot.green.pulse::before,
+html[data-theme="dark"] .dot.green.pulse::after{border-color:rgba(74,222,128,.5)}
+@media (prefers-reduced-motion: reduce) {
+  .dot.green.pulse::before,
+  .dot.green.pulse::after{animation:none}
+}
 .badge{display:inline-block; padding:2px 10px; border-radius:999px; font-size:13px; font-weight:600}
 .badge.green{background:var(--green-bg); color:var(--green)}
 .badge.yellow{background:var(--yellow-bg); color:var(--yellow)}
