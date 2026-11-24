@@ -361,6 +361,10 @@ async function checkMe() {
     return false;
   }
 }
+// 整页重载的小包装：生产行为与直接调 location.reload() 完全一致，
+// 包一层只是方便 jsdom 测试截住调用再断言（jsdom 的 location.reload
+// 是不可重定义的自有属性，没法直接打桩）。
+function reloadPage() { location.reload(); }
 function initLogin() {
   on('#login-form', 'submit', async (e) => {
     e.preventDefault();
@@ -382,7 +386,12 @@ function initLogin() {
       }
       $('#login-pass').value = '';
       const t = $('#login-totp'); if (t) t.value = '';
-      await checkMe();
+      // 登录成功后重载一次页面：标签页里跑的可能是升级前的旧版 app.js
+      //（index.html/app.js 虽然都发 no-cache，但只对新请求有效，管不到
+      // 已经跑起来的旧 bundle）。重载后浏览器重新拉最新版；重载后会话
+      // 已建立，不会再走登录提交，不会循环。need_totp 那路（只展开验证
+      // 码框）与登录失败不走这里，不重载。
+      if (await checkMe()) reloadPage();
     } catch (err) {
       const msg = String(err.message || '');
       if (msg.indexOf('429') >= 0 || msg.indexOf('锁定') >= 0 || msg.indexOf('locked') >= 0) $('#login-locked').classList.remove('hidden');
