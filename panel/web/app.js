@@ -278,7 +278,7 @@ function loadPage(page) {
   stopLogsTimer();
   if (page === 'overview') return loadOverview();
   else if (page === 'manage') return loadManage();
-  else if (page === 'nodes') return loadNodes();
+  else if (page === 'nodes') { loadNodes(); return loadNodeCerts(); }
   else if (page === 'links') return loadLinks();
   else if (page === 'certs') return loadCerts();
   else if (page === 'service') return loadService();
@@ -998,34 +998,81 @@ function nodeListHealthHtml(n) {
   const h = nodeListHealth(n);
   return nodeHealthDot(h.status) + esc(h.label);
 }
+let nodesCache = []; // v1.4.12：节点列表全量缓存（搜索／分页都在前端做，不新加后端接口）
+let nodesPage = 1;
+let nodesSearch = '';
+let nodesPageSize = 10; // v1.4.12：每页条数，10／20／50，默认 10
+// 前端列表按指定条数切页（节点列表每页条数可选，不沿用 PAGE_SIZE=20；
+// 总页数变少、当前页越界时自动落到最后一页，与 paginate 同口径）。
+function paginateSize(list, page, size) {
+  const total = list.length;
+  const per = Math.max(1, Number(size) || 10);
+  const totalPages = Math.max(1, Math.ceil(total / per));
+  const cur = Math.min(Math.max(page || 1, 1), totalPages);
+  return { slice: list.slice((cur - 1) * per, cur * per), total, totalPages, cur };
+}
+// 紧凑小卡片（v1.4.12）：照抄 landingMiniCard 那套 .mini-card（顶行
+// 名字＋健康、下面几行 mini-row、底部 btn-row 四个小按钮），纵向排成
+// 列表。健康标题与圆点走 nodeListHealthHtml（1.4.6 口径：跟上报健康走，
+// Xray 未运行时标题就是“Xray 未运行”；圆点与文字的相邻写法别改，
+// test-1406／1408 靠它断言）；“上报健康”行保留完整 detail（1.4.4 的
+// 回归断言要读它）；“入网”行不单列——没入网时健康标题就是“尚未入网”。
+function nodeMiniCard(n) {
+  const h = nodeListHealth(n);
+  return '<div class="mini-card static' + (h.status === 'offline' ? ' offline' : '') + '" data-node-card="' + esc(String(n.id)) + '">' +
+    '<div class="mini-top"><h3>' + esc(n.name || '') + '（' + esc(n.address || '') + '）</h3><span>' + nodeListHealthHtml(n) + '</span></div>' +
+    '<div class="mini-row"><span>上报健康</span><b>' + esc((n.backend_health && n.backend_health.detail) || '尚未上报') + '</b></div>' +
+    '<div class="mini-row"><span>agent 版本</span><b>' + esc(n.agent_version || '—') + '</b></div>' +
+    '<div class="mini-row"><span>已应用配置版本</span><b>' + esc(String(n.config_version == null ? '—' : n.config_version)) + '</b></div>' +
+    '<div class="mini-row"><span>最后在线</span><b>' + esc(n.last_seen ? fmtDate(n.last_seen) : '—') + '</b></div>' +
+    '<div class="btn-row"><button class="btn secondary sm" type="button" data-nodedetail="' + esc(String(n.id)) + '" data-detailname="' + esc(n.name || '') + '">详情</button>' +
+    '<button class="btn secondary sm" type="button" data-inbounds="' + esc(String(n.id)) + '" data-inbname="' + esc(n.name || '') + '" data-inbaddr="' + esc(n.address || '') + '">入站模板</button>' +
+    '<button class="btn secondary sm" type="button" data-regen="' + esc(String(n.id)) + '" data-regenname="' + esc(n.name || '') + '">重新生成入网令牌</button>' +
+    '<button class="btn danger sm" type="button" data-delnodes="' + esc(String(n.id)) + '" data-delname="' + esc(n.name || '') + '">删除</button></div></div>';
+}
+// 节点列表渲染（v1.4.12）：先按搜索词过滤（节点名／地址，前端本地过滤），
+// 再按每页条数切页；搜索后总页数跟着变，当前页越界时 paginateSize 会
+// 落到最后一页。分页条复用 pagerHtml（上一页／下一页／页码／跳至第 N 页）。
+function renderNodesList() {
+  const wrap = $('#nodes-list');
+  if (!wrap) return;
+  if (!nodesCache.length) { wrap.innerHTML = '<div class="empty">还没有节点。上面填名字与地址，生成入网令牌后去新落地机上跑安装命令。</div>'; return; }
+  const filtered = nodesCache.filter((n) => matchSubText(nodesSearch, [n.name, n.address]));
+  if (!filtered.length) { wrap.innerHTML = '<div class="empty">没有匹配的节点，换个关键词试试。</div>'; return; }
+  const pg = paginateSize(filtered, nodesPage, nodesPageSize);
+  nodesPage = pg.cur;
+  wrap.innerHTML = pg.slice.map((n) => nodeMiniCard(n)).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'nodes');
+  if (pg.totalPages > 1) wirePager(wrap, 'nodes', pg.cur, pg.totalPages, (p) => { nodesPage = p; renderNodesList(); });
+  wireNodeCardButtons(wrap);
+}
+function wireNodeCardButtons(wrap) {
+  $$('[data-nodedetail]', wrap).forEach((b) => b.addEventListener('click', () => openNodeDetailModal(Number(b.dataset.nodedetail), b.dataset.detailname)));
+  $$('[data-inbounds]', wrap).forEach((b) => b.addEventListener('click', () => loadNodeInbounds(Number(b.dataset.inbounds), b.dataset.inbname, b.dataset.inbaddr)));
+  $$('[data-regen]', wrap).forEach((b) => b.addEventListener('click', async () => {
+    // v1.4.12：重新生成入网令牌先弹二次确认（与删除节点同一个
+    // confirmModal）。文案按 node_backend.go 核过：令牌一次性、30 分钟
+    // 有效（nodeBackendJoinTokenTTL）；入网时令牌换长期 mTLS 客户端证书
+    // 后即作废（handleNodeBackendJoin），之后拉配置走证书、不走令牌；
+    // 重新生成只改 JoinTokenHash／JoinTokenExpires（handleNodesRegenJoinToken），
+    // 已入网的节点不受影响。
+    const ok = await confirmModal('重新生成入网令牌：' + (b.dataset.regenname || b.dataset.regen),
+      '<p>重新生成后，旧的入网令牌立即作废；已入网的节点不受影响，照常用（节点入网时已用令牌换过长期 mTLS 客户端证书，之后拉配置走证书，不走令牌）；新令牌 30 分钟内有效，只用于重装节点时入网。</p>', '重新生成', false);
+    if (!ok) return;
+    try {
+      const r2 = await apiPost('/api/v1/nodes/' + encodeURIComponent(b.dataset.regen) + '/join-token', {});
+      showNodesOnce(r2.join_token || '', r2.install_command || '');
+      toast('已重新生成入网令牌，旧令牌立即作废', 'ok');
+    } catch (e) { toast('重新生成失败：' + e.message, 'err'); }
+  }));
+  $$('[data-delnodes]', wrap).forEach((b) => b.addEventListener('click', () => deleteNode(b.dataset.delnodes, b.dataset.delname)));
+}
 async function loadNodes() {
   const wrap = $('#nodes-list');
   if (!wrap) return;
   try {
     const r = await api('/api/v1/nodes');
-    const nodes = r.nodes || [];
-    if (!nodes.length) { wrap.innerHTML = '<div class="empty">还没有节点。上面填名字与地址，生成入网令牌后去新落地机上跑安装命令。</div>'; return; }
-    wrap.innerHTML = nodes.map((n) => '<div class="card" style="margin-bottom:12px"><div class="kv"><span>节点</span><b>' + esc(n.name || '') + '（' + esc(n.address || '') + '）</b></div>' +
-      '<div class="kv"><span>健康</span><b>' + nodeListHealthHtml(n) + '</b></div>' +
-      '<div class="kv"><span>上报健康</span><b>' + esc((n.backend_health && n.backend_health.detail) || '尚未上报') + '</b></div>' +
-      '<div class="kv"><span>agent 版本</span><b>' + esc(n.agent_version || '—') + '</b></div>' +
-      '<div class="kv"><span>最后在线</span><b>' + esc(n.last_seen ? fmtDate(n.last_seen) : '—') + '</b></div>' +
-      '<div class="kv"><span>已应用配置版本</span><b>' + esc(String(n.config_version == null ? '—' : n.config_version)) + '</b></div>' +
-      '<div class="kv"><span>入网</span><b>' + (n.joined ? '已入网' : '未入网') + '</b></div>' +
-      '<div class="btn-row"><button class="btn secondary sm" type="button" data-nodedetail="' + esc(String(n.id)) + '" data-detailname="' + esc(n.name || '') + '">详情</button>' +
-      '<button class="btn secondary sm" type="button" data-inbounds="' + esc(String(n.id)) + '" data-inbname="' + esc(n.name || '') + '" data-inbaddr="' + esc(n.address || '') + '">入站模板</button>' +
-      '<button class="btn secondary sm" type="button" data-regen="' + esc(String(n.id)) + '">重新生成入网令牌</button>' +
-      '<button class="btn danger sm" type="button" data-delnodes="' + esc(String(n.id)) + '" data-delname="' + esc(n.name || '') + '">删除</button></div></div>').join('');
-    $$('[data-nodedetail]', wrap).forEach((b) => b.addEventListener('click', () => openNodeDetailModal(Number(b.dataset.nodedetail), b.dataset.detailname)));
-    $$('[data-inbounds]', wrap).forEach((b) => b.addEventListener('click', () => loadNodeInbounds(Number(b.dataset.inbounds), b.dataset.inbname, b.dataset.inbaddr)));
-    $$('[data-regen]', wrap).forEach((b) => b.addEventListener('click', async () => {
-      try {
-        const r2 = await apiPost('/api/v1/nodes/' + encodeURIComponent(b.dataset.regen) + '/join-token', {});
-        showNodesOnce(r2.join_token || '', r2.install_command || '');
-        toast('已重新生成入网令牌，旧令牌立即作废', 'ok');
-      } catch (e) { toast('重新生成失败：' + e.message, 'err'); }
-    }));
-    $$('[data-delnodes]', wrap).forEach((b) => b.addEventListener('click', () => deleteNode(b.dataset.delnodes, b.dataset.delname)));
+    nodesCache = r.nodes || [];
+    renderNodesList();
   } catch (e) {
     wrap.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
   }
@@ -1171,21 +1218,141 @@ function showInboundsError(msg) {
   if (!msg) { box.classList.add('hidden'); box.hidden = true; box.textContent = ''; return; }
   box.textContent = msg; box.classList.remove('hidden'); box.hidden = false;
 }
+// 入站模板改弹窗（v1.4.12）：以前点“入站模板”是在节点列表下方 inline
+// 展开一张表单，现在点开统一弹窗（openModal，遮罩／Esc／×／点别处关、
+// 一次只开一个，与详情弹窗和入站编辑弹窗同一套）。表单 HTML 放在
+// index.html 的 <template id="nodes-inbounds-template"> 里，每次打开
+// 时克隆一份放进弹窗、现场绑定；关弹窗即丢弃，下次打开是全新表单。
+// 帮助提示框 #ib-help-pop 本来就挂在 body 下、position:fixed，不会
+// 被弹窗裁掉。编辑弹窗保存后调 loadNodeInbounds：弹窗已关就重新打开
+// 入站模板弹窗（回到刚才的位置、列表已刷新）；添加表单提交成功后
+// 关闭弹窗并刷新节点列表（v1.4.12 用户定：提交后关闭）；提交失败时
+// 弹窗保持打开，报错显示在弹窗内，表单原样保留不用重填。
+function openNodeInboundsModal() {
+  const tpl = document.getElementById('nodes-inbounds-template');
+  if (!tpl) return null;
+  const m = openModal('', true);
+  if (!m) return null;
+  const body = m.querySelector('.modal-body');
+  if (!body) return null;
+  body.appendChild(tpl.content.cloneNode(true));
+  const title = body.querySelector('#nodes-inbounds-title');
+  if (title) title.textContent = '入站模板 —— ' + currentInboundsNodeName;
+  wireNodeInboundsModal(m);
+  return m;
+}
+function wireNodeInboundsModal(m) {
+  // 入站模板（v1.4.1 切片 2）：三件套、添加、编辑表单的绑定。
+  // SNI 与 REALITY 指纹是真正下拉框（v1.4.4）：select＋自定义文本框，见 presetSelectHtml。
+  wirePresetSelect('nodes-ib-sni', 'nodes-ib-sni-custom', m);
+  wirePresetSelect('nodes-ib-reality-fingerprint', 'nodes-ib-reality-fingerprint-custom', m);
+  const ssMethodWrap = $('#nodes-ib-ss-method-wrap', m);
+  const ssPwWrap = $('#nodes-ib-ss-pw-wrap', m);
+  const socksUserWrap = $('#nodes-ib-socks-user-wrap', m);
+  const socksPwWrap = $('#nodes-ib-socks-pw-wrap', m);
+  if (ssMethodWrap) ssMethodWrap.style.display = 'none';
+  if (ssPwWrap) ssPwWrap.style.display = 'none';
+  if (socksUserWrap) socksUserWrap.style.display = 'none';
+  if (socksPwWrap) socksPwWrap.style.display = 'none';
+  onIn(m, '#nodes-trio-btn', 'click', async () => {
+    if (!currentInboundsNodeId) { toast('先在上面点一个节点的“入站模板”', 'err'); return; }
+    try {
+      const r = await apiPost('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/default-trio', { domain: $('#nodes-trio-domain', m).value.trim() });
+      toast('已生成 ' + (r.created || []).length + ' 条入站' + (r.note ? '：' + r.note : ''), 'ok');
+      loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+    } catch (e) { showInboundsError(e.message); }
+  });
+  onIn(m, '#nodes-ib-protocol', 'change', () => {
+    const v = $('#nodes-ib-protocol', m).value;
+    const ss = v === 'shadowsocks' || v === 'ss2022';
+    const sk = v === 'socks';
+    if (ssMethodWrap) ssMethodWrap.style.display = ss ? '' : 'none';
+    if (ssPwWrap) ssPwWrap.style.display = ss ? '' : 'none';
+    if (socksUserWrap) socksUserWrap.style.display = sk ? '' : 'none';
+    if (socksPwWrap) socksPwWrap.style.display = sk ? '' : 'none';
+    // 备用协议默认端口（v1.4.10，切片 6）：SS／SS2022 8388、SOCKS5 1080；
+    // 只在端口空着时填，不覆盖用户手填的值。
+    const portEl = $('#nodes-ib-port', m);
+    if (portEl && !portEl.value.trim()) {
+      if (ss) portEl.value = '8388';
+      else if (sk) portEl.value = '1080';
+    }
+    if (v === 'ss2022') $('#nodes-ib-ss-method', m).value = '2022-blake3-aes-128-gcm';
+    if (v === 'shadowsocks') $('#nodes-ib-ss-method', m).value = 'aes-256-gcm';
+    // v1.4.11：提示框还开着时，内容按新协议刷新（端口／SNI／密码等口径会变）。
+    ibHelpRefresh();
+    // v1.4.12：换协议时证书置灰跟着刷新（TLS 协议没证书选不了）。
+    syncCertGate();
+  });
+  // v1.4.12：改 SNI／域名时证书置灰跟着刷新（按域名有没有证书）。
+  onIn(m, '#nodes-ib-sni', 'change', syncCertGate);
+  onIn(m, '#nodes-ib-sni-custom', 'input', syncCertGate);
+  onIn(m, '#nodes-inbound-add-form', 'submit', async (e) => {
+    e.preventDefault();
+    ibHelpHide(); // v1.4.11：提交时关掉字段帮助提示框。
+    if (!currentInboundsNodeId) { toast('先在上面点一个节点的“入站模板”', 'err'); return; }
+    const proto = $('#nodes-ib-protocol', m).value;
+    const mm = IB_PROTOCOLS[proto];
+    const tag = $('#nodes-ib-tag', m).value.trim();
+    const port = parseInt($('#nodes-ib-port', m).value, 10);
+    // 备用协议端口留空时走后端模板默认值（SS／SS2022 8388、SOCKS5 1080），
+    // 其他协议端口必填（v1.4.10，切片 6）。
+    const isBackupProto = proto === 'shadowsocks' || proto === 'ss2022' || proto === 'socks';
+    if (!tag || (port && (port < 1 || port > 65535)) || (!port && !isBackupProto)) { toast('tag 与端口（1–65535）都要填', 'err'); return; }
+    const body = { inbound_tag: tag, protocol: mm.protocol, transport: mm.transport, security: mm.security, port: port || 0, listen: $('#nodes-ib-listen', m).value.trim(), sni: presetSelectValue($('#nodes-ib-sni', m), $('#nodes-ib-sni-custom', m)) };
+    // v1.4.12：TLS 入站＋域名没有可用证书就拦住（先在下方节点证书里签发）。
+    const block = certGateBlocks(proto, body.sni, '', '');
+    if (block) { toast(block, 'err'); return; }
+    const fpAdd = presetSelectValue($('#nodes-ib-reality-fingerprint', m), $('#nodes-ib-reality-fingerprint-custom', m));
+    if (fpAdd) body.reality_fingerprint = fpAdd;
+    if (proto === 'shadowsocks' || proto === 'ss2022') {
+      body.ss_method = $('#nodes-ib-ss-method', m).value;
+      const ssPw = $('#nodes-ib-ss-password', m).value.trim();
+      if (ssPw) body.ss_password = ssPw;
+      // SS2022 密码不是普通随机串：按方法长度生成 base64 密钥
+      // （128-gcm 16 字节，其余 32 字节；agent 0.1.7 实测口径），
+      // 否则后端校验 400、节点上 Xray 也会报 bad key 拒掉。
+      else if (proto === 'ss2022') body.ss_password = randomSS2022Key($('#nodes-ib-ss-method', m).value === '2022-blake3-aes-128-gcm' ? 16 : 32);
+      else body.ss_password = randomPassword1401(16);
+    }
+    if (proto === 'socks') {
+      const su = $('#nodes-ib-socks-username', m).value.trim();
+      if (su) body.socks_username = su;
+      body.socks_password = $('#nodes-ib-socks-password', m).value.trim() || randomPassword1401(16);
+    }
+    try {
+      await apiPost('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds', body);
+      toast('入站已添加，节点 60 秒内应用', 'ok');
+      // v1.4.12 用户定：提交成功后关闭弹窗，回到节点列表（列表照常刷新）。
+      // 注意顺序：先关弹窗再 loadNodes；反过来 loadNodeInbounds 会因为
+      // 列表节点没了而把弹窗重新打开。提交失败走 catch，弹窗保持打开、
+      // 报错显示在弹窗内，表单原样保留不用重填。
+      closeModal();
+      loadNodes();
+    } catch (err2) { showInboundsError(err2.message); }
+  });
+  syncCertGate();
+}
 async function loadNodeInbounds(nodeId, nodeName, nodeAddress) {
   currentInboundsNodeId = nodeId; currentInboundsNodeName = nodeName || '';
   // 节点地址只在点“入站模板”时传进来（SOCKS5 配置卡要显示它）；
   // 列表内刷新（停用／编辑／换端口后重载）不传时保留上次的值。
   if (nodeAddress != null) currentInboundsNodeAddress = nodeAddress;
-  const card = $('#nodes-inbounds-card');
-  if (!card) return;
-  $('#nodes-inbounds-title').textContent = '入站模板 —— ' + currentInboundsNodeName;
-  card.classList.remove('hidden'); card.hidden = false;
+  // 弹窗还没开就先开（点“入站模板”走这里）；已经开着只刷新列表，
+  // 不重建弹窗（表单里填了一半的值不丢）。
+  if (!document.querySelector('#nodes-inbounds-list')) {
+    if (!openNodeInboundsModal()) return;
+  } else {
+    const t = document.querySelector('#nodes-inbounds-title');
+    if (t) t.textContent = '入站模板 —— ' + currentInboundsNodeName;
+  }
   showInboundsError('');
   try {
+    // 证书先拉（入站列表的证书列与置灰都读它；拉不到就当作没有证书）。
+    await loadNodeCerts();
     const r = await api('/api/v1/nodes/' + encodeURIComponent(nodeId) + '/inbounds');
     renderNodeInbounds(r.inbounds || []);
   } catch (e) { showInboundsError('加载入站失败：' + e.message); }
-  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 function renderNodeInbounds(inbounds) {
   const wrap = $('#nodes-inbounds-list');
@@ -1201,11 +1368,23 @@ function renderNodeInbounds(inbounds) {
   if (!inbounds.length) { wrap.innerHTML = '<div class="empty">还没有入站。点“一键生成默认三件套”，或下面手动添加。</div>'; return; }
   wrap.innerHTML = inbounds.map((inb) => {
     const isReality = inb.transport === 'reality' || inb.transport === 'xhttp';
-    return '<div class="card" style="margin-bottom:12px"><div class="kv"><span>入站</span><b>' + esc(inb.inbound_tag || '') + '</b></div>' +
+    // 证书列（v1.4.12，切片 7）：REALITY 行显示“无证书”；TLS 入站
+    // （HY2／TUIC／AnyTLS／Trojan／VLESS＋TLS）有证书显示域名与剩余
+    // 天数，没有显示“无证书（须先签发）”且整行置灰、启用／编辑／换端口／
+    // 轮换密钥点不开（删除保留可用，免得坏入站删不掉）；其它协议不显示
+    // 证书行（用不上证书）。
+    const needsCert = inb.protocol === 'hysteria2' || inb.protocol === 'tuic' || inb.protocol === 'anytls' || inb.protocol === 'trojan' || (inb.protocol === 'vless' && inb.security === 'tls');
+    const certDomain = needsCert ? (inb.domain || inb.sni || '') : '';
+    const cert = needsCert ? nodeCertForDomain(certDomain) : null;
+    const noCert = needsCert && !cert;
+    const certCell = isReality ? '无证书' : (needsCert ? (cert ? '证书：' + cert.domain + '（剩余 ' + (cert.days_left == null ? '—' : cert.days_left) + ' 天）' : '无证书（须先签发）') : null);
+    const dis = noCert ? ' disabled title="没有可用证书，先在下方节点证书里签发"' : '';
+    return '<div class="card' + (noCert ? ' ib-no-cert' : '') + '" style="margin-bottom:12px"><div class="kv"><span>入站</span><b>' + esc(inb.inbound_tag || '') + '</b></div>' +
       '<div class="kv"><span>协议</span><b>' + esc(ibProtocolLabel(inb)) + '</b></div>' +
       '<div class="kv"><span>端口</span><b>' + esc(String(inb.port)) + '（' + (ibIsTCP(inb) ? 'TCP' : (inb.transport === 'quic' ? 'UDP' : inb.transport)) + '）</b></div>' +
       '<div class="kv"><span>监听地址</span><b>' + esc(inb.listen || '0.0.0.0') + '</b></div>' +
       '<div class="kv"><span>SNI / 域名</span><b>' + esc(inb.sni || inb.domain || '—') + '</b></div>' +
+      (certCell != null ? '<div class="kv"><span>证书</span><b>' + esc(certCell) + '</b></div>' : '') +
       (isReality ? '<div class="kv"><span>REALITY 公钥</span><b style="word-break:break-all">' + esc(inb.reality_public_key || '—') + '</b></div><div class="kv"><span>short id</span><b>' + esc(inb.reality_short_id || '—') + '</b></div>' : '') +
       (inb.protocol === 'shadowsocks' ? '<div class="kv"><span>加密方法</span><b>' + esc(inb.ss_method || '—') + '</b></div>' : '') +
       // SOCKS5 手动配置卡（v1.4.10，切片 6；§8.4）：地址用节点地址，
@@ -1216,10 +1395,10 @@ function renderNodeInbounds(inbounds) {
       '<div class="kv"><span>SOCKS5 密码</span><b>' + esc(inb.socks_password || '—') + '</b></div>' : '') +
       '<div class="kv"><span>状态</span><b>' + (inb.enabled ? '启用' : '停用') + '</b></div>' +
       '<div class="btn-row">' +
-      '<button class="btn secondary sm" type="button" data-ib-toggle="' + esc(String(inb.inbound_id)) + '" data-ib-enabled="' + (inb.enabled ? '1' : '0') + '">' + (inb.enabled ? '停用' : '启用') + '</button>' +
-      '<button class="btn secondary sm" type="button" data-ib-edit="' + esc(String(inb.inbound_id)) + '">编辑</button>' +
-      '<button class="btn secondary sm" type="button" data-ib-change-port="' + esc(String(inb.inbound_id)) + '" data-ib-tag="' + esc(inb.inbound_tag || '') + '">换端口</button>' +
-      (isReality ? '<button class="btn secondary sm" type="button" data-ib-rotate="' + esc(String(inb.inbound_id)) + '" data-ib-tag="' + esc(inb.inbound_tag || '') + '">轮换密钥</button>' : '') +
+      '<button class="btn secondary sm" type="button" data-ib-toggle="' + esc(String(inb.inbound_id)) + '" data-ib-enabled="' + (inb.enabled ? '1' : '0') + '"' + dis + '>' + (inb.enabled ? '停用' : '启用') + '</button>' +
+      '<button class="btn secondary sm" type="button" data-ib-edit="' + esc(String(inb.inbound_id)) + '"' + dis + '>编辑</button>' +
+      '<button class="btn secondary sm" type="button" data-ib-change-port="' + esc(String(inb.inbound_id)) + '" data-ib-tag="' + esc(inb.inbound_tag || '') + '"' + dis + '>换端口</button>' +
+      (isReality ? '<button class="btn secondary sm" type="button" data-ib-rotate="' + esc(String(inb.inbound_id)) + '" data-ib-tag="' + esc(inb.inbound_tag || '') + '"' + dis + '>轮换密钥</button>' : '') +
       '<button class="btn danger sm" type="button" data-ib-del="' + esc(String(inb.inbound_id)) + '" data-ib-tag="' + esc(inb.inbound_tag || '') + '">删除</button></div></div>';
   }).join('');
   $$('[data-ib-toggle]', wrap).forEach((b) => b.addEventListener('click', async () => {
@@ -1313,6 +1492,13 @@ function openInboundEditModal(inb) {
     '<div class="btn-row"><button class="btn" type="submit">保存修改</button><button class="btn secondary" type="button" id="nodes-ib-edit-cancel">取消</button></div>' +
     '</form>');
   if (!m) return;
+  // v1.4.12：没有可用证书时 TLS 协议选项置灰（点不开）；已是该协议的
+  // 老入站仍可打开（选中的 disabled option 值照常读，不影响保存其它字段）。
+  const editProtoSel = $('#nodes-ib-edit-protocol', m);
+  if (editProtoSel) {
+    const hasAnyCert = nodeCertsCache.some((c) => nodeCertValid(c));
+    Array.from(editProtoSel.options).forEach((o) => { if (certGateNeedsCert(o.value)) o.disabled = !hasAnyCert; });
+  }
   const syncEdit = () => {
     const v = $('#nodes-ib-edit-protocol', m).value;
     const ss = v === 'shadowsocks' || v === 'ss2022';
@@ -1345,6 +1531,10 @@ function openInboundEditModal(inb) {
     if (!port || port < 1 || port > 65535) { toast('端口要在 1–65535 之间', 'err'); return; }
     const p = IB_PROTOCOLS[$('#nodes-ib-edit-protocol', m).value];
     const sni = presetSelectValue($('#nodes-ib-edit-sni', m), $('#nodes-ib-edit-sni-custom', m));
+    // v1.4.12：TLS 入站＋域名没有可用证书就拦住（原来就是这套协议＋域名
+    // 的老入站只改其它字段不拦，免得无证书的老入站连端口都改不了）。
+    const block = certGateBlocks($('#nodes-ib-edit-protocol', m).value, sni, ibCompositeValue(inb), inb.domain || inb.sni || '');
+    if (block) { toast(block, 'err'); return; }
     const body = { inbound_tag: tag, protocol: p.protocol, transport: p.transport, security: p.security, port, listen: $('#nodes-ib-edit-listen', m).value.trim(), sni, enabled: $('#nodes-ib-edit-enabled', m).value === 'true' };
     const mult = parseFloat($('#nodes-ib-edit-multiplier', m).value);
     if (mult) body.multiplier = mult;
@@ -1613,7 +1803,10 @@ function ibHelpWire() {
     ibHelpHide();
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && ibHelpOpenKey) ibHelpHide();
+    // v1.4.12：提示框开着时 Esc 只关提示框，不关弹窗——入站模板表单搬进
+    // 弹窗后，全局 Esc 处理（关弹窗）也在 document 上，注册在本处理之后；
+    // 这里拦住事件，免得关了提示框又顺手把弹窗也关了（表单里填了一半的值会丢）。
+    if (e.key === 'Escape' && ibHelpOpenKey) { ibHelpHide(); e.stopImmediatePropagation(); }
   });
   window.addEventListener('scroll', () => { if (ibHelpOpenKey) ibHelpHide(); }, true);
   window.addEventListener('resize', () => { if (ibHelpOpenKey) ibHelpHide(); });
@@ -1634,86 +1827,207 @@ function initNodes() {
   });
   on('#nodes-once-token-copy', 'click', (e) => copyText($('#nodes-once-token').value, e.target));
   on('#nodes-once-cmd-copy', 'click', (e) => copyText($('#nodes-once-cmd').value, e.target));
-  // 入站模板（v1.4.1 切片 2）：三件套、添加、编辑表单的绑定。
-  // SNI 与 REALITY 指纹是真正下拉框（v1.4.4）：select＋自定义文本框，见 presetSelectHtml。
-  wirePresetSelect('nodes-ib-sni', 'nodes-ib-sni-custom');
-  wirePresetSelect('nodes-ib-reality-fingerprint', 'nodes-ib-reality-fingerprint-custom');
-  ibHelpWire(); // v1.4.11：添加入站表单字段帮助（ⓘ 按钮＋提示框）。
-  const ssMethodWrap = $('#nodes-ib-ss-method-wrap');
-  const ssPwWrap = $('#nodes-ib-ss-pw-wrap');
-  const socksUserWrap = $('#nodes-ib-socks-user-wrap');
-  const socksPwWrap = $('#nodes-ib-socks-pw-wrap');
-  if (ssMethodWrap) ssMethodWrap.style.display = 'none';
-  if (ssPwWrap) ssPwWrap.style.display = 'none';
-  if (socksUserWrap) socksUserWrap.style.display = 'none';
-  if (socksPwWrap) socksPwWrap.style.display = 'none';
-  on('#nodes-trio-btn', 'click', async () => {
-    if (!currentInboundsNodeId) { toast('先在上面点一个节点的“入站模板”', 'err'); return; }
+  ibHelpWire(); // v1.4.11：添加入站表单字段帮助（ⓘ 按钮＋提示框，document 级委托，弹窗里同样生效）。
+  // 入站模板表单的绑定搬进弹窗（v1.4.12）：wireNodeInboundsModal 在每次打开
+  // 入站模板弹窗时现场绑（三件套／协议联动／提交）；入站编辑走弹窗
+  // （v1.4.2，切片 3）：openInboundEditModal 里绑提交与取消。
+  // v1.4.12：节点列表搜索（节点名／地址，前端本地过滤）与每页条数
+  // （10／20／50，默认 10）：切了立即生效、回到第 1 页重渲染。
+  wireListSearch('#nodes-search', (q) => { nodesSearch = q; nodesPage = 1; renderNodesList(); });
+  on('#nodes-page-size', 'change', () => {
+    const v = Number(($('#nodes-page-size') || {}).value) || 10;
+    nodesPageSize = [10, 20, 50].indexOf(v) !== -1 ? v : 10;
+    nodesPage = 1; renderNodesList();
+  });
+}
+/* ---------- 节点证书（v1.4.12，切片 7） ---------- */
+// 证书页落在节点页下方：签发（域名＋服务商下拉，六家自动＋手动两步走）、
+// 列表（域名／服务商／到期／状态／引用）、立即续签、删除（被引用时拦住）。
+// 缓存在 nodeCertsCache 里：入站列表的证书列与添加／编辑表单的置灰都
+// 读它；拉不到（旧接口／网络问题）就当作没有证书，不抛错。
+let nodeCertsCache = [];
+let nodeCertProvidersCache = [];
+function nodeCertValid(c) {
+  if (!c || !c.expires_at) return false;
+  const t = new Date(c.expires_at).getTime();
+  return !isNaN(t) && t > Date.now();
+}
+function nodeCertForDomain(domain) {
+  const d = String(domain || '').trim().toLowerCase();
+  if (!d) return null;
+  let best = null;
+  nodeCertsCache.forEach((c) => {
+    if (String(c.domain || '').toLowerCase() !== d || !nodeCertValid(c)) return;
+    if (!best || new Date(c.expires_at) > new Date(best.expires_at)) best = c;
+  });
+  return best;
+}
+async function loadNodeCerts() {
+  const wrap = $('#node-certs-list');
+  try {
+    const r = await api('/api/v1/node-certs');
+    nodeCertsCache = r.certs || [];
+    nodeCertProvidersCache = r.providers || [];
+    renderNodeCerts(r);
+    syncCertGate();
+    return r;
+  } catch (e) {
+    nodeCertsCache = [];
+    if (wrap) wrap.innerHTML = '<div class="error-box">加载证书失败：' + esc(e.message) + '</div>';
+    syncCertGate();
+    return null;
+  }
+}
+function renderNodeCerts(r) {
+  const wrap = $('#node-certs-list');
+  if (!wrap) return;
+  // 服务商下拉框后标注“未配置”（凭证没填的那家签发会 400，先提示）。
+  const sel = $('#node-cert-provider');
+  if (sel && nodeCertProvidersCache.length) {
+    Array.from(sel.options).forEach((o) => {
+      const p = nodeCertProvidersCache.find((x) => x.id === o.value);
+      if (!p) return;
+      const base = p.name || o.value;
+      o.textContent = p.configured ? base : base + '（未配置）';
+    });
+  }
+  // 手动签发进行中：回填 TXT 名与值，显示继续验证／取消。
+  const mp = r ? r.manual_pending : null;
+  const box = $('#node-cert-manual-box');
+  if (box) {
+    if (mp) {
+      $('#node-cert-manual-txt-name').textContent = mp.txt_name || '';
+      $('#node-cert-manual-txt-value').textContent = mp.txt_value || '';
+      box.dataset.ref = String(mp.ref || '');
+      box.dataset.domain = mp.domain || '';
+      box.classList.remove('hidden'); box.hidden = false;
+    } else { box.classList.add('hidden'); box.hidden = true; }
+  }
+  const certs = nodeCertsCache;
+  if (!certs.length) { wrap.innerHTML = '<div class="empty">还没有节点证书。上面填域名、选服务商，签发后 HY2／TUIC／AnyTLS／Trojan／VLESS＋TLS 入站才能用。</div>'; return; }
+  wrap.innerHTML = certs.map((c) => {
+    const st = c.status || 'unknown';
+    const badge = st === 'valid' ? 'green' : st === 'expiring' ? 'yellow' : st === 'expired' ? 'red' : 'grey';
+    const stText = st === 'valid' ? '有效' : st === 'expiring' ? '快到期' : st === 'expired' ? '已过期' : '未知';
+    const used = (c.used_by || []).join('、') || '没被入站引用';
+    return '<div class="card" style="margin-bottom:12px"><div class="kv"><span>证书</span><b>' + esc(c.domain || '') + '（ref ' + esc(String(c.ref)) + '）</b></div>' +
+      '<div class="kv"><span>服务商</span><b>' + esc(c.provider_name || c.provider || '') + '</b></div>' +
+      '<div class="kv"><span>状态</span><b><span class="badge ' + badge + '">' + stText + '</span> ' + esc(c.expires_at ? fmtDate(c.expires_at) + '（剩余 ' + String(c.days_left == null ? '—' : c.days_left) + ' 天）' : '—') + '</b></div>' +
+      '<div class="kv"><span>引用它的入站</span><b>' + esc(used) + '</b></div>' +
+      (c.last_error ? '<div class="kv"><span>上次续签失败</span><b>' + esc(c.last_error) + '</b></div>' : '') +
+      '<div class="btn-row">' +
+      '<button class="btn secondary sm" type="button" data-cert-renew="' + esc(String(c.ref)) + '"' + (c.provider === 'manual' ? ' disabled title="手动模式的证书不能一键续签，请重新走手动签发"' : '') + '>立即续签</button>' +
+      '<button class="btn danger sm" type="button" data-cert-del="' + esc(String(c.ref)) + '" data-cert-domain="' + esc(c.domain || '') + '">删除</button></div></div>';
+  }).join('');
+  $$('[data-cert-renew]', wrap).forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
     try {
-      const r = await apiPost('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/default-trio', { domain: $('#nodes-trio-domain').value.trim() });
-      toast('已生成 ' + (r.created || []).length + ' 条入站' + (r.note ? '：' + r.note : ''), 'ok');
-      loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
-    } catch (e) { showInboundsError(e.message); }
+      await apiPost('/api/v1/node-certs/' + encodeURIComponent(b.dataset.certRenew) + '/renew', {});
+      toast('已续签，节点 60 秒内拉到新证书', 'ok');
+      loadNodeCerts();
+    } catch (e) { showNodeCertError(e.message); }
+    b.disabled = false;
+  }));
+  $$('[data-cert-del]', wrap).forEach((b) => b.addEventListener('click', async () => {
+    const ok = await confirmModal('删除证书', '<p>确定删除域名 <b>' + esc(b.dataset.certDomain || '') + '</b> 的证书吗？</p><p>正在被入站引用的证书删不掉（先删入站或换域名）；删掉后文件与元数据一起清除。</p>', '删除', true);
+    if (!ok) return;
+    try {
+      await api('/api/v1/node-certs/' + encodeURIComponent(b.dataset.certDel), { method: 'DELETE' });
+      toast('已删除', 'ok'); loadNodeCerts(); if (currentInboundsNodeId) loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+    } catch (e) { showNodeCertError(e.message); }
+  }));
+}
+function showNodeCertError(msg) {
+  const box = $('#node-cert-error');
+  if (!box) return;
+  if (!msg) { box.classList.add('hidden'); box.hidden = true; box.textContent = ''; return; }
+  box.textContent = msg; box.classList.remove('hidden'); box.hidden = false;
+}
+// certGateNeedsCert 某协议值是不是要证书的 TLS 入站（与后端
+// inboundNeedsCert 同口径：HY2／TUIC／AnyTLS／Trojan／VLESS＋TLS。
+// agent 0.1.8 起 Trojan 也是 Xray TLS 入站，缺证书同样 fail-closed
+// 跳过，所以 Trojan 与 HY2／TUIC／AnyTLS／TLS 一样处理）。
+function certGateNeedsCert(proto) {
+  return proto === 'hysteria2' || proto === 'tuic' || proto === 'anytls' || proto === 'trojan' || proto === 'vless-tls';
+}
+// syncCertGate 添加入站表单的证书置灰（v1.4.12）：
+// ① 一张证书都没有时，HY2／TUIC／AnyTLS／Trojan／VLESS＋TLS 五个协议
+//    选项 disabled（点不开），先去下方签发证书；
+// ② 有证书但当前 SNI／域名没有可用证书时，同样禁用这五个选项，提示
+//    栏写明该域名暂无证书；
+// ③ SNI 空着时只看有没有证书（还没选域名，不按域名拦）。
+// 注意：disabled 的 option 程序上仍能设值（回归测试编程式选值提交不受
+// 影响），拦的是用户点选；真正提交时下面 certGateBlocks 再拦一次。
+function syncCertGate() {
+  const sel = $('#nodes-ib-protocol');
+  if (!sel) return;
+  const sni = presetSelectValue($('#nodes-ib-sni'), $('#nodes-ib-sni-custom'));
+  const domainCert = sni ? nodeCertForDomain(sni) : null;
+  const hasAny = nodeCertsCache.some((c) => nodeCertValid(c));
+  const allow = sni ? !!domainCert : hasAny;
+  Array.from(sel.options).forEach((o) => {
+    if (certGateNeedsCert(o.value)) o.disabled = !allow;
   });
-  on('#nodes-ib-protocol', 'change', () => {
-    const v = $('#nodes-ib-protocol').value;
-    const ss = v === 'shadowsocks' || v === 'ss2022';
-    const sk = v === 'socks';
-    if (ssMethodWrap) ssMethodWrap.style.display = ss ? '' : 'none';
-    if (ssPwWrap) ssPwWrap.style.display = ss ? '' : 'none';
-    if (socksUserWrap) socksUserWrap.style.display = sk ? '' : 'none';
-    if (socksPwWrap) socksPwWrap.style.display = sk ? '' : 'none';
-    // 备用协议默认端口（v1.4.10，切片 6）：SS／SS2022 8388、SOCKS5 1080；
-    // 只在端口空着时填，不覆盖用户手填的值。
-    const portEl = $('#nodes-ib-port');
-    if (portEl && !portEl.value.trim()) {
-      if (ss) portEl.value = '8388';
-      else if (sk) portEl.value = '1080';
-    }
-    if (v === 'ss2022') $('#nodes-ib-ss-method').value = '2022-blake3-aes-128-gcm';
-    if (v === 'shadowsocks') $('#nodes-ib-ss-method').value = 'aes-256-gcm';
-    // v1.4.11：提示框还开着时，内容按新协议刷新（端口／SNI／密码等口径会变）。
-    ibHelpRefresh();
-  });
-  on('#nodes-inbound-add-form', 'submit', async (e) => {
+  const hint = $('#nodes-ib-cert-hint');
+  if (hint) {
+    if (sni && !domainCert) hint.textContent = '域名 ' + sni + ' 暂无证书：' + (hasAny ? '这五个 TLS 协议暂时选不了，先在下方签发该域名的证书。' : 'HY2／TUIC／AnyTLS／Trojan／VLESS＋TLS 需要真证书，当前一张证书都没有，先在下方“节点证书”里签发。');
+    else if (!hasAny) hint.textContent = 'HY2／TUIC／AnyTLS／Trojan／VLESS＋TLS 需要真证书：当前一张证书都没有，先在下方“节点证书”里签发。';
+    else if (sni && domainCert) hint.textContent = '域名 ' + sni + ' 有可用证书（ref ' + domainCert.ref + '），TLS 入站可以直接用。';
+    else hint.textContent = '';
+  }
+}
+// certGateBlocks 提交时再拦一次：TLS 入站＋域名没有可用证书就拦住，
+// 并提示先签发；origProto／origDomain 是编辑时原入站的值——
+// 原来就是这套协议＋域名（已置灰的老入站）时只改其它字段不拦，
+// 免得无证书的老入站连端口都改不了。
+function certGateBlocks(proto, domain, origProto, origDomain) {
+  if (!certGateNeedsCert(proto)) return '';
+  if (origProto === proto && String(origDomain || '') === String(domain || '')) return '';
+  if (!nodeCertForDomain(domain)) return '域名 ' + (domain || '（空）') + ' 还没有可用证书：请先在下方“节点证书”里签发，签发后 60 秒内节点换上';
+  return '';
+}
+function initNodeCerts() {
+  on('#node-cert-issue-form', 'submit', async (e) => {
     e.preventDefault();
-    ibHelpHide(); // v1.4.11：提交时关掉字段帮助提示框。
-    if (!currentInboundsNodeId) { toast('先在上面点一个节点的“入站模板”', 'err'); return; }
-    const proto = $('#nodes-ib-protocol').value;
-    const m = IB_PROTOCOLS[proto];
-    const tag = $('#nodes-ib-tag').value.trim();
-    const port = parseInt($('#nodes-ib-port').value, 10);
-    // 备用协议端口留空时走后端模板默认值（SS／SS2022 8388、SOCKS5 1080），
-    // 其他协议端口必填（v1.4.10，切片 6）。
-    const isBackupProto = proto === 'shadowsocks' || proto === 'ss2022' || proto === 'socks';
-    if (!tag || (port && (port < 1 || port > 65535)) || (!port && !isBackupProto)) { toast('tag 与端口（1–65535）都要填', 'err'); return; }
-    const body = { inbound_tag: tag, protocol: m.protocol, transport: m.transport, security: m.security, port: port || 0, listen: $('#nodes-ib-listen').value.trim(), sni: presetSelectValue($('#nodes-ib-sni'), $('#nodes-ib-sni-custom')) };
-    const fpAdd = presetSelectValue($('#nodes-ib-reality-fingerprint'), $('#nodes-ib-reality-fingerprint-custom'));
-    if (fpAdd) body.reality_fingerprint = fpAdd;
-    if (proto === 'shadowsocks' || proto === 'ss2022') {
-      body.ss_method = $('#nodes-ib-ss-method').value;
-      const ssPw = $('#nodes-ib-ss-password').value.trim();
-      if (ssPw) body.ss_password = ssPw;
-      // SS2022 密码不是普通随机串：按方法长度生成 base64 密钥
-      // （128-gcm 16 字节，其余 32 字节；agent 0.1.7 实测口径），
-      // 否则后端校验 400、节点上 Xray 也会报 bad key 拒掉。
-      else if (proto === 'ss2022') body.ss_password = randomSS2022Key($('#nodes-ib-ss-method').value === '2022-blake3-aes-128-gcm' ? 16 : 32);
-      else body.ss_password = randomPassword1401(16);
-    }
-    if (proto === 'socks') {
-      const su = $('#nodes-ib-socks-username').value.trim();
-      if (su) body.socks_username = su;
-      body.socks_password = $('#nodes-ib-socks-password').value.trim() || randomPassword1401(16);
+    showNodeCertError('');
+    const domain = $('#node-cert-domain').value.trim();
+    const provider = $('#node-cert-provider').value;
+    if (!domain) { toast('证书域名要填', 'err'); return; }
+    if (provider === 'manual') {
+      try {
+        await apiPost('/api/v1/node-certs/manual/start', { domain });
+        toast('手动签发已下单：去 DNS 后台加 TXT 记录，再点“继续验证”', 'ok');
+        loadNodeCerts();
+      } catch (err) { showNodeCertError(err.message); }
+      return;
     }
     try {
-      await apiPost('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds', body);
-      toast('入站已添加，节点 60 秒内应用', 'ok');
-      $('#nodes-inbound-add-form').reset();
-      loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
-    } catch (err2) { showInboundsError(err2.message); }
+      await apiPost('/api/v1/node-certs', { domain, provider });
+      toast('证书已签发，节点 60 秒内拉到', 'ok');
+      $('#node-cert-issue-form').reset();
+      loadNodeCerts();
+      if (currentInboundsNodeId) loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+    } catch (err) { showNodeCertError(err.message); }
   });
-  // 入站编辑走弹窗（v1.4.2，切片 3）：openInboundEditModal 里绑提交与取消，
-  // 这里不再绑页面底部的编辑表单（已删）。
+  on('#node-cert-manual-confirm', 'click', async () => {
+    const box = $('#node-cert-manual-box');
+    const ref = box ? Number(box.dataset.ref || 0) : 0;
+    const domain = box ? box.dataset.domain || '' : '';
+    if (!ref || !domain) { toast('没有进行中的手动签发', 'err'); return; }
+    try {
+      await apiPost('/api/v1/node-certs/manual/confirm', { ref, domain });
+      toast('证书已签发，节点 60 秒内拉到', 'ok');
+      loadNodeCerts();
+      if (currentInboundsNodeId) loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+    } catch (err) { showNodeCertError(err.message); }
+  });
+  on('#node-cert-manual-cancel', 'click', async () => {
+    try {
+      await apiPost('/api/v1/node-certs/manual/cancel', {});
+      toast('已取消手动签发', 'ok');
+      loadNodeCerts();
+    } catch (err) { showNodeCertError(err.message); }
+  });
 }
 async function deleteLanding(index) {
   const l = landingsCache.find((x) => x.index === index);
@@ -6344,6 +6658,7 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initTraffic);
   safeInit(initCentral);
   safeInit(initNodes); // v1.4.0：节点页建节点表单与复制按钮绑定
+  safeInit(initNodeCerts); // v1.4.12：节点证书页签发／续签／删除／手动两步走绑定
   let refreshing = false;
   const refreshBtn = on('#refresh-btn', 'click', async () => {
     if (refreshing || !refreshBtn) return; // 正在刷时再点无效
@@ -6359,7 +6674,11 @@ document.addEventListener('DOMContentLoaded', () => {
       refreshBtn.disabled = false; refreshBtn.classList.remove('spinning');
     }
   });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (ibHelpOpenKey) { ibHelpHide(); return; } // v1.4.12：提示框开着先关提示框，不关弹窗
+    closeModal();
+  });
   // checkMe 必须执行：不管前面哪个初始化失败，都要决定显示登录页还是后台
   try { checkMe(); } catch (e) { showLogin(); }
 });

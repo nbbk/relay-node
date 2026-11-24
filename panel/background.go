@@ -237,9 +237,11 @@ func (s *Server) certLoop() {
 	defer t.Stop()
 	s.checkCerts()
 	s.maybeRenewPanelCert()
+	s.maybeRenewNodeCerts() // v1.4.12，切片 7：节点证书同节奏自动续签
 	for range t.C {
 		s.checkCerts()
 		s.maybeRenewPanelCert()
+		s.maybeRenewNodeCerts()
 	}
 }
 

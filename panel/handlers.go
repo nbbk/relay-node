@@ -188,6 +188,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/nodes/{id}/inbounds/{inbound_id}", s.requireAuth(s.handleNodeInboundsDelete))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/inbounds/default-trio", s.requireAuth(s.handleNodeInboundsDefaultTrio))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/inbounds/{inbound_id}/rotate-reality-key", s.requireAuth(s.handleNodeInboundRotateRealityKey))
+	// 轻量节点后端（v1.4.12，切片 7）：节点证书签发／列表／续签／删除＋手动两步走（会话认证）。
+	mux.HandleFunc("GET /api/v1/node-certs", s.requireAuth(s.handleNodeCertsList))
+	mux.HandleFunc("POST /api/v1/node-certs", s.requireAuth(s.handleNodeCertsIssue))
+	mux.HandleFunc("POST /api/v1/node-certs/{ref}/renew", s.requireAuth(s.handleNodeCertsRenew))
+	mux.HandleFunc("DELETE /api/v1/node-certs/{ref}", s.requireAuth(s.handleNodeCertsDelete))
+	mux.HandleFunc("POST /api/v1/node-certs/manual/start", s.requireAuth(s.handleNodeCertsManualStart))
+	mux.HandleFunc("POST /api/v1/node-certs/manual/confirm", s.requireAuth(s.handleNodeCertsManualConfirm))
+	mux.HandleFunc("POST /api/v1/node-certs/manual/cancel", s.requireAuth(s.handleNodeCertsManualCancel))
 	// 轻量节点后端（v1.4.2，切片 3）：一键换端口＋每节点用户指派＋轮换 UUID（会话认证）。
 	mux.HandleFunc("POST /api/v1/nodes/{id}/inbounds/{inbound_id}/change-port", s.requireAuth(s.handleNodeInboundChangePort))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/users", s.requireAuth(s.handleNodeUsersList))

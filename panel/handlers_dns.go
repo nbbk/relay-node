@@ -130,10 +130,11 @@ func (s *Server) handleDNSProvider(w http.ResponseWriter, r *http.Request) {
 // ---------- 手动模式两步走（v1.3.49） ----------
 
 // manualPendingStatus 返回当前进行中的手动签发订单（设置页回填用）：
-// 没有或已过期返回 nil；否则返回域名、TXT 名与值、过期时间。
+// 没有、已过期、或是节点证书的单（归节点证书页管，不在这里回填）
+// 都返回 nil；否则返回域名、TXT 名与值、过期时间。
 func (s *Server) manualPendingStatus() map[string]any {
 	p, err := s.loadPendingOrder()
-	if err != nil {
+	if err != nil || p.Kind == "node" {
 		return nil
 	}
 	txtName, txtValue := "", ""
@@ -166,6 +167,12 @@ func (s *Server) handleManualStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errResp("当前 DNS 服务商不是手动模式：请先在设置页把服务商切成“手动添加 TXT”"))
 		return
 	}
+	// 全局 pending 单文件一次只能有一单：节点证书的手动签发进行中时，
+	// 面板这边不许再开一单（会把对方的订单顶掉），提示先完成或取消它。
+	if p, err := s.loadPendingOrder(); err == nil && p.Kind == "node" {
+		writeJSON(w, 400, errResp(fmt.Sprintf("已有进行中的节点证书手动签发（域名 %s），请先完成或取消它", p.Domain)))
+		return
+	}
 	s.certMu.Lock()
 	defer s.certMu.Unlock()
 	st, _, err := s.startACMEOrder(domain)
@@ -175,7 +182,7 @@ func (s *Server) handleManualStart(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	pend := &acmePendingOrder{
-		Version: 1, Domain: domain, OrderURL: st.OrderURL, FinalizeURL: st.FinalizeURL,
+		Version: 1, Kind: "panel", Domain: domain, OrderURL: st.OrderURL, FinalizeURL: st.FinalizeURL,
 		CSRKeyPEM: string(st.CSRKeyPEM), CreatedAt: now, ExpiresAt: now.Add(acmePendingTTL),
 	}
 	for _, az := range st.Authz {
@@ -223,6 +230,10 @@ func (s *Server) handleManualConfirm(w http.ResponseWriter, r *http.Request) {
 	pend, err := s.loadPendingOrder()
 	if err != nil {
 		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	if pend.Kind == "node" {
+		writeJSON(w, 400, errResp("当前进行中的手动签发是节点证书，不是面板证书：请先完成或取消它"))
 		return
 	}
 	if pend.Domain != domain {
@@ -274,7 +285,12 @@ func (s *Server) handleManualConfirm(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleManualCancel 取消进行中的手动签发（删 pending 文件）。
+// 节点证书的单不归这里管（提示去节点证书页取消），免得误删对方订单。
 func (s *Server) handleManualCancel(w http.ResponseWriter, r *http.Request) {
+	if p, err := s.loadPendingOrder(); err == nil && p.Kind == "node" {
+		writeJSON(w, 400, errResp("当前进行中的手动签发是节点证书，不是面板证书：请到节点页证书卡片取消它"))
+		return
+	}
 	s.clearPendingOrder()
 	s.audit(s.currentUser(r), "取消手动签发", "", "成功", "")
 	writeJSON(w, 200, okResp(nil))

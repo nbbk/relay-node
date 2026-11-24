@@ -186,6 +186,12 @@ type nodeBackendStoreData struct {
 	DeletedIDs    []int64              `json:"deleted_ids"` // 删节点的墓碑：agent 再来拉时认得出“已删”，回空配置让它自停
 	Routes        []BackendRelayRoute  `json:"routes"`
 	Certs         []BackendCertificate `json:"certs"`
+	// NextCertRef／NodeCerts 节点证书（v1.4.12，切片 7）：ref 计数器与
+	// 元数据（证书文件另存 $PANEL_HOME/certs/node-<ref>.crt/.key，600 权限）。
+	// 状态不落盘：列表按 ExpiresAt 现算（valid／expiring／expired），
+	// 免得过期后存的状态 stale。
+	NextCertRef int64      `json:"next_cert_ref"`
+	NodeCerts   []NodeCert `json:"node_certs"`
 }
 
 type nodeBackendStore struct {
@@ -230,6 +236,12 @@ func (n *nodeBackendStore) load() {
 	if d.Certs == nil {
 		d.Certs = []BackendCertificate{}
 	}
+	if d.NextCertRef < 1 {
+		d.NextCertRef = 1
+	}
+	if d.NodeCerts == nil {
+		d.NodeCerts = []NodeCert{}
+	}
 	n.data = d
 }
 
@@ -245,6 +257,9 @@ func (n *nodeBackendStore) saveLocked() error {
 	}
 	if n.data.Certs == nil {
 		n.data.Certs = []BackendCertificate{}
+	}
+	if n.data.NodeCerts == nil {
+		n.data.NodeCerts = []NodeCert{}
 	}
 	b, err := json.MarshalIndent(n.data, "", "  ")
 	if err != nil {
@@ -503,13 +518,23 @@ type NodeConfigUser struct {
 	Inbounds []string `json:"inbounds,omitempty"`
 }
 
+// nodeCertDoc 下发给 agent 的一张证书（切片 7 约定形状）：ref 与入站
+// 的 CertRef 对得上，crt／key 是 PEM 内容。只含本节点 TLS 入站引用的
+// 证书（引用了但不存在／已过期的不发，agent 侧按 interim 契约
+// fail-closed 跳过该入站）。
+type nodeCertDoc struct {
+	Ref int64  `json:"ref"`
+	Crt string `json:"crt"`
+	Key string `json:"key"`
+}
+
 // nodeBackendConfigDoc 下发给 agent 的配置文档（§6.4 形状；
-// 切片 2：入站与用户都下发，证书表恒为空（签发与下发是切片 7 的事）。
+// 切片 7：证书随配置下发（certs[]，只含本节点 TLS 入站引用的证书）。
 type nodeBackendConfigDoc struct {
 	ConfigVersion int64            `json:"config_version"`
 	Inbounds      []NodeInbound    `json:"inbounds"`
 	Users         []NodeConfigUser `json:"users"`
-	Certs         []any            `json:"certs"`
+	Certs         []nodeCertDoc    `json:"certs"`
 }
 
 // configETag 配置文档的强 ETag：版本＋内容哈希。
@@ -531,8 +556,13 @@ func etagMatches(inm, etag string) bool {
 	return false
 }
 
-// configDocOf 该节点的配置文档（切片 2：入站与用户都下发）。
+// configDocOf 该节点的配置文档（切片 7：入站、用户、证书都下发）。
 // users 由调用方从订阅用户表组装（见 nodeBackendUsersForNode）。
+// 证书绑定在下发时解析（不存入站里）：TLS 入站按域名（Domain，没有
+// 就用 SNI）找本节点有效的证书，找到就把 cert_ref 写进该入站、把 PEM
+// 放进 certs[]；找不到、过期、文件缺失都不发，入站 cert_ref 留 0，
+// agent 侧按 interim 契约 fail-closed 跳过该入站（不渲染无证书的
+// TLS 入站）。调用方须持有 n.mu（读 NodeCerts 与证书文件）。
 func (n *nodeBackendStore) configDocOf(node *BackendNode, users []NodeConfigUser) nodeBackendConfigDoc {
 	inbounds := node.Inbounds
 	if inbounds == nil {
@@ -541,11 +571,40 @@ func (n *nodeBackendStore) configDocOf(node *BackendNode, users []NodeConfigUser
 	if users == nil {
 		users = []NodeConfigUser{}
 	}
+	// 拷贝一份再写 cert_ref，不动节点里存的入站（绑定是下发时现算的，
+	// 续签换证书不用改入站）。
+	out := make([]NodeInbound, len(inbounds))
+	copy(out, inbounds)
+	now := time.Now()
+	certs := []nodeCertDoc{}
+	seen := map[int64]bool{}
+	for i := range out {
+		domain, ok := inboundCertDomain(out[i])
+		if !ok {
+			continue
+		}
+		cert := n.nodeCertForDomain(domain, now)
+		if cert == nil {
+			continue
+		}
+		if seen[cert.Ref] {
+			out[i].CertRef = cert.Ref
+			continue
+		}
+		crt, key, err := n.readNodeCertFiles(cert.Ref)
+		if err != nil {
+			// 文件缺失／损坏：当作没有这张证书，入站 cert_ref 留 0。
+			continue
+		}
+		seen[cert.Ref] = true
+		out[i].CertRef = cert.Ref
+		certs = append(certs, nodeCertDoc{Ref: cert.Ref, Crt: string(crt), Key: string(key)})
+	}
 	return nodeBackendConfigDoc{
 		ConfigVersion: node.ConfigVersion,
-		Inbounds:      inbounds,
+		Inbounds:      out,
 		Users:         users,
-		Certs:         []any{},
+		Certs:         certs,
 	}
 }
 
@@ -697,13 +756,19 @@ func (s *Server) handleNodesCreate(w http.ResponseWriter, r *http.Request) {
 // nodeInstallCommand 一键安装命令（面板地址取本次请求的 Host——
 // 管理员正用这个地址看面板，agent 用同一地址连回来才通）。
 // 带 --node-id：join 请求体要求 node_id，agent 侧是必填参数。
+// 有 curl 用 curl 拉脚本，没有 curl 用 wget 兜底（wget -qO-），两个
+// 都没有就明说请先装 curl 或 wget、exit 1（不要静默成功、不要空跑
+// bash）。保持一行可复制粘贴；curl 与 wget 两个分支的脚本 URL 与
+// 参数（--panel／--node-id／--token）原样相同。
 func (s *Server) nodeInstallCommand(r *http.Request, nodeID int64, token string) string {
 	scheme := "http"
 	if s.cfg.HTTPSEnabled {
 		scheme = "https"
 	}
 	panelURL := scheme + "://" + r.Host
-	return fmt.Sprintf("curl -fsSL https://raw.githubusercontent.com/nbbk/zhexuexi-node-backend/main/install-node-backend.sh | bash -s -- --panel %s --node-id %d --token %s", panelURL, nodeID, token)
+	args := fmt.Sprintf("--panel %s --node-id %d --token %s", panelURL, nodeID, token)
+	script := "https://raw.githubusercontent.com/nbbk/zhexuexi-node-backend/main/install-node-backend.sh"
+	return fmt.Sprintf("if command -v curl >/dev/null 2>&1; then curl -fsSL %s | bash -s -- %s; elif command -v wget >/dev/null 2>&1; then wget -qO- %s | bash -s -- %s; else echo '请先安装 curl 或 wget' >&2; exit 1; fi", script, args, script, args)
 }
 
 // nodeRowForList 节点列表里的一行（§4.6 字段＋健康）。

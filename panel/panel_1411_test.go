@@ -3,7 +3,7 @@ package main
 // v1.4.11：添加入站表单字段帮助（ⓘ 按钮＋提示框）。
 //
 // 覆盖：
-//   - 版本断言 1.4.11。
+//   - 版本断言 1.4.12。
 //   - index.html 里添加入站表单的 10 个字段 label 旁都有 data-ib-help
 //     按钮（tag、protocol、port、listen、sni、reality-fingerprint、
 //     ss-method、ss-password、socks-username、socks-password），是
@@ -21,8 +21,8 @@ import (
 )
 
 func TestVersion1411(t *testing.T) {
-	if Version != "1.4.11" {
-		t.Fatalf("VERSION 应是 1.4.11，实际 %q", Version)
+	if Version != "1.4.12" {
+		t.Fatalf("VERSION 应是 1.4.12，实际 %q", Version)
 	}
 }
 

@@ -565,9 +565,11 @@ func submitAndPollChallenge(ac *acmeClient, az acmeAuthzState, manual bool) erro
 	return nil
 }
 
-// finalizeACMEOrder 生成 CSR、finalize、轮询订单等证书、下载并写 certs/。
-func (s *Server) finalizeACMEOrder(ac *acmeClient, st *acmeOrderState) error {
-	dir := filepath.Join(s.env.PanelHome, "certs")
+// finalizeACMEOrderTo 生成 CSR、finalize、轮询订单等证书、下载并写
+// 到指定路径（证书 certPerm、私钥恒 600）。finalizeACMEOrder 是它
+// 的面板版（写 certs/cert.pem／key.pem）；节点证书签发走同一段流程，
+// 只换落盘路径（node-<ref>.crt／.key，证书也是 600）。
+func (s *Server) finalizeACMEOrderTo(ac *acmeClient, st *acmeOrderState, certPath, keyPath string, certPerm os.FileMode) error {
 	csrKey := st.CSRKey
 	if csrKey == nil && len(st.CSRKeyPEM) > 0 {
 		if blk, _ := pem.Decode(st.CSRKeyPEM); blk != nil {
@@ -616,11 +618,17 @@ func (s *Server) finalizeACMEOrder(ac *acmeClient, st *acmeOrderState) error {
 	if err != nil || code >= 300 {
 		return fmt.Errorf("ACME 下载证书失败（HTTP %d）", code)
 	}
-	if err := writeFileAtomic(filepath.Join(dir, "cert.pem"), b, 0o644); err != nil {
+	if err := writeFileAtomic(certPath, b, certPerm); err != nil {
 		return err
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(csrKey)})
-	return writeFileAtomic(filepath.Join(dir, "key.pem"), keyPEM, 0o600)
+	return writeFileAtomic(keyPath, keyPEM, 0o600)
+}
+
+// finalizeACMEOrder 生成 CSR、finalize、轮询订单等证书、下载并写 certs/。
+func (s *Server) finalizeACMEOrder(ac *acmeClient, st *acmeOrderState) error {
+	dir := filepath.Join(s.env.PanelHome, "certs")
+	return s.finalizeACMEOrderTo(ac, st, filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem"), 0o644)
 }
 
 // obtainACMECert 为 domain 申请 Let's Encrypt 证书（DNS-01），存到 certs/。
@@ -681,9 +689,14 @@ type acmePendingAuthz struct {
 	TXTValue     string `json:"txt_value"`
 }
 
-// acmePendingOrder 是落盘的手动签发订单。
+// acmePendingOrder 是落盘的手动签发订单。Kind 区分归属（v1.4.12：
+// "panel" 面板证书／"node" 节点证书；老文件没有 Kind 的按面板算），
+// Ref 是节点证书的 ref（面板单没有）。pending 文件全局只有一个，
+// 两边手动签发串行化（见 handleManualStart 与节点证书的手动接口）。
 type acmePendingOrder struct {
 	Version     int                `json:"version"`
+	Kind        string             `json:"kind,omitempty"`
+	Ref         int64              `json:"ref,omitempty"`
 	Domain      string             `json:"domain"`
 	OrderURL    string             `json:"order_url"`
 	FinalizeURL string             `json:"finalize_url"`

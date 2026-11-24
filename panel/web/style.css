@@ -262,6 +262,10 @@ html[data-theme="dark"] .log-box{background:#020617}
 .ib-help-pop p{margin:6px 0}
 .ib-help-pop .ib-help-x{position:absolute; top:8px; right:10px; width:24px; height:24px; border:none; border-radius:50%; background:transparent; color:var(--muted); font-size:16px; line-height:1; cursor:pointer}
 .ib-help-pop .ib-help-x:hover{background:var(--surface-muted); color:var(--text)}
+/* v1.4.12：无证书的 TLS 入站行置灰（HY2／TUIC／AnyTLS／Trojan／VLESS＋TLS
+   没有可用证书时整行半透明，启用／编辑／换端口／轮换密钥按钮 disabled，
+   点不开；删除保留可用，免得坏入站删不掉）。 */
+.ib-no-cert{opacity:.55}
 .mini-card.static{cursor:default}
 .modal h2{margin-bottom:8px; padding-right:36px}
 #toast-wrap{position:fixed; left:50%; transform:translateX(-50%); bottom:76px; z-index:200; display:flex; flex-direction:column; gap:8px; width:min(92vw,480px)}
@@ -371,6 +375,12 @@ html[data-theme="dark"] .tag.relay{background:#1e3a5f; color:#93c5fd; border-col
 
 /* ---- v1.3.20：列表工具条 / 搜索框 ---- */
 .list-toolbar{display:flex; gap:8px; margin:10px 0}
+/* ---- v1.4.12：节点列表工具条（搜索＋每页条数）与紧凑卡片列表 ---- */
+/* 每页条数下拉框跟搜索框同一行：label 不占整行、select 宽度按内容。 */
+.nodes-toolbar label{margin:0; display:inline-flex; align-items:center; gap:6px; font-weight:400; font-size:14px; color:var(--muted)}
+.nodes-toolbar select{width:auto; padding:9px 10px}
+/* 节点列表：一列紧凑小卡片（复用 .mini-card），纵向排，不用三列网格。 */
+.nodes-list{display:grid; gap:12px}
 .list-search{
   flex:1; max-width:420px; padding:9px 12px; border:1px solid var(--border);
   border-radius:999px; background:var(--surface); color:var(--text); font-size:14px;
