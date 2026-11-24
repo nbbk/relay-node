@@ -1013,11 +1013,11 @@ async function loadNodes() {
       '<div class="kv"><span>已应用配置版本</span><b>' + esc(String(n.config_version == null ? '—' : n.config_version)) + '</b></div>' +
       '<div class="kv"><span>入网</span><b>' + (n.joined ? '已入网' : '未入网') + '</b></div>' +
       '<div class="btn-row"><button class="btn secondary sm" type="button" data-nodedetail="' + esc(String(n.id)) + '" data-detailname="' + esc(n.name || '') + '">详情</button>' +
-      '<button class="btn secondary sm" type="button" data-inbounds="' + esc(String(n.id)) + '" data-inbname="' + esc(n.name || '') + '">入站模板</button>' +
+      '<button class="btn secondary sm" type="button" data-inbounds="' + esc(String(n.id)) + '" data-inbname="' + esc(n.name || '') + '" data-inbaddr="' + esc(n.address || '') + '">入站模板</button>' +
       '<button class="btn secondary sm" type="button" data-regen="' + esc(String(n.id)) + '">重新生成入网令牌</button>' +
       '<button class="btn danger sm" type="button" data-delnodes="' + esc(String(n.id)) + '" data-delname="' + esc(n.name || '') + '">删除</button></div></div>').join('');
     $$('[data-nodedetail]', wrap).forEach((b) => b.addEventListener('click', () => openNodeDetailModal(Number(b.dataset.nodedetail), b.dataset.detailname)));
-    $$('[data-inbounds]', wrap).forEach((b) => b.addEventListener('click', () => loadNodeInbounds(Number(b.dataset.inbounds), b.dataset.inbname)));
+    $$('[data-inbounds]', wrap).forEach((b) => b.addEventListener('click', () => loadNodeInbounds(Number(b.dataset.inbounds), b.dataset.inbname, b.dataset.inbaddr)));
     $$('[data-regen]', wrap).forEach((b) => b.addEventListener('click', async () => {
       try {
         const r2 = await apiPost('/api/v1/nodes/' + encodeURIComponent(b.dataset.regen) + '/join-token', {});
@@ -1055,11 +1055,15 @@ async function openNodeDetailModal(nodeId, nodeName) {
   // 本就不起 sing-box，Running=false 不是故障，不显示。
   const hasSingbox = (d.inbounds || []).some((ib) => ib.protocol === 'hysteria2' || ib.protocol === 'tuic' || ib.protocol === 'anytls');
   const sbRow = hasSingbox ? '<div class="kv"><span>sing-box</span><b>' + esc(bh.singbox_running ? '运行中' : '未运行') + '（重启 ' + esc(String(bh.singbox_restarts == null ? '—' : bh.singbox_restarts)) + ' 次' + (bh.singbox_version ? '，' + esc(bh.singbox_version) : '') + '）</b></div>' : '';
+  // 核心版本（v1.4.10）：以上报的 xray_version 为准（backend_health
+  // 里新加的 xray_version，节点行里本来就有）；没上报过就不编版本号，显示 —。
+  const coreVer = String(bh.xray_version || n.xray_version || '').trim();
   const m = openModal('<h2>节点详情：' + esc(nodeName || n.name || nodeId) + '</h2>' +
     '<h3>上报健康</h3>' +
     '<div class="kv"><span>状态</span><b>' + nodeHealthDot(bh.status) + esc(bh.detail || '尚未上报') + '</b></div>' +
     '<div class="kv"><span>最后上报</span><b>' + esc(bh.last_traffic_at ? fmtDate(typeof bh.last_traffic_at === 'number' ? bh.last_traffic_at * 1000 : bh.last_traffic_at) : '—') + '</b></div>' +
     (bh.last_error ? '<div class="kv"><span>最后错误</span><b>' + esc(bh.last_error) + '</b></div>' : '') +
+    '<div class="kv"><span>核心版本</span><b>' + esc(coreVer ? 'Xray ' + coreVer : '—') + '</b></div>' +
     '<div class="kv"><span>Xray 重启次数</span><b>' + esc(String(bh.xray_restarts == null ? '—' : bh.xray_restarts)) + '</b></div>' +
     sbRow +
     '<div class="kv"><span>CPU／内存</span><b>' + esc(bh.cpu_percent == null ? '—' : String(bh.cpu_percent) + '% ／ ' + String(bh.mem_mb == null ? '—' : bh.mem_mb) + ' MB') + '</b></div>' +
@@ -1094,6 +1098,7 @@ async function deleteNode(id, name) {
 /* ---------- 入站模板（v1.4.1 切片 2） ---------- */
 let currentInboundsNodeId = null;
 let currentInboundsNodeName = '';
+let currentInboundsNodeAddress = '';
 let currentEditInboundId = null;
 
 const IB_PROTOCOLS = {
@@ -1166,8 +1171,11 @@ function showInboundsError(msg) {
   if (!msg) { box.classList.add('hidden'); box.hidden = true; box.textContent = ''; return; }
   box.textContent = msg; box.classList.remove('hidden'); box.hidden = false;
 }
-async function loadNodeInbounds(nodeId, nodeName) {
+async function loadNodeInbounds(nodeId, nodeName, nodeAddress) {
   currentInboundsNodeId = nodeId; currentInboundsNodeName = nodeName || '';
+  // 节点地址只在点“入站模板”时传进来（SOCKS5 配置卡要显示它）；
+  // 列表内刷新（停用／编辑／换端口后重载）不传时保留上次的值。
+  if (nodeAddress != null) currentInboundsNodeAddress = nodeAddress;
   const card = $('#nodes-inbounds-card');
   if (!card) return;
   $('#nodes-inbounds-title').textContent = '入站模板 —— ' + currentInboundsNodeName;
@@ -1200,6 +1208,12 @@ function renderNodeInbounds(inbounds) {
       '<div class="kv"><span>SNI / 域名</span><b>' + esc(inb.sni || inb.domain || '—') + '</b></div>' +
       (isReality ? '<div class="kv"><span>REALITY 公钥</span><b style="word-break:break-all">' + esc(inb.reality_public_key || '—') + '</b></div><div class="kv"><span>short id</span><b>' + esc(inb.reality_short_id || '—') + '</b></div>' : '') +
       (inb.protocol === 'shadowsocks' ? '<div class="kv"><span>加密方法</span><b>' + esc(inb.ss_method || '—') + '</b></div>' : '') +
+      // SOCKS5 手动配置卡（v1.4.10，切片 6；§8.4）：地址用节点地址，
+      // 端口／用户名／密码照入站字段显示；SOCKS5 不进订阅，手动填客户端。
+      (inb.protocol === 'socks' ? '<div class="kv"><span>SOCKS5 地址</span><b>' + esc(currentInboundsNodeAddress || inb.listen || '—') + '</b></div>' +
+      '<div class="kv"><span>SOCKS5 端口</span><b>' + esc(String(inb.port)) + '</b></div>' +
+      '<div class="kv"><span>SOCKS5 用户名</span><b>' + esc(inb.socks_username || '—') + '</b></div>' +
+      '<div class="kv"><span>SOCKS5 密码</span><b>' + esc(inb.socks_password || '—') + '</b></div>' : '') +
       '<div class="kv"><span>状态</span><b>' + (inb.enabled ? '启用' : '停用') + '</b></div>' +
       '<div class="btn-row">' +
       '<button class="btn secondary sm" type="button" data-ib-toggle="' + esc(String(inb.inbound_id)) + '" data-ib-enabled="' + (inb.enabled ? '1' : '0') + '">' + (inb.enabled ? '停用' : '启用') + '</button>' +
@@ -1286,7 +1300,7 @@ function openInboundEditModal(inb) {
     '<div id="nodes-ib-edit-ss-method-wrap"><label for="nodes-ib-edit-ss-method">SS 加密方法</label><select id="nodes-ib-edit-ss-method">' +
     ['aes-256-gcm', 'aes-128-gcm', 'chacha20-poly1305', '2022-blake3-aes-128-gcm', '2022-blake3-aes-256-gcm', '2022-blake3-chacha20-poly1305'].map((mm) => '<option value="' + mm + '"' + (inb.ss_method === mm ? ' selected' : '') + '>' + mm + '</option>').join('') +
     '</select></div>' +
-    '<div id="nodes-ib-edit-ss-pw-wrap"><label for="nodes-ib-edit-ss-password">SS 密码 <span class="hint">留空不改</span></label><input id="nodes-ib-edit-ss-password" placeholder="留空不改"></div>' +
+    '<div id="nodes-ib-edit-ss-pw-wrap"><label for="nodes-ib-edit-ss-password">SS 密码 <span class="hint">留空不改；SS2022 密码须是 base64 定长密钥</span></label><input id="nodes-ib-edit-ss-password" placeholder="留空不改"></div>' +
     '<div id="nodes-ib-edit-socks-user-wrap"><label for="nodes-ib-edit-socks-username">SOCKS5 用户名</label><input id="nodes-ib-edit-socks-username" value="' + esc(inb.socks_username || '') + '"></div>' +
     '<div id="nodes-ib-edit-socks-pw-wrap"><label for="nodes-ib-edit-socks-password">SOCKS5 密码 <span class="hint">留空不改</span></label><input id="nodes-ib-edit-socks-password" placeholder="留空不改"></div>' +
     '<div id="nodes-ib-edit-flow-wrap"><label for="nodes-ib-edit-flow">VLESS flow <span class="hint">Vision 入站填 xtls-rprx-vision，空着不填也行</span></label><input id="nodes-ib-edit-flow" value="' + esc(inb.flow || '') + '" placeholder="xtls-rprx-vision"></div>' +
@@ -1359,12 +1373,23 @@ function openInboundEditModal(inb) {
   });
 }
 function randomPassword1401(n) {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  // 字符集与后端 auth.go 的 randomPassword 一致（去掉 0／1／I／L／O／i／l／o
+  // 这些易混淆字符；v1.4.10 前前端这里多一个 L，两边已对齐）。
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
   const buf = new Uint32Array(n || 16);
   window.crypto.getRandomValues(buf);
   let out = '';
   for (let i = 0; i < buf.length; i++) out += chars[buf[i] % chars.length];
   return out;
+}
+// randomSS2022Key 生成 SS2022 的 base64 密钥（agent 0.1.7 实测口径）：
+// n 字节随机数，标准 base64 编码（带 = 补齐，与 Xray 要求的格式一致）。
+function randomSS2022Key(n) {
+  const buf = new Uint8Array(n);
+  window.crypto.getRandomValues(buf);
+  let s = '';
+  for (let i = 0; i < buf.length; i++) s += String.fromCharCode(buf[i]);
+  return btoa(s);
 }
 function initNodes() {
   on('#nodes-create-form', 'submit', async (e) => {
@@ -1388,8 +1413,12 @@ function initNodes() {
   wirePresetSelect('nodes-ib-reality-fingerprint', 'nodes-ib-reality-fingerprint-custom');
   const ssMethodWrap = $('#nodes-ib-ss-method-wrap');
   const ssPwWrap = $('#nodes-ib-ss-pw-wrap');
+  const socksUserWrap = $('#nodes-ib-socks-user-wrap');
+  const socksPwWrap = $('#nodes-ib-socks-pw-wrap');
   if (ssMethodWrap) ssMethodWrap.style.display = 'none';
   if (ssPwWrap) ssPwWrap.style.display = 'none';
+  if (socksUserWrap) socksUserWrap.style.display = 'none';
+  if (socksPwWrap) socksPwWrap.style.display = 'none';
   on('#nodes-trio-btn', 'click', async () => {
     if (!currentInboundsNodeId) { toast('先在上面点一个节点的“入站模板”', 'err'); return; }
     try {
@@ -1401,8 +1430,18 @@ function initNodes() {
   on('#nodes-ib-protocol', 'change', () => {
     const v = $('#nodes-ib-protocol').value;
     const ss = v === 'shadowsocks' || v === 'ss2022';
+    const sk = v === 'socks';
     if (ssMethodWrap) ssMethodWrap.style.display = ss ? '' : 'none';
     if (ssPwWrap) ssPwWrap.style.display = ss ? '' : 'none';
+    if (socksUserWrap) socksUserWrap.style.display = sk ? '' : 'none';
+    if (socksPwWrap) socksPwWrap.style.display = sk ? '' : 'none';
+    // 备用协议默认端口（v1.4.10，切片 6）：SS／SS2022 8388、SOCKS5 1080；
+    // 只在端口空着时填，不覆盖用户手填的值。
+    const portEl = $('#nodes-ib-port');
+    if (portEl && !portEl.value.trim()) {
+      if (ss) portEl.value = '8388';
+      else if (sk) portEl.value = '1080';
+    }
     if (v === 'ss2022') $('#nodes-ib-ss-method').value = '2022-blake3-aes-128-gcm';
     if (v === 'shadowsocks') $('#nodes-ib-ss-method').value = 'aes-256-gcm';
   });
@@ -1413,13 +1452,27 @@ function initNodes() {
     const m = IB_PROTOCOLS[proto];
     const tag = $('#nodes-ib-tag').value.trim();
     const port = parseInt($('#nodes-ib-port').value, 10);
-    if (!tag || !port || port < 1 || port > 65535) { toast('tag 与端口（1–65535）都要填', 'err'); return; }
-    const body = { inbound_tag: tag, protocol: m.protocol, transport: m.transport, security: m.security, port, listen: $('#nodes-ib-listen').value.trim(), sni: presetSelectValue($('#nodes-ib-sni'), $('#nodes-ib-sni-custom')) };
+    // 备用协议端口留空时走后端模板默认值（SS／SS2022 8388、SOCKS5 1080），
+    // 其他协议端口必填（v1.4.10，切片 6）。
+    const isBackupProto = proto === 'shadowsocks' || proto === 'ss2022' || proto === 'socks';
+    if (!tag || (port && (port < 1 || port > 65535)) || (!port && !isBackupProto)) { toast('tag 与端口（1–65535）都要填', 'err'); return; }
+    const body = { inbound_tag: tag, protocol: m.protocol, transport: m.transport, security: m.security, port: port || 0, listen: $('#nodes-ib-listen').value.trim(), sni: presetSelectValue($('#nodes-ib-sni'), $('#nodes-ib-sni-custom')) };
     const fpAdd = presetSelectValue($('#nodes-ib-reality-fingerprint'), $('#nodes-ib-reality-fingerprint-custom'));
     if (fpAdd) body.reality_fingerprint = fpAdd;
     if (proto === 'shadowsocks' || proto === 'ss2022') {
       body.ss_method = $('#nodes-ib-ss-method').value;
-      body.ss_password = $('#nodes-ib-ss-password').value.trim() || randomPassword1401(16);
+      const ssPw = $('#nodes-ib-ss-password').value.trim();
+      if (ssPw) body.ss_password = ssPw;
+      // SS2022 密码不是普通随机串：按方法长度生成 base64 密钥
+      // （128-gcm 16 字节，其余 32 字节；agent 0.1.7 实测口径），
+      // 否则后端校验 400、节点上 Xray 也会报 bad key 拒掉。
+      else if (proto === 'ss2022') body.ss_password = randomSS2022Key($('#nodes-ib-ss-method').value === '2022-blake3-aes-128-gcm' ? 16 : 32);
+      else body.ss_password = randomPassword1401(16);
+    }
+    if (proto === 'socks') {
+      const su = $('#nodes-ib-socks-username').value.trim();
+      if (su) body.socks_username = su;
+      body.socks_password = $('#nodes-ib-socks-password').value.trim() || randomPassword1401(16);
     }
     try {
       await apiPost('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds', body);

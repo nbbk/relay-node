@@ -6,7 +6,7 @@ package main
 //   - POST /api/v1/node/traffic 的 health 块新增 singbox_running／
 //     singbox_restarts／singbox_version，落盘进节点，节点详情的
 //     backend_health 原样返回（与 xray_* 同口径）。
-//   - 版本断言 1.4.9。
+//   - 版本断言 1.4.10。
 
 import (
 	"strings"
@@ -53,7 +53,7 @@ func TestNodeTrafficSingboxHealth1407(t *testing.T) {
 // ---------- 版本断言 ----------
 
 func TestVersion1407(t *testing.T) {
-	if Version != "1.4.9" {
-		t.Fatalf("Version 应为 1.4.9，实际 %q", Version)
+	if Version != "1.4.10" {
+		t.Fatalf("Version 应为 1.4.10，实际 %q", Version)
 	}
 }

@@ -37,6 +37,65 @@ const (
 	realityDefaultDest = "www.example.com:443"
 )
 
+// defaultInboundPorts 备用协议的模板默认端口（v1.4.10，切片 6；
+// 实施方案 §5.2 定值）：SS／SS2022 默认 8388，SOCKS5 默认 1080。
+// 只是新建入站的模板默认值，可改；端口本身仍是入站字段，不走配置。
+const (
+	defaultShadowsocksPort = 8388
+	defaultSocksPort       = 1080
+)
+
+// ss2022KeyBytes SS2022 方法要的密钥字节数（agent 0.1.7 实测口径）：
+// Xray 要求密码是 base64 编码的定长密钥，长度不对时应用配置报 bad key
+// 拒掉（fail-closed）。2022-blake3-aes-128-gcm 要 16 字节，其余
+// 2022 方法要 32 字节；不在表里的 2022- 开头方法返回 false。
+func ss2022KeyBytes(method string) (int, bool) {
+	switch method {
+	case "2022-blake3-aes-128-gcm":
+		return 16, true
+	case "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305":
+		return 32, true
+	default:
+		return 0, false
+	}
+}
+
+// generateSS2022Key 生成 SS2022 的 base64 密钥：n 字节随机数，标准
+// base64 编码（带 = 补齐，与 Xray 要求的格式一致）。
+// rand.Read 失败是极小概率事件，失败时返回空串、调用方校验会 400
+// 挡住，不会把非法密钥存进去。
+func generateSS2022Key(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// validateSS2022Password SS2022 密码格式校验（agent 0.1.7 实测口径）：
+// 密码必须是 base64 编码的定长密钥；面板在保存时就拦住，不等节点上
+// 应用配置失败才发现。其它 2022- 开头的方法只要求 base64 能解出
+// 16 或 32 字节；非 2022 方法不校验。
+func validateSS2022Password(method, password string) string {
+	if !strings.HasPrefix(method, "2022-") {
+		return ""
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(password))
+	if err != nil {
+		return "SS2022 密码须是 base64 编码的密钥（不是普通密码）"
+	}
+	if want, known := ss2022KeyBytes(method); known {
+		if len(raw) != want {
+			return fmt.Sprintf("SS2022 密码长度不对：%s 要 %d 字节密钥的 base64，实际解出 %d 字节", method, want, len(raw))
+		}
+		return ""
+	}
+	if len(raw) != 16 && len(raw) != 32 {
+		return "SS2022 密码须是 16 或 32 字节密钥的 base64"
+	}
+	return ""
+}
+
 // generateRealityKeypair 生成 REALITY X25519 密钥对，返回
 // (privateKey, publicKey)，都是 base64 RawURLEncoding。
 func generateRealityKeypair() (string, string, error) {
@@ -153,6 +212,9 @@ func validateInbound(in NodeInbound) string {
 		}
 		if strings.TrimSpace(in.SSMethod) == "" || strings.TrimSpace(in.SSPassword) == "" {
 			return "Shadowsocks 要填加密方法与密码"
+		}
+		if msg := validateSS2022Password(in.SSMethod, in.SSPassword); msg != "" {
+			return msg
 		}
 	case "hysteria2", "tuic":
 		if in.Transport != "quic" {
@@ -386,6 +448,35 @@ func applyInboundRequest(in *NodeInbound, req inboundRequest, isNew bool) {
 		}
 		if in.RealityFingerprint == "" && (in.Transport == "reality" || in.Transport == "xhttp") {
 			in.RealityFingerprint = "chrome"
+		}
+		// 切片 6：备用协议的新建默认值——端口没填时按协议补模板
+		// 默认值（SS／SS2022 8388，SOCKS5 1080）；密码没填时自动
+		// 生成（可改；只在新建时生成，编辑留空不改）。SS2022 的密码
+		// 不是普通随机串，而是对应方法长度的 base64 密钥（agent 0.1.7
+		// 实测口径：128-gcm 16 字节、256-gcm／chacha20 32 字节），
+		// 否则 Xray 应用配置时报 bad key 拒掉；普通 SS 与 SOCKS5
+		// 仍生成 16 位随机密码。
+		if in.Port == 0 {
+			switch in.Protocol {
+			case "shadowsocks":
+				in.Port = defaultShadowsocksPort
+			case "socks":
+				in.Port = defaultSocksPort
+			}
+		}
+		if in.Protocol == "shadowsocks" && strings.TrimSpace(in.SSPassword) == "" {
+			if n, ok := ss2022KeyBytes(in.SSMethod); ok {
+				in.SSPassword = generateSS2022Key(n)
+			} else if strings.HasPrefix(in.SSMethod, "2022-") {
+				// 不在表里的 2022 方法：默认按 32 字节生成（校验对未知
+				// 方法只要求 16 或 32 字节，不会把自动生成的挡住）。
+				in.SSPassword = generateSS2022Key(32)
+			} else {
+				in.SSPassword = randomPassword(16)
+			}
+		}
+		if in.Protocol == "socks" && strings.TrimSpace(in.SocksPassword) == "" {
+			in.SocksPassword = randomPassword(16)
 		}
 	}
 }

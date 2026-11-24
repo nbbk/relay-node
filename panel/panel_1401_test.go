@@ -322,7 +322,9 @@ func TestInboundsValidation1401(t *testing.T) {
 		{"端口超范围", `{"inbound_tag":"a","protocol":"vless","transport":"tcp","security":"none","port":70000}`},
 		{"未知协议", `{"inbound_tag":"a","protocol":"wireguard","transport":"tcp","security":"none","port":51820}`},
 		{"HY2 缺域名", `{"inbound_tag":"a","protocol":"hysteria2","transport":"quic","security":"tls","port":443}`},
-		{"SS 缺密码", `{"inbound_tag":"a","protocol":"shadowsocks","transport":"tcp","security":"none","port":8388,"ss_method":"aes-256-gcm"}`},
+		// SS 缺密码不再 400：v1.4.10 起新建时自动生成（见
+		// TestInboundBackupDefaults1410）；缺方法仍 400。
+		{"SS 缺方法", `{"inbound_tag":"a","protocol":"shadowsocks","transport":"tcp","security":"none","port":8388,"ss_password":"testpassword123456"}`},
 		{"VLESS 传输与安全不配", `{"inbound_tag":"a","protocol":"vless","transport":"quic","security":"tls","port":443}`},
 		{"空 tag", `{"inbound_tag":"","protocol":"vless","transport":"tcp","security":"none","port":8443}`},
 	}
@@ -560,7 +562,7 @@ func TestInboundListen1401(t *testing.T) {
 // ---------- 9. 版本断言 ----------
 
 func TestVersion1401(t *testing.T) {
-	if Version != "1.4.9" {
-		t.Fatalf("VERSION 应是 1.4.9，实际 %q", Version)
+	if Version != "1.4.10" {
+		t.Fatalf("VERSION 应是 1.4.10，实际 %q", Version)
 	}
 }

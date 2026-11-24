@@ -246,7 +246,7 @@ func nodeBackendHealthMap(n *BackendNode, now time.Time) map[string]any {
 	return map[string]any{
 		"status": status, "detail": detail,
 		"last_error": n.HealthLastError, "xray_running": n.HealthXrayRunning,
-		"xray_restarts": n.HealthXrayRestarts, "last_traffic_at": lastTraffic,
+		"xray_version": n.XrayVersion, "xray_restarts": n.HealthXrayRestarts, "last_traffic_at": lastTraffic,
 		"config_version": cfgVer,
 		"cpu_percent":    n.HealthCPUPercent, "mem_mb": n.HealthMemMB,
 		"singbox_running": n.HealthSingboxRunning, "singbox_restarts": n.HealthSingboxRestarts,

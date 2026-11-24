@@ -16,7 +16,7 @@ package main
 //     relay 但重建失败时 resume／disable 仍报错（状态已落盘）。
 //   - 四级指派：all／group／node／inbound 解析成配置文档 users[]
 //     .inbounds（空＝全部入站）；非法指派 400。
-//   - 版本断言 1.4.9。
+//   - 版本断言 1.4.10。
 
 import (
 	"crypto/tls"
@@ -547,7 +547,7 @@ func TestBackendAssignmentInbounds1404(t *testing.T) {
 // ---------- 11. 版本断言 ----------
 
 func TestVersion1404(t *testing.T) {
-	if Version != "1.4.9" {
-		t.Fatalf("Version 应为 1.4.9，实际 %q", Version)
+	if Version != "1.4.10" {
+		t.Fatalf("Version 应为 1.4.10，实际 %q", Version)
 	}
 }
