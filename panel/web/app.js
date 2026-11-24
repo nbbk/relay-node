@@ -2011,6 +2011,7 @@ function initNodes() {
   on('#nodes-once-token-copy', 'click', (e) => copyText($('#nodes-once-token').value, e.target));
   on('#nodes-once-cmd-copy', 'click', (e) => copyText($('#nodes-once-cmd').value, e.target));
   ibHelpWire(); // v1.4.11：添加入站表单字段帮助（ⓘ 按钮＋提示框，document 级委托，弹窗里同样生效）。
+  dnsTutorialWire(); // v1.4.17：DNS 凭证「怎么获取？」入口（document 级委托，按钮在各家凭证表单里）。
   // 入站模板弹窗的绑定（v1.4.12）：wireNodeInboundsModal 在每次打开入站模板
   // 弹窗时现场绑（三件套＋“手动添加入站”按钮）；手动添加入站是单独的弹窗
   // （v1.4.13）：wireNodeIbAddModal 在每次打开时现场绑（协议联动／提交）；
@@ -3325,6 +3326,191 @@ const DNS_PROVIDER_NAMES = {
   desec: 'deSEC', porkbun: 'Porkbun', cloudns: 'CloudNS', manual: '手动模式',
 };
 function dnsProviderDisplay(id) { return DNS_PROVIDER_NAMES[id] || id; }
+
+// v1.4.17：DNS 服务商凭证获取教程——设置页每家凭证表单旁的「怎么获取？」
+// 入口点开 openModal 显示对应内容；内容与
+// ~/workspace/goals/goal-6/dns-provider-tutorials.md 一字不差（结构与
+// 步骤数以文案文件为准），只有单独成行的网址渲染成新标签页链接；
+// Namecheap 第 6 步的 curl 命令放代码块里，不渲染成链接。
+const DNS_TUTORIALS = {
+  cloudflare: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener">https://dash.cloudflare.com/profile/api-tokens</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录 Cloudflare 后台，确认你的域名已经添加，且域名的 NS 已改成 Cloudflare 给的那两个。</li><li>打开上面的 API Tokens 页（右上角头像 → My Profile → API Tokens 也能到）。</li><li>点 Create Token。</li><li>找到 "Edit zone DNS" 那一行，点 Use template。</li><li>权限只留 Zone | DNS | Edit 和 Zone | Zone | Read 两条，多了删掉、少了补上。</li><li>Zone Resources 选 Include → Specific zone → 下拉选你的域名，不要选 All zones。</li><li>点 Continue to summary 核对一遍（权限是上面两条、zone 是你的域名），点 Create Token，立刻复制令牌。</li></ol>' +
+    '<p><b>要开什么权限：</b>Zone:DNS:Edit（改 DNS 记录）+ Zone:Zone:Read（读 zone 信息），且只限定到这一个 zone。</p>' +
+    '<p><b>拿到的是什么：</b>API Token 一串，以 <code>cfut_xxxx</code> 开头；面板里填到「API Token」那一栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>令牌只显示一次，关掉页面就再也看不到，复制后立即贴到面板里。</li><li>绝不要用 Global API Key，那等于账号密码。</li><li>域名 DNS 必须托管在 Cloudflare，NS 不在 Cloudflare 时令牌写了记录也不生效。</li></ul>' +
+    '<p><b>相关链接：</b></p>' +
+    '<p><a href="https://developers.cloudflare.com/fundamentals/api/get-started/create-token/" target="_blank" rel="noopener">https://developers.cloudflare.com/fundamentals/api/get-started/create-token/</a></p>',
+  aliyun: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://ram.console.aliyun.com/users" target="_blank" rel="noopener">https://ram.console.aliyun.com/users</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录阿里云控制台，打开访问控制 RAM（顶部搜索「访问控制」也能进）。</li><li>左侧点 身份管理 → 用户 → 创建用户，登录名填一个好认的名字，如 <code>acme-dns</code>。</li><li>访问方式只勾「使用永久 AccessKey 访问」，不要勾「控制台访问」（这个用户只调 API，不登网页）。</li><li>创建成功后，在用户列表点这个用户名进详情页，点 权限管理 → 新增授权。</li><li>搜索并勾选系统策略 AliyunDNSFullAccess，确认授权（授权范围默认账号级别即可）。</li><li>回到用户详情页，点 凭证管理 → 创建 AccessKey，按提示确认创建。</li><li>立刻复制 AccessKey ID 和 AccessKey Secret，也可以点下载 CSV 存一份。</li></ol>' +
+    '<p><b>要开什么权限：</b>AliyunDNSFullAccess（只能管理云解析 DNS，碰不到账号里其他云资源）。</p>' +
+    '<p><b>拿到的是什么：</b>AccessKey ID（<code>LTAIxxxx</code> 开头）+ AccessKey Secret；面板里分别填到「AccessKey ID」和「AccessKey Secret」两栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>不要用主账号的 AccessKey，那把钥匙能动账号里的一切。</li><li>Secret 只显示一次，关掉页面就再也看不到；丢了只能删掉旧密钥重新创建。</li><li>授权后等约 1 分钟让权限生效再签发，否则会报无权限。</li><li>域名要先在阿里云云解析 DNS 里添加。</li></ul>',
+  dnspod: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://console.dnspod.cn" target="_blank" rel="noopener">https://console.dnspod.cn</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录 DNSPod 控制台。</li><li>确认你的域名已经添加（没加先点添加域名，再把域名 NS 改成 DNSPod 的）。</li><li>点右上角头像 → 我的账号。</li><li>在账号页找到 API Token（经典版），点创建 Token（可能要短信验证，按提示完成）。</li><li>复制生成的 ID 和 Token，立即保存好（Token 只显示一次）。</li></ol>' +
+    '<p><b>要开什么权限：</b>经典版 API Token 不分 scope；注意面板要的是 DNSPod 经典版 Token，不是腾讯云 CAM 的 SecretId / SecretKey。</p>' +
+    '<p><b>拿到的是什么：</b>Token ID（一串数字）+ Token；面板里分别填到「Token ID」和「Token」两栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>Token 只显示一次，关掉页面就再也看不到。</li><li>域名必须先在 DNSPod 添加并把 NS 指到 DNSPod，否则 API 写了记录也不生效。</li></ul>',
+  route53: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://console.aws.amazon.com/iam/" target="_blank" rel="noopener">https://console.aws.amazon.com/iam/</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录 AWS 控制台，打开 IAM → 用户。</li><li>点创建用户，用户名填一个好认的名字，如 <code>acme-dns</code>。</li><li>这个用户只调 API，不勾控制台登录。</li><li>权限选「直接附加策略」，搜索并勾选 AmazonRoute53FullAccess，点下一步。</li><li>核对一遍，点创建用户。</li><li>进用户详情页 → 安全凭证 → 创建访问密钥。</li><li>用例选「其他」，点下一步，再点创建访问密钥，点显示并复制 Access key ID 和 Secret access key（也可以下载 CSV 存一份）。</li></ol>' +
+    '<p><b>要开什么权限：</b>AmazonRoute53FullAccess（只管 Route 53）。</p>' +
+    '<p><b>拿到的是什么：</b>AccessKey ID（<code>AKIAxxxx</code> 开头）+ Secret Access Key；面板里分别填到「AccessKey ID」和「Secret Access Key」两栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>不要用根账号的访问密钥。</li><li>Secret 只显示一次，关掉对话框就再也看不到；丢了只能删掉重建。</li><li>域名要先在 Route 53 建一个公有 Hosted Zone，并把域名 NS 改成 Route 53 给的 4 个 NS。</li><li>一个用户最多 2 个访问密钥，满了要先删旧的才能建新的。</li></ul>',
+  godaddy: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://developer.godaddy.com/keys" target="_blank" rel="noopener">https://developer.godaddy.com/keys</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>用持有域名的 GoDaddy 账号登录开发者后台。</li><li>打开 Personal Access Token 页（API Keys 页里找）。</li><li>点 Generate Token。</li><li>起个名字，选有效期（最长 1 年，建议选 1 年）。</li><li>权限展开 Domains &amp; DNS，只勾 domains.domain:read 和 domains.dns:update，不要整包全勾。</li><li>点 Create Token / Generate Token。</li><li>立刻复制令牌，只显示一次。</li></ol>' +
+    '<p><b>要开什么权限：</b>domains.domain:read（读域名与记录）+ domains.dns:update（创建和删除 TXT 记录）。</p>' +
+    '<p><b>拿到的是什么：</b>Personal Access Token（一长串字符）；面板里填到「Personal Access Token」那一栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>PAT 最长有效 1 年，到期后面板签发会报 401，须重新生成并换进面板。</li><li>别用旧的 Key + Secret（sso-key）方式，那是已废弃的 v1 接口。</li><li>别选 OTE（测试环境）的密钥，生产要用 Production 环境的。</li><li>域名必须注册在 GoDaddy 且用 GoDaddy 的 DNS 托管。</li></ul>' +
+    '<p><b>相关链接：</b></p>' +
+    '<p><a href="https://developer.godaddy.com/en/docs/api-users/auth" target="_blank" rel="noopener">https://developer.godaddy.com/en/docs/api-users/auth</a></p>',
+  namecheap: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://ap.www.namecheap.com/settings/tools/apiaccess/" target="_blank" rel="noopener">https://ap.www.namecheap.com/settings/tools/apiaccess/</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录 Namecheap，先确认账号符合 API 开通条件：域名 20 个以上，或账户余额 50 美元以上，或近 2 年消费 50 美元以上，满足一条即可。</li><li>打开上面的 API Access 页（或 Profile → Tools → Business &amp; Dev Tools → Namecheap API Access，点 MANAGE）。</li><li>把 API Access 开关打开，阅读条款，输入账号密码确认。</li><li>复制页面上显示的 API Key（API User 就是你的 Namecheap 用户名）。</li><li>在同一页的 Whitelisted IPs 点 Edit → Add IP，填面板服务器的公网 IPv4 地址，保存。</li><li>查面板服务器公网 IP：在面板服务器上执行下面这条命令，输出的那串 IPv4 就是要填的地址：<pre class="cmd"><code>curl https://api.ipify.org</code></pre></li></ol>' +
+    '<p><b>要开什么权限：</b>无 scope 可选；API 开通本身有账号门槛（见第 1 步）。</p>' +
+    '<p><b>拿到的是什么：</b>API User（你的用户名）+ API Key（一长串十六进制）+ Client IP（面板服务器公网 IPv4）；面板里分别填到「API User」「API Key」「Client IP」三栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>IP 不加白名单 API 直接拒绝；只支持 IPv4，不支持 IPv6。</li><li>只支持用 BasicDNS（Namecheap 免费 DNS）的域名。</li><li>面板服务器换 IP 后，要同步改白名单和面板里的 Client IP。</li><li>重置 API Key 会让旧 Key 立即失效，用旧 Key 的地方都要换。</li></ul>' +
+    '<p><b>相关链接：</b></p>' +
+    '<p><a href="https://www.namecheap.com/support/api/intro/" target="_blank" rel="noopener">https://www.namecheap.com/support/api/intro/</a></p>',
+  digitalocean: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://cloud.digitalocean.com/account/api/tokens" target="_blank" rel="noopener">https://cloud.digitalocean.com/account/api/tokens</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录 DigitalOcean 控制台，打开 API → Tokens 页。</li><li>在 Personal Access Tokens 下面点 Generate New Token。</li><li>填 Token name，如 <code>acme-dns</code>。</li><li>Expiration 选 No expiry（或足够长的有效期）。</li><li>Scopes 选 Custom：域名（domain）勾 Read 和 Write，其他资源保持 No Access。</li><li>点 Generate Token。</li><li>立刻复制令牌，只显示一次。</li></ol>' +
+    '<p><b>要开什么权限：</b>domain 的 Read + Write（读和改域名记录）；想省事也可直接选 Full Access，但权限更大。</p>' +
+    '<p><b>拿到的是什么：</b>Personal Access Token，以 <code>dop_v1_xxxx</code> 开头；面板里填到「Personal Access Token」那一栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>令牌只显示一次，关掉页面就再也看不到。</li><li>域名要先在 DigitalOcean 的 Networking → Domains 里添加。</li><li>选 Full Access 的令牌能动账号里一切资源，优先用自定义 scope。</li></ul>',
+  linode: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://cloud.linode.com/profile/tokens" target="_blank" rel="noopener">https://cloud.linode.com/profile/tokens</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录 Linode Cloud Manager。</li><li>点右上角用户名 → API Tokens（或直接打开上面的地址）。</li><li>点 Create a Personal Access Token。</li><li>填 Label，如 <code>acme-dns</code>。</li><li>Expiry 选一个足够长的有效期（或 Never）。</li><li>权限只给 Domains 选 Read/Write，其他保持 No Access。</li><li>点 Create Token。</li><li>立刻复制令牌，只显示一次。</li></ol>' +
+    '<p><b>要开什么权限：</b>domains:read_write（其余 No Access）。</p>' +
+    '<p><b>拿到的是什么：</b>Personal Access Token；面板里填到「Personal Access Token」那一栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>令牌只显示一次，关掉弹窗就看不到。</li><li>权限不够会报 403；缺了 scope 只能新建一个令牌（不能给已有令牌加 scope）。</li><li>域名要先在 Linode 的 Domains 里添加。</li></ul>' +
+    '<p><b>相关链接：</b></p>' +
+    '<p><a href="https://techdocs.akamai.com/cloud-computing/docs/manage-personal-access-tokens" target="_blank" rel="noopener">https://techdocs.akamai.com/cloud-computing/docs/manage-personal-access-tokens</a></p>',
+  vultr: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://my.vultr.com/settings/#settingsapi" target="_blank" rel="noopener">https://my.vultr.com/settings/#settingsapi</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录 Vultr 客户后台，打开 Account → API（上面的地址）。</li><li>如果 API 还没启用，先点 Enable API。</li><li>在 User Access Tokens 区填名字、选有效期，点 Add Key。</li><li>立刻复制 API Key，只显示一次。</li><li>如果开了 Access Control，把面板服务器的公网 IP 加进允许列表再保存。</li></ol>' +
+    '<p><b>要开什么权限：</b>无 scope；每账号一把，可用 IP 允许列表限制来源。</p>' +
+    '<p><b>拿到的是什么：</b>API Key；面板里填到「API Key」那一栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>Key 只显示一次，关掉页面就再也看不到。</li><li>域名要先在 Vultr 的 DNS 里添加。</li><li>开了 Access Control 又没加面板服务器 IP，调用会直接被拒绝。</li></ul>',
+  bunny: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://dash.bunny.net/account/api-key" target="_blank" rel="noopener">https://dash.bunny.net/account/api-key</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录 bunny.net 后台。</li><li>打开 Account → API（或直接打开上面的地址）。</li><li>找到 Account API Key，点眼睛图标显示出来。</li><li>点复制图标复制 Key。</li><li>确认你要填的是 Account API Key，不是 Storage Zone 或 Stream 的 Key。</li></ol>' +
+    '<p><b>要开什么权限：</b>无 scope 可选；这把 Key 有账号全部权限。</p>' +
+    '<p><b>拿到的是什么：</b>Account API Key（一长串字符）；面板里填到「API Key」那一栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>这把 Key 能动 CDN、存储、账单，不只是 DNS，泄露了立即在同一页点刷新图标重新生成（旧 Key 立即失效）。</li><li>账号自带一把，不用生成；别拿 Storage Zone 或 Stream 的 Key 来填。</li><li>域名要先在 Bunny 添加 DNS Zone。</li></ul>' +
+    '<p><b>相关链接：</b></p>' +
+    '<p><a href="https://bunny.net/docs/api-reference/authentication" target="_blank" rel="noopener">https://bunny.net/docs/api-reference/authentication</a></p>',
+  hetzner: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://console.hetzner.cloud" target="_blank" rel="noopener">https://console.hetzner.cloud</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录 Hetzner Cloud Console。</li><li>选你的项目（没有先建一个；令牌只属于这一个项目）。</li><li>左侧点 Security，上方点 API Tokens。</li><li>点 Generate API Token。</li><li>填描述（如 <code>acme-dns</code>），权限选 Read &amp; Write。</li><li>点生成，立刻复制令牌，只显示一次。</li></ol>' +
+    '<p><b>要开什么权限：</b>Read &amp; Write（项目级）。</p>' +
+    '<p><b>拿到的是什么：</b>Cloud API Token；面板里填到「API Token」那一栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>令牌只显示一次，关掉窗口就再也看不到。</li><li>不要用旧 DNS Console（dns.hetzner.com）的令牌，旧 DNS API 已于 2026 年 5 月下线，那把令牌在新 API 上不可用。</li><li>一个令牌只管一个项目，换项目要另外开一把。</li><li>域名要先在 Hetzner Console 的这个项目里添加 DNS Zone。</li></ul>' +
+    '<p><b>相关链接：</b></p>' +
+    '<p><a href="https://docs.hetzner.com/cloud/api/getting-started/generating-api-token/" target="_blank" rel="noopener">https://docs.hetzner.com/cloud/api/getting-started/generating-api-token/</a></p>',
+  spaceship: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://www.spaceship.com/application/api-manager/" target="_blank" rel="noopener">https://www.spaceship.com/application/api-manager/</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录 Spaceship。</li><li>打开上面的 API Manager 页。</li><li>点创建 Key。</li><li>起个名字，权限只勾 dnsrecords:read 和 dnsrecords:write。</li><li>保存后复制 API Key 和 API Secret。</li><li>确认域名已在 Spaceship 注册且用它的 DNS。</li></ol>' +
+    '<p><b>要开什么权限：</b>dnsrecords:read（读记录）+ dnsrecords:write（写记录）。</p>' +
+    '<p><b>拿到的是什么：</b>API Key + API Secret；面板里分别填到「API Key」和「API Secret」两栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>Secret 只显示一次，关掉页面就再也看不到。</li><li>域名必须在 Spaceship 注册且用 Spaceship 的 DNS，否则 API 写了记录也不生效。</li></ul>' +
+    '<p><b>相关链接：</b></p>' +
+    '<p><a href="https://docs.spaceship.dev/" target="_blank" rel="noopener">https://docs.spaceship.dev/</a></p>',
+  gandi: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://admin.gandi.net/organizations/account/pat" target="_blank" rel="noopener">https://admin.gandi.net/organizations/account/pat</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录 Gandi 后台。</li><li>打开上面的 Personal Access Token 页（或 Organizations → 选你的组织 → Sharing → Personal Access Token）。</li><li>点 Create a token。</li><li>选域名所属的组织，填名字，选有效期（7 天–1 年）。</li><li>权限勾 "Manage domain name technical configurations"（管理域名技术配置），并把范围限定到要用的域名。</li><li>点 Create，立刻复制令牌，只显示一次。</li></ol>' +
+    '<p><b>要开什么权限：</b>Manage domain name technical configurations（建议同时勾 See and renew domain names，方便核对域名）。</p>' +
+    '<p><b>拿到的是什么：</b>Personal Access Token；面板里填到「Personal Access Token」那一栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>令牌有有效期（最长 1 年），到期前须重新生成并换进面板，Gandi 不会提醒。</li><li>不要用旧的 API Key（已废弃、不能限范围）。</li><li>域名必须用 LiveDNS 域名服务器（NS 是 <code>ns-*.gandi.net</code>）；经典 DNS（<code>*.dns.gandi.net</code>）不兼容，须先迁到 LiveDNS。</li></ul>',
+  namesilo: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://www.namesilo.com/account/api-manager" target="_blank" rel="noopener">https://www.namesilo.com/account/api-manager</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录 NameSilo。</li><li>打开上面的 API Manager 页。</li><li>生成 API Key。</li><li>复制 API Key，保存好。</li><li>确认域名已在 NameSilo 注册。</li></ol>' +
+    '<p><b>要开什么权限：</b>无 scope 可选。</p>' +
+    '<p><b>拿到的是什么：</b>API Key；面板里填到「API Key」那一栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>域名要先在 NameSilo 注册。</li><li>API Key 会放在请求地址的查询串里传输，不要把它贴到群里或公开日志里。</li></ul>',
+  desec: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://desec.io" target="_blank" rel="noopener">https://desec.io</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>在 deSEC 注册账号，按确认邮件里的链接激活（邮件里会带一个初始 token，也可以直接用它）。</li><li>登录 deSEC，打开 Token Management。</li><li>点创建新 token。</li><li>给 token 起个名字，策略可以限到 <code>_acme-challenge*</code>（只让它改验证记录）。</li><li>复制 token，只显示一次。</li></ol>' +
+    '<p><b>要开什么权限：</b>建议把 token 策略限到 <code>_acme-challenge*</code>（最小权限）。</p>' +
+    '<p><b>拿到的是什么：</b>API Token；面板里填到「Token」那一栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>token 只显示一次，关掉页面就再也看不到。</li><li>域名要先在 deSEC 添加。</li></ul>' +
+    '<p><b>相关链接：</b></p>' +
+    '<p><a href="https://desec.readthedocs.io/en/latest/" target="_blank" rel="noopener">https://desec.readthedocs.io/en/latest/</a></p>',
+  porkbun: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://porkbun.com/account/api" target="_blank" rel="noopener">https://porkbun.com/account/api</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录 Porkbun，右上角点 ACCOUNT → API Access（或直接打开上面的地址）。</li><li>填标题，权限建议选 "Manage, but no purchases"（或自定义只给 DNS），可再限域名或 IP，点 Create API Key。</li><li>弹出的框里同时复制 API Key 和 Secret Key，Secret 只显示一次，关掉页面就看不到。</li><li>再给域名开 API Access：ACCOUNT → Domain Management → 找到域名点 Details → 把 API Access 开关打开。</li><li>想一次全开的话，在 API Access 页打开 Opt In All Domains（含以后新加的域名）。</li></ol>' +
+    '<p><b>要开什么权限：</b>建议 Manage, but no purchases（或自定义 DNS 权限）。</p>' +
+    '<p><b>拿到的是什么：</b>API Key（<code>pk1_xxxx</code> 开头）+ Secret Key（<code>sk1_xxxx</code> 开头）；面板里分别填到「API Key」和「Secret」两栏。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>光有 Key 不够，域名没开 API Access 会报 API_ACCESS_DISABLED。</li><li>Secret 只显示一次，丢了只能删掉重建。</li><li>域名必须用 Porkbun 的 NS。</li></ul>' +
+    '<p><b>相关链接：</b></p>' +
+    '<p><a href="https://kb.porkbun.com/article/190-getting-started-with-the-porkbun-dns-api" target="_blank" rel="noopener">https://kb.porkbun.com/article/190-getting-started-with-the-porkbun-dns-api</a></p>',
+  cloudns: '<p><b>去哪里：</b></p>' +
+    '<p><a href="https://www.cloudns.net/api-settings/" target="_blank" rel="noopener">https://www.cloudns.net/api-settings/</a></p>' +
+    '<p><b>步骤：</b></p>' +
+    '<ol><li>登录 ClouDNS 控制台。</li><li>顶部导航点 API &amp; Resellers（或直接打开上面的地址）。</li><li>在 API Users 区点 Add new user。</li><li>设一个 API 密码，IP 地址留空（表示不限制来源 IP）。</li><li>点 Save，表格里会生成 auth-id，记下来。</li><li>子账号用法：在 API Sub-Users 区点 Add new sub-user，填好权限与密码，拿到 sub-auth-id 或 sub-auth-user，面板里填 Sub-auth user 那栏（主账号不用填）。</li></ol>' +
+    '<p><b>要开什么权限：</b>API 用户默认有账号全部权限；子账号可限范围。</p>' +
+    '<p><b>拿到的是什么：</b>auth-id（数字 ID）+ auth-password（你自己设的密码）；面板里分别填到「Auth ID」和「Auth Password」两栏，子账号另填「Sub-auth user」。</p>' +
+    '<p><b>注意：</b></p>' +
+    '<ul><li>HTTP API 只在 Premium DNS 和 DDoS Protected DNS 套餐里有，免费套餐看不到 API &amp; Resellers 入口。</li><li>IP 白名单填了面板服务器 IP 才能调，面板服务器换 IP 会断（留空最省事）。</li><li>错误也回 HTTP 200，看面板报错提示为准，不要只看状态码。</li></ul>' +
+    '<p><b>相关链接：</b></p>' +
+    '<p><a href="https://www.cloudns.net/wiki/article/42/" target="_blank" rel="noopener">https://www.cloudns.net/wiki/article/42/</a></p>',
+  manual: '<p>不用填凭证：点「开启 HTTPS」后，面板先下单并在下方给出 TXT 记录名与值，你去任意 DNS 后台加上，再点「已添加，继续验证」；订单 1 小时内有效，面板重启后仍可继续；不自动续签，到期前手动重新签发。</p>',
+};
+// v1.4.17：点开指定服务商的凭证获取教程（宽弹窗；手动模式只显示一句话）。
+function showDNSTutorial(provider) {
+  const html = DNS_TUTORIALS[provider];
+  if (!html) return;
+  const title = provider === 'manual' ? '手动模式' : dnsProviderDisplay(provider) + ' 凭证获取教程';
+  openModal('<h2>' + esc(title) + '</h2><div class="dns-tutorial">' + html + '</div>', true);
+}
+// v1.4.17：document 级委托（按钮在各家凭证表单里，随下拉框显隐；
+// 只绑一次，重复调用直接返回，与 ibHelpWire 同款做法）。
+let dnsTutorialWired = false;
+function dnsTutorialWire() {
+  if (dnsTutorialWired) return;
+  dnsTutorialWired = true;
+  document.addEventListener('click', (e) => {
+    const t = e.target;
+    const btn = t && t.closest ? t.closest('[data-dns-tutorial]') : null;
+    if (!btn) return;
+    showDNSTutorial(btn.getAttribute('data-dns-tutorial'));
+  });
+}
 // 当前选中的服务商（后端没给或给了空值时默认 cloudflare，老 payload 兼容）。
 function dnsCurrentProvider(st) {
   const p = (st && st.dns_provider) || '';

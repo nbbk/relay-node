@@ -641,3 +641,11 @@
 - HTTPS 卡片的 #dns-provider 查过、没动：它从不删 option（renderDNSProvider 只回填选中值），没有同样的问题；未配置的服务商本来就要能选（选了才填得了它的凭证表单），改成只列已配置反而会断掉配凭证的入口。Go 静态断言 panel_1416_test.go 把这条也钉住了（renderDNSProvider 不重建、不删 option）。
 - 测试：新增 Go panel_1416_test.go（版本断言 1.4.16；renderNodeCerts 重建 option 的静态断言——记选中值、清空重建、按 providers 逐个建 option、未配置跳过、手动恒保留、选中值保住、旧的 o.remove() 已不在；renderDNSProvider 不动断言）与 jsdom test-1416.js（同会话内设置页配好新服务商后证书页下拉框立刻出现它、已选中的值在重建后不变、未配置的仍不出现、手动恒保留、证书页与 HTTPS 卡片两个下拉框都覆盖）；test-1404／test-1406（pulse 版）／test-1408／test-1409／test-1410／test-1411／test-1412／test-1413／test-1414／test-1415 回归全过；面板 `TZ=UTC go test -race` 全量全过（版本断言已一并升到 1.4.16）。未测：真机、iPhone Safari。
 - 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。
+
+### v1.4.17 更新
+
+- 设置页 DNS 服务商卡片：每家凭证表单旁加「怎么获取？」入口，点开用宽弹窗显示该家凭证获取教程（去哪里、步骤、要开什么权限、拿到的是什么、注意、相关链接）；教程内容与 dns-provider-tutorials.md 一字不差（18 家：17 家服务商＋手动模式），只有单独成行的网址渲染成新标签页链接（target="_blank" rel="noopener"）；Namecheap 第 6 步的 `curl https://api.ipify.org` 是命令、放代码块里，不渲染成链接。手动模式不整篇教程，只显示一句话（不用填凭证，面板下单后给 TXT 名与值，手动加记录再点“已添加，继续验证”），入口放在手动模式的说明段落下、选中手动时才可见。入口用 document 级委托（data-dns-tutorial 属性），只绑一次，与 ibHelpWire 同款做法；按钮 type="button"，不会误提交凭证表单。
+- 顺手修 Namecheap 面板旧提示：路径从“Profile → Security → API Access”改成官方路径“Profile → Tools → Business & Dev Tools → Namecheap API Access”，句子其余部分不动；教程里同一步骤用的也是新路径，两处一致。
+- 核对：教程里每家“面板里填到「X」那一栏”说的栏名与面板上该家表单实际的 label 全一致（17 家，含 CloudNS 的子账号「Sub-auth user」与 Porkbun 的「Secret」），面板 label 一处没动。
+- 测试：Go 全量与 jsdom test-1417 由测试同事另行覆盖（本版未写 jsdom 测试、未跑 Go 全量；版本断言已一并升到 1.4.17）。未测：真机、iPhone Safari。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。
