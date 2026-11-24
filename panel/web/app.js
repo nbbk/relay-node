@@ -1391,6 +1391,233 @@ function randomSS2022Key(n) {
   for (let i = 0; i < buf.length; i++) s += String.fromCharCode(buf[i]);
   return btoa(s);
 }
+// ---------- 添加入站表单字段帮助（v1.4.11） ----------
+// 每个字段 label 旁的 ⓘ 按钮点开一个共享提示框（#ib-help-pop）：
+// 点 ⓘ 打开、再点关、点别处关、Esc 关、一次只开一个。
+// 内容以实现为准：端口／SNI／密码等口径见 node_inbounds.go 的
+// validateInbound 与新建默认值（1.4.10 切片 6）；SS2022 密钥长度是
+// agent 0.1.7 实测口径；SOCKS5 用户名空着节点上应用失败（agent 的
+// renderSocksInbound 要求用户名非空）。带 proto 参数的是跟协议联动
+// 的字段：打开时按当前选的协议生成内容，切换协议时若提示框还开着，
+// 内容跟着刷新（见协议 change 处理里的 ibHelpRefresh）。
+const IB_HELP = {
+  tag: {
+    title: '入站 tag/名称',
+    body: () => [
+      '填什么：给这条入站起个名字，节点内唯一，列表里显示的就是它。',
+      '必填：不能为空，同一个节点里不能重复，重复会保存失败。',
+      '建议：协议加端口，如 ss-8388、reality-443，一眼看出是哪条入站。',
+    ],
+  },
+  protocol: {
+    title: '协议',
+    body: () => [
+      '填什么：这条入站跑什么协议，决定客户端用什么方式连接。',
+      '必填，默认 VLESS＋REALITY。',
+      '建议：新节点先用上面“一键生成默认三件套”（REALITY＋XHTTP＋HY2）；SS、SS2022、SOCKS5 是备用协议，默认不开，按需添加；XHTTP 只作服务端 fallback，不进订阅。',
+    ],
+  },
+  port: {
+    title: '端口',
+    body: (p) => {
+      const lines = ['填什么：入站监听的端口，客户端连的就是这个端口，范围 1–65535。'];
+      if (p === 'shadowsocks' || p === 'ss2022' || p === 'socks') {
+        lines.push('选填：留空走默认端口（SS／SS2022 是 8388，SOCKS5 是 1080）；想换就手填。切换协议时端口空着会自动填默认端口，手填的值不会被覆盖。');
+      } else {
+        lines.push('必填：这个协议端口不能为空。');
+      }
+      lines.push('建议：REALITY、TLS 类一般用 443；TCP 443 与 UDP 443 各只能一个启用的入站占着（HY2 和 TUIC 都是 UDP 443，同时只能开一个）；停用的入站不占端口。');
+      return lines;
+    },
+  },
+  listen: {
+    title: '监听地址',
+    body: () => [
+      '填什么：入站绑哪块网卡的 IP。',
+      '选填：留空等于 0.0.0.0，监听全部网卡。',
+      '建议：一般留空；多 IP 的机器想只走某块网卡时再填指定 IP；填了一定要是合法 IP，不然保存失败。',
+    ],
+  },
+  sni: {
+    title: 'SNI / 域名',
+    body: (p) => {
+      if (p === 'vless-reality' || p === 'vless-xhttp') return [
+        '填什么：REALITY 的伪装目标域名，握手时对外看起来像在访问这个网站；回落目标与 serverNames 都从它派生。',
+        '必填：留空会先填占位值 www.example.com 顶上，但占位值不能用，部署前必须改成真实域名。',
+        '建议：下拉选五个预设大站之一（如 www.microsoft.com），或选“自定义”手填。',
+      ];
+      if (p === 'vless-tls' || p === 'trojan' || p === 'anytls') return [
+        '填什么：TLS 证书的域名，也是客户端连接时用的 SNI。',
+        '必填：必须是真实域名，证书就签给这个域名。',
+        '建议：填节点域名，如 example.com；域名须先 A 记录解析到这台节点。',
+      ];
+      if (p === 'hysteria2' || p === 'tuic') return [
+        '填什么：HY2／TUIC 的域名，客户端连接时用的 SNI，证书按这个域名签发。',
+        '必填：必须是真实域名。',
+        '建议：填节点域名，如 example.com；域名须先 A 记录解析到这台节点；HY2 和 TUIC 都是 UDP 443，同时只能开一个。',
+      ];
+      return [
+        '这个协议不用填 SNI：没有 TLS 握手，填了也不起作用。',
+        '留空即可。',
+      ];
+    },
+  },
+  'reality-fingerprint': {
+    title: 'REALITY 指纹',
+    body: (p) => {
+      if (p === 'vless-reality' || p === 'vless-xhttp') return [
+        '填什么：REALITY 握手时模仿的浏览器 TLS 指纹。',
+        '选填：留空默认 chrome。',
+        '建议：一般用默认 chrome；下拉有 8 个预设（chrome、firefox、safari、ios、android、edge、qq、random），选“自定义”可手填；只能用字母、数字、下划线、连字符，最多 64 个字。',
+      ];
+      return ['只对 REALITY 入站有效；当前协议不是 REALITY，填了也不起作用。'];
+    },
+  },
+  'ss-method': {
+    title: 'SS 加密方法',
+    body: (p) => {
+      if (p === 'ss2022') return [
+        '填什么：SS2022 的加密方法，决定密码密钥要多长。',
+        '必填。',
+        '建议：默认 2022-blake3-aes-128-gcm（16 字节密钥）；2022-blake3-aes-256-gcm 与 2022-blake3-chacha20-poly1305 要 32 字节密钥；只能选 2022- 开头的方法。',
+      ];
+      return [
+        '填什么：Shadowsocks 的加密方法。',
+        '必填。',
+        '建议：默认 aes-256-gcm；三种可选（aes-256-gcm、aes-128-gcm、chacha20-poly1305），不要选 2022- 开头的方法，那是 SS2022 用的。',
+      ];
+    },
+  },
+  'ss-password': {
+    title: 'SS 密码',
+    body: (p) => {
+      if (p === 'ss2022') return [
+        '填什么：SS2022 的密钥，必须是 base64 编码的定长密钥，不是普通密码。',
+        '选填：留空按方法自动生成（128-gcm 16 字节，256-gcm／chacha20 32 字节）。',
+        '建议：留空自动生成最省事；手填必须是合法 base64 且长度对上，否则保存时直接报 400；普通随机串不能用，节点上 Xray 会报 bad key 拒掉。',
+      ];
+      return [
+        '填什么：客户端连接用的密码。',
+        '选填：留空自动生成 16 位随机密码。',
+        '建议：留空让它生成就行；手填也行，任意密码都可以。',
+      ];
+    },
+  },
+  'socks-username': {
+    title: 'SOCKS5 用户名',
+    body: () => [
+      '填什么：SOCKS5 的登录用户名，客户端填这个用户名连接。',
+      '必填：不填的话节点上应用这条入站会失败（agent 要求用户名非空）。',
+      '建议：填一个好记的用户名，如 user1；和密码一起填进客户端。',
+    ],
+  },
+  'socks-password': {
+    title: 'SOCKS5 密码',
+    body: () => [
+      '填什么：SOCKS5 的登录密码。',
+      '选填：留空自动生成 16 位随机密码。',
+      '建议：留空自动生成；手填也行。',
+    ],
+  },
+};
+let ibHelpOpenKey = null;
+let ibHelpOpenBtn = null;
+let ibHelpWired = false;
+function ibHelpProto() { const s = $('#nodes-ib-protocol'); return s ? s.value : ''; }
+function ibHelpPopEl() {
+  let pop = document.getElementById('ib-help-pop');
+  if (pop) return pop;
+  pop = document.createElement('div');
+  pop.id = 'ib-help-pop';
+  pop.className = 'ib-help-pop';
+  pop.setAttribute('role', 'dialog');
+  pop.setAttribute('aria-label', '填写说明');
+  pop.hidden = true;
+  const x = document.createElement('button');
+  x.type = 'button';
+  x.className = 'ib-help-x';
+  x.setAttribute('aria-label', '关闭提示');
+  x.textContent = '×';
+  x.addEventListener('click', (e) => { e.stopPropagation(); ibHelpHide(); });
+  pop.appendChild(x);
+  const t = document.createElement('h4');
+  t.className = 'ib-help-title';
+  pop.appendChild(t);
+  const b = document.createElement('div');
+  b.className = 'ib-help-body';
+  pop.appendChild(b);
+  document.body.appendChild(pop);
+  return pop;
+}
+function ibHelpRender(key) {
+  const entry = IB_HELP[key];
+  const pop = ibHelpPopEl();
+  if (!entry) return;
+  pop.querySelector('.ib-help-title').textContent = entry.title;
+  const body = pop.querySelector('.ib-help-body');
+  body.textContent = '';
+  entry.body(ibHelpProto()).forEach((line) => {
+    const p = document.createElement('p');
+    p.textContent = line;
+    body.appendChild(p);
+  });
+}
+function ibHelpPlace(btn) {
+  const pop = ibHelpPopEl();
+  pop.hidden = false;
+  const r = btn.getBoundingClientRect();
+  const w = Math.min(340, window.innerWidth - 16);
+  let left = r.left;
+  if (left + w > window.innerWidth - 8) left = Math.max(8, window.innerWidth - 8 - w);
+  let top = r.bottom + 6;
+  const h = pop.offsetHeight;
+  if (top + h > window.innerHeight - 8 && r.top - 6 - h > 8) top = r.top - 6 - h;
+  pop.style.left = left + 'px';
+  pop.style.top = top + 'px';
+}
+function ibHelpShow(key, btn) {
+  ibHelpRender(key);
+  ibHelpPlace(btn);
+  ibHelpOpenKey = key;
+  ibHelpOpenBtn = btn;
+  document.querySelectorAll('[data-ib-help]').forEach((b) => b.setAttribute('aria-expanded', b === btn ? 'true' : 'false'));
+}
+function ibHelpHide() {
+  const pop = document.getElementById('ib-help-pop');
+  if (pop) pop.hidden = true;
+  ibHelpOpenKey = null;
+  ibHelpOpenBtn = null;
+  document.querySelectorAll('[data-ib-help]').forEach((b) => b.setAttribute('aria-expanded', 'false'));
+}
+function ibHelpRefresh() {
+  if (ibHelpOpenKey && ibHelpOpenBtn) ibHelpShow(ibHelpOpenKey, ibHelpOpenBtn);
+}
+function ibHelpWire() {
+  if (ibHelpWired) return;
+  ibHelpWired = true;
+  document.addEventListener('click', (e) => {
+    const t = e.target;
+    const btn = t && t.closest ? t.closest('[data-ib-help]') : null;
+    if (btn) {
+      // ⓘ 在 label 里：preventDefault 拦住 label 把焦点抢到输入框上。
+      e.preventDefault();
+      const key = btn.getAttribute('data-ib-help');
+      if (ibHelpOpenKey === key) ibHelpHide();
+      else ibHelpShow(key, btn);
+      return;
+    }
+    if (!ibHelpOpenKey) return;
+    // 点提示框里、协议下拉框上不关：前者是框内操作，后者是换协议看
+    // 联动内容（change 时由 ibHelpRefresh 刷新）；其余点别处都关。
+    if (t && t.closest && (t.closest('#ib-help-pop') || t.closest('#nodes-ib-protocol'))) return;
+    ibHelpHide();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && ibHelpOpenKey) ibHelpHide();
+  });
+  window.addEventListener('scroll', () => { if (ibHelpOpenKey) ibHelpHide(); }, true);
+  window.addEventListener('resize', () => { if (ibHelpOpenKey) ibHelpHide(); });
+}
 function initNodes() {
   on('#nodes-create-form', 'submit', async (e) => {
     e.preventDefault();
@@ -1411,6 +1638,7 @@ function initNodes() {
   // SNI 与 REALITY 指纹是真正下拉框（v1.4.4）：select＋自定义文本框，见 presetSelectHtml。
   wirePresetSelect('nodes-ib-sni', 'nodes-ib-sni-custom');
   wirePresetSelect('nodes-ib-reality-fingerprint', 'nodes-ib-reality-fingerprint-custom');
+  ibHelpWire(); // v1.4.11：添加入站表单字段帮助（ⓘ 按钮＋提示框）。
   const ssMethodWrap = $('#nodes-ib-ss-method-wrap');
   const ssPwWrap = $('#nodes-ib-ss-pw-wrap');
   const socksUserWrap = $('#nodes-ib-socks-user-wrap');
@@ -1444,9 +1672,12 @@ function initNodes() {
     }
     if (v === 'ss2022') $('#nodes-ib-ss-method').value = '2022-blake3-aes-128-gcm';
     if (v === 'shadowsocks') $('#nodes-ib-ss-method').value = 'aes-256-gcm';
+    // v1.4.11：提示框还开着时，内容按新协议刷新（端口／SNI／密码等口径会变）。
+    ibHelpRefresh();
   });
   on('#nodes-inbound-add-form', 'submit', async (e) => {
     e.preventDefault();
+    ibHelpHide(); // v1.4.11：提交时关掉字段帮助提示框。
     if (!currentInboundsNodeId) { toast('先在上面点一个节点的“入站模板”', 'err'); return; }
     const proto = $('#nodes-ib-protocol').value;
     const m = IB_PROTOCOLS[proto];

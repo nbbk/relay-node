@@ -213,7 +213,7 @@ func TestManualDisableNotFound1403(t *testing.T) {
 // ---------- 4. 版本断言 ----------
 
 func TestVersion1403(t *testing.T) {
-	if Version != "1.4.10" {
-		t.Fatalf("Version 应为 1.4.10，实际 %q", Version)
+	if Version != "1.4.11" {
+		t.Fatalf("Version 应为 1.4.11，实际 %q", Version)
 	}
 }

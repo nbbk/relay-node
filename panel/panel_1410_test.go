@@ -18,7 +18,7 @@ package main
 //     一条都不进（切片 10 的活）；SS／SS2022 链接在 plain／base64／
 //     Clash／sing-box 四种格式里都渲染出来；socks5:// 链接在 Clash 与
 //     sing-box 里不出 proxy／outbound。
-//   - 版本断言 1.4.10。
+//   - 版本断言 1.4.11。
 
 import (
 	"encoding/base64"
@@ -55,8 +55,8 @@ func setupNode1410(t *testing.T) (*Server, http.Handler, string, int64) {
 }
 
 func TestVersion1410(t *testing.T) {
-	if Version != "1.4.10" {
-		t.Fatalf("VERSION 应是 1.4.10，实际 %q", Version)
+	if Version != "1.4.11" {
+		t.Fatalf("VERSION 应是 1.4.11，实际 %q", Version)
 	}
 }
 

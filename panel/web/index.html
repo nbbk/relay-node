@@ -203,8 +203,8 @@
           <h3 style="margin-top:16px">添加入站</h3>
           <form id="nodes-inbound-add-form">
             <div class="form-grid">
-              <div><label for="nodes-ib-tag">入站 tag/名称 <span class="hint">必填，节点内唯一，如 ss-8388</span></label><input id="nodes-ib-tag" placeholder="ss-8388" maxlength="64" required></div>
-              <div><label for="nodes-ib-protocol">协议 <span class="hint">选一个；默认三件套以外按需添加</span></label><select id="nodes-ib-protocol">
+              <div><label for="nodes-ib-tag">入站 tag/名称 <span class="hint">必填，节点内唯一，如 ss-8388</span><button type="button" class="ib-help-btn" data-ib-help="tag" aria-label="入站 tag/名称填写说明" aria-expanded="false">ⓘ</button></label><input id="nodes-ib-tag" placeholder="ss-8388" maxlength="64" required></div>
+              <div><label for="nodes-ib-protocol">协议 <span class="hint">选一个；默认三件套以外按需添加</span><button type="button" class="ib-help-btn" data-ib-help="protocol" aria-label="协议填写说明" aria-expanded="false">ⓘ</button></label><select id="nodes-ib-protocol">
                 <option value="vless-reality" selected>VLESS＋REALITY＋Vision（TCP）</option>
                 <option value="vless-xhttp">VLESS＋REALITY＋XHTTP（TCP）</option>
                 <option value="vless-tls">VLESS＋TLS＋Vision（TCP）</option>
@@ -216,11 +216,11 @@
                 <option value="ss2022">Shadowsocks 2022</option>
                 <option value="socks">SOCKS5</option>
               </select></div>
-              <div><label for="nodes-ib-port">端口 <span class="hint">SS 默认 8388、SOCKS5 默认 1080（留空用默认）；其他协议必填，1–65535；TCP 443 与 UDP 443 各只能一个入站占</span></label><input id="nodes-ib-port" type="number" min="1" max="65535" placeholder="8443"></div>
-              <div><label for="nodes-ib-listen">监听地址 <span class="hint">留空 = 0.0.0.0，监听全部网卡；多 IP 机器可填指定 IP</span></label><input id="nodes-ib-listen" placeholder="0.0.0.0"></div>
-              <div><label for="nodes-ib-sni">SNI / 域名 <span class="hint">REALITY、TLS、HY2、TUIC、AnyTLS、Trojan 必填；REALITY 不填用占位值 www.example.com；点下拉选常用大站，选“自定义”可手填</span></label><select id="nodes-ib-sni"><option value="">（留空）</option><option value="www.microsoft.com">www.microsoft.com</option><option value="www.apple.com">www.apple.com</option><option value="www.amazon.com">www.amazon.com</option><option value="www.cloudflare.com">www.cloudflare.com</option><option value="www.bing.com">www.bing.com</option><option value="__custom">自定义…</option></select><input id="nodes-ib-sni-custom" placeholder="手填 SNI / 域名，如 example.com" style="display:none;margin-top:6px"></div>
-              <div id="nodes-ib-reality-fp-wrap"><label for="nodes-ib-reality-fingerprint">REALITY 指纹 <span class="hint">点下拉选预设，选“自定义”可手填；只对 REALITY 入站有效</span></label><select id="nodes-ib-reality-fingerprint"><option value="">（留空）</option><option value="chrome" selected>chrome</option><option value="firefox">firefox</option><option value="safari">safari</option><option value="ios">ios</option><option value="android">android</option><option value="edge">edge</option><option value="qq">qq</option><option value="random">random</option><option value="__custom">自定义…</option></select><input id="nodes-ib-reality-fingerprint-custom" placeholder="手填指纹，如 chrome" style="display:none;margin-top:6px"></div>
-              <div id="nodes-ib-ss-method-wrap"><label for="nodes-ib-ss-method">SS 加密方法</label><select id="nodes-ib-ss-method">
+              <div><label for="nodes-ib-port">端口 <span class="hint">SS 默认 8388、SOCKS5 默认 1080（留空用默认）；其他协议必填，1–65535；TCP 443 与 UDP 443 各只能一个入站占</span><button type="button" class="ib-help-btn" data-ib-help="port" aria-label="端口填写说明" aria-expanded="false">ⓘ</button></label><input id="nodes-ib-port" type="number" min="1" max="65535" placeholder="8443"></div>
+              <div><label for="nodes-ib-listen">监听地址 <span class="hint">留空 = 0.0.0.0，监听全部网卡；多 IP 机器可填指定 IP</span><button type="button" class="ib-help-btn" data-ib-help="listen" aria-label="监听地址填写说明" aria-expanded="false">ⓘ</button></label><input id="nodes-ib-listen" placeholder="0.0.0.0"></div>
+              <div><label for="nodes-ib-sni">SNI / 域名 <span class="hint">REALITY、TLS、HY2、TUIC、AnyTLS、Trojan 必填；REALITY 不填用占位值 www.example.com；点下拉选常用大站，选“自定义”可手填</span><button type="button" class="ib-help-btn" data-ib-help="sni" aria-label="SNI / 域名填写说明" aria-expanded="false">ⓘ</button></label><select id="nodes-ib-sni"><option value="">（留空）</option><option value="www.microsoft.com">www.microsoft.com</option><option value="www.apple.com">www.apple.com</option><option value="www.amazon.com">www.amazon.com</option><option value="www.cloudflare.com">www.cloudflare.com</option><option value="www.bing.com">www.bing.com</option><option value="__custom">自定义…</option></select><input id="nodes-ib-sni-custom" placeholder="手填 SNI / 域名，如 example.com" style="display:none;margin-top:6px"></div>
+              <div id="nodes-ib-reality-fp-wrap"><label for="nodes-ib-reality-fingerprint">REALITY 指纹 <span class="hint">点下拉选预设，选“自定义”可手填；只对 REALITY 入站有效</span><button type="button" class="ib-help-btn" data-ib-help="reality-fingerprint" aria-label="REALITY 指纹填写说明" aria-expanded="false">ⓘ</button></label><select id="nodes-ib-reality-fingerprint"><option value="">（留空）</option><option value="chrome" selected>chrome</option><option value="firefox">firefox</option><option value="safari">safari</option><option value="ios">ios</option><option value="android">android</option><option value="edge">edge</option><option value="qq">qq</option><option value="random">random</option><option value="__custom">自定义…</option></select><input id="nodes-ib-reality-fingerprint-custom" placeholder="手填指纹，如 chrome" style="display:none;margin-top:6px"></div>
+              <div id="nodes-ib-ss-method-wrap"><label for="nodes-ib-ss-method">SS 加密方法<button type="button" class="ib-help-btn" data-ib-help="ss-method" aria-label="SS 加密方法填写说明" aria-expanded="false">ⓘ</button></label><select id="nodes-ib-ss-method">
                 <option value="aes-256-gcm" selected>aes-256-gcm</option>
                 <option value="aes-128-gcm">aes-128-gcm</option>
                 <option value="chacha20-poly1305">chacha20-poly1305</option>
@@ -228,9 +228,9 @@
                 <option value="2022-blake3-aes-256-gcm">2022-blake3-aes-256-gcm</option>
                 <option value="2022-blake3-chacha20-poly1305">2022-blake3-chacha20-poly1305</option>
               </select></div>
-              <div id="nodes-ib-ss-pw-wrap"><label for="nodes-ib-ss-password">SS 密码 <span class="hint">留空自动生成：SS 是 16 位随机密码，SS2022 是 base64 密钥</span></label><input id="nodes-ib-ss-password" placeholder="留空自动生成"></div>
-              <div id="nodes-ib-socks-user-wrap"><label for="nodes-ib-socks-username">SOCKS5 用户名</label><input id="nodes-ib-socks-username" placeholder="如 user1"></div>
-              <div id="nodes-ib-socks-pw-wrap"><label for="nodes-ib-socks-password">SOCKS5 密码 <span class="hint">留空自动生成 16 位随机密码</span></label><input id="nodes-ib-socks-password" placeholder="留空自动生成"></div>
+              <div id="nodes-ib-ss-pw-wrap"><label for="nodes-ib-ss-password">SS 密码 <span class="hint">留空自动生成：SS 是 16 位随机密码，SS2022 是 base64 密钥</span><button type="button" class="ib-help-btn" data-ib-help="ss-password" aria-label="SS 密码填写说明" aria-expanded="false">ⓘ</button></label><input id="nodes-ib-ss-password" placeholder="留空自动生成"></div>
+              <div id="nodes-ib-socks-user-wrap"><label for="nodes-ib-socks-username">SOCKS5 用户名<button type="button" class="ib-help-btn" data-ib-help="socks-username" aria-label="SOCKS5 用户名填写说明" aria-expanded="false">ⓘ</button></label><input id="nodes-ib-socks-username" placeholder="如 user1"></div>
+              <div id="nodes-ib-socks-pw-wrap"><label for="nodes-ib-socks-password">SOCKS5 密码 <span class="hint">留空自动生成 16 位随机密码</span><button type="button" class="ib-help-btn" data-ib-help="socks-password" aria-label="SOCKS5 密码填写说明" aria-expanded="false">ⓘ</button></label><input id="nodes-ib-socks-password" placeholder="留空自动生成"></div>
             </div>
             <div class="btn-row"><button class="btn" type="submit">添加入站</button></div>
           </form>
