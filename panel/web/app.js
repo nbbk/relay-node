@@ -1143,10 +1143,10 @@ function showNodesOnce(token, cmd) {
 // 节点详情弹窗（v1.4.4，切片 4）：上报健康块＋流量块（本期按人合计、
 // 各入站总量）。数字全部来自 agent 的 60 秒上报，面板不主动探节点；
 // 失联时显示上次数据，不清零。
-async function openNodeDetailModal(nodeId, nodeName) {
-  let d;
-  try { d = await api('/api/v1/nodes/' + encodeURIComponent(nodeId)); }
-  catch (e) { toast('加载节点详情失败：' + e.message, 'err'); return; }
+// 节点详情弹窗的 HTML（v1.4.19，切片 9）：openNodeDetailModal（本机）与
+// openCentralNodeDetail（远程代理）共用——两边接口形状一致（节点行＋
+// 入站＋流量＋健康），抽出来免得两份 drift。改文案只改这里。
+function nodeDetailModalHtml(d, nodeName, nodeId) {
   const n = d.node || {};
   const bh = d.backend_health || n.backend_health || {};
   const tr = d.traffic || { users: [], inbounds: [], up_period: 0, down_period: 0, up_total: 0, down_total: 0 };
@@ -1162,7 +1162,7 @@ async function openNodeDetailModal(nodeId, nodeName) {
   // 核心版本（v1.4.10）：以上报的 xray_version 为准（backend_health
   // 里新加的 xray_version，节点行里本来就有）；没上报过就不编版本号，显示 —。
   const coreVer = String(bh.xray_version || n.xray_version || '').trim();
-  const m = openModal('<h2>节点详情：' + esc(nodeName || n.name || nodeId) + '</h2>' +
+  return '<h2>节点详情：' + esc(nodeName || n.name || nodeId) + '</h2>' +
     '<h3>上报健康</h3>' +
     '<div class="kv"><span>状态</span><b>' + nodeHealthDot(bh.status) + esc(bh.detail || '尚未上报') + '</b></div>' +
     '<div class="kv"><span>最后上报</span><b>' + esc(bh.last_traffic_at ? fmtDate(typeof bh.last_traffic_at === 'number' ? bh.last_traffic_at * 1000 : bh.last_traffic_at) : '—') + '</b></div>' +
@@ -1177,7 +1177,23 @@ async function openNodeDetailModal(nodeId, nodeName) {
     (users.length ? users.map((u) => '<div class="kv"><span>' + esc(u.username || u.user_id || '') + '</span><b>本期 ' + esc(fmtBytes((u.up_period || 0) + (u.down_period || 0))) + '（上 ' + esc(fmtBytes(u.up_period || 0)) + '／下 ' + esc(fmtBytes(u.down_period || 0)) + '）</b></div>').join('') : '<p class="muted small">本期还没有按人流量。</p>') +
     '<h3>各入站总量（累计）</h3>' +
     (inbounds.length ? inbounds.map((ib) => '<div class="kv"><span>' + esc(ib.inbound_tag || '') + '</span><b>上 ' + esc(fmtBytes(ib.up || 0)) + ' ／ 下 ' + esc(fmtBytes(ib.down || 0)) + '</b></div>').join('') : '<p class="muted small">还没有入站流量。</p>') +
-    '<div class="btn-row"><button class="btn secondary" id="node-detail-close" type="button">关闭</button></div>');
+    '<div class="btn-row"><button class="btn secondary" id="node-detail-close" type="button">关闭</button></div>';
+}
+async function openNodeDetailModal(nodeId, nodeName) {
+  let d;
+  try { d = await api('/api/v1/nodes/' + encodeURIComponent(nodeId)); }
+  catch (e) { toast('加载节点详情失败：' + e.message, 'err'); return; }
+  const m = openModal(nodeDetailModalHtml(d, nodeName, nodeId));
+  if (m) onIn(m, '#node-detail-close', 'click', closeModal);
+}
+// 远程节点详情（v1.4.19，切片 9）：经管理面板代理调远程的
+// /api/v1/central/nodes/{remote_id}/{node_id}，形状与本地节点详情一致，
+// 弹窗与 openNodeDetailModal 共用 nodeDetailModalHtml。
+async function openCentralNodeDetail(remoteId, nodeId, nodeName) {
+  let d;
+  try { d = await api('/api/v1/central/nodes/' + encodeURIComponent(remoteId) + '/' + encodeURIComponent(nodeId)); }
+  catch (e) { toast('加载远程节点详情失败：' + e.message, 'err'); return; }
+  const m = openModal(nodeDetailModalHtml(d, nodeName, nodeId));
   if (m) onIn(m, '#node-detail-close', 'click', closeModal);
 }
 async function deleteNode(id, name) {
@@ -4705,6 +4721,7 @@ function initTraffic() {
 
 /* ---------- 集中管理（v1.2.0） ---------- */
 let centralRemotes = [];
+let centralLocalNodes = null; // v1.4.19：集中管理页本机节点（汇总接口的 local.nodes），null＝还没拉到
 let centralNodeStats = null; // v1.3.52：集中管理页顶部的节点统计（/api/v1/central/remotes 回的 node_stats）
 let centralDetailId = null;
 let centralDetailPage = 1;
@@ -6205,20 +6222,28 @@ function renderCentralSubTabs() {
   const holder = $('#central-sub-panels');
   if (!bar || !holder) return;
   const remotes = centralRemotes || [];
+  const localHtml = centralLocalNodesHtml();
   if (!remotes.length) {
     bar.innerHTML = '';
-    holder.innerHTML = '<div class="empty">还没登记远程面板。<br>到被管面板的设置页生成远程管理令牌，再到“登记远程面板”选项卡填地址和令牌登记。登记后这里会显示每台远程面板的在线状态、版本、落地数、流量汇总与最近到期时间。</div>';
-    return;
+    holder.innerHTML = localHtml + '<div class="empty">还没登记远程面板。<br>到被管面板的设置页生成远程管理令牌，再到“登记远程面板”选项卡填地址和令牌登记。登记后这里会显示每台远程面板的在线状态、版本、落地数、流量汇总与最近到期时间。</div>';
+  } else {
+    bar.innerHTML = remotes.map((rm) =>
+      '<button type="button" class="central-tab" role="tab" id="central-sub-tab-' + esc(rm.id) + '" aria-controls="central-sub-panel-' + esc(rm.id) + '" aria-selected="false" data-central-sub-tab="' + esc(rm.id) + '">' + esc(rm.name || rm.base_url) + '</button>').join('');
+    holder.innerHTML = localHtml + remotes.map((rm) =>
+      '<div class="central-sub-panel" role="tabpanel" id="central-sub-panel-' + esc(rm.id) + '" aria-labelledby="central-sub-tab-' + esc(rm.id) + '" hidden>' + centralRemoteCardHtml(rm) + '</div>').join('');
   }
-  bar.innerHTML = remotes.map((rm) =>
-    '<button type="button" class="central-tab" role="tab" id="central-sub-tab-' + esc(rm.id) + '" aria-controls="central-sub-panel-' + esc(rm.id) + '" aria-selected="false" data-central-sub-tab="' + esc(rm.id) + '">' + esc(rm.name || rm.base_url) + '</button>').join('');
-  holder.innerHTML = remotes.map((rm) =>
-    '<div class="central-sub-panel" role="tabpanel" id="central-sub-panel-' + esc(rm.id) + '" aria-labelledby="central-sub-tab-' + esc(rm.id) + '" hidden>' + centralRemoteCardHtml(rm) + '</div>').join('');
   holder.querySelectorAll('[data-central-open]').forEach((b) => b.addEventListener('click', () => window.open(b.dataset.centralOpen, '_blank', 'noopener')));
   holder.querySelectorAll('[data-central-detail]').forEach((b) => b.addEventListener('click', () => openCentralDetail(b.dataset.centralDetail)));
   holder.querySelectorAll('[data-central-del]').forEach((b) => b.addEventListener('click', () => centralDeregister(b.dataset.centralDel)));
   holder.querySelectorAll('[data-central-token]').forEach((b) => b.addEventListener('click', () => centralChangeToken(b.dataset.centralToken)));
   holder.querySelectorAll('[data-central-edit]').forEach((b) => b.addEventListener('click', () => centralEditRemote(b.dataset.centralEdit)));
+  // v1.4.19：节点行详情——远程走代理接口，本机走本地接口（openNodeDetailModal）。
+  holder.querySelectorAll('[data-central-node-detail]').forEach((b) => b.addEventListener('click', () => {
+    const parts = String(b.dataset.centralNodeDetail || '').split(':');
+    openCentralNodeDetail(parts[0], parts[1], b.dataset.centralNodeName || '');
+  }));
+  holder.querySelectorAll('[data-central-local-node-detail]').forEach((b) => b.addEventListener('click', () => openNodeDetailModal(b.dataset.centralLocalNodeDetail, b.dataset.centralLocalNodeName || '')));
+  if (!remotes.length) return;
   let saved = null;
   try { saved = localStorage.getItem(CENTRAL_SUB_TAB_KEY); } catch (e) { /* 读不到就用第一个 */ }
   showCentralSubTab(saved);
@@ -6253,7 +6278,64 @@ function centralRemoteCardHtml(rm) {
     '<button class="btn secondary sm" type="button" data-central-open="' + esc(rm.base_url) + '">打开远程面板 ↗</button>' +
     '<button class="btn secondary sm" type="button" data-central-edit="' + esc(rm.id) + '">编辑</button>' +
     '<button class="btn secondary sm" type="button" data-central-token="' + esc(rm.id) + '">更换令牌</button>' +
-    '<button class="btn danger sm" type="button" data-central-del="' + esc(rm.id) + '">取消登记</button></div></div>';
+    '<button class="btn danger sm" type="button" data-central-del="' + esc(rm.id) + '">取消登记</button></div>' +
+    centralRemoteNodesHtml(rm) + '</div>';
+}
+// ---------- 集中管理节点子列表（v1.4.19，切片 9） ----------
+// 每台远程面板的卡片下面展开“节点”子列表（节点名、健康、本期流量）；
+// 数据是 2 分钟拉取链快照里带的 nodes（central/status 下发），不另起轮询。
+// 状态标注：从没拉成功过 → “尚未拉取”；失联 → “离线，显示上次数据”
+// （数字是上次拉到的，不清零）；远程版本低于 1.4.19 → 看不到节点，写明版本太旧。
+function centralRemoteNodesState(rm) {
+  if (!rm.last_ok_at) return 'never';
+  if (!rm.online) return 'offline_cached';
+  return 'online';
+}
+function centralNodeHealthLabel(h) {
+  if (h === 'online') return '在线';
+  if (h === 'offline') return '离线';
+  return '从未上报';
+}
+// 一行节点（远程与本机共用）：圆点＋名字＋健康、本期流量、详情按钮。
+// detailAttr 是详情按钮的 data-* 属性（远程：data-central-node-detail＝
+// “远程id:节点id”；本机：data-central-local-node-detail＝“节点id”）。
+function centralNodeRowHtml(n, detailAttr) {
+  const t = n.traffic || {};
+  const period = (Number(t.up_period) || 0) + (Number(t.down_period) || 0);
+  return '<div style="display:flex;align-items:center;gap:8px;margin-top:4px"><span style="flex:1">' + nodeHealthDot(n.health) + ' ' + esc(n.name || ('节点 ' + n.node_id)) + ' <span class="small muted">' + esc(centralNodeHealthLabel(n.health)) + '</span></span>' +
+    '<span class="small">本期 ' + esc(fmtBytes(period)) + '</span>' +
+    '<button class="btn secondary sm" type="button" ' + detailAttr + '>详情</button></div>';
+}
+function centralRemoteNodesHtml(rm) {
+  const nodes = rm.nodes || [];
+  const state = centralRemoteNodesState(rm);
+  let note = '';
+  if (state === 'never') note = '（尚未拉取）';
+  else if (state === 'offline_cached') note = '（离线，显示上次数据）';
+  let body = '';
+  if (state === 'never') {
+    body = '<p class="muted small" style="margin:6px 0 0">尚未拉取：这台远程面板还没成功拉过一次，节点列表是空的。</p>';
+  } else if (rm.nodes_supported === false) {
+    body = '<p class="muted small" style="margin:6px 0 0">远程面板版本太旧（' + esc(rm.version || '—') + '，需要 1.4.19+），节点列表不可见，先升级远程面板。</p>';
+  } else if (!nodes.length) {
+    body = '<p class="muted small" style="margin:6px 0 0">这台远程面板没有后端节点。</p>';
+  } else {
+    body = nodes.map((n) => centralNodeRowHtml(n, 'data-central-node-detail="' + esc(rm.id) + ':' + esc(String(n.node_id)) + '" data-central-node-name="' + esc(n.name || '') + '"')).join('');
+  }
+  return '<details class="central-nodes" style="margin-top:10px"><summary>节点（' + nodes.length + ' 个）' + esc(note) + '</summary><div style="margin-top:6px">' + body + '</div></details>';
+}
+// 本机节点卡片（v1.4.19，切片 9）：集中管理页同一页可见，数据是汇总接口
+// 的 local.nodes（现场算，与远程快照里的 nodes 同形状）。没有本机节点
+// 时显示一行“没有节点”，不隐藏卡片；汇总接口拉不到时（centralLocalNodes
+// 为 null）整张卡片不出现，免得误报“没有节点”。
+function centralLocalNodesHtml() {
+  if (centralLocalNodes == null) return '';
+  const nodes = centralLocalNodes;
+  const body = nodes.length
+    ? nodes.map((n) => centralNodeRowHtml(n, 'data-central-local-node-detail="' + esc(String(n.node_id)) + '" data-central-local-node-name="' + esc(n.name || '') + '"')).join('')
+    : '<p class="muted small" style="margin:6px 0 0">本机没有后端节点。</p>';
+  return '<div class="mini-card static" style="margin-bottom:12px"><div class="mini-top"><h3>本机</h3><span><span class="tag">本机面板</span></span></div>' +
+    '<div class="mini-row"><span>节点</span><b>' + nodes.length + ' 个</b></div>' + body + '</div>';
 }
 async function loadCentral() {
   centralDetailId = null;
@@ -6264,6 +6346,12 @@ async function loadCentral() {
     centralRemotes = r.remotes || [];
     centralNodeStats = r.node_stats || null;
     renderCentralNodeStats();
+    // v1.4.19：顺带拉节点汇总接口取本机节点（local.nodes），集中管理页
+    // 同一页可见；best-effort，拉不到就不画本机卡片，不影响远程卡片。
+    try {
+      const cn = await api('/api/v1/central/nodes');
+      centralLocalNodes = (cn.local && cn.local.nodes) || [];
+    } catch (e2) { centralLocalNodes = null; }
     renderCentralSubTabs();
   } catch (e) {
     centralNodeStats = null;

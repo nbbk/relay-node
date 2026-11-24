@@ -802,6 +802,17 @@ func (s *Server) handleNodesList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, okResp(map[string]any{"nodes": rows}))
 }
 
+// nodeDetailPayload 节点详情的返回体（v1.4.19）：handleNodesGet 与被管端
+// central/nodes/{id} 共用同一份形状——节点行、入站（私钥不返回，
+// 切片 2）、流量块（本期按人合计＋各入站总量）与上报健康块。调用方须
+// 持有 nodes.mu。
+func (s *Server) nodeDetailPayload(node *BackendNode) map[string]any {
+	return map[string]any{
+		"node": nodeRowForList(*node), "inbounds": sanitizedInbounds(node.Inbounds), "users": []any{},
+		"traffic": s.nodeBackendTrafficBlock(node), "backend_health": nodeBackendHealthMap(node, time.Now()),
+	}
+}
+
 // handleNodesGet GET /api/v1/nodes/{id}：节点详情。
 func (s *Server) handleNodesGet(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -816,17 +827,9 @@ func (s *Server) handleNodesGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, errResp("节点不存在"))
 		return
 	}
-	row := nodeRowForList(*node)
-	// 入站列表走管理接口视图：私钥不返回（切片 2）。
-	inbounds := sanitizedInbounds(node.Inbounds)
-	// v1.4.4：详情加流量块（本期按人合计＋各入站总量）与上报健康块。
-	traffic := s.nodeBackendTrafficBlock(node)
-	health := nodeBackendHealthMap(node, time.Now())
+	payload := s.nodeDetailPayload(node)
 	s.nodes.mu.Unlock()
-	writeJSON(w, 200, okResp(map[string]any{
-		"node": row, "inbounds": inbounds, "users": []any{},
-		"traffic": traffic, "backend_health": health,
-	}))
+	writeJSON(w, 200, okResp(payload))
 }
 
 // handleNodesDelete DELETE /api/v1/nodes/{id}：删除节点。

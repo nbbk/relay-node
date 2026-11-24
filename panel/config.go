@@ -716,7 +716,8 @@ func readUseUDP(tomlData []byte) (bool, bool) {
 }
 
 // setUseUDP 改 config.toml 里 use_udp 开关（v1.3.46）：只改已有的 use_udp 行
-// （行尾注释保留）；没有这行时返回 false，调用方不要凭空加行。
+// （行尾注释保留）；没有这行时返回 false——缺行由 ensureUseUDP 经
+// appendUseUDPLine 补（v1.4.19），不要在这里凭空加行。
 func setUseUDP(tomlData []byte, on bool) ([]byte, bool) {
 	lines := strings.Split(string(tomlData), "\n")
 	found := false
@@ -747,8 +748,37 @@ func setUseUDP(tomlData []byte, on bool) ([]byte, bool) {
 	return []byte(strings.Join(lines, "\n")), true
 }
 
+// appendUseUDPLine config.toml 里没有 use_udp 行时补一行（v1.4.19）：
+// 已有 [network] 小节就把 use_udp = true 插到它后面；没有就追加
+// [network] 小节。TOML 表顺序无所谓，插哪都行。返回（新 toml，是否改过）。
+// v1.4.18 的缺口：setUseUDP 只改已有行，缺行时 ensureUseUDP 静默跳过，
+// UDP 路由加了也不生效（中转机 config.toml 从来只有 TCP 转发、从来没有
+// use_udp 行，真机验收 2026-11-24 当场发现，只能手动补行）。
+func appendUseUDPLine(tomlData []byte) ([]byte, bool) {
+	lines := strings.Split(string(tomlData), "\n")
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "#") {
+			continue
+		}
+		if t == "[network]" || strings.HasPrefix(t, "[network] ") || strings.HasPrefix(t, "[network]\t") || strings.HasPrefix(t, "[network]#") {
+			out := make([]string, 0, len(lines)+1)
+			out = append(out, lines[:i+1]...)
+			out = append(out, "use_udp = true")
+			out = append(out, lines[i+1:]...)
+			return []byte(strings.Join(out, "\n")), true
+		}
+	}
+	s := string(tomlData)
+	if s != "" && !strings.HasSuffix(s, "\n") {
+		s += "\n"
+	}
+	return []byte(s + "[network]\nuse_udp = true\n"), true
+}
+
 // ensureUseUDP needUDP 时保证 config.toml 的 use_udp 是 true（v1.3.46）；
-// 不需要时保持原值，绝不乱关。返回 (新 toml, 是否改过)。
+// 不需要时保持原值，绝不乱关。v1.4.19：use_udp 行缺失时自动补上
+// （appendUseUDPLine），不再静默跳过。返回 (新 toml, 是否改过)。
 func ensureUseUDP(tomlData []byte, needUDP bool) ([]byte, bool) {
 	if !needUDP {
 		return tomlData, false
@@ -756,7 +786,10 @@ func ensureUseUDP(tomlData []byte, needUDP bool) ([]byte, bool) {
 	if on, ok := readUseUDP(tomlData); ok && on {
 		return tomlData, false
 	}
-	return setUseUDP(tomlData, true)
+	if out, ok := setUseUDP(tomlData, true); ok {
+		return out, true
+	}
+	return appendUseUDPLine(tomlData)
 }
 
 // ensureUseUDPForConf 任一落地 PORTS 里有 udp: 条目就保证 config.toml 的

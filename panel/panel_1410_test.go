@@ -55,8 +55,8 @@ func setupNode1410(t *testing.T) (*Server, http.Handler, string, int64) {
 }
 
 func TestVersion1410(t *testing.T) {
-	if Version != "1.4.18" {
-		t.Fatalf("VERSION 应是 1.4.18，实际 %q", Version)
+	if Version != "1.4.19" {
+		t.Fatalf("VERSION 应是 1.4.19，实际 %q", Version)
 	}
 }
 

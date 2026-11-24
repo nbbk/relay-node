@@ -217,6 +217,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/central/remotes/{id}", s.requireAuth(s.handleCentralRemotesUpdate))
 	mux.HandleFunc("POST /api/v1/central/remotes/{id}/poll", s.requireAuth(s.handleCentralRemotesPoll))
 	mux.HandleFunc("GET /api/v1/central/remotes/{id}/landings", s.requireAuth(s.handleCentralRemoteLandings))
+	mux.HandleFunc("GET /api/v1/central/nodes", s.requireAuth(s.handleCentralNodesAggregate))
+	mux.HandleFunc("GET /api/v1/central/nodes/{id}", s.requireCentralToken(s.handleCentralNodeDetail))
+	mux.HandleFunc("GET /api/v1/central/nodes/{remote_id}/{node_id}", s.requireAuth(s.handleCentralNodeDetailProxy))
 	mux.HandleFunc("GET /api/v1/central/remotes/{id}/links", s.requireAuth(s.handleCentralRemoteLinks))
 	mux.HandleFunc("GET /api/v1/central/remotes/{id}/certs", s.requireAuth(s.handleCentralRemoteCerts))
 	mux.HandleFunc("GET /api/v1/central/remotes/{id}/traffic", s.requireAuth(s.handleCentralRemoteTraffic))
@@ -623,11 +626,9 @@ func (s *Server) handleFix(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, okResp(map[string]any{"msg": "UDP 转发已经开着，无需修复"}))
 			return
 		}
-		newToml, ok := setUseUDP(tomlData, true)
-		if !ok {
-			writeJSON(w, 200, map[string]any{"ok": true, "need_manual": true, "reason": "config.toml 里没找到 use_udp 配置行，请手动检查配置", "guide": "/api/v1/certs/renew-guide"})
-			return
-		}
+		// v1.4.19：缺行时 ensureUseUDP 自动补 [network] + use_udp = true，
+		// 不再报 need_manual（v1.4.18 的缺口：setUseUDP 只改已有行）。
+		newToml, _ := ensureUseUDP(tomlData, true)
 		if err := s.writeConfigTomlAtomic(newToml); err != nil {
 			writeJSON(w, 200, errResp("写 config.toml 失败："+err.Error()))
 			return

@@ -12,7 +12,7 @@ package main
 //   - 主面板必须拿着令牌原文去调远程接口，所以主面板 config.json 里
 //     存的是令牌明文（remotes[].token），与 Telegram Token、Cloudflare
 //     令牌同等待遇：文件 600 权限，绝不进审计日志、绝不通过接口返回。
-//   - 令牌只放行白名单里的 17 个 central/* 接口（status / links /
+//   - 令牌只放行白名单里的 central/* 接口（status / nodes 详情 / links /
 //     订阅内容 / 加落地 / 编辑落地 / 补原始链接 / 删落地 / 给落地加节点 /
 //     删子节点 / 续期 / 续量 / 设流量限制 / 证书 / 流量 / 体检 / 一键修复 /
 //     服务操作），改密码、改端口、改设置等接口令牌调不通。
@@ -94,6 +94,46 @@ type RemoteStatusSnapshot struct {
 	Error         string                 `json:"error"`
 	// Cached 为 true 表示本次返回的是上次成功时的缓存（本次拉取失败）。
 	Cached bool `json:"cached"`
+	// Nodes 该远程面板的后端节点摘要（v1.4.19，切片 9）：随 central/status
+	// 下发，走已有的 2 分钟拉取链。失联时保留上次拉到的，不清零（与
+	// Landings 同款）；从没拉成功过时为空，界面标“尚未拉取”。
+	Nodes []centralNodeSummary `json:"nodes"`
+	// NodesSupported 该远程面板的版本支不支持节点摘要（v1.4.19+ 才下发
+	// nodes；更旧的版本拉得到状态但看不到节点，前端据此写明版本太旧）。
+	NodesSupported bool `json:"nodes_supported"`
+}
+
+// centralNodeSummary 一台后端节点的摘要（v1.4.19，切片 9）：集中管理页
+// 每台远程面板行下的节点子列表用。health 是 nodeHealth 口径
+// （online／offline／never）；traffic 是本期按人合计＋累计，与节点
+// 详情的 traffic 块同口径（nodeBackendTrafficBlock）。
+type centralNodeSummary struct {
+	NodeID  int64               `json:"node_id"`
+	Name    string              `json:"name"`
+	Health  string              `json:"health"`
+	Traffic centralNodeTraffic  `json:"traffic"`
+}
+
+// centralNodeTraffic 一台后端节点的流量：本期（up_period＋down_period）
+// 与累计（up_total＋down_total），字节数。
+type centralNodeTraffic struct {
+	UpPeriod   int64 `json:"up_period"`
+	DownPeriod int64 `json:"down_period"`
+	UpTotal    int64 `json:"up_total"`
+	DownTotal  int64 `json:"down_total"`
+}
+
+// centralNodesState 一台远程面板的节点数据状态（v1.4.19，切片 9）：
+// online＝刚拉到；offline_cached＝失联、显示上次数据；never＝从没拉成功过。
+// 前端按它写行上标注，数字不清零（快照里留着上次的）。
+func centralNodesState(snap *RemoteStatusSnapshot) string {
+	if snap == nil || snap.LastOKAt == "" {
+		return "never"
+	}
+	if !snap.Online {
+		return "offline_cached"
+	}
+	return "online"
 }
 
 // remoteTraffic 远程落地的一份流量快照（字段与本地总览的 traffic 一致）。
@@ -302,8 +342,41 @@ func (s *Server) localStatusPayload() (map[string]any, error) {
 	return resp, nil
 }
 
+// centralNodesSummary 本机全部后端节点的摘要（v1.4.19，切片 9）：
+// 供 handleCentralStatus 下发。自己拿 nodes.mu（调用方不用持锁）；
+// 流量走 nodeBackendTrafficBlock（与节点详情同一块：本期按人合计＋累计）。
+// 没有节点时返回空数组（不是 null，前端不用判空）。
+func (s *Server) centralNodesSummary() []centralNodeSummary {
+	s.nodes.mu.Lock()
+	defer s.nodes.mu.Unlock()
+	out := make([]centralNodeSummary, 0, len(s.nodes.data.Nodes))
+	num := func(v any) int64 {
+		if n, ok := v.(int64); ok {
+			return n
+		}
+		return 0
+	}
+	for _, n := range s.nodes.listNodes() {
+		tb := s.nodeBackendTrafficBlock(&n)
+		out = append(out, centralNodeSummary{
+			NodeID: n.ID,
+			Name:   n.Name,
+			Health: nodeHealth(&n),
+			Traffic: centralNodeTraffic{
+				UpPeriod:   num(tb["up_period"]),
+				DownPeriod: num(tb["down_period"]),
+				UpTotal:    num(tb["up_total"]),
+				DownTotal:  num(tb["down_total"]),
+			},
+		})
+	}
+	return out
+}
+
 // handleCentralStatus 被管端总览摘要（令牌认证）：版本、realm 是否在跑、
 // 落地列表（域名/IP、监听端口、在线状态、延迟）、根分区磁盘使用率。
+// v1.4.19：多带本机后端节点摘要（nodes），主面板随 2 分钟拉取链收走，
+// 不另起轮询。
 func (s *Server) handleCentralStatus(w http.ResponseWriter, r *http.Request) {
 	data, err := s.localStatusPayload()
 	if err != nil {
@@ -324,6 +397,7 @@ func (s *Server) handleCentralStatus(w http.ResponseWriter, r *http.Request) {
 		"disk_total_bytes": st.DiskTotalBytes,
 		"disk_used_bytes":  st.DiskUsedBytes,
 		"disk_free_bytes":  st.DiskFreeBytes,
+		"nodes":            s.centralNodesSummary(),
 	}))
 }
 
@@ -400,6 +474,7 @@ func (s *Server) fetchRemoteStatus(rem RemotePanel) (*RemoteStatusSnapshot, erro
 		DiskPct      float64                `json:"disk_pct"`
 		RelayAddr    string                 `json:"relay_addr"`
 		Landings     []remoteLandingSummary `json:"landings"`
+		Nodes        []centralNodeSummary   `json:"nodes"`
 		Error        string                 `json:"error"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -429,9 +504,16 @@ func (s *Server) fetchRemoteStatus(rem RemotePanel) (*RemoteStatusSnapshot, erro
 		Online: true, Version: resp.PanelVersion, LandingCount: len(resp.Landings),
 		DiskPct: resp.DiskPct, RealmRunning: resp.Realm.Running, RelayAddr: resp.RelayAddr,
 		Landings: resp.Landings, LastCheckedAt: now, LastOKAt: now,
+		Nodes: resp.Nodes,
+		// 节点摘要是 1.4.19 才下发的：远程版本低于 1.4.19 时 nodes 为空不是
+		// “没有节点”，是“看不到”，前端据此写明版本太旧；版本号空着时放行。
+		NodesSupported: resp.PanelVersion == "" || !isNewerVersion("1.4.19", resp.PanelVersion),
 	}
 	if snap.Landings == nil {
 		snap.Landings = []remoteLandingSummary{}
+	}
+	if snap.Nodes == nil {
+		snap.Nodes = []centralNodeSummary{}
 	}
 	return snap, nil
 }
@@ -493,7 +575,7 @@ func (s *Server) pollOneRemote(rem RemotePanel) *RemoteStatusSnapshot {
 	var alert string
 	if err != nil {
 		if prev == nil {
-			prev = &RemoteStatusSnapshot{ID: rem.ID, Name: rem.Name, BaseURL: rem.BaseURL, Landings: []remoteLandingSummary{}}
+			prev = &RemoteStatusSnapshot{ID: rem.ID, Name: rem.Name, BaseURL: rem.BaseURL, Landings: []remoteLandingSummary{}, Nodes: []centralNodeSummary{}}
 		}
 		wasOnline := st.seen && st.wasOnline
 		prev.Online = false
@@ -543,7 +625,7 @@ func (s *Server) handleCentralRemotesList(w http.ResponseWriter, r *http.Request
 		if snap, ok := s.centralCache[rem.ID]; ok && snap != nil {
 			out = append(out, *snap)
 		} else {
-			out = append(out, RemoteStatusSnapshot{ID: rem.ID, Name: rem.Name, BaseURL: rem.BaseURL, Landings: []remoteLandingSummary{}})
+			out = append(out, RemoteStatusSnapshot{ID: rem.ID, Name: rem.Name, BaseURL: rem.BaseURL, Landings: []remoteLandingSummary{}, Nodes: []centralNodeSummary{}})
 		}
 	}
 	// 节点统计（v1.3.52）：总数 + 本机一行 + 每台远程一行，只计数；
@@ -782,6 +864,27 @@ func (s *Server) handleCentralRemotesPoll(w http.ResponseWriter, r *http.Request
 	writeJSON(w, 200, okResp(map[string]any{"remote": snap}))
 }
 
+// handleCentralNodeDetail GET /api/v1/central/nodes/{id}：被管端节点详情
+// （令牌认证，v1.4.19，切片 9）。主面板的详情代理调的就是它；形状与
+// 本地 GET /api/v1/nodes/{id} 一致（节点行＋入站＋流量＋健康）。
+func (s *Server) handleCentralNodeDetail(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, 400, errResp("节点 id 不对"))
+		return
+	}
+	s.nodes.mu.Lock()
+	node := s.nodes.getNode(id)
+	if node == nil {
+		s.nodes.mu.Unlock()
+		writeJSON(w, 404, errResp("节点不存在"))
+		return
+	}
+	payload := s.nodeDetailPayload(node)
+	s.nodes.mu.Unlock()
+	writeJSON(w, 200, okResp(payload))
+}
+
 // ---------- 主面板端：聚合读取 ----------
 
 // handleCentralRemoteLandings 该远程面板的落地列表：当场拉一次；
@@ -816,6 +919,78 @@ func (s *Server) handleCentralRemoteLandings(w http.ResponseWriter, r *http.Requ
 	s.centralCache[id] = snap
 	s.centralMu.Unlock()
 	writeJSON(w, 200, okResp(map[string]any{"remote": snap, "landings": snap.Landings}))
+}
+
+// ---------- 主面板端：节点汇总与详情代理（v1.4.19，切片 9） ----------
+
+// centralRemoteNodesEntry 聚合接口里一台远程面板的节点行：快照里的节点
+// 摘要＋状态标注（online／offline_cached／never）。快照没有时按从没
+// 拉过处理（state=never，nodes 为空数组）。
+func centralRemoteNodesEntry(rem RemotePanel, snap *RemoteStatusSnapshot) map[string]any {
+	nodes := []centralNodeSummary{}
+	supported := true
+	state := "never"
+	var lastOK, lastChecked string
+	online := false
+	if snap != nil {
+		nodes = snap.Nodes
+		if nodes == nil {
+			nodes = []centralNodeSummary{}
+		}
+		supported = snap.NodesSupported
+		state = centralNodesState(snap)
+		lastOK, lastChecked = snap.LastOKAt, snap.LastCheckedAt
+		online = snap.Online
+	}
+	return map[string]any{
+		"remote_id": rem.ID, "remote_name": rem.Name, "online": online,
+		"state": state, "last_ok_at": lastOK, "last_checked_at": lastChecked,
+		"nodes_supported": supported, "nodes": nodes,
+	}
+}
+
+// handleCentralNodesAggregate GET /api/v1/central/nodes：管理面板汇总
+// 各远程的节点（读 2 分钟拉取链的缓存，不当场拉远程、不新增轮询）。
+// 带 ?remote_id= 只回那一台：{remote_id, nodes:[...]}；不带回全部：
+// {remotes:[{remote_id, ..., nodes:[...]}]}。没登记过该远程 404。
+// 令牌绝不经过这里（只读缓存里的快照，快照里本来就没有令牌）。
+func (s *Server) handleCentralNodesAggregate(w http.ResponseWriter, r *http.Request) {
+	s.centralMu.Lock()
+	defer s.centralMu.Unlock()
+	if rid := strings.TrimSpace(r.URL.Query().Get("remote_id")); rid != "" {
+		rem := s.remoteByID(rid)
+		if rem == nil {
+			writeJSON(w, 404, errResp("没有登记过这台远程面板"))
+			return
+		}
+		writeJSON(w, 200, okResp(centralRemoteNodesEntry(*rem, s.centralCache[rid])))
+		return
+	}
+	entries := []map[string]any{}
+	for _, rem := range s.cfg.Remotes {
+		entries = append(entries, centralRemoteNodesEntry(rem, s.centralCache[rem.ID]))
+	}
+	// local 本机面板的节点（v1.4.19，切片 9）：集中管理页同一页可见；
+	// 现场算（不走缓存），与远程快照里的 nodes 同形状。
+	writeJSON(w, 200, okResp(map[string]any{"remotes": entries, "local": map[string]any{"nodes": s.centralNodesSummary()}}))
+}
+
+// handleCentralNodeDetailProxy GET /api/v1/central/nodes/{remote_id}/{node_id}：
+// 管理面板经代理看某远程某节点的详情（v1.4.19，切片 9）。只经完整面板
+// 代理：调远程的 /api/v1/central/nodes/{node_id}（令牌认证），不直连
+// 节点后端。远程低于 1.4.19 时按版本门提示升级。
+func (s *Server) handleCentralNodeDetailProxy(w http.ResponseWriter, r *http.Request) {
+	rem := s.remoteByID(r.PathValue("remote_id"))
+	if rem == nil {
+		writeJSON(w, 404, errResp("没有登记过这台远程面板"))
+		return
+	}
+	nodeID, err := strconv.ParseInt(r.PathValue("node_id"), 10, 64)
+	if err != nil || nodeID <= 0 {
+		writeJSON(w, 400, errResp("节点 id 不对"))
+		return
+	}
+	s.proxyRemoteRead(w, r, *rem, "/api/v1/central/nodes/"+strconv.FormatInt(nodeID, 10), 10*time.Second, "1.4.19")
 }
 
 // handleCentralRemoteLinks 代理看远程面板的节点链接/二维码：原样透传远程的返回。
