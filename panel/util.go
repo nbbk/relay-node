@@ -247,7 +247,10 @@ func bbrEnabled() bool {
 }
 
 // restartRealm 重启 realm：优先 systemctl，无 systemd 时 pkill + nohup 兜底（与 stop.sh 同款）。
-func (s *Server) restartRealm() error {
+// restartRealmImpl 是真正的实现（包级变量，测试可替换为桩；
+// 与 realmInstalledFunc／scopeRunnerAvailable1344 同款做法）。
+// 调用方一律走 s.restartRealm()，不要直接调 restartRealmImpl。
+var restartRealmImpl = func(s *Server) error {
 	if hasSystemd() {
 		if err := runCmd(nil, 30*time.Second, "systemctl", "restart", "realm"); err != nil {
 			return fmt.Errorf("systemctl restart realm 失败：%v", err)
@@ -277,6 +280,10 @@ func (s *Server) restartRealm() error {
 		return fmt.Errorf("realm 启动后没跑起来")
 	}
 	return nil
+}
+
+func (s *Server) restartRealm() error {
+	return restartRealmImpl(s)
 }
 
 func (s *Server) controlRealm(action string) error {

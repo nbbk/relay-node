@@ -192,6 +192,34 @@
         <h2 style="margin-top:20px">节点列表</h2>
         <div class="list-toolbar nodes-toolbar"><input id="nodes-search" class="list-search" type="search" placeholder="搜索节点：名称、地址…" aria-label="搜索节点"><label for="nodes-page-size">每页 <select id="nodes-page-size"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option></select> 条</label><button class="btn secondary sm" type="button" id="nodes-view-toggle" aria-pressed="false">列表视图</button></div>
         <div id="nodes-list" class="nodes-list nodes-grid"></div>
+        <!-- 中转路由（v1.4.18，切片 8）：面板改路由，本机 realm 配置跟着变
+             并重启生效；管理面板本机无中转，只存路由、不下发。 -->
+        <h2 style="margin-top:20px">中转路由</h2>
+        <p class="muted">中转机 realm 的转发：监听地址收到的流量转到目标节点的落地地址。保存后立即重下发并重启 realm，已建立的中转连接会断开、须重连；只改路由不改节点配置。</p>
+        <div class="card">
+          <div class="btn-row"><button class="btn" type="button" id="nodes-relay-add">添加路由</button><button class="btn secondary" type="button" id="nodes-relay-reapply">重新下发</button></div>
+          <div id="nodes-relay-note" class="muted small"></div>
+          <div id="nodes-relay-routes"></div>
+        </div>
+        <!-- 添加／编辑中转路由（v1.4.18）：单独弹窗，表单与入站添加弹窗同款
+             （label＋hint＋ⓘ 帮助，见 app.js IB_HELP 的 route-* 条目）；
+             监听地址是路由的键，编辑时不可改（改监听请删了重建）。 -->
+        <template id="nodes-relay-route-template">
+          <h2 id="nodes-relay-route-title">添加中转路由</h2>
+          <div id="nodes-relay-error" class="error-box hidden" hidden></div>
+          <form id="nodes-relay-form">
+            <div class="form-grid">
+              <div><label for="nodes-relay-node">目标节点 <span class="hint">必填，流量转到这台节点</span><button type="button" class="ib-help-btn" data-ib-help="route-node" aria-label="目标节点填写说明" aria-expanded="false">ⓘ</button></label><select id="nodes-relay-node"></select></div>
+              <div><label for="nodes-relay-listen">监听地址 <span class="hint">必填，中转机上收流量的地址</span><button type="button" class="ib-help-btn" data-ib-help="route-listen" aria-label="监听地址填写说明" aria-expanded="false">ⓘ</button></label><input id="nodes-relay-listen" placeholder="0.0.0.0:30004" required></div>
+              <div><label for="nodes-relay-remote-addr">落地地址 <span class="hint">选填，空着用目标节点的地址</span><button type="button" class="ib-help-btn" data-ib-help="route-remote-addr" aria-label="落地地址填写说明" aria-expanded="false">ⓘ</button></label><input id="nodes-relay-remote-addr" placeholder="留空用节点地址"></div>
+              <div><label for="nodes-relay-remote-port">落地端口 <span class="hint">必填，1–65535</span><button type="button" class="ib-help-btn" data-ib-help="route-remote-port" aria-label="落地端口填写说明" aria-expanded="false">ⓘ</button></label><input id="nodes-relay-remote-port" type="number" min="1" max="65535" placeholder="443" required></div>
+              <div><label for="nodes-relay-proto">协议 <span class="hint">TCP 或 UDP</span><button type="button" class="ib-help-btn" data-ib-help="route-proto" aria-label="协议填写说明" aria-expanded="false">ⓘ</button></label><select id="nodes-relay-proto"><option value="tcp" selected>TCP</option><option value="udp">UDP（HY2／TUIC 用）</option></select></div>
+              <div><label for="nodes-relay-enabled">启用 <span class="hint">关掉后中转不再转这条路由</span><button type="button" class="ib-help-btn" data-ib-help="route-enabled" aria-label="启用填写说明" aria-expanded="false">ⓘ</button></label><select id="nodes-relay-enabled"><option value="true" selected>启用</option><option value="false">停用</option></select></div>
+            </div>
+            <p class="muted small" id="nodes-relay-listen-note" hidden>监听地址是路由的键，不可改；改监听请删了这条重建。</p>
+            <div class="btn-row"><button class="btn" type="submit" id="nodes-relay-submit">保存</button></div>
+          </form>
+        </template>
         <!-- 入站模板（v1.4.12）：三件套＋入站列表放 <template> 里，点“入站模板”时克隆
              一份放进统一弹窗（见 app.js openNodeInboundsModal），不在页面下方 inline 展开。
              手动添加入站的表单不在这里（v1.4.13 起是单独的弹窗，见下面

@@ -148,8 +148,8 @@ type NodeInbound struct {
 
 // ---------- §4.4 RelayRoute（中转路由） ----------
 
-// BackendRelayRoute 一条中转路由（§4.4 字段全表；切片 1 只有模型
-// 与存储，路由表恒为空，下发 realm 配置是切片 8 的事）。
+// BackendRelayRoute 一条中转路由（§4.4 字段全表；渲染、下发、增删改
+// 接口见 node_relay.go，切片 8）。
 type BackendRelayRoute struct {
 	RelayID      int64  `json:"relay_id"`
 	ListenAddr   string `json:"listen_addr"`
@@ -894,8 +894,15 @@ func (s *Server) handleNodesDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
 	}
+	// v1.4.18，切片 8：一起删了路由就重下发一次，把段从 config.toml
+	// 里撤掉（不然段残留、realm 还在往已删节点转）。下发失败不回滚
+	// 删除（节点已删），只把错误透给用户、留“重新下发”重试。
+	applied, applyErr := false, ""
+	if req.DeleteRoutes && len(orphans) > 0 {
+		applied, applyErr = s.applyAfterRouteChangeLocked()
+	}
 	s.audit(s.currentUser(r), "删除节点", fmt.Sprintf("节点 %d %s", node.ID, node.Name), "成功", "")
-	writeJSON(w, 200, okResp(map[string]any{"deleted_id": id, "deleted_routes": len(orphans)}))
+	writeJSON(w, 200, okResp(map[string]any{"deleted_id": id, "deleted_routes": len(orphans), "applied": applied, "apply_error": applyErr}))
 }
 
 // handleNodesRegenJoinToken POST /api/v1/nodes/{id}/join-token：

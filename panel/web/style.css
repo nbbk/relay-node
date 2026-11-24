@@ -404,6 +404,13 @@ html[data-theme="dark"] .tag.relay{background:#1e3a5f; color:#93c5fd; border-col
 .list-row .cell-name{font-weight:600; white-space:normal; word-break:break-all}
 .list-row .cell-wrap{white-space:normal; word-break:break-all}
 .list-row .btn-row{margin-left:auto; display:flex; gap:6px; flex-wrap:wrap}
+/* v1.4.18：节点卡片／列表行的四个操作按钮一行排下（卡片 280px 宽放不下
+   原来的 14px 按钮，删除会掉到第二行）：只收节点卡片（data-node-card）
+   与节点列表行（data-node-row）里的按钮——btn-row 不换行、gap 收紧、
+   按钮 padding／字号收小；不动全局 .btn／.btn.sm，证书行不受影响；
+   删除按钮的红色破坏性样式（.btn.danger）不动。 */
+.mini-card[data-node-card] .btn-row, .list-row[data-node-row] .btn-row{flex-wrap:nowrap; gap:5px}
+.mini-card[data-node-card] .btn-row .btn, .list-row[data-node-row] .btn-row .btn{padding:5px 7px; font-size:12px; white-space:nowrap}
 .list-search{
   flex:1; max-width:420px; padding:9px 12px; border:1px solid var(--border);
   border-radius:999px; background:var(--surface); color:var(--text); font-size:14px;

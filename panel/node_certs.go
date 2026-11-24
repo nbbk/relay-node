@@ -223,6 +223,35 @@ func (n *nodeBackendStore) nodeCertUsedBy(ref int64) []string {
 	return out
 }
 
+// nodeCertUsedBySplit 把 nodeCertUsedBy 的覆盖引用按“实际绑定”分两档
+// （v1.4.18，调用方须持有 n.mu）：实际下发绑定走 nodeCertForDomain
+// （精确优先），落到这张证书的是“正在使用”；只靠泛域名覆盖匹配、
+// 实际绑定落到另一张证书（或没有可用证书）的是“备用”。两档加起来
+// 就是 nodeCertUsedBy 的覆盖列表。删证书的拦截仍用 nodeCertUsedBy
+// 的覆盖口径，不动——泛域名是精确证书的兜底，删了它以后精确证书
+// 一过期入站就起不来了。
+func (n *nodeBackendStore) nodeCertUsedBySplit(ref int64, now time.Time) (used, standby []string) {
+	cert := n.nodeCertByRef(ref)
+	if cert == nil {
+		return nil, nil
+	}
+	for _, node := range n.data.Nodes {
+		for _, in := range node.Inbounds {
+			d, ok := inboundCertDomain(in)
+			if !ok || !nodeCertDomainMatches(cert.Domain, d) {
+				continue
+			}
+			label := node.Name + " / " + in.InboundTag
+			if bound := n.nodeCertForDomain(d, now); bound != nil && bound.Ref == ref {
+				used = append(used, label)
+			} else {
+				standby = append(standby, label)
+			}
+		}
+	}
+	return used, standby
+}
+
 // bumpNodesUsingCertDomainLocked 该域名的证书续签后，把用到它的节点
 // 的配置版本都＋1（调用方须持有 n.mu；改完调用方负责 saveLocked）：
 // agent 60 秒内拉到新证书。按入站域名与证书域名的覆盖关系算（泛域名
@@ -479,17 +508,23 @@ func (s *Server) maybeRenewNodeCerts() {
 // ---------- 管理接口（会话认证） ----------
 
 // nodeCertRowForList 证书列表里的一行（状态与剩余天数现算）。
+// v1.4.18：引用分两档——used_by_active 是实际绑定到这张证书的入站
+// （正在使用），used_by_standby 是只靠泛域名覆盖匹配的入站（备用）；
+// used_by 仍是两档加起来的覆盖列表（删证书拦截与旧口径不变）。
 func (s *Server) nodeCertRowForList(c NodeCert, now time.Time) map[string]any {
 	exp := time.Unix(c.ExpiresAt, 0)
+	used, standby := s.nodes.nodeCertUsedBySplit(c.Ref, now)
 	return map[string]any{
 		"ref": c.Ref, "domain": c.Domain, "provider": c.Provider,
-		"provider_name": dnsProviderName(c.Provider),
-		"issued_at":     time.Unix(c.IssuedAt, 0).UTC().Format(time.RFC3339),
-		"expires_at":    exp.UTC().Format(time.RFC3339),
-		"days_left":     nodeCertDaysLeft(exp, now),
-		"status":        nodeCertStatus(exp, now),
-		"last_error":    c.LastError,
-		"used_by":       s.nodes.nodeCertUsedBy(c.Ref),
+		"provider_name":   dnsProviderName(c.Provider),
+		"issued_at":       time.Unix(c.IssuedAt, 0).UTC().Format(time.RFC3339),
+		"expires_at":      exp.UTC().Format(time.RFC3339),
+		"days_left":       nodeCertDaysLeft(exp, now),
+		"status":          nodeCertStatus(exp, now),
+		"last_error":      c.LastError,
+		"used_by":         s.nodes.nodeCertUsedBy(c.Ref),
+		"used_by_active":  used,
+		"used_by_standby": standby,
 	}
 }
 

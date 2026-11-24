@@ -120,11 +120,11 @@ async function api(path, opts, noAuthRedirect) {
   try { data = await res.json(); } catch (e) { /* 非 JSON 响应 */ }
   // 登录请求本身的 401 是“密码错了”，不是会话过期：不走过期分支，让服务端文案（账号或密码不对）原样透到登录框
   if (res.status === 401 && !noAuthRedirect) { showLogin(); throw new Error('登录已过期，请重新登录'); }
-  if (res.status === 403) throw new Error((data && data.error) || '无权限（403）：当前 IP 不在白名单内，或会话无效');
-  if (res.status === 409) throw new Error((data && data.error) || '正在操作，请稍等（409）');
-  if (res.status === 429) throw new Error((data && data.error) || '请求过于频繁或登录失败过多被锁定，请稍后再试（429）');
-  if (!res.ok) throw new Error((data && data.error) || ('请求失败（HTTP ' + res.status + '）'));
-  if (data && data.ok === false) throw new Error(data.error || '操作失败');
+  if (res.status === 403) throw Object.assign(new Error((data && data.error) || '无权限（403）：当前 IP 不在白名单内，或会话无效'), { data });
+  if (res.status === 409) throw Object.assign(new Error((data && data.error) || '正在操作，请稍等（409）'), { data });
+  if (res.status === 429) throw Object.assign(new Error((data && data.error) || '请求过于频繁或登录失败过多被锁定，请稍后再试（429）'), { data });
+  if (!res.ok) throw Object.assign(new Error((data && data.error) || ('请求失败（HTTP ' + res.status + '）')), { data });
+  if (data && data.ok === false) throw Object.assign(new Error(data.error || '操作失败'), { data });
   return data || {};
 }
 async function apiPost(path, body, noAuthRedirect) { return api(path, { method: 'POST', body: JSON.stringify(body || {}) }, noAuthRedirect); }
@@ -278,7 +278,7 @@ function loadPage(page) {
   stopLogsTimer();
   if (page === 'overview') return loadOverview();
   else if (page === 'manage') return loadManage();
-  else if (page === 'nodes') { loadNodes(); return loadNodeCerts(); }
+  else if (page === 'nodes') { loadNodes(); loadRelayRoutes(); return loadNodeCerts(); }
   else if (page === 'links') return loadLinks();
   else if (page === 'certs') return loadCerts();
   else if (page === 'service') return loadService();
@@ -1047,12 +1047,14 @@ function paginateSize(list, page, size) {
 // test-1406／1408 靠它断言）；“上报健康”行保留完整 detail（1.4.4 的
 // 回归断言要读它）；“入网”行不单列——没入网时健康标题就是“尚未入网”。
 // 节点四个操作按钮（v1.4.14：卡片与列表行共用同一套，免得两边 drift）：
-// 详情／入站模板／重新生成入网令牌／删除，data-* 属性与 wireNodeCardButtons
-// 绑的四种一致，行里点了一样生效。
+// 详情／入站模板／重新生成令牌／删除，data-* 属性与 wireNodeCardButtons
+// 绑的四种一致，行里点了一样生效。v1.4.18：第三个按钮改短叫“重新生成
+// 令牌”（卡片 280px 宽要一行排下四个；点开后的二次确认标题仍是全名
+// “重新生成入网令牌”，见 wireNodeCardButtons）。
 function nodeActionButtons(n) {
   return '<button class="btn secondary sm" type="button" data-nodedetail="' + esc(String(n.id)) + '" data-detailname="' + esc(n.name || '') + '">详情</button>' +
     '<button class="btn secondary sm" type="button" data-inbounds="' + esc(String(n.id)) + '" data-inbname="' + esc(n.name || '') + '" data-inbaddr="' + esc(n.address || '') + '">入站模板</button>' +
-    '<button class="btn secondary sm" type="button" data-regen="' + esc(String(n.id)) + '" data-regenname="' + esc(n.name || '') + '">重新生成入网令牌</button>' +
+    '<button class="btn secondary sm" type="button" data-regen="' + esc(String(n.id)) + '" data-regenname="' + esc(n.name || '') + '">重新生成令牌</button>' +
     '<button class="btn danger sm" type="button" data-delnodes="' + esc(String(n.id)) + '" data-delname="' + esc(n.name || '') + '">删除</button>';
 }
 function nodeMiniCard(n) {
@@ -1154,7 +1156,9 @@ async function openNodeDetailModal(nodeId, nodeName) {
   // （HY2／TUIC／AnyTLS）时显示；无 sing-box 入站的节点上 agent
   // 本就不起 sing-box，Running=false 不是故障，不显示。
   const hasSingbox = (d.inbounds || []).some((ib) => ib.protocol === 'hysteria2' || ib.protocol === 'tuic' || ib.protocol === 'anytls');
-  const sbRow = hasSingbox ? '<div class="kv"><span>sing-box</span><b>' + esc(bh.singbox_running ? '运行中' : '未运行') + '（重启 ' + esc(String(bh.singbox_restarts == null ? '—' : bh.singbox_restarts)) + ' 次' + (bh.singbox_version ? '，' + esc(bh.singbox_version) : '') + '）</b></div>' : '';
+  // v1.4.18：版本号标出来（“核心版本 1.14.4”），别光秃秃塞在括号里；
+  // singbox_version 为空时兜底显示 —（与“核心版本”行 Xray 为空时同款）。
+  const sbRow = hasSingbox ? '<div class="kv"><span>sing-box</span><b>' + esc(bh.singbox_running ? '运行中' : '未运行') + '（核心版本 ' + esc(bh.singbox_version || '—') + '，重启 ' + esc(String(bh.singbox_restarts == null ? '—' : bh.singbox_restarts)) + ' 次）</b></div>' : '';
   // 核心版本（v1.4.10）：以上报的 xray_version 为准（backend_health
   // 里新加的 xray_version，节点行里本来就有）；没上报过就不编版本号，显示 —。
   const coreVer = String(bh.xray_version || n.xray_version || '').trim();
@@ -1184,7 +1188,11 @@ async function deleteNode(id, name) {
     toast('已删除', 'ok'); loadNodes();
   } catch (e) {
     if (String(e.message || '').indexOf('中转路由') !== -1) {
-      const ok2 = await confirmModal('有中转路由指向该节点', '<p>有中转路由指向该节点，一起删除这些路由吗？</p>', '一起删除', true);
+      // v1.4.18：孤儿路由列出来再让用户选（§5.1：弹窗警告孤儿路由，
+      // 列出路由；e.data 是 api() 挂上的响应体，见 api 的 !res.ok 分支）。
+      const orphans = (e.data && e.data.orphan_routes) || [];
+      const list = orphans.length ? '<p>以下中转路由指向该节点：</p><ul>' + orphans.map((rt) => '<li>' + esc(String(rt.listen_addr || '')) + ' → ' + esc(String(rt.remote_addr || '')) + ':' + esc(String(rt.remote_port == null ? '' : rt.remote_port)) + '（' + esc(String(rt.proto || '')) + '）</li>').join('') + '</ul>' : '';
+      const ok2 = await confirmModal('有中转路由指向该节点', '<p>有中转路由指向该节点，一起删除这些路由吗？</p>' + list + '<p>一起删除后中转配置会重下发、realm 重启；不一起删就先取消、去中转路由里删掉它们再回来。</p>', '一起删除', true);
       if (!ok2) return;
       try {
         await api('/api/v1/nodes/' + encodeURIComponent(id), { method: 'DELETE', body: JSON.stringify({ delete_routes: true }) });
@@ -1194,6 +1202,144 @@ async function deleteNode(id, name) {
     }
     toast('删除失败：' + e.message, 'err');
   }
+}
+/* ---------- 中转路由（v1.4.18，切片 8） ---------- */
+// 面板改路由，本机 realm 配置跟着变并重启生效（后端 node_relay.go）。
+// 列表与添加／编辑表单都在节点页下方（index.html 的中转路由卡片＋
+// <template id="nodes-relay-route-template">，弹窗复用 openModal）。
+// 保存成功关弹窗回列表（与入站弹窗同款）；失败留弹窗内、错误留在
+// #nodes-relay-error 里，不用重填。保存后重启 realm，已建立的中转
+// 连接会断开须重连——确认框与 toast 里都写明。
+let relayRoutesCache = [];
+let relayRoutesLocal = true;
+function relayRouteNodeName(id) {
+  const n = nodesCache.find((x) => Number(x.id) === Number(id));
+  return n ? (n.name || n.address || String(id)) : ('节点 ' + id);
+}
+// relayApplyToast 保存／删除／重下发后的提示：下发了就报重启，
+// 没下发就把原因说清（路由已保存，点“重新下发”可重试）。
+function relayApplyToast(r, verb) {
+  if (r && r.applied) { toast(verb + '，中转配置已下发、realm 已重启（已建立的中转连接会断开，须重连）', 'ok'); return; }
+  if (r && r.apply_error) { toast(verb + '，但未下发到中转：' + r.apply_error + '，可点“重新下发”重试', 'err'); return; }
+  toast(verb + '（没有变化，不用重启）', 'ok');
+}
+async function loadRelayRoutes() {
+  const wrap = $('#nodes-relay-routes');
+  if (!wrap) return;
+  try {
+    const r = await api('/api/v1/relay-routes');
+    relayRoutesCache = r.routes || [];
+    relayRoutesLocal = r.local_relay !== false;
+    renderRelayRoutes();
+  } catch (e) {
+    wrap.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
+  }
+}
+function renderRelayRoutes() {
+  const wrap = $('#nodes-relay-routes');
+  if (!wrap) return;
+  const note = $('#nodes-relay-note');
+  if (note) note.textContent = relayRoutesLocal ? '' : '本机是管理面板，没有中转：路由只保存，不会下发到中转机。';
+  if (!relayRoutesCache.length) { wrap.innerHTML = '<div class="empty">还没有中转路由。点“添加路由”，中转机收到流量就按这里转到目标节点。</div>'; return; }
+  wrap.innerHTML = relayRoutesCache.map((rt) => {
+    const key = esc(String(rt.relay_id == null ? 0 : rt.relay_id)) + '|' + esc(String(rt.listen_addr || ''));
+    return '<div class="list-row" data-relay-row="' + key + '">' +
+      '<span class="cell"><b>' + esc(String(rt.listen_addr || '')) + '</b></span>' +
+      '<span class="cell">→ ' + esc(relayRouteNodeName(rt.remote_node_id)) + ' ' + esc(String(rt.remote_addr || '')) + ':' + esc(String(rt.remote_port == null ? '' : rt.remote_port)) + '</span>' +
+      '<span class="cell">' + esc(String((rt.proto || 'tcp').toUpperCase())) + (rt.transport && rt.transport !== 'tcp' ? '／' + esc(String(rt.transport)) : '') + '</span>' +
+      '<span class="cell">' + (rt.enabled ? '启用' : '停用') + '</span>' +
+      '<span class="btn-row"><button class="btn secondary sm" type="button" data-relay-edit="' + key + '">编辑</button>' +
+      '<button class="btn danger sm" type="button" data-relay-del="' + key + '">删除</button></span></div>';
+  }).join('');
+  $$('[data-relay-edit]', wrap).forEach((b) => b.addEventListener('click', () => {
+    const parts = String(b.dataset.relayEdit || '').split('|');
+    const rt = relayRoutesCache.find((x) => String(x.relay_id == null ? 0 : x.relay_id) === parts[0] && String(x.listen_addr || '') === parts[1]);
+    if (rt) openRelayRouteModal(rt);
+  }));
+  $$('[data-relay-del]', wrap).forEach((b) => b.addEventListener('click', () => {
+    const parts = String(b.dataset.relayDel || '').split('|');
+    deleteRelayRoute(Number(parts[0] || 0), parts[1] || '');
+  }));
+}
+function openRelayRouteModal(route) {
+  const tpl = document.getElementById('nodes-relay-route-template');
+  if (!tpl) return;
+  const isEdit = !!route;
+  const m = openModal('', true);
+  if (!m) return;
+  const body = m.querySelector('.modal-body');
+  if (!body) return;
+  body.appendChild(tpl.content.cloneNode(true));
+  const title = body.querySelector('#nodes-relay-route-title');
+  if (title) title.textContent = isEdit ? '编辑中转路由' : '添加中转路由';
+  const nodeSel = body.querySelector('#nodes-relay-node');
+  const listenInput = body.querySelector('#nodes-relay-listen');
+  const remoteAddr = body.querySelector('#nodes-relay-remote-addr');
+  const remotePort = body.querySelector('#nodes-relay-remote-port');
+  const protoSel = body.querySelector('#nodes-relay-proto');
+  const enabledSel = body.querySelector('#nodes-relay-enabled');
+  const errBox = body.querySelector('#nodes-relay-error');
+  const listenNote = body.querySelector('#nodes-relay-listen-note');
+  const showErr = (msg) => { if (!errBox) return; errBox.textContent = msg; errBox.classList.remove('hidden'); errBox.hidden = false; };
+  if (!nodesCache.length) {
+    nodeSel.innerHTML = '<option value="" disabled selected>（先在上面建一个节点）</option>';
+  } else {
+    nodeSel.innerHTML = nodesCache.map((n) => '<option value="' + esc(String(n.id)) + '">' + esc(n.name || n.address || String(n.id)) + '（' + esc(n.address || '') + '）</option>').join('');
+  }
+  if (isEdit) {
+    nodeSel.value = String(route.remote_node_id);
+    listenInput.value = route.listen_addr || '';
+    listenInput.disabled = true;
+    if (listenNote) listenNote.hidden = false;
+    remoteAddr.value = route.remote_addr || '';
+    remotePort.value = route.remote_port == null ? '' : String(route.remote_port);
+    protoSel.value = route.proto || 'tcp';
+    enabledSel.value = route.enabled ? 'true' : 'false';
+  } else {
+    remotePort.value = '443';
+    if (nodesCache.length) nodeSel.value = String(nodesCache[0].id);
+  }
+  // 目标节点换了、落地地址还空着时，跟着填新节点的地址。
+  nodeSel.addEventListener('change', () => {
+    if (remoteAddr.value.trim() !== '') return;
+    const n = nodesCache.find((x) => String(x.id) === nodeSel.value);
+    if (n) remoteAddr.value = n.address || '';
+  });
+  const form = body.querySelector('#nodes-relay-form');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const nodeId = Number(nodeSel.value);
+    if (!nodeId) { showErr('先在上面建一个节点，再回来加路由。'); return; }
+    const listen = listenInput.value.trim();
+    if (!listen) { showErr('监听地址不能为空，如 0.0.0.0:30004。'); return; }
+    const port = Number(remotePort.value);
+    if (!port || port < 1 || port > 65535) { showErr('落地端口须是 1–65535。'); return; }
+    const payload = {
+      relay_id: isEdit ? (route.relay_id == null ? 0 : route.relay_id) : 0,
+      listen_addr: listen, remote_node_id: nodeId,
+      remote_addr: remoteAddr.value.trim(), remote_port: port,
+      proto: protoSel.value, enabled: enabledSel.value === 'true',
+    };
+    try {
+      const r = isEdit
+        ? await api('/api/v1/relay-routes', { method: 'PUT', body: JSON.stringify(payload) })
+        : await apiPost('/api/v1/relay-routes', payload);
+      closeModal();
+      relayApplyToast(r, isEdit ? '已保存路由' : '已添加路由');
+      loadRelayRoutes();
+    } catch (err) { showErr(err.message); }
+  });
+}
+async function deleteRelayRoute(relayId, listen) {
+  const rt = relayRoutesCache.find((x) => Number(x.relay_id == null ? 0 : x.relay_id) === Number(relayId) && String(x.listen_addr || '') === String(listen));
+  const label = rt ? (rt.listen_addr + ' → ' + relayRouteNodeName(rt.remote_node_id) + ' ' + (rt.remote_addr || '') + ':' + (rt.remote_port == null ? '' : rt.remote_port)) : (listen || '');
+  const ok = await confirmModal('删除中转路由', '<p>确定删除路由 <b>' + esc(label) + '</b> 吗？</p><p>删除后中转配置会重下发、realm 重启，已建立的中转连接会断开、须重连；目标节点本身不受影响。</p>', '删除', true);
+  if (!ok) return;
+  try {
+    const r = await api('/api/v1/relay-routes', { method: 'DELETE', body: JSON.stringify({ relay_id: relayId, listen_addr: listen }) });
+    relayApplyToast(r, '已删除路由');
+    loadRelayRoutes();
+  } catch (e) { toast('删除失败：' + e.message, 'err'); }
 }
 /* ---------- 入站模板（v1.4.1 切片 2） ---------- */
 let currentInboundsNodeId = null;
@@ -1892,6 +2038,55 @@ const IB_HELP = {
       '建议：凭证在设置页 DNS 服务商卡片里配，配好后这里才会出现；手动模式不用配凭证。Cloudflare 须先在面板设置里配好 Zone DNS Edit 权限的 Token（cfut_ 开头）；手动模式走两步签发（面板给 TXT 值，用户自己去 DNS 加记录，再回来点验证）。',
     ],
   },
+  // 中转路由字段（v1.4.18，切片 8）：与入站表单共用同一套 ⓘ 机制。
+  'route-node': {
+    title: '目标节点',
+    body: () => [
+      '填什么：流量要转到哪台后端节点，下拉选一台。',
+      '必填：节点须已在节点列表里（没入网的节点选了也转不通）。',
+      '建议：先在上面把节点入网，再回来加路由；落地地址空着就用这台节点的地址。',
+    ],
+  },
+  'route-listen': {
+    title: '监听地址',
+    body: () => [
+      '填什么：中转机上收流量的地址，格式 IP:端口，如 0.0.0.0:30004；只填端口（如 30004）也行，自动补成 0.0.0.0:30004。',
+      '必填：1–65535，不能与落地监听、按人转发、面板端口撞，也不能与已有路由重复。',
+      '建议：中转监听端口与落地端口可以相同（如都用 443），撞的是监听端口之间，不是监听与落地之间；监听地址是路由的键，建好后不可改，改监听请删了重建。',
+    ],
+  },
+  'route-remote-addr': {
+    title: '落地地址',
+    body: () => [
+      '填什么：目标节点的 IP 或域名，流量转到这里；端口不填在这里，另填落地端口。',
+      '选填：空着就用目标节点的地址（节点列表里的地址）。',
+      '建议：一般空着就行；节点换了地址时改这里，不用改监听地址。',
+    ],
+  },
+  'route-remote-port': {
+    title: '落地端口',
+    body: () => [
+      '填什么：目标节点上入站的端口，如 REALITY 的 443、HY2 的 443。',
+      '必填：1–65535。',
+      '建议：跟目标节点入站模板里的端口填成一致，不然转过去没人接。',
+    ],
+  },
+  'route-proto': {
+    title: '协议',
+    body: () => [
+      '填什么：这条路由转 TCP 还是 UDP。',
+      '必填，默认 TCP。',
+      '建议：REALITY／VLESS／Trojan 选 TCP；HY2／TUIC 选 UDP——选了 UDP 的路由存在时，面板会把 config.toml 的全局 use_udp 开关打开（只开不关）；同监听地址的 TCP＋UDP 路由只写一段，不会抢绑定。',
+    ],
+  },
+  'route-enabled': {
+    title: '启用',
+    body: () => [
+      '填什么：这条路由现在转不转。',
+      '必填，默认启用。',
+      '建议：关掉后下次下发就把这段从中转配置里撤掉、realm 重启；想临时停一条路由就关它，不用删。',
+    ],
+  },
 };
 let ibHelpOpenKey = null;
 let ibHelpOpenBtn = null;
@@ -2031,6 +2226,15 @@ function initNodes() {
     saveListView(NODES_VIEW_KEY, nodesView);
     renderNodesList();
   });
+  // v1.4.18：中转路由（添加／重新下发），按钮在节点页中转路由卡片里。
+  on('#nodes-relay-add', 'click', () => openRelayRouteModal(null));
+  on('#nodes-relay-reapply', 'click', async () => {
+    try {
+      const r = await apiPost('/api/v1/relay-routes/apply', {});
+      relayApplyToast(r, '已重新下发');
+      loadRelayRoutes();
+    } catch (e) { toast('重新下发失败：' + e.message, 'err'); }
+  });
   syncViewToggle('#nodes-view-toggle', nodesView);
 }
 /* ---------- 节点证书（v1.4.12，切片 7） ---------- */
@@ -2113,32 +2317,48 @@ function certActionButtons(c) {
     '<button class="btn secondary sm" type="button" data-cert-renew="' + esc(String(c.ref)) + '"' + (c.provider === 'manual' ? ' disabled title="手动模式的证书不能一键续签，请重新走手动签发"' : '') + '>立即续签</button>' +
     '<button class="btn danger sm" type="button" data-cert-del="' + esc(String(c.ref)) + '" data-cert-domain="' + esc(c.domain || '') + '">删除</button>';
 }
+// 证书引用分两档（v1.4.18，卡片与列表行共用）：后端 nodeCertUsedBySplit
+// 按实际绑定分——nodeCertForDomain（精确优先）落到这张的是“正在使用”
+// （used_by_active），只靠泛域名覆盖匹配的是“备用”（used_by_standby）；
+// 两档都没有就是没被入站引用。前端不自己算，以后端为准。
+function certUsedTiers(c) {
+  return { active: c.used_by_active || [], standby: c.used_by_standby || [] };
+}
 // 证书小卡片（v1.4.14）：复用节点页同款 .mini-card，放在 #node-certs-list
 // 的 .nodes-grid 网格里（方形小卡片，min-height 260px、按钮沉底）；
 // 旧 .card＋.kv 那版的全部信息都在：域名（ref）、服务商、状态／到期、
-// 引用它的入站、上次续签失败、复制／续签／删除。
+// 引用它的入站（v1.4.18 起分“正在使用”与“备用”两档）、上次续签失败、
+// 复制／续签／删除。
 function certMiniCard(c) {
   const s = certStatusOf(c);
-  const used = (c.used_by || []).join('、') || '没被入站引用';
+  const t = certUsedTiers(c);
+  const usedRows = (t.active.length || t.standby.length)
+    ? (t.active.length ? '<div class="mini-row"><span>正在使用</span><b>' + esc(t.active.join('、')) + '</b></div>' : '') +
+      (t.standby.length ? '<div class="mini-row"><span>备用</span><b>' + esc(t.standby.join('、')) + '</b></div>' : '')
+    : '<div class="mini-row"><span>引用它的入站</span><b>没被入站引用</b></div>';
   return '<div class="mini-card static" data-cert-card="' + esc(String(c.ref)) + '">' +
     '<div class="mini-top"><h3>' + esc(c.domain || '') + '（ref ' + esc(String(c.ref)) + '）</h3><span class="badge ' + s.badge + '">' + s.text + '</span></div>' +
     '<div class="mini-row"><span>服务商</span><b>' + esc(c.provider_name || c.provider || '') + '</b></div>' +
     '<div class="mini-row"><span>状态</span><b>' + esc(c.expires_at ? fmtDate(c.expires_at) + '（剩余 ' + String(c.days_left == null ? '—' : c.days_left) + ' 天）' : '—') + '</b></div>' +
-    '<div class="mini-row"><span>引用它的入站</span><b>' + esc(used) + '</b></div>' +
+    usedRows +
     (c.last_error ? '<div class="mini-row"><span>上次续签失败</span><b>' + esc(c.last_error) + '</b></div>' : '') +
     '<div class="btn-row">' + certActionButtons(c) + '</div></div>';
 }
 // 证书列表行（v1.4.14，列表视图）：紧凑行，一行一条；卡片里的信息
-// 一个不少（域名、服务商、状态／到期、引用它的入站、上次续签失败、
-// 复制／续签／删除），只是横向排。
+// 一个不少（域名、服务商、状态／到期、引用它的入站——v1.4.18 起分
+// “正在使用”与“备用”两档、上次续签失败、复制／续签／删除），只是横向排。
 function certListRow(c) {
   const s = certStatusOf(c);
-  const used = (c.used_by || []).join('、') || '没被入站引用';
+  const t = certUsedTiers(c);
+  const usedCell = (t.active.length || t.standby.length)
+    ? (t.active.length ? '<span class="cell cell-wrap"><span class="muted">正在使用：</span>' + esc(t.active.join('、')) + '</span>' : '') +
+      (t.standby.length ? '<span class="cell cell-wrap"><span class="muted">备用：</span>' + esc(t.standby.join('、')) + '</span>' : '')
+    : '<span class="cell cell-wrap"><span class="muted">引用：</span>没被入站引用</span>';
   return '<div class="list-row" data-cert-row="' + esc(String(c.ref)) + '">' +
     '<span class="cell cell-name">' + esc(c.domain || '') + '（ref ' + esc(String(c.ref)) + '）</span>' +
     '<span class="cell">' + esc(c.provider_name || c.provider || '') + '</span>' +
     '<span class="cell"><span class="badge ' + s.badge + '">' + s.text + '</span> ' + esc(c.expires_at ? fmtDate(c.expires_at) + '（剩余 ' + String(c.days_left == null ? '—' : c.days_left) + ' 天）' : '—') + '</span>' +
-    '<span class="cell cell-wrap"><span class="muted">引用：</span>' + esc(used) + '</span>' +
+    usedCell +
     (c.last_error ? '<span class="cell cell-wrap"><span class="muted">上次续签失败：</span>' + esc(c.last_error) + '</span>' : '') +
     '<span class="btn-row">' + certActionButtons(c) + '</span></div>';
 }
