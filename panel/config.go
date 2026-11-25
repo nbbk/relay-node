@@ -134,6 +134,10 @@ type PanelConfig struct {
 	// 的节点；成员归属存在 SubUser/MergedSub 的 GroupID 上（单字段，一人
 	// 最多一个组），这里只存组的落地集合与名称。通用订阅（全量）不进分组。
 	SubGroups []SubGroup `json:"sub_groups,omitempty"`
+	// 套餐档位（v1.4.27，方案 B）：管理员自定义创建的档位模板；订阅用户
+	// 挂 PlanID，建用户时档位值作默认值（个人值优先覆盖）。空 = 还没建
+	// 过档位，读时按“默认”档位兜底（见 plans.go 的 ensureDefaultPlan）。
+	Plans []Plan `json:"plans,omitempty"`
 	// 按人转发（v1.3.25，按订阅限流量 A）：本面板上的每用户转发记录。
 	// 只给开了限流的订阅建；每条是一条独立监听端口 → 同一落地端口的
 	// 转发，端口就是用户身份。管理面板模式下本机没有转发，这里是空的；
@@ -278,6 +282,30 @@ type MergedSub struct {
 	BackendTargets []string `json:"backend_targets,omitempty"`
 }
 
+// Plan 套餐档位（v1.4.27，方案 B，XBoard 式）：管理员在面板里自定义
+// 创建的档位模板。订阅用户挂 PlanID：建用户时没给分组/限流/模式/重置/
+// 到期就用档位的值（档位 ExpiresDays>0 时建用户时 ExpiresAt=now+天数），
+// 给了的个人值优先（档位默认值＋个人覆盖）。档位关联的权限组决定节点
+// 范围（GroupID）；档位本身不存落地勾选，节点范围只走分组。
+// TrafficLimitBytes 0 = 不限流；TrafficLimitMode total/monthly；
+// ResetMode 只在 monthly 下有效（monthly/anniversary/custom，见
+// MergedSub 头注释）；ExpiresDays 0 = 永久；Mode both/relay/direct。
+// 默认档位（Plans 为空时）：Name "默认"，无分组、不限流、永不过期、both，
+// 由 plans.go 的 ensureDefaultPlan() 保证（写路径上建，GET 不写盘）。
+type Plan struct {
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	GroupID           string `json:"group_id,omitempty"`
+	TrafficLimitBytes int64  `json:"traffic_limit_bytes,omitempty"`
+	TrafficLimitMode  string `json:"traffic_limit_mode,omitempty"`
+	ResetMode         string `json:"reset_mode,omitempty"`
+	ResetDay          int    `json:"reset_day,omitempty"`
+	ExpiresDays       int    `json:"expires_days,omitempty"`
+	Mode              string `json:"mode,omitempty"`
+	Note              string `json:"note,omitempty"`
+	CreatedAt         string `json:"created_at"`
+}
+
 // SubGroup 分组（v1.3.26，权限组）：一组 = 一组落地 + 一组用户，组里的人
 // 用组里的节点。建一次组、加用户就行，不用每人重复勾落地；通用共享节点
 // 放一个组，美国/英国/法国等定制用户各放各的组。
@@ -313,6 +341,11 @@ type SubGroup struct {
 // > 0 才限流，0 = 不限流（走共享端口）。
 // GroupID（v1.3.26，分组）：所属分组的 ID，空 = 不分组；非空时订阅按
 // 组的落地集合出内容，自己的 Selection 保留在记录里（出组/删组后恢复）。
+// PlanID/Username/PasswordHash（v1.4.27，方案 B）：PlanID 是套餐档位
+// （空 = 没挂档位）；Username 是该用户的登录账号（唯一，不可与管理员
+// 账号重名，空着创建时自动生成 u-＋6 位随机十六进制）；PasswordHash
+// 是登录密码的 PBKDF2 哈希（与管理员密码同款 hashPassword，绝不返回
+// 给前端；空 = 这个用户还没设登录密码、登不进来）。
 type SubUser struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
@@ -322,8 +355,19 @@ type SubUser struct {
 	CreatedAt string         `json:"created_at"`
 	Selection []SubSelection `json:"selection,omitempty"`
 	Mode      string         `json:"mode,omitempty"`
-	ExpiresAt string         `json:"expires_at,omitempty"`
-	GroupID   string         `json:"group_id,omitempty"`
+	// LinkMode 订阅级链接模式（Unreleased，订阅体系统一 B 追加）：
+	// "" = 跟随节点（默认，按节点的 LinkMode 出）；"direct" = 仅 A
+	// 直连；"relay" = 仅 B 中转；"both" = A 和 B 都出。订阅级显式
+	// 设置优先于节点级；只影响订阅拼链接（backendSubLinksForUser），
+	// 单条入站链接不动；改它不 bump 节点 ConfigVersion（订阅内容
+	// 实时生成，agent 不用重新拉配置）。
+	LinkMode  string `json:"link_mode,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+	GroupID   string `json:"group_id,omitempty"`
+	// 套餐档位（v1.4.27）：见 SubUser 头注释。
+	PlanID       string `json:"plan_id,omitempty"`
+	Username     string `json:"username,omitempty"`
+	PasswordHash string `json:"password_hash,omitempty"`
 	// 流量上限（v1.3.25，A 方案）：见 MergedSub 头注释。
 	TrafficLimitBytes int64  `json:"traffic_limit_bytes,omitempty"`
 	TrafficLimitMode  string `json:"traffic_limit_mode,omitempty"`

@@ -39,16 +39,17 @@ func subModeCreatePOST(t *testing.T, handler func(http.ResponseWriter, *http.Req
 func TestSubModeFilter(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	// 1.4.27：内容过滤的模式改挂订阅用户身上（通用订阅已退场）。
+	u := subUserForToken1427(t, s, tok)
 
 	// 全部（默认）：4 条，中转直连各 2
-	s.cfg.SubTokenMode = "both"
+	u.Mode = "both"
 	links := subPlainLinks(t, s, tok)
 	if len(links) != 4 {
 		t.Fatalf("both 应 4 条，实际 %d：%v", len(links), links)
 	}
 	// 仅中转：2 条，全带 -中转后缀，不含 -直连
-	s.cfg.SubTokenMode = "relay"
+	u.Mode = "relay"
 	links = subPlainLinks(t, s, tok)
 	if len(links) != 2 {
 		t.Fatalf("relay 应 2 条，实际 %d：%v", len(links), links)
@@ -59,7 +60,7 @@ func TestSubModeFilter(t *testing.T) {
 		}
 	}
 	// 仅直连：2 条，全带 -直连后缀，不含 -中转
-	s.cfg.SubTokenMode = "direct"
+	u.Mode = "direct"
 	links = subPlainLinks(t, s, tok)
 	if len(links) != 2 {
 		t.Fatalf("direct 应 2 条，实际 %d：%v", len(links), links)
@@ -71,7 +72,7 @@ func TestSubModeFilter(t *testing.T) {
 	}
 
 	// Clash：仅中转时有“中转节点”组、没有“直连节点”组；仅直连时反过来。
-	s.cfg.SubTokenMode = "relay"
+	u.Mode = "relay"
 	rec := callSub(t, s, tok, "/sub/"+tok+"?format=clash", "")
 	if rec.Code != 200 {
 		t.Fatalf("clash 应 200，实际 %d", rec.Code)
@@ -83,7 +84,7 @@ func TestSubModeFilter(t *testing.T) {
 	if strings.Contains(body, `name: "直连节点"`) {
 		t.Fatalf("relay 的 Clash 不应有“直连节点”组（空组要省略）：\n%s", body)
 	}
-	s.cfg.SubTokenMode = "direct"
+	u.Mode = "direct"
 	rec = callSub(t, s, tok, "/sub/"+tok+"?format=clash", "")
 	body = rec.Body.String()
 	if !strings.Contains(body, `name: "直连节点"`) {
@@ -93,14 +94,14 @@ func TestSubModeFilter(t *testing.T) {
 		t.Fatalf("direct 的 Clash 不应有“中转节点”组（空组要省略）：\n%s", body)
 	}
 	// ?mode=global（分流模式）与内容过滤互不干扰：仅中转 + global 照样 MATCH,手动选择
-	s.cfg.SubTokenMode = "relay"
+	u.Mode = "relay"
 	rec = callSub(t, s, tok, "/sub/"+tok+"?format=clash&mode=global", "")
 	body = rec.Body.String()
 	if !strings.Contains(body, "MATCH,手动选择") || strings.Contains(body, `name: "直连节点"`) {
 		t.Fatalf("relay + ?mode=global 应 MATCH,手动选择 且无直连组：\n%s", body)
 	}
 	// 全部 + split：两个组都在，MATCH,DIRECT
-	s.cfg.SubTokenMode = "both"
+	u.Mode = "both"
 	rec = callSub(t, s, tok, "/sub/"+tok+"?format=clash", "")
 	body = rec.Body.String()
 	if !strings.Contains(body, `name: "中转节点"`) || !strings.Contains(body, `name: "直连节点"`) || !strings.Contains(body, "MATCH,DIRECT") {
@@ -111,16 +112,16 @@ func TestSubModeFilter(t *testing.T) {
 func TestSubModeLegacyDefaultBoth(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	u := subUserForToken1427(t, s, tok)
 
-	// 老记录：通用令牌没存模式（空）→ 按全部处理，已发出去的链接行为不变
-	s.cfg.SubTokenMode = ""
+	// 老记录：订阅用户没存模式（空）→ 按全部处理，已发出去的链接行为不变
+	u.Mode = ""
 	if links := subPlainLinks(t, s, tok); len(links) != 4 {
 		t.Fatalf("没存模式应按全部（4 条），实际 %d：%v", len(links), links)
 	}
-	// 合并订阅创建时不传模式 → 默认全部，响应里 mode=both
-	code, resp := subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsCreate(w, r) },
-		"/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1},{"panel":"local","landing":2}]}`)
+	// 订阅用户创建时不传模式 → 默认全部，响应里 mode=both
+	code, resp := subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleSubUsersCreate(w, r) },
+		"/api/v1/subscriptions/users", `{"name":"张三","selection":[{"panel":"local","landing":1},{"panel":"local","landing":2}]}`)
 	if code != 200 {
 		t.Fatalf("创建应 200，实际 %d %v", code, resp)
 	}
@@ -130,17 +131,29 @@ func TestSubModeLegacyDefaultBoth(t *testing.T) {
 	url, _ := resp["url"].(string)
 	mtok := strings.TrimPrefix(url, "http://example.com/sub/")
 	if links := subPlainLinks(t, s, mtok); len(links) != 4 {
-		t.Fatalf("默认 both 的合并订阅应 4 条，实际 %d：%v", len(links), links)
+		t.Fatalf("默认 both 的订阅用户应 4 条，实际 %d：%v", len(links), links)
 	}
-	// 老记录：直接写进配置的合并订阅没存模式（空）→ 同样按全部处理
+	// 老记录：直接写进配置的订阅用户没存模式（空）→ 同样按全部处理
 	s2 := newTestSubServer(t)
 	tok2 := generateSubToken()
-	s2.cfg.MergedSubs = append(s2.cfg.MergedSubs, MergedSub{
-		ID: "legacy", TokenHash: hashSubToken(tok2),
+	subUserForToken1427(t, s2, tok2)
+	if links := subPlainLinks(t, s2, tok2); len(links) != 4 {
+		t.Fatalf("老订阅用户记录（无模式）应按全部（4 条），实际 %d：%v", len(links), links)
+	}
+	// 合并订阅已退场：创建与旧链接一律 410。
+	code, resp = subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsCreate(w, r) },
+		"/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1},{"panel":"local","landing":2}]}`)
+	if code != 410 {
+		t.Fatalf("合并订阅创建应 410（已退场），实际 %d %v", code, resp)
+	}
+	s3 := newTestSubServer(t)
+	tok3 := generateSubToken()
+	s3.cfg.MergedSubs = append(s3.cfg.MergedSubs, MergedSub{
+		ID: "legacy", TokenHash: hashSubToken(tok3),
 		Selection: []SubSelection{{Panel: "local", Landing: 1}, {Panel: "local", Landing: 2}},
 	})
-	if links := subPlainLinks(t, s2, tok2); len(links) != 4 {
-		t.Fatalf("老合并记录（无模式）应按全部（4 条），实际 %d：%v", len(links), links)
+	if rec := callSub(t, s3, tok3, "/sub/"+tok3, ""); rec.Code != 410 {
+		t.Fatalf("老合并订阅链接应 410（已退场），实际 %d", rec.Code)
 	}
 }
 
@@ -181,82 +194,55 @@ func TestSubModeCreateAndRotateKeepsMode(t *testing.T) {
 		}
 	}
 
-	// 合并订阅：建 direct → 轮换后模式仍是 direct，新令牌只出直连链接
+	// 1.4.27：合并订阅已退场，创建与轮换一律 410。
 	code, resp = subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsCreate(w, r) },
 		"/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1},{"panel":"local","landing":2}],"mode":"direct"}`)
-	if code != 200 {
-		t.Fatalf("建合并订阅应 200，实际 %d %v", code, resp)
+	if code != 410 {
+		t.Fatalf("建合并订阅应 410（已退场），实际 %d %v", code, resp)
 	}
-	if resp["mode"] != "direct" {
-		t.Fatalf("建合并订阅时 mode 应存 direct，实际 %v", resp)
-	}
-	mid, _ := resp["id"].(string)
-	req = httptest.NewRequest("POST", "/api/v1/subscriptions/merged/"+mid+"/rotate", nil)
-	req.SetPathValue("id", mid)
+	req = httptest.NewRequest("POST", "/api/v1/subscriptions/merged/ms-x/rotate", nil)
+	req.SetPathValue("id", "ms-x")
 	rec = httptest.NewRecorder()
 	s.handleMergedSubsRotate(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("轮换合并订阅应 200，实际 %d %s", rec.Code, rec.Body.String())
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &rot)
-	if rot["mode"] != "direct" {
-		t.Fatalf("轮换后合并订阅 mode 应保持 direct，实际 %v", rot)
-	}
-	url, _ = rot["url"].(string)
-	mtok := strings.TrimPrefix(url, "http://example.com/sub/")
-	links = subPlainLinks(t, s, mtok)
-	if len(links) != 2 {
-		t.Fatalf("轮换后 direct 合并订阅应 2 条直连链接，实际 %d：%v", len(links), links)
-	}
-	for _, ln := range links {
-		if !strings.Contains(ln, "-直连") {
-			t.Fatalf("轮换后 direct 合并订阅只应含直连链接：%s", ln)
-		}
+	if rec.Code != 410 {
+		t.Fatalf("轮换合并订阅应 410（已退场），实际 %d %s", rec.Code, rec.Body.String())
 	}
 
-	// 通用订阅：生成时选 relay → 响应带 mode，订阅只出中转链接；再生成（轮换）
-	// 时表单改选 direct → 新令牌只出直连链接（生成按表单当前选择存）
+	// 1.4.27：通用订阅已退场，生成一律 410。
 	code, resp = subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleSubTokenGenerate(w, r) },
 		"/api/v1/settings/subscription/generate", `{"mode":"relay"}`)
-	if code != 200 {
-		t.Fatalf("生成通用订阅应 200，实际 %d %v", code, resp)
-	}
-	url, _ = resp["url"].(string)
-	gtok := strings.TrimPrefix(url, "http://example.com/sub/")
-	if links := subPlainLinks(t, s, gtok); len(links) != 2 || !strings.Contains(links[0], "-中转") {
-		t.Fatalf("通用订阅 relay 应 2 条中转链接，实际 %v", links)
+	if code != 410 {
+		t.Fatalf("生成通用订阅应 410（已退场），实际 %d %v", code, resp)
 	}
 	code, resp = subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleSubTokenGenerate(w, r) },
 		"/api/v1/settings/subscription/generate", `{"mode":"direct"}`)
-	if code != 200 || resp["rotated"] != true {
-		t.Fatalf("再生成应 200 且 rotated=true，实际 %d %v", code, resp)
-	}
-	url, _ = resp["url"].(string)
-	gtok = strings.TrimPrefix(url, "http://example.com/sub/")
-	if links := subPlainLinks(t, s, gtok); len(links) != 2 || !strings.Contains(links[0], "-直连") {
-		t.Fatalf("轮换后通用订阅 direct 应 2 条直连链接，实际 %v", links)
+	if code != 410 {
+		t.Fatalf("再生成通用订阅应 410（已退场），实际 %d %v", code, resp)
 	}
 }
 
 func TestSubModeInvalidRejected(t *testing.T) {
 	s := newTestSubServer(t)
+	// 1.4.27：通用/合并订阅已退场，非法模式到不了校验，直接 410；
+	// 订阅用户仍在，非法模式 400。
 	cases := []struct {
 		name    string
 		handler func(w http.ResponseWriter, r *http.Request)
 		target  string
 		body    string
+		want    int
 	}{
 		{"通用订阅", func(w http.ResponseWriter, r *http.Request) { s.handleSubTokenGenerate(w, r) },
-			"/api/v1/settings/subscription/generate", `{"mode":"bogus"}`},
+			"/api/v1/settings/subscription/generate", `{"mode":"bogus"}`, 410},
 		{"每人链接", func(w http.ResponseWriter, r *http.Request) { s.handleSubUsersCreate(w, r) },
-			"/api/v1/subscriptions/users", `{"name":"张三","mode":"bogus"}`},
+			"/api/v1/subscriptions/users", `{"name":"张三","mode":"bogus"}`, 400},
 		{"合并订阅", func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsCreate(w, r) },
-			"/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1}],"mode":"bogus"}`},
+			"/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1}],"mode":"bogus"}`, 410},
 	}
 	for _, c := range cases {
 		code, resp := subModeCreatePOST(t, c.handler, c.target, c.body)
-		if code != 400 {
-			t.Fatalf("%s：非法模式应 400，实际 %d %v", c.name, code, resp)
+		if code != c.want {
+			t.Fatalf("%s：应 %d，实际 %d %v", c.name, c.want, code, resp)
 		}
 	}
 }

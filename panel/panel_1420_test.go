@@ -37,8 +37,8 @@ import (
 )
 
 func TestVersion1420(t *testing.T) {
-	if Version != "1.4.26" {
-		t.Fatalf("Version 应为 1.4.23，实际 %q", Version)
+	if Version != "1.4.27" {
+		t.Fatalf("Version 应为 1.4.27，实际 %q", Version)
 	}
 }
 
@@ -597,15 +597,13 @@ func TestServeSubBackend1420(t *testing.T) {
 			t.Fatalf("按人订阅 plain 里缺后端链接 %q：\n%s", want, body)
 		}
 	}
-	// 通用订阅令牌：没有用户身份，后端链接一条都不进。
+	// 1.4.27：通用订阅已退场，旧通用令牌直接 410（后端链接只进按人
+	// 订阅，通用订阅本来就没有用户身份、一条都不进）。
 	gtok := generateSubToken()
 	s.cfg.SubTokenHash = hashSubToken(gtok)
 	rec = callSub(t, s, gtok, "/sub/"+gtok+"?format=plain", "")
-	if rec.Code != 200 {
-		t.Fatalf("通用订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "example-node-") {
-		t.Fatalf("通用订阅里不应出现后端节点链接：\n%s", rec.Body.String())
+	if rec.Code != 410 {
+		t.Fatalf("通用订阅应 410（已退场），实际 %d：%s", rec.Code, rec.Body.String())
 	}
 	// 按人订阅的 singbox 与 clash 里同样有后端链接与分组。
 	rec = callSub(t, s, tok, "/sub/"+tok+"?format=singbox", "")

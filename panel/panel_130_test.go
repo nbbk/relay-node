@@ -56,7 +56,7 @@ func tokenFromSubURL130(t *testing.T, raw string) string {
 func TestSubUsers130(t *testing.T) {
 	s := newTestSubServer(t)
 
-	// 旧的面板级通用令牌保留：先生成一个，后面每人令牌建好后它仍能用
+	// 旧的面板级通用令牌已退场：1.4.27 起旧通用链接直接 410
 	panelTok := generateSubToken()
 	s.cfg.SubTokenHash = hashSubToken(panelTok)
 
@@ -91,9 +91,9 @@ func TestSubUsers130(t *testing.T) {
 	if rec := callSub(t, s, "sub_0000000000000000000000000000000000000000000000000000000000000000", "/sub/x", ""); rec.Code != 404 {
 		t.Fatalf("错令牌应 404，实际 %d", rec.Code)
 	}
-	// 旧通用令牌照常
-	if rec := callSub(t, s, panelTok, "/sub/"+panelTok, ""); rec.Code != 200 {
-		t.Fatalf("旧通用订阅链接应仍 200，实际 %d", rec.Code)
+	// 旧通用令牌已退场：直接 410
+	if rec := callSub(t, s, panelTok, "/sub/"+panelTok, ""); rec.Code != 410 {
+		t.Fatalf("旧通用订阅链接应 410（已退场），实际 %d", rec.Code)
 	}
 	// 每人链接的 format/mode 参数都生效
 	clash := callSub(t, s, tokA, "/sub/"+tokA+"?format=clash&mode=global", "")
@@ -166,8 +166,8 @@ func TestSubUsers130(t *testing.T) {
 	if rec := callSub(t, s, tokA2, "/sub/"+tokA2, ""); rec.Code != 200 {
 		t.Fatalf("撤销 B 不应影响 A，实际 %d", rec.Code)
 	}
-	if rec := callSub(t, s, panelTok, "/sub/"+panelTok, ""); rec.Code != 200 {
-		t.Fatalf("撤销 B 不应影响旧通用链接，实际 %d", rec.Code)
+	if rec := callSub(t, s, panelTok, "/sub/"+panelTok, ""); rec.Code != 410 {
+		t.Fatalf("旧通用链接已退场，应 410，实际 %d", rec.Code)
 	}
 }
 
@@ -201,59 +201,29 @@ func TestSubUserMerged130(t *testing.T) {
 
 // TestMergedSubName130 合并订阅填名称：同一勾选集合可有多个不同名称的令牌，
 // 各归各人；不填名称走老逻辑（同一选择重新生成会轮换），且轮换不能误伤已命名的那条。
+// TestMergedSubName130 1.4.27：合并订阅已退场，创建接口一律 410
+// （同一勾选多名称、多令牌各归各人的能力，现在由订阅用户承担：
+// 每人一条独立令牌，见 TestSubUsers130）。
 func TestMergedSubName130(t *testing.T) {
 	s := newTestSubServer(t)
 	sel := `[{"panel":"local","landing":1}]`
-	mk := func(name string) string {
-		t.Helper()
-		rec := callJSON130(t, s.handleMergedSubsCreate, "POST", "/api/v1/subscriptions/merged",
-			`{"selection":`+sel+`,"name":"`+name+`"}`)
-		if rec.Code != 200 {
-			t.Fatalf("生成合并订阅（name=%q）应 200，实际 %d：%s", name, rec.Code, rec.Body.String())
+	for _, body := range []string{
+		`{"selection":` + sel + `,"name":"张三"}`,
+		`{"selection":` + sel + `,"name":"李四"}`,
+		`{"selection":` + sel + `}`,
+	} {
+		rec := callJSON130(t, s.handleMergedSubsCreate, "POST", "/api/v1/subscriptions/merged", body)
+		if rec.Code != 410 {
+			t.Fatalf("合并订阅创建 %s 应 410（已退场），实际 %d：%s", body, rec.Code, rec.Body.String())
 		}
-		return tokenFromSubURL130(t, respMap130(t, rec)["url"].(string))
 	}
-	tokZhang := mk("张三")
-	tokLi := mk("李四")
-	if tokZhang == tokLi {
-		t.Fatalf("不同名称应是不同令牌")
-	}
-	if rec := callSub(t, s, tokZhang, "/sub/"+tokZhang, ""); rec.Code != 200 {
-		t.Fatalf("张三的合并订阅应 200，实际 %d", rec.Code)
-	}
-	if rec := callSub(t, s, tokLi, "/sub/"+tokLi, ""); rec.Code != 200 {
-		t.Fatalf("李四的合并订阅应 200，实际 %d", rec.Code)
-	}
-	// 不填名称生成同一选择：新起一条（不轮换已命名的），两条命名的照常
-	rec := callJSON130(t, s.handleMergedSubsCreate, "POST", "/api/v1/subscriptions/merged", `{"selection":`+sel+`}`)
+	// 列表仍可查（供核对），但不再有新建的记录。
+	rec := callJSON130(t, s.handleMergedSubsList, "GET", "/api/v1/subscriptions/merged", "")
 	if rec.Code != 200 {
-		t.Fatalf("不填名称生成应 200，实际 %d：%s", rec.Code, rec.Body.String())
+		t.Fatalf("列合并订阅应 200，实际 %d", rec.Code)
 	}
-	if respMap130(t, rec)["rotated"] == true {
-		t.Fatalf("第一次不填名称生成不应是轮换")
-	}
-	tokPlain := tokenFromSubURL130(t, respMap130(t, rec)["url"].(string))
-	if rec := callSub(t, s, tokZhang, "/sub/"+tokZhang, ""); rec.Code != 200 {
-		t.Fatalf("不填名称生成不应影响张三的链接，实际 %d", rec.Code)
-	}
-	// 再不填名称生成同一选择：轮换的是没名称的那条，命名的两条照常
-	rec = callJSON130(t, s.handleMergedSubsCreate, "POST", "/api/v1/subscriptions/merged", `{"selection":`+sel+`}`)
-	if respMap130(t, rec)["rotated"] != true {
-		t.Fatalf("第二次不填名称生成应是轮换")
-	}
-	if rec := callSub(t, s, tokPlain, "/sub/"+tokPlain, ""); rec.Code != 404 {
-		t.Fatalf("轮换后旧的无名链接应 404，实际 %d", rec.Code)
-	}
-	if rec := callSub(t, s, tokZhang, "/sub/"+tokZhang, ""); rec.Code != 200 {
-		t.Fatalf("轮换无名链接不应影响张三，实际 %d", rec.Code)
-	}
-	if rec := callSub(t, s, tokLi, "/sub/"+tokLi, ""); rec.Code != 200 {
-		t.Fatalf("轮换无名链接不应影响李四，实际 %d", rec.Code)
-	}
-	// 列表含名称
-	rec = callJSON130(t, s.handleMergedSubsList, "GET", "/api/v1/subscriptions/merged", "")
-	if !strings.Contains(rec.Body.String(), "张三") || !strings.Contains(rec.Body.String(), "李四") {
-		t.Fatalf("合并订阅列表应含名称：%s", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "张三") || strings.Contains(rec.Body.String(), "李四") {
+		t.Fatalf("退场后创建失败，列表不应出现张三/李四：%s", rec.Body.String())
 	}
 }
 

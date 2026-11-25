@@ -24,8 +24,8 @@ import (
 )
 
 func TestVersion1424(t *testing.T) {
-	if Version != "1.4.26" {
-		t.Fatalf("Version 应为 1.4.24，实际 %q", Version)
+	if Version != "1.4.27" {
+		t.Fatalf("Version 应为 1.4.27，实际 %q", Version)
 	}
 }
 
@@ -33,18 +33,18 @@ func TestUserinfoPermanentExpireZero1424(t *testing.T) {
 	s := newTestSubServer(t)
 
 	// 三项全无（永久令牌、无落地数据）→ 仍不发头。
+	// 1.4.27：通用订阅已退场，改走永久的订阅用户。
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
-	s.cfg.SubTokenExpiresAt = ""
+	subUserForToken1427(t, s, tok)
 	rec := callSub(t, s, tok, "/sub/"+tok, "")
 	if rec.Code != 200 {
-		t.Fatalf("通用订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
+		t.Fatalf("订阅用户应 200，实际 %d：%s", rec.Code, rec.Body.String())
 	}
 	if h := rec.Header().Get("subscription-userinfo"); h != "" {
 		t.Fatalf("三项全无时不应发 userinfo 头，实际 %q", h)
 	}
 
-	// 通用订阅（永久）：落地有流量累计与上限、无到期 → 头含 expire=0。
+	// 订阅用户（永久）：落地有流量累计与上限、无到期 → 头含 expire=0。
 	s.stateMu.Lock()
 	s.state.Landings["203.0.113.1"] = &LandingExt{TrafficLimitBytes: 100 << 30}
 	s.stateMu.Unlock()
@@ -55,7 +55,7 @@ func TestUserinfoPermanentExpireZero1424(t *testing.T) {
 	h := rec.Header().Get("subscription-userinfo")
 	want := "upload=123456; download=789012; total=107374182400; expire=0"
 	if h != want {
-		t.Fatalf("永久通用订阅头应为 %q，实际 %q", want, h)
+		t.Fatalf("永久订阅用户头应为 %q，实际 %q", want, h)
 	}
 
 	// 一人一条订阅（永久）：有用量＋上限、无到期 → 头含 expire=0。

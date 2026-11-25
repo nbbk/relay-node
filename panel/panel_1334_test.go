@@ -32,7 +32,7 @@ func newFakeChangePortRemote1334(t *testing.T) *fakeChangePortRemote1334 {
 		forwards: []UserForward{
 			{Key: "merged:ms-a", SubKind: "merged", SubID: "ms-a", SubName: "合并一", Panel: "local", LandingAddr: "203.0.113.1", ListenPort: 30000, LimitBytes: 1073741824, LimitMode: "total", ResetMode: "monthly", ResetDay: 1},
 			{Key: "merged:ms-b", SubKind: "merged", SubID: "ms-b", SubName: "合并二", Panel: "local", LandingAddr: "203.0.113.1", ListenPort: 30001, LimitBytes: 1073741824, LimitMode: "total", ResetMode: "monthly", ResetDay: 1},
-			{Key: "merged:ms-test", SubKind: "merged", SubID: "ms-test", SubName: "测试一番", Panel: "local", LandingAddr: "203.0.113.1", ListenPort: 30002, LimitBytes: 1073741824, LimitMode: "total", ResetMode: "monthly", ResetDay: 1},
+			{Key: "subuser:su-test", SubKind: "subuser", SubID: "su-test", SubName: "测试一番", Panel: "local", LandingAddr: "203.0.113.1", ListenPort: 30002, LimitBytes: 1073741824, LimitMode: "total", ResetMode: "monthly", ResetDay: 1},
 		},
 		skipPorts: map[int]bool{},
 	}
@@ -71,7 +71,8 @@ func newFakeChangePortRemote1334(t *testing.T) *fakeChangePortRemote1334 {
 				continue
 			}
 			applied++
-			kept = append(kept, UserForward{Key: req.Key, SubKind: "merged", SubID: strings.TrimPrefix(req.Key, "merged:"), Panel: "local", LandingAddr: cf.LandingAddr, ListenPort: cf.ListenPort, LimitBytes: cf.LimitBytes, LimitMode: cf.LimitMode, ResetMode: cf.ResetMode, ResetDay: cf.ResetDay, NextResetAt: cf.NextResetAt, Disabled: cf.Disabled})
+			keyKind, _, _ := strings.Cut(req.Key, ":")
+			kept = append(kept, UserForward{Key: req.Key, SubKind: keyKind, SubID: strings.TrimPrefix(req.Key, keyKind+":"), Panel: "local", LandingAddr: cf.LandingAddr, ListenPort: cf.ListenPort, LimitBytes: cf.LimitBytes, LimitMode: cf.LimitMode, ResetMode: cf.ResetMode, ResetDay: cf.ResetDay, NextResetAt: cf.NextResetAt, Disabled: cf.Disabled})
 		}
 		f.forwards = kept
 		f.posts = append(f.posts, map[string]any{"key": req.Key, "forwards": req.Forwards, "applied": applied, "skipped": skipped})
@@ -88,8 +89,8 @@ func newChangePortServer1334(t *testing.T, remote *fakeChangePortRemote1334) *Se
 	s := newTestAddLandingServer(t, t.TempDir(), t.TempDir())
 	tok := generateRemoteToken()
 	s.cfg.Remotes = append(s.cfg.Remotes, RemotePanel{ID: "rm-1334", Name: "测试远程", BaseURL: remote.srv.URL, Token: tok})
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: "ms-test", Name: "测试一番", TrafficLimitBytes: 1073741824, TrafficLimitMode: "total", ResetMode: "monthly", ResetDay: 1})
-	s.cfg.UserForwards = append(s.cfg.UserForwards, UserForward{Key: "merged:ms-test", SubKind: "merged", SubID: "ms-test", SubName: "测试一番", Panel: "rm-1334", LandingAddr: "203.0.113.1", ListenPort: 30002, LimitBytes: 1073741824, LimitMode: "total", ResetMode: "monthly", ResetDay: 1})
+	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: "su-test", Name: "测试一番", TrafficLimitBytes: 1073741824, TrafficLimitMode: "total", ResetMode: "monthly", ResetDay: 1})
+	s.cfg.UserForwards = append(s.cfg.UserForwards, UserForward{Key: "subuser:su-test", SubKind: "subuser", SubID: "su-test", SubName: "测试一番", Panel: "rm-1334", LandingAddr: "203.0.113.1", ListenPort: 30002, LimitBytes: 1073741824, LimitMode: "total", ResetMode: "monthly", ResetDay: 1})
 	return s
 }
 
@@ -118,10 +119,10 @@ func TestChangeUserForwardPortCustom1334(t *testing.T) {
 	remote := newFakeChangePortRemote1334(t)
 	s := newChangePortServer1334(t, remote)
 	// 用量记录先记一笔：换口后必须原样保留（不清零）。
-	rec := s.userTraffic.get("merged:ms-test")
+	rec := s.userTraffic.get("subuser:su-test")
 	rec.UpTotal, rec.DownTotal, rec.UpPeriod, rec.DownPeriod = 111, 222, 33, 44
 
-	r := callChangePort1334(t, s, "merged", "ms-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30005}`)
+	r := callChangePort1334(t, s, "subuser", "su-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30005}`)
 	resp := decodeChangePort1334(t, r)
 	if r.Code != 200 || resp["ok"] != true {
 		t.Fatalf("换口应成功：code=%d resp=%v", r.Code, resp)
@@ -133,7 +134,7 @@ func TestChangeUserForwardPortCustom1334(t *testing.T) {
 		t.Fatalf("远程问到了，remote_checked 应为 true，实际 resp=%v", resp)
 	}
 	// 本机记录已改。
-	f := s.findRemoteUserForward("merged:ms-test", "rm-1334", "203.0.113.1")
+	f := s.findRemoteUserForward("subuser:su-test", "rm-1334", "203.0.113.1")
 	if f == nil || f.ListenPort != 30005 {
 		t.Fatalf("本机记录端口应是 30005，实际 %+v", f)
 	}
@@ -153,7 +154,7 @@ func TestChangeUserForwardPortCustom1334(t *testing.T) {
 		t.Fatalf("下发集合里应有新端口 30005，实际 posts=%v", remote.posts)
 	}
 	// 用量记录原样保留。
-	up, down, upP, downP, ok := s.userTraffic.totals("merged:ms-test")
+	up, down, upP, downP, ok := s.userTraffic.totals("subuser:su-test")
 	if !ok || up != 111 || down != 222 || upP != 33 || downP != 44 {
 		t.Fatalf("用量记录应原样保留（111/222/33/44），实际 %d/%d/%d/%d ok=%v", up, down, upP, downP, ok)
 	}
@@ -169,7 +170,7 @@ func TestChangeUserForwardPortCustom1334(t *testing.T) {
 func TestChangeUserForwardPortCollisionRemote1334(t *testing.T) {
 	remote := newFakeChangePortRemote1334(t)
 	s := newChangePortServer1334(t, remote)
-	r := callChangePort1334(t, s, "merged", "ms-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30001}`)
+	r := callChangePort1334(t, s, "subuser", "su-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30001}`)
 	resp := decodeChangePort1334(t, r)
 	if r.Code != 400 || resp["ok"] != false {
 		t.Fatalf("撞端口应 400 拒绝：code=%d resp=%v", r.Code, resp)
@@ -178,7 +179,7 @@ func TestChangeUserForwardPortCollisionRemote1334(t *testing.T) {
 	if !strings.Contains(errMsg, "30001") || !strings.Contains(errMsg, "已被占用") || !strings.Contains(errMsg, "合并二") {
 		t.Fatalf("错误应写清端口与是谁在用，实际 %q", errMsg)
 	}
-	f := s.findRemoteUserForward("merged:ms-test", "rm-1334", "203.0.113.1")
+	f := s.findRemoteUserForward("subuser:su-test", "rm-1334", "203.0.113.1")
 	if f == nil || f.ListenPort != 30002 {
 		t.Fatalf("拒绝后原转发应不动（30002），实际 %+v", f)
 	}
@@ -197,13 +198,13 @@ func TestChangeUserForwardPortOutOfRange1334(t *testing.T) {
 		`{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":40000}`,
 		`{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30002}`,
 	} {
-		r := callChangePort1334(t, s, "merged", "ms-test", body)
+		r := callChangePort1334(t, s, "subuser", "su-test", body)
 		resp := decodeChangePort1334(t, r)
 		if r.Code != 400 || resp["ok"] != false {
 			t.Fatalf("应 400 拒绝 %s：code=%d resp=%v", body, r.Code, resp)
 		}
 	}
-	f := s.findRemoteUserForward("merged:ms-test", "rm-1334", "203.0.113.1")
+	f := s.findRemoteUserForward("subuser:su-test", "rm-1334", "203.0.113.1")
 	if f == nil || f.ListenPort != 30002 {
 		t.Fatalf("拒绝后原转发应不动（30002），实际 %+v", f)
 	}
@@ -217,7 +218,7 @@ func TestChangeUserForwardPortOutOfRange1334(t *testing.T) {
 func TestChangeUserForwardPortAuto1334(t *testing.T) {
 	remote := newFakeChangePortRemote1334(t)
 	s := newChangePortServer1334(t, remote)
-	r := callChangePort1334(t, s, "merged", "ms-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":0}`)
+	r := callChangePort1334(t, s, "subuser", "su-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":0}`)
 	resp := decodeChangePort1334(t, r)
 	if r.Code != 200 || resp["ok"] != true {
 		t.Fatalf("自动分配应成功：code=%d resp=%v", r.Code, resp)
@@ -234,7 +235,7 @@ func TestChangeUserForwardPortRemoteDown1334(t *testing.T) {
 	remote := newFakeChangePortRemote1334(t)
 	remote.get404 = true // 旧远程：没有只读接口
 	s := newChangePortServer1334(t, remote)
-	r := callChangePort1334(t, s, "merged", "ms-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30005}`)
+	r := callChangePort1334(t, s, "subuser", "su-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30005}`)
 	resp := decodeChangePort1334(t, r)
 	if r.Code != 200 || resp["ok"] != true {
 		t.Fatalf("远程问不到时应回退本地校验、仍成功：code=%d resp=%v", r.Code, resp)
@@ -257,13 +258,13 @@ func TestChangeUserForwardPortRemoteSkipRollback1334(t *testing.T) {
 	remote := newFakeChangePortRemote1334(t)
 	remote.skipPorts[30005] = true // 模拟竞态：问到时空着，下发时已被别人占了
 	s := newChangePortServer1334(t, remote)
-	r := callChangePort1334(t, s, "merged", "ms-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30005}`)
+	r := callChangePort1334(t, s, "subuser", "su-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30005}`)
 	resp := decodeChangePort1334(t, r)
 	if r.Code != 400 || resp["ok"] != false {
 		t.Fatalf("远程跳过时应 400 报错：code=%d resp=%v", r.Code, resp)
 	}
 	// 本机记录回滚到旧端口。
-	f := s.findRemoteUserForward("merged:ms-test", "rm-1334", "203.0.113.1")
+	f := s.findRemoteUserForward("subuser:su-test", "rm-1334", "203.0.113.1")
 	if f == nil || f.ListenPort != 30002 {
 		t.Fatalf("回滚后本机记录应是旧端口 30002，实际 %+v", f)
 	}
@@ -285,12 +286,12 @@ func TestChangeUserForwardPortRemoteSkipRollback1334(t *testing.T) {
 	// 远程存量里这条转发还在（没被全量替换丢掉）。
 	stillThere := false
 	for _, fw := range remote.forwards {
-		if fw.Key == "merged:ms-test" && fw.ListenPort == 30002 {
+		if fw.Key == "subuser:su-test" && fw.ListenPort == 30002 {
 			stillThere = true
 		}
 	}
 	if !stillThere {
-		t.Fatalf("远程存量里 ms-test 的 30002 转发应还在，实际 %+v", remote.forwards)
+		t.Fatalf("远程存量里 su-test 的 30002 转发应还在，实际 %+v", remote.forwards)
 	}
 }
 
@@ -299,16 +300,16 @@ func TestChangeUserForwardPortRemoteSkipRollback1334(t *testing.T) {
 func TestChangeUserForwardPortMultiLanding1334(t *testing.T) {
 	remote := newFakeChangePortRemote1334(t)
 	// 远程再加一条 ms-test 在 203.0.113.2 上的转发。
-	remote.forwards = append(remote.forwards, UserForward{Key: "merged:ms-test", SubKind: "merged", SubID: "ms-test", SubName: "测试一番", Panel: "local", LandingAddr: "203.0.113.2", ListenPort: 30003, LimitBytes: 1073741824, LimitMode: "total", ResetMode: "monthly", ResetDay: 1})
+	remote.forwards = append(remote.forwards, UserForward{Key: "subuser:su-test", SubKind: "subuser", SubID: "su-test", SubName: "测试一番", Panel: "local", LandingAddr: "203.0.113.2", ListenPort: 30003, LimitBytes: 1073741824, LimitMode: "total", ResetMode: "monthly", ResetDay: 1})
 	s := newChangePortServer1334(t, remote)
-	s.cfg.UserForwards = append(s.cfg.UserForwards, UserForward{Key: "merged:ms-test", SubKind: "merged", SubID: "ms-test", SubName: "测试一番", Panel: "rm-1334", LandingAddr: "203.0.113.2", ListenPort: 30003, LimitBytes: 1073741824, LimitMode: "total", ResetMode: "monthly", ResetDay: 1})
-	r := callChangePort1334(t, s, "merged", "ms-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30005}`)
+	s.cfg.UserForwards = append(s.cfg.UserForwards, UserForward{Key: "subuser:su-test", SubKind: "subuser", SubID: "su-test", SubName: "测试一番", Panel: "rm-1334", LandingAddr: "203.0.113.2", ListenPort: 30003, LimitBytes: 1073741824, LimitMode: "total", ResetMode: "monthly", ResetDay: 1})
+	r := callChangePort1334(t, s, "subuser", "su-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30005}`)
 	resp := decodeChangePort1334(t, r)
 	if r.Code != 200 || resp["ok"] != true {
 		t.Fatalf("多落地换其中一条应成功：code=%d resp=%v", r.Code, resp)
 	}
-	f1 := s.findRemoteUserForward("merged:ms-test", "rm-1334", "203.0.113.1")
-	f2 := s.findRemoteUserForward("merged:ms-test", "rm-1334", "203.0.113.2")
+	f1 := s.findRemoteUserForward("subuser:su-test", "rm-1334", "203.0.113.1")
+	f2 := s.findRemoteUserForward("subuser:su-test", "rm-1334", "203.0.113.2")
 	if f1 == nil || f1.ListenPort != 30005 {
 		t.Fatalf("203.0.113.1 应换成 30005，实际 %+v", f1)
 	}
@@ -336,7 +337,7 @@ func TestChangeUserForwardPortNoForward1334(t *testing.T) {
 	remote := newFakeChangePortRemote1334(t)
 	s := newChangePortServer1334(t, remote)
 	s.cfg.UserForwards = nil
-	r := callChangePort1334(t, s, "merged", "ms-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30005}`)
+	r := callChangePort1334(t, s, "subuser", "su-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30005}`)
 	resp := decodeChangePort1334(t, r)
 	if r.Code != 400 || resp["ok"] != false {
 		t.Fatalf("没有转发时应 400 拒绝：code=%d resp=%v", r.Code, resp)
@@ -352,10 +353,10 @@ func TestSubUserForwardsList1334(t *testing.T) {
 	s.centralMu.Lock()
 	s.centralCache["rm-1334"] = &RemoteStatusSnapshot{ID: "rm-1334", Name: "测试远程", Landings: []remoteLandingSummary{{Index: 1, Name: "智利", Landing: "203.0.113.1"}}}
 	s.centralMu.Unlock()
-	req := httptest.NewRequest("GET", "/api/v1/subscriptions/merged/ms-test/forwards", nil)
-	req.SetPathValue("id", "ms-test")
+	req := httptest.NewRequest("GET", "/api/v1/subscriptions/users/su-test/forwards", nil)
+	req.SetPathValue("id", "su-test")
 	rec := httptest.NewRecorder()
-	s.handleSubUserForwards("merged")(rec, req)
+	s.handleSubUserForwards("subuser")(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("列表应 200，实际 %d：%s", rec.Code, rec.Body.String())
 	}
@@ -385,10 +386,10 @@ func TestSubUserForwardsList1334(t *testing.T) {
 		t.Fatalf("端口段应是 30000–39999，实际 %d–%d", resp.PortStart, resp.PortEnd)
 	}
 	// 不存在的订阅 404。
-	req2 := httptest.NewRequest("GET", "/api/v1/subscriptions/merged/ms-nope/forwards", nil)
-	req2.SetPathValue("id", "ms-nope")
+	req2 := httptest.NewRequest("GET", "/api/v1/subscriptions/users/su-nope/forwards", nil)
+	req2.SetPathValue("id", "su-nope")
 	rec2 := httptest.NewRecorder()
-	s.handleSubUserForwards("merged")(rec2, req2)
+	s.handleSubUserForwards("subuser")(rec2, req2)
 	if rec2.Code != 404 {
 		t.Fatalf("不存在的订阅应 404，实际 %d", rec2.Code)
 	}
@@ -400,15 +401,71 @@ func TestChangeUserForwardPortLocalRollback1334(t *testing.T) {
 	// 本机有 relay.conf + config.toml，但没有 realm 二进制：applyUserForwards
 	// 写完 toml 后重启 realm 失败，换口应报错、本机记录回滚。
 	s := newTestSubServer(t)
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: "ms-test", Name: "测试一番", TrafficLimitBytes: 1073741824, TrafficLimitMode: "total", ResetMode: "monthly", ResetDay: 1})
-	s.cfg.UserForwards = append(s.cfg.UserForwards, UserForward{Key: "merged:ms-test", SubKind: "merged", SubID: "ms-test", SubName: "测试一番", Panel: "local", LandingAddr: "203.0.113.1", ListenPort: 30002, LimitBytes: 1073741824, LimitMode: "total", ResetMode: "monthly", ResetDay: 1})
-	r := callChangePort1334(t, s, "merged", "ms-test", `{"panel_id":"local","landing_addr":"203.0.113.1","new_port":30005}`)
+	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: "su-test", Name: "测试一番", TrafficLimitBytes: 1073741824, TrafficLimitMode: "total", ResetMode: "monthly", ResetDay: 1})
+	s.cfg.UserForwards = append(s.cfg.UserForwards, UserForward{Key: "subuser:su-test", SubKind: "subuser", SubID: "su-test", SubName: "测试一番", Panel: "local", LandingAddr: "203.0.113.1", ListenPort: 30002, LimitBytes: 1073741824, LimitMode: "total", ResetMode: "monthly", ResetDay: 1})
+	r := callChangePort1334(t, s, "subuser", "su-test", `{"panel_id":"local","landing_addr":"203.0.113.1","new_port":30005}`)
 	resp := decodeChangePort1334(t, r)
 	if r.Code != 400 || resp["ok"] != false {
 		t.Fatalf("本机重启失败时应 400 报错：code=%d resp=%v", r.Code, resp)
 	}
-	f := s.findUserForward("merged:ms-test", "203.0.113.1")
+	f := s.findUserForward("subuser:su-test", "203.0.113.1")
 	if f == nil || f.ListenPort != 30002 {
 		t.Fatalf("回滚后本机记录应是旧端口 30002，实际 %+v", f)
+	}
+}
+
+// ---------- 合并订阅退场：forwards / change-port 一并 410 ----------
+
+func TestMergedForwardsAndChangePortRetired1334(t *testing.T) {
+	remote := newFakeChangePortRemote1334(t)
+	s := newChangePortServer1334(t, remote)
+	// 直接调 handler：merged 的两个接口都 410，文案与其它退场接口一致。
+	req := httptest.NewRequest("GET", "/api/v1/subscriptions/merged/ms-test/forwards", nil)
+	req.SetPathValue("id", "ms-test")
+	rec := httptest.NewRecorder()
+	s.handleSubUserForwards("merged")(rec, req)
+	if rec.Code != 410 {
+		t.Fatalf("合并订阅 forwards 应 410（已退场），实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), retiredSubMsg) {
+		t.Fatalf("合并订阅 forwards 的 410 文案应与其它退场接口一致，实际 %s", rec.Body.String())
+	}
+	r := callChangePort1334(t, s, "merged", "ms-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30005}`)
+	if r.Code != 410 {
+		t.Fatalf("合并订阅 change-port 应 410（已退场），实际 %d：%s", r.Code, r.Body.String())
+	}
+	if !strings.Contains(r.Body.String(), retiredSubMsg) {
+		t.Fatalf("合并订阅 change-port 的 410 文案应与其它退场接口一致，实际 %s", r.Body.String())
+	}
+	// 退场不应动任何记录：换口没发生，远程没收到下发。
+	if f := s.findRemoteUserForward("subuser:su-test", "rm-1334", "203.0.113.1"); f == nil || f.ListenPort != 30002 {
+		t.Fatalf("410 后原转发应不动（30002），实际 %+v", f)
+	}
+	if len(remote.posts) != 0 {
+		t.Fatalf("410 后不应向远程下发，实际 posts=%d", len(remote.posts))
+	}
+	// 走完整路由也 410（注册的 merged 路由已退场），subuser 路由不受影响。
+	h := s.routes()
+	cookie := loginTestCookie(t, h)
+	get := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", target, nil)
+		req.Header.Set("Cookie", cookie)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := get("/api/v1/subscriptions/merged/ms-test/forwards"); rec.Code != 410 {
+		t.Fatalf("路由上合并订阅 forwards 应 410，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	postReq := httptest.NewRequest("POST", "/api/v1/subscriptions/merged/ms-test/change-port", strings.NewReader(`{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30005}`))
+	postReq.Header.Set("Cookie", cookie)
+	postReq.Header.Set("Content-Type", "application/json")
+	postRec := httptest.NewRecorder()
+	h.ServeHTTP(postRec, postReq)
+	if postRec.Code != 410 {
+		t.Fatalf("路由上合并订阅 change-port 应 410，实际 %d：%s", postRec.Code, postRec.Body.String())
+	}
+	if rec := get("/api/v1/subscriptions/users/su-test/forwards"); rec.Code != 200 {
+		t.Fatalf("订阅用户的 forwards 不应受退场影响，应 200，实际 %d：%s", rec.Code, rec.Body.String())
 	}
 }

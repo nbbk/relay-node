@@ -61,19 +61,17 @@ func TestNodeUUIDCreateSubUser1335(t *testing.T) {
 	}
 }
 
-// TestNodeUUIDCreateMerged1335 新建合并订阅即按勾选生成 UUID。
+// TestNodeUUIDCreateMerged1335 1.4.27：合并订阅已退场，新建接口 410；
+// 新建时按勾选生成 UUID 的行为现在由订阅用户承担，见
+// TestNodeUUIDCreateUser1335。
 func TestNodeUUIDCreateMerged1335(t *testing.T) {
 	s := newTestSubServer(t)
 	rec := callJSON130(t, s.handleMergedSubsCreate, "POST", "/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1},{"panel":"local","landing":2}]}`)
-	if rec.Code != 200 {
-		t.Fatalf("新建合并订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
+	if rec.Code != 410 {
+		t.Fatalf("新建合并订阅应 410（已退场），实际 %d：%s", rec.Code, rec.Body.String())
 	}
-	m := s.cfg.MergedSubs[0]
-	if len(m.NodeUUIDs) != 2 || m.NodeUUIDs["203.0.113.1"] == "" || m.NodeUUIDs["203.0.113.2"] == "" {
-		t.Fatalf("应给两个落地各生成一个 UUID，实际 %v", m.NodeUUIDs)
-	}
-	if m.NodeUUIDs["203.0.113.1"] == m.NodeUUIDs["203.0.113.2"] {
-		t.Fatalf("同一订阅不同落地的 UUID 不应相同")
+	if len(s.cfg.MergedSubs) != 0 {
+		t.Fatalf("退场后创建失败，不应新增合并订阅记录，实际 %+v", s.cfg.MergedSubs)
 	}
 }
 

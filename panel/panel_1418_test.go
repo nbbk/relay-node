@@ -31,8 +31,8 @@ import (
 )
 
 func TestVersion1418(t *testing.T) {
-	if Version != "1.4.26" {
-		t.Fatalf("Version 应为 1.4.23，实际 %q", Version)
+	if Version != "1.4.27" {
+		t.Fatalf("Version 应为 1.4.27，实际 %q", Version)
 	}
 }
 
@@ -415,7 +415,9 @@ func TestNodesDeleteRoutesReapply1418(t *testing.T) {
 	}
 }
 
-// 管理面板上建路由：只存不下发，applied=false 且原因写明管理面板。
+// 管理面板上建路由（C 方案）：不再本地存路由，没登记中转面板时
+// 直接 400，提示先去集中管理页登记；登记了就代理到中转面板
+// （代理用例见 panel_1428_relay_c_test.go）。
 func TestRelayRoutesCreateManagerOnly1418(t *testing.T) {
 	s := newTestServer1400(t)
 	h := s.routes()
@@ -424,15 +426,7 @@ func TestRelayRoutesCreateManagerOnly1418(t *testing.T) {
 	s.cfg.ManagerOnly = true
 	code, body := authed1400(t, h, cookie, "POST", "/api/v1/relay-routes",
 		`{"listen_addr":"0.0.0.0:30004","remote_node_id":1,"remote_port":443,"proto":"tcp"}`)
-	if code != 200 {
-		t.Fatalf("管理面板建路由应 200（只存不下发），实际 %d：%s", code, body)
-	}
-	m := respMap1400(t, body)
-	if m["applied"] != false {
-		t.Fatalf("管理面板建路由应 applied=false：%s", body)
-	}
-	ae, _ := m["apply_error"].(string)
-	if !strings.Contains(ae, "管理面板") {
-		t.Fatalf("管理面板的 apply_error 应写明管理面板，实际 %q", ae)
+	if code != 400 || !strings.Contains(body, "还没登记中转面板") {
+		t.Fatalf("管理面板没登记中转面板时建路由应 400 且提示登记，实际 %d：%s", code, body)
 	}
 }

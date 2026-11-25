@@ -194,11 +194,13 @@
         <div class="list-toolbar nodes-toolbar"><input id="nodes-search" class="list-search" type="search" placeholder="搜索节点：名称、地址…" aria-label="搜索节点"><label for="nodes-page-size">每页 <select id="nodes-page-size"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option></select> 条</label><button class="btn secondary sm" type="button" id="nodes-view-toggle" aria-pressed="false">列表视图</button></div>
         <div id="nodes-list" class="nodes-list nodes-grid"></div>
         <!-- 中转路由（v1.4.18，切片 8）：面板改路由，本机 realm 配置跟着变
-             并重启生效；管理面板本机无中转，只存路由、不下发。 -->
+             并重启生效；管理面板本机无中转，路由经代理下发到选中的中转
+             面板（C 方案），本地不再存路由。 -->
         <h2 style="margin-top:20px">中转路由</h2>
         <p class="muted">中转机 realm 的转发：监听地址收到的流量转到目标节点的落地地址。保存后立即重下发并重启 realm，已建立的中转连接会断开、须重连；只改路由不改节点配置。</p>
         <div class="card">
           <div class="btn-row"><button class="btn" type="button" id="nodes-relay-add">添加路由</button><button class="btn secondary" type="button" id="nodes-relay-reapply">重新下发</button></div>
+          <div class="btn-row" id="nodes-relay-panel-row" hidden><label for="nodes-relay-panel">中转机</label><select id="nodes-relay-panel"></select></div>
           <div id="nodes-relay-note" class="muted small"></div>
           <div id="nodes-relay-routes"></div>
         </div>
@@ -210,9 +212,9 @@
           <div id="nodes-relay-error" class="error-box hidden" hidden></div>
           <form id="nodes-relay-form">
             <div class="form-grid">
-              <div><label for="nodes-relay-node">目标节点 <span class="hint">必填，流量转到这台节点</span><button type="button" class="ib-help-btn" data-ib-help="route-node" aria-label="目标节点填写说明" aria-expanded="false">ⓘ</button></label><select id="nodes-relay-node"></select></div>
+              <div><label for="nodes-relay-node">目标节点 <span class="hint">选填，选了自动填落地地址</span><button type="button" class="ib-help-btn" data-ib-help="route-node" aria-label="目标节点填写说明" aria-expanded="false">ⓘ</button></label><select id="nodes-relay-node"></select></div>
               <div><label for="nodes-relay-listen">监听地址 <span class="hint">必填，中转机上收流量的地址</span><button type="button" class="ib-help-btn" data-ib-help="route-listen" aria-label="监听地址填写说明" aria-expanded="false">ⓘ</button></label><input id="nodes-relay-listen" placeholder="0.0.0.0:30004" required></div>
-              <div><label for="nodes-relay-remote-addr">落地地址 <span class="hint">选填，空着用目标节点的地址</span><button type="button" class="ib-help-btn" data-ib-help="route-remote-addr" aria-label="落地地址填写说明" aria-expanded="false">ⓘ</button></label><input id="nodes-relay-remote-addr" placeholder="留空用节点地址"></div>
+              <div><label for="nodes-relay-remote-addr">落地地址 <span class="hint">不选节点时必填，选了节点可空</span><button type="button" class="ib-help-btn" data-ib-help="route-remote-addr" aria-label="落地地址填写说明" aria-expanded="false">ⓘ</button></label><input id="nodes-relay-remote-addr" placeholder="留空用节点地址"></div>
               <div><label for="nodes-relay-remote-port">落地端口 <span class="hint">必填，1–65535</span><button type="button" class="ib-help-btn" data-ib-help="route-remote-port" aria-label="落地端口填写说明" aria-expanded="false">ⓘ</button></label><input id="nodes-relay-remote-port" type="number" min="1" max="65535" placeholder="443" required></div>
               <div><label for="nodes-relay-proto">协议 <span class="hint">TCP 或 UDP</span><button type="button" class="ib-help-btn" data-ib-help="route-proto" aria-label="协议填写说明" aria-expanded="false">ⓘ</button></label><select id="nodes-relay-proto"><option value="tcp" selected>TCP</option><option value="udp">UDP（HY2／TUIC 用）</option></select></div>
               <div><label for="nodes-relay-enabled">启用 <span class="hint">关掉后中转不再转这条路由</span><button type="button" class="ib-help-btn" data-ib-help="route-enabled" aria-label="启用填写说明" aria-expanded="false">ⓘ</button></label><select id="nodes-relay-enabled"><option value="true" selected>启用</option><option value="false">停用</option></select></div>
@@ -737,115 +739,22 @@
           </div>
           <div class="settings-panel hidden" role="tabpanel" id="settings-panel-subscription" aria-labelledby="settings-tab-subscription" hidden>
             <div class="grid cols-2">
-              <div class="card">
-            <h2>订阅链接</h2>
-            <p class="muted">一个链接导入节点：默认一次拿到本面板的节点（中转 + 直连），下面能选只要中转或只要直连。内容实时生成，面板里增删节点后订阅自动跟着变，不用重新导出。</p>
-            <details class="small muted"><summary>格式与模式参数说明</summary>客户端按 UA 自动识别格式（Clash 系拿 YAML，sing-box 官方客户端拿 JSON，其他拿 base64 列表），也可以在链接后面加 ?format=clash / singbox / base64 / plain 手动指定；Clash 订阅默认不带模式参数，服务端按分流出（TikTok/社交/流媒体走节点，其他直连），想手动指定可以在链接后面加 ?mode=split（分流）/ global（全局）。?mode=global 只有一种情况才需要：规则模式下想全走代理、又保留 TikTok/社交/流媒体的分类分流——客户端切全局模式会忽略全部规则，分类分流就没了。</details>
-            <div class="small" id="sub-status">未生成订阅链接</div>
-            <div id="sub-once" class="hidden" style="margin-top:10px">
-              <div class="warn-box">链接已加密存在面板里，随时能点“复制”重新拿；轮换后旧链接立即失效。</div>
-              <div class="kv"><span>订阅链接</span><b class="mono" id="sub-url-value" style="word-break:break-all"></b></div>
-              <div class="btn-row">
-                <button class="btn secondary sm" id="sub-copy" type="button">复制订阅链接</button>
-                <button class="btn secondary sm" id="sub-copy-clash" type="button">复制 Clash 链接</button>
-                <button class="btn secondary sm" id="sub-copy-singbox" type="button">复制 sing-box 链接</button>
-                <button class="btn secondary sm" id="sub-copy-base64" type="button">复制 base64 链接</button>
-                <button class="btn secondary sm" id="sub-copy-plain" type="button">复制明文链接</button>
-                <button class="btn secondary sm" id="sub-qr" type="button">二维码</button>
-              </div>
-              <p class="small muted">三条链接各给一类客户端：Clash 链接给 FlClash、Clash Verge Rev、Clash Party、Stash、ClashX Meta、Clash Meta for Android；sing-box 链接给 sing-box 官方客户端、Hiddify、Karing、NekoBox、Streisand；base64 链接给 v2rayNG、v2rayN、Shadowrocket。FlClash、Verge 这类 Clash 系客户端不要用 base64 那条，它们的导入口不认 base64。</p>
-              <div class="btn-row" style="margin-top:8px">
-                <label class="small">模式（可选）：
-                  <select id="sub-mode">
-                    <option value="" selected>默认（不带参数，服务端按分流出）</option>
-                    <option value="split">分流（TikTok/社交/流媒体走节点，其他直连）</option>
-                    <option value="global">全局（全部走代理）</option>
-                  </select>
-                </label>
-                <span class="small muted">默认复制的链接不带模式参数；只有规则模式下想全走代理、又保留分类分流时，才选全局。</span>
-              </div>
-            </div>
-            <div class="setting-row">
-              <label class="small" for="sub-token-mode">订阅内容：</label>
-              <select id="sub-token-mode" name="sub-token-mode" data-sub-mode-select data-sub-mode-key="relay-panel-sub-mode-token" style="width:160px">
-                <option value="both" selected>全部</option>
-                <option value="relay">仅中转</option>
-                <option value="direct">仅直连</option>
-              </select>
-              <span class="small muted">全部：中转和直连的节点都进订阅；仅中转：只要走中转机的节点；仅直连：只要直连落地机的节点。</span>
-            </div>
-            <div class="setting-row">
-              <label class="small" for="sub-expiry-date">到期时间：</label>
-              <input id="sub-expiry-date" type="date" style="width:170px">
-              <label class="small"><input type="checkbox" id="sub-expiry-permanent" checked> 永久</label>
-              <button class="btn secondary" id="sub-expiry-save" type="button">保存到期时间</button>
-              <span class="small muted" id="sub-expiry-status"></span>
-            </div>
-            <div class="setting-row">
-              <label class="small" for="sub-file-name">订阅文件名称：</label>
-              <input id="sub-file-name" type="text" placeholder="留空 = 面板名" style="width:200px">
-              <button class="btn secondary" id="sub-file-name-save" type="button">保存文件名</button>
-              <span class="small muted">客户端导入订阅时看到的文件名（例如“CP管理面板.yaml”）；改了面板名不会跟着变；留空就用面板名。</span>
-            </div>
-            <p class="small muted">到期时间到了，订阅链接就打不开（客户端更新拉不到节点）；轮换不改到期时间。留空勾永久 = 永不过期；填日期 = 当天 23:59:59 到期。</p>
+              <div class="card" id="card-sub-plans">
+            <h2>套餐档位</h2>
+            <p class="muted">档位决定一个订阅用户能拿多少流量、用多久、走哪些节点：建用户时选档位，流量、到期与分组按档位默认值填好，可再改。</p>
             <div class="btn-row">
-              <button class="btn" id="sub-generate" type="button">生成订阅链接</button>
-              <button class="btn secondary" id="sub-rotate" type="button">轮换订阅链接</button>
-              <button class="btn danger" id="sub-revoke" type="button">撤销订阅链接</button>
+              <button class="btn" id="sub-plan-create" type="button">新建档位</button>
             </div>
-            <p class="small">链接泄露可一键轮换，旧链接立即失效；撤销后订阅立即打不开。</p>
-            <p class="small muted">通用订阅是所有人共用一条链接，不做按人限流；想按人限流量，用下面的一人一条或合并订阅。</p>
+            <div class="list-toolbar"><input id="sub-plan-search" class="list-search" type="search" placeholder="搜索档位：名字、备注…" aria-label="搜索档位"></div>
+            <div id="sub-plan-list" style="margin-top:12px">加载中…</div>
+          </div>
+              <div class="card">
+            <h2>通用订阅</h2>
+            <p class="muted">通用订阅已退场，请使用订阅用户。</p>
           </div>
               <div class="card">
             <h2>订阅用户（一人一条）</h2>
-            <p class="muted">通用订阅链接是所有人拉同一条，封一条就全军覆没；每人一个独立令牌，封一条只影响一个人。名字用来认人（例如“张三的手机”），链接加密存在面板里，列表里每人都有“复制”按钮，随时能重新拿；撤销只影响那个人，其他人的链接照常。</p>
-            <div class="setting-row">
-              <label class="small" for="sub-user-name">名字：</label>
-              <input id="sub-user-name" type="text" placeholder="例如：张三的手机" style="width:160px">
-              <label class="small" for="sub-user-note">备注：</label>
-              <input id="sub-user-note" type="text" placeholder="选填，例如：备用机" style="width:160px">
-            </div>
-            <div class="setting-row">
-              <label class="small" for="sub-user-expiry-date">到期（选填）：</label>
-              <input id="sub-user-expiry-date" type="date" style="width:170px" disabled>
-              <label class="small"><input type="checkbox" id="sub-user-expiry-permanent" checked> 永久</label>
-              <span class="small muted">勾永久 = 永不过期；填日期 = 当天 23:59:59 到期，到期后这条订阅打不开。</span>
-            </div>
-            <div class="setting-row">
-              <label class="small" for="sub-user-mode">订阅内容：</label>
-              <select id="sub-user-mode" name="sub-user-mode" data-sub-mode-select data-sub-mode-key="relay-panel-sub-mode-user" style="width:160px">
-                <option value="both" selected>全部</option>
-                <option value="relay">仅中转</option>
-                <option value="direct">仅直连</option>
-              </select>
-              <span class="small muted">全部：中转和直连的节点都进订阅；仅中转：只要走中转机的节点；仅直连：只要直连落地机的节点。</span>
-            </div>
-            <div class="setting-row">
-              <label class="small">流量上限（GB，0 = 不限流）：</label>
-              <input data-tl-gb type="number" min="0" step="1" value="0" style="width:90px">
-              <label class="small">算法：</label>
-              <select data-tl-mode style="width:130px">
-                <option value="total" selected>累计（整个生命周期）</option>
-                <option value="monthly">按月（每月重置）</option>
-              </select>
-              <label class="small">重置：</label>
-              <select data-tl-reset style="width:130px">
-                <option value="monthly" selected>每月 1 号</option>
-                <option value="anniversary">跟随生成日</option>
-                <option value="custom">自定义每月几号</option>
-              </select>
-              <label class="small">几号：</label>
-              <input data-tl-day type="number" min="1" max="31" value="1" style="width:60px">
-            </div>
-            <p class="small muted">开了限流才给这个人建独立转发（独立端口 → 同一落地），不开限流的继续走共享端口；超量时 80% 发 Telegram 提醒、100% 自动停用，续量或等下个周期恢复。统计是上行 + 下行合计、按 L3 字节计（含包头，比客户端显示的多几个百分点），分钟级采样、超一点正常，配额留点余量。</p>
-            <p class="small muted">新建默认是全量订阅（全部落地）；想按人分落地，建完去下面列表点“编辑”勾选。</p>
-            <div class="setting-row">
-              <label class="small" for="sub-user-group">所属分组：</label>
-              <select id="sub-user-group" style="width:160px">
-                <option value="" selected>不分组</option>
-              </select>
-              <span class="small muted">进了组，订阅按组的落地出内容；自己的勾选保留着，出组后恢复。</span>
-            </div>
+            <p class="muted">每人一个独立令牌，封一条只影响一个人；登录后按档位拿节点、看流量与到期。名字用来认人（例如“张三的手机”），链接加密存在面板里，列表里每人都有“复制”按钮，随时能重新拿；撤销只影响那个人，其他人的链接照常。</p>
             <div class="btn-row">
               <button class="btn" id="sub-user-create" type="button">新建订阅用户</button>
             </div>
@@ -865,7 +774,7 @@
               <div class="card">
             <h2>分组（权限组）</h2>
             <p class="muted">一组 = 一组落地 + 一组用户，组里的人用组里的节点。建一次组、加用户就行，不用每人重复勾落地；通用共享节点放一个组，美国/英国/法国等定制用户各放各的组。改组的落地，组里所有人的订阅下次更新立即同步，链接不变；删组后成员恢复自己原来勾的落地，链接也不变。</p>
-            <p class="small muted">通用订阅（所有人共用一条链接）不进分组；分组只决定用户能看到哪些落地，限流还是按人单独算（组里开了限流的人各走自己的独立转发端口，互不干扰）。</p>
+            <p class="small muted">分组只决定用户能看到哪些落地，限流还是按人单独算（组里开了限流的人各走自己的独立转发端口，互不干扰）。</p>
             <div class="btn-row">
               <button class="btn" id="sub-group-create" type="button">新建分组</button>
             </div>
@@ -1218,30 +1127,7 @@
           </div>
           <div class="central-panel hidden" role="tabpanel" id="central-panel-sub" aria-labelledby="central-tab-sub" hidden>
             <h2>合并订阅</h2>
-            <p class="muted">按落地勾选，生成一条合并订阅链接：一个链接导入，客户端一次拿到选中落地的节点（下面能选只要中转或只要直连）。勾面板即选它下面全部落地，部分选时面板框显示半选；顶上可全选全部面板。每个落地行上还有“复制订阅”，只导这一个落地的节点。内容实时生成，面板里增删节点后自动跟着变；勾选变了就重新生成一条，不同选择各用各的令牌。</p>
-            <div id="central-sub-tree">加载中…</div>
-            <div class="setting-row">
-              <label class="small" for="central-sub-mode">订阅内容：</label>
-              <select id="central-sub-mode" name="central-sub-mode" data-sub-mode-select data-sub-mode-key="relay-panel-sub-mode-central" style="width:160px">
-                <option value="both" selected>全部</option>
-                <option value="relay">仅中转</option>
-                <option value="direct">仅直连</option>
-              </select>
-              <span class="small muted">全部：中转和直连的节点都进订阅；仅中转：只要走中转机的节点；仅直连：只要直连落地机的节点。</span>
-            </div>
-            <div class="setting-row">
-              <label class="small" for="central-sub-group">所属分组：</label>
-              <select id="central-sub-group" style="width:160px">
-                <option value="" selected>不分组</option>
-              </select>
-              <span class="small muted">进了组，订阅按组的落地出内容；自己的勾选保留着，出组后恢复。</span>
-            </div>
-            <div class="setting-row"><label class="small">归属到人（选填）：<input id="central-sub-name" type="text" placeholder="例如：张三的手机" style="width:160px"></label></div>
-            <div class="setting-row"><label class="small" for="central-sub-expiry-date">到期（选填）：</label><input id="central-sub-expiry-date" type="date" style="width:170px" disabled><label class="small"><input type="checkbox" id="central-sub-permanent" checked> 永久</label></div>
-            <div class="btn-row" id="central-sub-traffic-row"><label class="small">流量上限（GB，0 = 不限流）：<input data-tl-gb type="number" min="0" step="1" value="0" style="width:90px"></label><label class="small">算法：<select data-tl-mode style="width:130px"><option value="total" selected>累计（整个生命周期）</option><option value="monthly">按月（每月重置）</option></select></label><label class="small">重置：<select data-tl-reset style="width:130px"><option value="monthly" selected>每月 1 号</option><option value="anniversary">跟随生成日</option><option value="custom">自定义每月几号</option></select></label><label class="small">几号：<input data-tl-day type="number" min="1" max="31" value="1" style="width:60px"></label></div>
-            <p class="small muted">开了限流才给这条订阅建独立转发（每台中转机上一个独立端口 → 同一落地），不开限流的继续走共享端口；超量时 80% 发 Telegram 提醒、100% 自动停用。统计是上行 + 下行合计、按 L3 字节计，分钟级采样。</p>
-            <p class="small muted">勾永久 = 永不过期；填日期 = 当天 23:59:59 到期，到期后这条订阅打不开。</p>
-            <div class="btn-row"><button class="btn" id="central-sub-generate" type="button" disabled>生成合并订阅</button></div>
+            <p class="muted">合并订阅已退场，请使用订阅用户。</p>
             <div class="list-toolbar"><input id="central-sub-search" class="list-search" type="search" placeholder="搜索合并订阅：名字、勾选…" aria-label="搜索合并订阅"></div>
             <div id="central-sub-list" style="margin-top:12px"></div>
           </div>

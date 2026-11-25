@@ -291,9 +291,9 @@ func TestMigrationCrossMachineRestore1329(t *testing.T) {
 	if err != nil || plain != genTok {
 		t.Fatalf("通用订阅密文应用恢复回来的密钥解出原令牌，实际 err=%v", err)
 	}
-	// 旧链接直接能用（通用 + 每人）。
-	if rec := callSub(t, dst, genTok, "/sub/"+genTok, ""); rec.Code != 200 {
-		t.Fatalf("恢复后通用订阅旧链接应 200，实际 %d %s", rec.Code, rec.Body.String())
+	// 旧链接：每人订阅直接能用；通用订阅已退场，旧链接 410。
+	if rec := callSub(t, dst, genTok, "/sub/"+genTok, ""); rec.Code != 410 {
+		t.Fatalf("恢复后通用订阅旧链接应 410（已退场），实际 %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := callSub(t, dst, userTok, "/sub/"+userTok, ""); rec.Code != 200 {
 		t.Fatalf("恢复后每人订阅旧链接应 200，实际 %d %s", rec.Code, rec.Body.String())

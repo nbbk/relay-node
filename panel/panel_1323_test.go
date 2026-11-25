@@ -18,8 +18,8 @@ var vlessPair1323 = []subLink{
 
 // TestVersion1348 VERSION 文件是 1.4.12。
 func TestVersion1348(t *testing.T) {
-	if Version != "1.4.26" {
-		t.Fatalf("VERSION 应是 1.4.23，实际 %q", Version)
+	if Version != "1.4.27" {
+		t.Fatalf("VERSION 应是 1.4.27，实际 %q", Version)
 	}
 }
 
@@ -156,7 +156,7 @@ func TestClashEmptyUnchanged1323(t *testing.T) {
 func TestSingboxFormat1323(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 	rec := callSub(t, s, tok, "/sub/"+tok+"?format=singbox", "")
 	if rec.Code != 200 {
 		t.Fatalf("singbox 应 200，实际 %d %s", rec.Code, rec.Body.String())
@@ -219,7 +219,7 @@ func TestSingboxFormat1323(t *testing.T) {
 func TestSingboxUA1323(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 	url := "/sub/" + tok
 	cases := []struct {
 		ua   string

@@ -160,7 +160,7 @@ func strconv_Quote134(s string) string {
 func TestSubContentDisposition134(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 	// 默认：文件名留空 → 回落面板名 CP管理（非 ASCII）：filename* 带编码后的
 	// 面板名，ASCII 兜底仍是通用名 subscription.yaml
 	rec := callSub(t, s, tok, "/sub/"+tok+"?format=clash", "Clash")
@@ -192,25 +192,23 @@ func TestSubContentDisposition134(t *testing.T) {
 	if !strings.Contains(cd, `filename*=UTF-8''%E6%88%91%E7%9A%84%E8%AE%A2%E9%98%85.yaml`) || strings.Contains(cd, "OtherPanel") {
 		t.Fatalf("设了文件名后改面板名不应影响文件名，实际：%q", cd)
 	}
-	// 合并订阅同样走订阅文件名称（此时已设“我的订阅”）
-	req := httptest.NewRequest("POST", "/api/v1/subscriptions/merged", strings.NewReader(`{"selection":[{"panel":"local","landing":1}]}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec2 := httptest.NewRecorder()
-	s.handleMergedSubsCreate(rec2, req)
+	// 订阅用户同样走订阅文件名称（此时已设“我的订阅”）
+	rec2 := callJSON130(t, s.handleSubUsersCreate, "POST", "/api/v1/subscriptions/users",
+		`{"name":"只选落地1","selection":[{"panel":"local","landing":1}]}`)
 	if rec2.Code != 200 {
-		t.Fatalf("合并订阅生成应 200，实际 %d：%s", rec2.Code, rec2.Body.String())
+		t.Fatalf("新建订阅用户应 200，实际 %d：%s", rec2.Code, rec2.Body.String())
 	}
 	var merged map[string]any
 	_ = json.Unmarshal(rec2.Body.Bytes(), &merged)
 	murl, _ := merged["url"].(string)
-	mtok := strings.TrimPrefix(murl, "http://example.com/sub/")
+	mtok := tokenFromSubURL130(t, murl)
 	rec = callSub(t, s, mtok, "/sub/"+mtok+"?format=clash", "Clash")
 	if rec.Code != 200 {
-		t.Fatalf("合并订阅应 200，实际 %d", rec.Code)
+		t.Fatalf("订阅用户应 200，实际 %d", rec.Code)
 	}
 	cd = rec.Header().Get("Content-Disposition")
 	if !strings.Contains(cd, `filename*=UTF-8''%E6%88%91%E7%9A%84%E8%AE%A2%E9%98%85.yaml`) {
-		t.Fatalf("合并订阅也应用订阅文件名称，实际：%q", cd)
+		t.Fatalf("订阅用户也应用订阅文件名称，实际：%q", cd)
 	}
 }
 
@@ -248,11 +246,11 @@ func TestFetchRemoteStatusTraffic134(t *testing.T) {
 // 排第二，之后是手动选择、中转、直连、社交、流媒体；规则指向：TikTok、
 // 社交、流媒体三组都直接指向自动选择（1.3.23 起从手动选择/各自的组改过来），
 // MATCH 仍是分流 MATCH,DIRECT。
-// 单面板与合并订阅共用同一份渲染逻辑，两边都验。
+// 单面板与带勾选的订阅用户共用同一份渲染逻辑，两边都验。
 func TestClashGroupOrder134(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 	checkOrder := func(body string) {
 		t.Helper()
 		want := []string{"自动选择", "GLOBAL", "手动选择", "中转节点", "直连节点", "社交", "流媒体"}
@@ -282,21 +280,19 @@ func TestClashGroupOrder134(t *testing.T) {
 		t.Fatalf("clash 应 200，实际 %d", rec.Code)
 	}
 	checkOrder(rec.Body.String())
-	// 合并订阅
-	req := httptest.NewRequest("POST", "/api/v1/subscriptions/merged", strings.NewReader(`{"selection":[{"panel":"local","landing":1}]}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec2 := httptest.NewRecorder()
-	s.handleMergedSubsCreate(rec2, req)
+	// 带勾选的订阅用户（共用同一份渲染逻辑，同样验顺序）
+	rec2 := callJSON130(t, s.handleSubUsersCreate, "POST", "/api/v1/subscriptions/users",
+		`{"name":"只选落地1","selection":[{"panel":"local","landing":1}]}`)
 	if rec2.Code != 200 {
-		t.Fatalf("合并订阅生成应 200，实际 %d：%s", rec2.Code, rec2.Body.String())
+		t.Fatalf("新建订阅用户应 200，实际 %d：%s", rec2.Code, rec2.Body.String())
 	}
 	var merged map[string]any
 	_ = json.Unmarshal(rec2.Body.Bytes(), &merged)
 	murl, _ := merged["url"].(string)
-	mtok := strings.TrimPrefix(murl, "http://example.com/sub/")
+	mtok := tokenFromSubURL130(t, murl)
 	rec = callSub(t, s, mtok, "/sub/"+mtok+"?format=clash", "")
 	if rec.Code != 200 {
-		t.Fatalf("合并订阅 clash 应 200，实际 %d", rec.Code)
+		t.Fatalf("订阅用户 clash 应 200，实际 %d", rec.Code)
 	}
 	checkOrder(rec.Body.String())
 }

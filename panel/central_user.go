@@ -815,6 +815,12 @@ func (s *Server) changeUserForwardPort(key, panelID, landingAddr string, newPort
 // 用）。只读内存配置，不读文件。kind 是 "subuser" 或 "merged"。
 func (s *Server) handleSubUserForwards(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// v1.4.27：合并订阅已退场，merged 的转发列表接口一并 410
+		//（与其它合并订阅接口同一口径）；subuser 不受影响。
+		if kind == "merged" {
+			handleRetiredSub(w, r)
+			return
+		}
 		id := r.PathValue("id")
 		key := userSubKey(kind, id)
 		var subName string
@@ -859,6 +865,12 @@ func (s *Server) handleSubUserForwards(kind string) http.HandlerFunc {
 // 订阅 key 走不清零，旧端口释放回池子。kind 是 "subuser" 或 "merged"。
 func (s *Server) handleSubChangePort(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// v1.4.27：合并订阅已退场，merged 的换端口接口一并 410
+		//（与其它合并订阅接口同一口径）；subuser 不受影响。
+		if kind == "merged" {
+			handleRetiredSub(w, r)
+			return
+		}
 		id := r.PathValue("id")
 		key := userSubKey(kind, id)
 		var req struct {

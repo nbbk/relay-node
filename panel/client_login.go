@@ -3,8 +3,12 @@ package main
 // 客户端账号密码登录（v1.3.45，契约见客户端仓 docs/api/client-login.md）：
 // 面板在 9870-9880 上另起 HTTPS 监听（只挂 /api/v1/client/*），
 // POST /api/v1/client/login 用管理后台同一套账号校验，成功返回会话令牌
-// sess_+64 位十六进制（只存 SHA-256 哈希）与该账号的订阅链接（v1.4.26：
-// 优先合并订阅，见 clientSubscriptionURL）。
+// sess_+64 位十六进制（只存 SHA-256 哈希）与该账号的订阅链接。
+// v1.4.27（方案 B）：每人登录账号——先验管理员账号（TOTP 只拦管理员），
+// 再按 Username 验订阅用户（跳过 TOTP，密码是唯一因素）；登录回包除
+// subscription_url 外还带 account_type、plan_name、plan（套餐对象，
+// 含 traffic_used）与 nodes（该用户有权限的全部节点，见 loginNodesForUser）。
+// 管理员登录兜底取第一份已启用的 SubUser 的订阅与节点，plan 为 null。
 
 import (
 	"context"
@@ -15,6 +19,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +42,9 @@ const (
 type clientSession struct {
 	username  string
 	expiresAt time.Time
+	// subUserID 该会话属于哪个订阅用户（v1.4.27）：空 = 管理员会话；
+	// 非空 = SubUser 的 ID，改密码/删用户时按它吊销（见 revokeBySubUserID）。
+	subUserID string
 }
 
 // clientSessionStore 客户端会话令牌表：key 是令牌的 SHA-256（hex），
@@ -58,11 +66,17 @@ func hashClientSessionToken(tok string) string {
 
 // create 生成一个会话令牌并记下（只存哈希），返回令牌明文与过期时间。
 // 明文只返回给这一次登录响应，调用方不得再存。
-func (st *clientSessionStore) create(username string) (string, time.Time) {
+// subUserID 可选（v1.4.27）：SubUser 登录时传该用户的 ID，管理员登录
+// 时不传（空 = 管理员会话）。
+func (st *clientSessionStore) create(username string, subUserID ...string) (string, time.Time) {
 	tok := "sess_" + randomTokenHex(32)
 	exp := time.Now().Add(clientSessionTTL)
+	sid := ""
+	if len(subUserID) > 0 {
+		sid = subUserID[0]
+	}
 	st.mu.Lock()
-	st.sessions[hashClientSessionToken(tok)] = &clientSession{username: username, expiresAt: exp}
+	st.sessions[hashClientSessionToken(tok)] = &clientSession{username: username, expiresAt: exp, subUserID: sid}
 	st.mu.Unlock()
 	return tok, exp
 }
@@ -100,6 +114,22 @@ func (st *clientSessionStore) revokeAllForUser(username string) {
 	}
 }
 
+// revokeBySubUserID 吊销某订阅用户的全部客户端会话（v1.4.27：改密码/
+// 删用户时调，按会话上的 subUserID 匹配，与用户名无关——用户名改了
+// 旧会话照样吊销）。
+func (st *clientSessionStore) revokeBySubUserID(subUserID string) {
+	if subUserID == "" {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for h, s := range st.sessions {
+		if s.subUserID == subUserID {
+			delete(st.sessions, h)
+		}
+	}
+}
+
 // clientAuthUsernameKey 校验通过的客户端账号名在 request context 里的键。
 type clientAuthUsernameKey struct{}
 
@@ -126,10 +156,16 @@ func (s *Server) requireClientAuth(next http.HandlerFunc) http.HandlerFunc {
 // ---------- 登录接口 ----------
 
 // handleClientLogin POST /api/v1/client/login（公开端点，无须事先认证）。
-// 账号与管理后台同一套（cfg.Username + cfg.PasswordHash，PBKDF2）；
-// 成功返回会话令牌与订阅链接（v1.4.26：优先合并订阅，见 clientSubscriptionURL），
-// 失败一律 401（账号不存在与密码不对不区分，不给枚举账号的口子）。防刷复用管理登录的同一套逻辑：同一 IP
-// 5 次失败锁 5 分钟，锁定期内返回 429 + Retry-After（契约 §3.3）。
+// v1.4.27（方案 B）：先按现有逻辑验管理员账号（TOTP 检查只对管理员
+// 生效，保持现有行为）；管理员不对时，按 Username 找 SubUser，
+// verifyPassword 验密码。SubUser 登录跳过 TOTP（他们没有 TOTP 密钥，
+// 密码是唯一因素，与 XBoard 同款）。SubUser 被停用（Disabled）或已过期
+// （ExpiresAt 已过）时登录 401，与密码错误同一响应，不区分原因。
+// 成功返回会话令牌、订阅链接（SubUser 是他自己的，管理员是第一份已启用
+// 的 SubUser 的兜底）、account_type、plan_name、plan 与 nodes。
+// 失败一律 401（账号不存在与密码不对不区分，不给枚举账号的口子）。防刷
+// 复用管理登录的同一套逻辑：同一 IP 5 次失败锁 5 分钟，锁定期内返回
+// 429 + Retry-After（契约 §3.3）。
 func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if s.sessions.loginLocked(ip) {
@@ -149,67 +185,206 @@ func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errResp("账号或密码不能为空"))
 		return
 	}
-	okCreds := req.Username == s.cfg.Username && verifyPassword(req.Password, s.cfg.PasswordHash)
-	// 密码对了、二次验证开着时：客户端发不了验证码，直接按失败处理
-	// （不给密码单因素绕过二次验证的口子）；响应与密码错误完全一致，
-	// 只在审计日志里区分原因。
-	if !okCreds || s.cfg.TOTPEnabled {
-		justLocked := s.sessions.loginFailed(ip)
-		detail := "密码错误"
-		if okCreds {
-			detail = "二次验证未通过（客户端登录不支持验证码）"
+	// 管理员账号：密码对了、二次验证开着时，客户端发不了验证码，
+	// 直接按失败处理（不给密码单因素绕过二次验证的口子）；响应与
+	// 密码错误完全一致，只在审计日志里区分原因。
+	adminOK := req.Username == s.cfg.Username && verifyPassword(req.Password, s.cfg.PasswordHash)
+	if adminOK && !s.cfg.TOTPEnabled {
+		s.sessions.loginOK(ip)
+		tok, exp := s.clientSessions.create(req.Username)
+		s.audit(req.Username, "客户端登录", "", "成功", "")
+		resp := map[string]any{
+			"token":        tok,
+			"username":     req.Username,
+			"expires_at":   exp.Unix(),
+			"account_type": "admin",
+			"plan_name":    "",
+			"plan":         nil,
 		}
-		s.audit(req.Username, "客户端登录", "", "失败", detail)
-		if justLocked {
-			s.onLoginLock(ip, req.Username)
+		if u := s.firstEnabledSubUser(); u != nil {
+			if url := s.clientSubscriptionURLForUser(r, u); url != "" {
+				resp["subscription_url"] = url
+			}
+			resp["nodes"] = s.loginNodesForUser(u)
+		} else {
+			resp["nodes"] = []any{}
 		}
-		writeJSON(w, 401, errResp("账号或密码不对"))
+		writeJSON(w, 200, resp)
 		return
 	}
-	s.sessions.loginOK(ip)
-	tok, exp := s.clientSessions.create(req.Username)
-	s.audit(req.Username, "客户端登录", "", "成功", "")
-	resp := map[string]any{
-		"token":      tok,
-		"username":   req.Username,
-		"expires_at": exp.Unix(),
+	// 订阅用户账号：按 Username 找人，密码是唯一因素（跳过 TOTP）；
+	// 停用/过期与密码错误同一响应，不区分原因。
+	subUserOK := false
+	var subUser *SubUser
+	if !adminOK {
+		if u := s.findSubUserByUsername(req.Username); u != nil {
+			subUser = u
+			if u.PasswordHash != "" && verifyPassword(req.Password, u.PasswordHash) && !u.Disabled && !subExpired(u.ExpiresAt, time.Now()) {
+				subUserOK = true
+			}
+		}
 	}
-	if u := s.clientSubscriptionURL(r); u != "" {
-		resp["subscription_url"] = u
+	if subUserOK {
+		s.sessions.loginOK(ip)
+		tok, exp := s.clientSessions.create(subUser.Username, subUser.ID)
+		s.audit(subUser.Username, "客户端登录", "", "成功", "订阅用户")
+		resp := map[string]any{
+			"token":        tok,
+			"username":     subUser.Username,
+			"expires_at":   exp.Unix(),
+			"account_type": "user",
+			"plan_name":    s.planNameOf(subUser.PlanID),
+			"plan":         s.loginPlanForUser(subUser),
+			"nodes":        s.loginNodesForUser(subUser),
+		}
+		if url := s.clientSubscriptionURLForUser(r, subUser); url != "" {
+			resp["subscription_url"] = url
+		}
+		writeJSON(w, 200, resp)
+		return
 	}
-	writeJSON(w, 200, resp)
+	justLocked := s.sessions.loginFailed(ip)
+	detail := "密码错误"
+	if adminOK {
+		detail = "二次验证未通过（客户端登录不支持验证码）"
+	}
+	s.audit(req.Username, "客户端登录", "", "失败", detail)
+	if justLocked {
+		s.onLoginLock(ip, req.Username)
+	}
+	writeJSON(w, 401, errResp("账号或密码不对"))
 }
 
-// clientSubscriptionURL 登录成功返回的订阅完整链接（契约 §3.2）。
-// 规则（v1.4.26）：优先返回合并订阅——按 cfg.MergedSubs 的顺序（创建顺序，
-// 先创建的在前），取第一份已启用（Disabled=false）且有链接（TokenEnc != ""）
-// 的，解密令牌后拼链接；解密失败的那份跳过、继续找下一份。没有任何可用的
-// 合并订阅时，回落到通用订阅（老行为：cfg.SubTokenHash/SubTokenEnc 那条）。
-// 合并订阅才有节点内容——管理面板本机没节点，通用订阅内容是空的，登录后
-// 客户端要自动带节点，必须优先合并订阅；回落只为向后兼容（通用订阅仍是
-// 老行为，有内容的老面板不受影响）。
-// 没生成过通用订阅、或只有旧链接（1.3.7 之前，无密文）且又无可用合并订阅
-// 时返回 ""，调用方不给 subscription_url 字段。
-func (s *Server) clientSubscriptionURL(r *http.Request) string {
-	for i := range s.cfg.MergedSubs {
-		ms := &s.cfg.MergedSubs[i]
-		if ms.Disabled || strings.TrimSpace(ms.TokenEnc) == "" {
-			continue
+// firstEnabledSubUser 第一份已启用且未过期的订阅用户（cfg.SubUsers 的顺序，
+// 即创建顺序）：管理员登录回包的订阅与节点兜底都取他。停用或已过期
+// （ExpiresAt 已过，口径与 SubUser 登录时停用/过期 401 一致）的都跳过。
+// 没有返回 nil。
+func (s *Server) firstEnabledSubUser() *SubUser {
+	now := time.Now()
+	for i := range s.cfg.SubUsers {
+		if !s.cfg.SubUsers[i].Disabled && !subExpired(s.cfg.SubUsers[i].ExpiresAt, now) {
+			return &s.cfg.SubUsers[i]
 		}
-		tok, err := s.decryptSubTokenNow(ms.TokenEnc)
-		if err != nil {
-			continue
-		}
-		return s.clientSubscriptionLink(r, tok)
 	}
-	if s.cfg.SubTokenHash == "" || s.cfg.SubTokenEnc == "" {
+	return nil
+}
+
+// clientSubscriptionURLForUser 某订阅用户自己的订阅完整链接（解密他
+// 的 TokenEnc 后拼链接；没链接/解不开返回 ""，调用方不给
+// subscription_url 字段）。
+func (s *Server) clientSubscriptionURLForUser(r *http.Request, u *SubUser) string {
+	if u == nil || strings.TrimSpace(u.TokenEnc) == "" {
 		return ""
 	}
-	tok, err := s.decryptSubTokenNow(s.cfg.SubTokenEnc)
+	tok, err := s.decryptSubTokenNow(u.TokenEnc)
 	if err != nil {
 		return ""
 	}
 	return s.clientSubscriptionLink(r, tok)
+}
+
+// clientSubscriptionURL 登录成功返回的订阅完整链接（契约 §3.2）。
+// v1.4.27：管理员登录兜底取第一份已启用的 SubUser 的订阅（见
+// firstEnabledSubUser）；没有 SubUser 时返回 ""，调用方不给
+// subscription_url 字段。通用订阅与合并订阅已退场，不再从这里取。
+func (s *Server) clientSubscriptionURL(r *http.Request) string {
+	if u := s.firstEnabledSubUser(); u != nil {
+		return s.clientSubscriptionURLForUser(r, u)
+	}
+	return ""
+}
+
+// loginPlanForUser 登录回包里的 plan 对象（v1.4.27）：取该用户生效的
+// 值，不是档位模板值——id/name 是档位（没挂档位时 id 与 name 为空），
+// group_id/group_name 是该用户生效的分组，流量上限/模式/重置与到期
+// 取该用户自己的字段；traffic_used 是已用字节数（与订阅用户列表里
+// 的 traffic_used 同款算法：userUsageSummary 按 limit_mode 取本期
+// 或累计；不限流时为 0）。
+func (s *Server) loginPlanForUser(u *SubUser) map[string]any {
+	if u == nil {
+		return nil
+	}
+	planID, planName := "", ""
+	if p := s.findPlan(u.PlanID); u.PlanID != "" && p != nil {
+		planID, planName = p.ID, p.Name
+	}
+	used, _, _ := s.userUsageSummary(userSubKey("subuser", u.ID), u.TrafficLimitBytes, u.TrafficLimitMode)
+	return map[string]any{
+		"id":                 planID,
+		"name":               planName,
+		"group_id":           u.GroupID,
+		"group_name":         s.groupNameOf(u.GroupID),
+		"traffic_limit_mb":   u.TrafficLimitBytes / 1024 / 1024,
+		"traffic_limit_mode": u.TrafficLimitMode,
+		"reset_mode":         u.ResetMode,
+		"traffic_used":       used,
+		"expires_at":         u.ExpiresAt,
+	}
+}
+
+// loginNodesForUser 登录回包里的 nodes 数组（v1.4.27）：该用户有权限的
+// 全部节点，按档位权限组算出的节点范围，分两类：
+//   - backend（后端节点）：遍历节点列表，过 nodeHasUser（节点侧门）＋
+//     backendAssignAllows（用户侧四级门）两道门才进；
+//   - landing（中转落地）：取该用户生效的勾选 effectiveSelectionForSubUser，
+//     空勾选 = 全部本地落地；本地落地取 relay.conf 里的名字与地址，
+//     远程落地不调远程面板，name/address 取不到时填编号原文。
+//
+// 顺序：后端节点在前（按节点 id），中转落地在后（按勾选顺序）。
+func (s *Server) loginNodesForUser(u *SubUser) []map[string]any {
+	out := []map[string]any{}
+	if u == nil {
+		return out
+	}
+	key := userSubKey("subuser", u.ID)
+	s.nodes.mu.Lock()
+	nodes := make([]*BackendNode, 0, len(s.nodes.data.Nodes))
+	for _, n := range s.nodes.data.Nodes {
+		nodes = append(nodes, n)
+	}
+	s.nodes.mu.Unlock()
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+	for _, n := range nodes {
+		if !nodeHasUser(n, key) {
+			continue
+		}
+		if !s.backendAssignAllows(u.BackendScope, u.BackendTargets, u.GroupID, n) {
+			continue
+		}
+		out = append(out, map[string]any{"kind": "backend", "id": n.ID, "name": n.Name, "address": n.Address})
+	}
+	sel := s.effectiveSelectionForSubUser(u)
+	if len(sel) == 0 {
+		if rc, _, err := s.readRelayConf(); err == nil && rc != nil {
+			for _, l := range rc.Landings {
+				out = append(out, map[string]any{"kind": "landing", "id": fmt.Sprintf("local:%d", l.Index), "name": l.displayName(), "address": l.Landing})
+			}
+		}
+		return out
+	}
+	// 非空勾选：本地落地按 relay.conf 取名/地址，远程落地不调远程，
+	// 取不到时 name/address 填编号原文。
+	var localByIndex map[int]Landing
+	if rc, _, err := s.readRelayConf(); err == nil && rc != nil {
+		localByIndex = map[int]Landing{}
+		for _, l := range rc.Landings {
+			localByIndex[l.Index] = l
+		}
+	}
+	for _, ss := range sel {
+		if ss.Panel == "local" {
+			id := fmt.Sprintf("local:%d", ss.Landing)
+			if l, ok := localByIndex[ss.Landing]; ok {
+				out = append(out, map[string]any{"kind": "landing", "id": id, "name": l.displayName(), "address": l.Landing})
+			} else {
+				out = append(out, map[string]any{"kind": "landing", "id": id, "name": id, "address": id})
+			}
+			continue
+		}
+		id := fmt.Sprintf("%s:%d", ss.Panel, ss.Landing)
+		out = append(out, map[string]any{"kind": "landing", "id": id, "name": id, "address": id})
+	}
+	return out
 }
 
 // clientSubscriptionLink 按令牌拼订阅完整链接：口径与 subURL 一致（对外

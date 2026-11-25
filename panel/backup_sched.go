@@ -161,6 +161,8 @@ func (s *Server) buildScheduledBackupData(label string) map[string]any {
 	withTokens := s.migrationPassphraseSet()
 	out["sub_users"] = sanitizeSubUsers(s.cfg.SubUsers, withTokens)
 	out["merged_subs"] = sanitizeMergedSubs(s.cfg.MergedSubs, withTokens)
+	// 套餐档位（v1.4.27）：全量跟走（不含敏感字段，什么时候都进备份）。
+	out["plans"] = sanitizePlans(s.cfg.Plans)
 	return out
 }
 
@@ -183,29 +185,64 @@ func (s *Server) migrationPassphraseSet() bool {
 // GroupID（v1.3.26，分组）：跟着记录走；恢复时指向的分组在备份里没有
 // 就清掉（恢复为自己勾选），并在导入结果里写明。
 type subUserBackup struct {
-	ID                string         `json:"id"`
-	Name              string         `json:"name"`
-	Note              string         `json:"note,omitempty"`
-	CreatedAt         string         `json:"created_at,omitempty"`
-	Selection         []SubSelection `json:"selection,omitempty"`
-	Mode              string         `json:"mode,omitempty"`
-	GroupID           string         `json:"group_id,omitempty"`
-	ExpiresAt         string         `json:"expires_at,omitempty"`
-	TrafficLimitBytes int64          `json:"traffic_limit_bytes,omitempty"`
-	TrafficLimitMode  string         `json:"traffic_limit_mode,omitempty"`
-	ResetMode         string         `json:"reset_mode,omitempty"`
-	ResetDay          int            `json:"reset_day,omitempty"`
-	NextResetAt       string         `json:"next_reset_at,omitempty"`
-	LastResetAt       string         `json:"last_reset_at,omitempty"`
-	TrafficWarned80   bool           `json:"traffic_warned_80,omitempty"`
-	TrafficWarned100  bool           `json:"traffic_warned_100,omitempty"`
-	Disabled          bool           `json:"disabled,omitempty"`
-	DisabledReason    string         `json:"disabled_reason,omitempty"`
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Note      string         `json:"note,omitempty"`
+	CreatedAt string         `json:"created_at,omitempty"`
+	Selection []SubSelection `json:"selection,omitempty"`
+	Mode      string         `json:"mode,omitempty"`
+	// LinkMode 订阅级链接模式（Unreleased）："" = 跟随节点。
+	LinkMode          string `json:"link_mode,omitempty"`
+	GroupID           string `json:"group_id,omitempty"`
+	ExpiresAt         string `json:"expires_at,omitempty"`
+	TrafficLimitBytes int64  `json:"traffic_limit_bytes,omitempty"`
+	TrafficLimitMode  string `json:"traffic_limit_mode,omitempty"`
+	ResetMode         string `json:"reset_mode,omitempty"`
+	ResetDay          int    `json:"reset_day,omitempty"`
+	NextResetAt       string `json:"next_reset_at,omitempty"`
+	LastResetAt       string `json:"last_reset_at,omitempty"`
+	TrafficWarned80   bool   `json:"traffic_warned_80,omitempty"`
+	TrafficWarned100  bool   `json:"traffic_warned_100,omitempty"`
+	Disabled          bool   `json:"disabled,omitempty"`
+	DisabledReason    string `json:"disabled_reason,omitempty"`
 	// NodeUUIDs（v1.3.30）：每落地一个 UUID；备份/恢复全量跟走，丢了它
 	// Phase 1 的用户就得重新导入。
 	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
 	TokenHash string            `json:"token_hash,omitempty"`
 	TokenEnc  string            `json:"token_enc,omitempty"`
+	// 套餐档位与登录账号（v1.4.27）：PlanID/Username 全量跟走；
+	// PasswordHash 是登录密码的哈希，只在已设迁移口令时才进备份
+	// （与 token_hash/token_enc 同款开关），没口令的备份恢复后该
+	// 用户须重设密码才能登录。
+	PlanID       string `json:"plan_id,omitempty"`
+	Username     string `json:"username,omitempty"`
+	PasswordHash string `json:"password_hash,omitempty"`
+}
+
+// planBackup 备份文件里的套餐档位（v1.4.27）：全量跟走，不含敏感字段。
+type planBackup struct {
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	GroupID           string `json:"group_id,omitempty"`
+	TrafficLimitBytes int64  `json:"traffic_limit_bytes,omitempty"`
+	TrafficLimitMode  string `json:"traffic_limit_mode,omitempty"`
+	ResetMode         string `json:"reset_mode,omitempty"`
+	ResetDay          int    `json:"reset_day,omitempty"`
+	ExpiresDays       int    `json:"expires_days,omitempty"`
+	Mode              string `json:"mode,omitempty"`
+	Note              string `json:"note,omitempty"`
+	CreatedAt         string `json:"created_at,omitempty"`
+}
+
+func sanitizePlans(plans []Plan) []planBackup {
+	out := make([]planBackup, 0, len(plans))
+	for _, p := range plans {
+		out = append(out, planBackup{ID: p.ID, Name: p.Name, GroupID: p.GroupID,
+			TrafficLimitBytes: p.TrafficLimitBytes, TrafficLimitMode: p.TrafficLimitMode,
+			ResetMode: p.ResetMode, ResetDay: p.ResetDay, ExpiresDays: p.ExpiresDays,
+			Mode: p.Mode, Note: p.Note, CreatedAt: p.CreatedAt})
+	}
+	return out
 }
 
 type mergedSubBackup struct {
@@ -249,9 +286,10 @@ func sanitizeSubUsers(users []SubUser, withTokens bool) []subUserBackup {
 			ExpiresAt: u.ExpiresAt, TrafficLimitBytes: u.TrafficLimitBytes, TrafficLimitMode: u.TrafficLimitMode,
 			ResetMode: u.ResetMode, ResetDay: u.ResetDay, NextResetAt: u.NextResetAt, LastResetAt: u.LastResetAt,
 			TrafficWarned80: u.TrafficWarned80, TrafficWarned100: u.TrafficWarned100, Disabled: u.Disabled, DisabledReason: u.DisabledReason,
-			NodeUUIDs: u.NodeUUIDs}
+			NodeUUIDs: u.NodeUUIDs, PlanID: u.PlanID, Username: u.Username, LinkMode: u.LinkMode}
 		if withTokens {
 			b.TokenHash, b.TokenEnc = u.TokenHash, u.TokenEnc
+			b.PasswordHash = u.PasswordHash
 		}
 		out = append(out, b)
 	}
@@ -575,6 +613,7 @@ type importPayload struct {
 	Traffic             json.RawMessage    `json:"traffic"`
 	SubUsers            []subUserBackup    `json:"sub_users"`
 	MergedSubs          []mergedSubBackup  `json:"merged_subs"`
+	Plans               []planBackup       `json:"plans"`
 	SubGroups           []SubGroup         `json:"sub_groups"`
 	SubToken            *subTokenBackup    `json:"sub_token"`
 	UserForwards        []UserForward      `json:"user_forwards"`
@@ -776,6 +815,24 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 		s.cfg.SubGroups = p.SubGroups
 		cfgChanged = true
 	}
+	// 套餐档位（v1.4.27）：快照整体替换；档位关联的分组在备份里没有
+	// 时清掉该档位的分组（只影响档位默认值，不删用户、不删链接）。
+	if p.Plans != nil {
+		plans := make([]Plan, 0, len(p.Plans))
+		for _, bp := range p.Plans {
+			pl := Plan{ID: bp.ID, Name: bp.Name, GroupID: bp.GroupID,
+				TrafficLimitBytes: bp.TrafficLimitBytes, TrafficLimitMode: bp.TrafficLimitMode,
+				ResetMode: bp.ResetMode, ResetDay: bp.ResetDay, ExpiresDays: bp.ExpiresDays,
+				Mode: bp.Mode, Note: bp.Note, CreatedAt: bp.CreatedAt}
+			if pl.GroupID != "" && s.findSubGroup(pl.GroupID) == nil {
+				groupWarns = append(groupWarns, "套餐档位「"+pl.Name+"」的分组在备份里没有，已清除档位的分组")
+				pl.GroupID = ""
+			}
+			plans = append(plans, pl)
+		}
+		s.cfg.Plans = plans
+		cfgChanged = true
+	}
 	// 订阅用户：快照整体替换；v1.3.29：到期与限流字段全量带回（不再变
 	// 永久/不限流）。令牌：同机恢复（本机已有该 ID）优先本机现有哈希与
 	// 密文（备份后轮换过的令牌不被旧备份顶掉）；跨机（本机无此 ID）只有
@@ -788,12 +845,16 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 	if p.SubUsers != nil {
 		keepHash := map[string]string{}
 		keepEnc := map[string]string{}
+		keepPassword := map[string]string{}
 		for _, u := range s.cfg.SubUsers {
 			if u.TokenHash != "" {
 				keepHash[u.ID] = u.TokenHash
 			}
 			if u.TokenEnc != "" {
 				keepEnc[u.ID] = u.TokenEnc
+			}
+			if u.PasswordHash != "" {
+				keepPassword[u.ID] = u.PasswordHash
 			}
 		}
 		users := make([]SubUser, 0, len(p.SubUsers))
@@ -802,7 +863,7 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 				ExpiresAt: bu.ExpiresAt, TrafficLimitBytes: bu.TrafficLimitBytes, TrafficLimitMode: bu.TrafficLimitMode,
 				ResetMode: bu.ResetMode, ResetDay: bu.ResetDay, NextResetAt: bu.NextResetAt, LastResetAt: bu.LastResetAt,
 				TrafficWarned80: bu.TrafficWarned80, TrafficWarned100: bu.TrafficWarned100, Disabled: bu.Disabled, DisabledReason: bu.DisabledReason,
-				NodeUUIDs: bu.NodeUUIDs}
+				NodeUUIDs: bu.NodeUUIDs, PlanID: bu.PlanID, Username: bu.Username, LinkMode: bu.LinkMode}
 			if h, ok := keepHash[bu.ID]; ok {
 				u.TokenHash = h
 			} else if mig != nil && bu.TokenHash != "" {
@@ -813,6 +874,14 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 				u.TokenEnc = e
 			} else if mig != nil && bu.TokenEnc != "" {
 				u.TokenEnc = bu.TokenEnc
+			}
+			// 登录密码哈希（v1.4.27）：同机恢复优先本机现有哈希；跨机
+			// 只有迁移信封已解开时才用备份里的；都没拿到时该用户须重设
+			// 密码才能登录（备份里没口令时正文里本就不含它）。
+			if h, ok := keepPassword[bu.ID]; ok {
+				u.PasswordHash = h
+			} else if mig != nil && bu.PasswordHash != "" {
+				u.PasswordHash = bu.PasswordHash
 			}
 			if u.TokenHash == "" {
 				tokenEmpty++
@@ -867,8 +936,15 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 	}
 	// 分组指向核对（v1.3.26）：成员的 GroupID 指向的分组不在恢复后的分组
 	// 列表里时，清掉该成员的分组（恢复为自己勾选），并在导入结果里写明。
-	if p.SubGroups != nil || p.SubUsers != nil || p.MergedSubs != nil {
+	// 档位指向核对（v1.4.27）：同理，PlanID 指向的档位不在恢复后的档位
+	// 列表里时清掉该用户的档位（只清档位挂接，不动限流/到期现值）。
+	if p.SubGroups != nil || p.SubUsers != nil || p.MergedSubs != nil || p.Plans != nil {
 		for i := range s.cfg.SubUsers {
+			if s.cfg.SubUsers[i].PlanID != "" && s.findPlan(s.cfg.SubUsers[i].PlanID) == nil {
+				groupWarns = append(groupWarns, "订阅用户「"+s.cfg.SubUsers[i].Name+"」的套餐档位在备份里没有，已取消档位")
+				s.cfg.SubUsers[i].PlanID = ""
+				cfgChanged = true
+			}
 			if s.cfg.SubUsers[i].GroupID != "" && s.findSubGroup(s.cfg.SubUsers[i].GroupID) == nil {
 				groupWarns = append(groupWarns, "订阅用户「"+s.cfg.SubUsers[i].Name+"」的分组在备份里没有，已恢复为自己勾选")
 				s.cfg.SubUsers[i].GroupID = ""

@@ -138,145 +138,108 @@ func mustSubKey137(t *testing.T, s *Server) []byte {
 func TestSubLinkEndpoint137(t *testing.T) {
 	s := newTestSubServer(t)
 
-	// ① 通用订阅：生成后随时能取回同一条链接
-	rec := callJSON130(t, s.handleSubTokenGenerate, "POST", "/api/v1/settings/subscription/generate", "")
-	if rec.Code != 200 {
-		t.Fatalf("生成通用订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
+	// 1.4.27：通用/合并订阅已退场，取链接接口里 generic 与 merged 一律
+	// 410；kind=user 恢复解密返回（见 TestSubLinkUserRefresh137）。
+	for _, kind := range []string{"generic", "merged"} {
+		if rec := callLink137(t, s, kind, ""); rec.Code != 410 {
+			t.Fatalf("kind=%s 的取链接应 410，实际 %d：%s", kind, rec.Code, rec.Body.String())
+		}
 	}
-	genURL := respMap130(t, rec)["url"].(string)
-	genTok := tokenFromSubURL130(t, genURL)
-	if s.cfg.SubTokenEnc == "" {
-		t.Fatal("生成后应存了密文")
+	if rec := callLink137(t, s, "bogus", ""); rec.Code != 400 {
+		t.Fatalf("kind=bogus 的取链接应 400，实际 %d：%s", rec.Code, rec.Body.String())
 	}
-	rec = callLink137(t, s, "generic", "")
-	if rec.Code != 200 {
-		t.Fatalf("取回通用链接应 200，实际 %d：%s", rec.Code, rec.Body.String())
+	// 不存在的订阅用户 404；没给 id 400。
+	if rec := callLink137(t, s, "user", "su-nope"); rec.Code != 404 {
+		t.Fatalf("不存在的订阅用户取链接应 404，实际 %d：%s", rec.Code, rec.Body.String())
 	}
-	m := linkResp137(t, rec)
-	if m["legacy"] != false || m["url"] != genURL {
-		t.Fatalf("取回的通用链接应与生成时一致：%v", m)
+	if rec := callLink137(t, s, "user", ""); rec.Code != 400 {
+		t.Fatalf("不给 id 的取链接应 400，实际 %d：%s", rec.Code, rec.Body.String())
 	}
-	// 轮换后取回的是新链接，旧链接打不开
-	rec = callJSON130(t, s.handleSubTokenGenerate, "POST", "/api/v1/settings/subscription/generate", "")
-	if rec.Code != 200 {
-		t.Fatalf("轮换通用订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
-	}
-	newURL := respMap130(t, rec)["url"].(string)
-	if newURL == genURL {
-		t.Fatal("轮换后链接应变了")
-	}
-	m = linkResp137(t, callLink137(t, s, "generic", ""))
-	if m["url"] != newURL {
-		t.Fatalf("轮换后取回的应是新链接：%v", m)
-	}
-	if r := callSubIP137(t, s, genTok, "203.0.113.9"); r.Code != 404 {
-		t.Fatalf("旧链接轮换后应 404，实际 %d", r.Code)
-	}
-	// 旧数据（只有哈希、没有密文）→ legacy 提示，不编链接
-	s.cfg.SubTokenEnc = ""
-	m = linkResp137(t, callLink137(t, s, "generic", ""))
-	if m["legacy"] != true || m["message"] == nil || m["message"] == "" {
-		t.Fatalf("旧链接应返回 legacy 提示：%v", m)
-	}
-	if _, ok := m["url"]; ok {
-		t.Fatalf("旧链接不应返回 url：%v", m)
-	}
-	// 撤销后取回 404
-	s.cfg.SubTokenEnc = mustSubEnc137(t, s, newURL)
-	rec = callJSON130(t, s.handleSubTokenRevoke, "POST", "/api/v1/settings/subscription/revoke", "")
-	if rec.Code != 200 {
-		t.Fatalf("撤销通用订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
-	}
-	if s.cfg.SubTokenEnc != "" {
-		t.Fatal("撤销后密文应清掉")
-	}
-	if rec := callLink137(t, s, "generic", ""); rec.Code != 404 {
-		t.Fatalf("撤销后取回应 404，实际 %d", rec.Code)
-	}
-
-	// ② 订阅用户：新建后取回，轮换后取回新链接，旧数据 legacy
-	rec = callJSON130(t, s.handleSubUsersCreate, "POST", "/api/v1/subscriptions/users", `{"name":"张三的手机"}`)
-	if rec.Code != 200 {
-		t.Fatalf("新建订阅用户应 200，实际 %d：%s", rec.Code, rec.Body.String())
-	}
-	uid := respMap130(t, rec)["id"].(string)
-	userURL := respMap130(t, rec)["url"].(string)
-	m = linkResp137(t, callLink137(t, s, "user", uid))
-	if m["legacy"] != false || m["url"] != userURL {
-		t.Fatalf("取回的每人链接应与新建时一致：%v", m)
-	}
-	rec = callJSONPath137(t, s.handleSubUsersRotate, "POST", "/api/v1/subscriptions/users/"+uid+"/rotate", "", uid)
-	if rec.Code != 200 {
-		t.Fatalf("轮换订阅用户应 200，实际 %d：%s", rec.Code, rec.Body.String())
-	}
-	newUserURL := respMap130(t, rec)["url"].(string)
-	m = linkResp137(t, callLink137(t, s, "user", uid))
-	if m["url"] != newUserURL {
-		t.Fatalf("轮换后取回的应是新链接：%v", m)
-	}
-	s.cfg.SubUsers[0].TokenEnc = ""
-	m = linkResp137(t, callLink137(t, s, "user", uid))
-	if m["legacy"] != true {
-		t.Fatalf("旧的每人链接应返回 legacy：%v", m)
-	}
-	if rec := callLink137(t, s, "user", "su-不存在"); rec.Code != 404 {
-		t.Fatalf("没有的订阅用户应 404，实际 %d", rec.Code)
-	}
-
-	// ③ 合并订阅：生成后取回；含远程落地的勾选同样取回主面板的链接
-	rec = callJSON130(t, s.handleMergedSubsCreate, "POST", "/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1}]}`)
-	if rec.Code != 200 {
-		t.Fatalf("生成合并订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
-	}
-	mid := respMap130(t, rec)["id"].(string)
-	mergedURL := respMap130(t, rec)["url"].(string)
-	m = linkResp137(t, callLink137(t, s, "merged", mid))
-	if m["legacy"] != false || m["url"] != mergedURL {
-		t.Fatalf("取回的合并链接应与生成时一致：%v", m)
-	}
-	// 远程勾选的合并订阅：令牌仍是主面板的，取回不受远程影响
+	// 合并订阅列表仍可查（供核对），has_link 按密文有无区分。
 	remoteTok := generateSubToken()
 	remoteEnc, err := s.encryptSubTokenNow(remoteTok)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: "ms-remote137", Name: "远程测试", TokenHash: hashSubToken(remoteTok), TokenEnc: remoteEnc, Selection: []SubSelection{{Panel: "remote-id-x", Landing: 3}}})
-	m = linkResp137(t, callLink137(t, s, "merged", "ms-remote137"))
-	if m["legacy"] != false || !strings.Contains(m["url"].(string), remoteTok) {
-		t.Fatalf("含远程落地的合并订阅也应取回主面板链接：%v", m)
-	}
-	// 合并订阅轮换后取回新链接，旧数据 legacy
-	rec = callJSONPath137(t, s.handleMergedSubsRotate, "POST", "/api/v1/subscriptions/merged/"+mid+"/rotate", "", mid)
-	if rec.Code != 200 {
-		t.Fatalf("轮换合并订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
-	}
-	newMergedURL := respMap130(t, rec)["url"].(string)
-	m = linkResp137(t, callLink137(t, s, "merged", mid))
-	if m["url"] != newMergedURL {
-		t.Fatalf("轮换后取回的合并链接应是新链接：%v", m)
-	}
-	for i := range s.cfg.MergedSubs {
-		if s.cfg.MergedSubs[i].ID == mid {
-			s.cfg.MergedSubs[i].TokenEnc = ""
-		}
-	}
-	m = linkResp137(t, callLink137(t, s, "merged", mid))
-	if m["legacy"] != true {
-		t.Fatalf("旧的合并链接应返回 legacy：%v", m)
-	}
-	if rec := callLink137(t, s, "merged", "ms-不存在"); rec.Code != 404 {
-		t.Fatalf("没有的合并订阅应 404，实际 %d", rec.Code)
-	}
-	if rec := callLink137(t, s, "bogus", ""); rec.Code != 400 {
-		t.Fatalf("非法 kind 应 400，实际 %d", rec.Code)
-	}
-	// 列表带 has_link：有密文 true，没有 false
-	rec = callJSON130(t, s.handleMergedSubsList, "GET", "/api/v1/subscriptions/merged", "")
+	s.cfg.MergedSubs = append(s.cfg.MergedSubs,
+		MergedSub{ID: "ms-with137", Name: "有密文", TokenHash: hashSubToken(remoteTok), TokenEnc: remoteEnc, Selection: []SubSelection{{Panel: "local", Landing: 1}}},
+		MergedSub{ID: "ms-no137", Name: "无密文", TokenHash: "hash-x", Selection: []SubSelection{{Panel: "local", Landing: 1}}},
+	)
+	rec := callJSON130(t, s.handleMergedSubsList, "GET", "/api/v1/subscriptions/merged", "")
 	if rec.Code != 200 {
 		t.Fatalf("列合并订阅应 200，实际 %d", rec.Code)
 	}
 	if !strings.Contains(rec.Body.String(), `"has_link":true`) || !strings.Contains(rec.Body.String(), `"has_link":false`) {
 		t.Fatalf("合并列表应同时有 has_link true/false：%s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"retired":true`) {
+		t.Fatalf("合并列表应标 retired:true：%s", rec.Body.String())
+	}
+}
+
+// TestSubLinkUserRefresh137 刷新后重新复制/二维码：创建订阅用户后不依赖
+// 创建回包，再调取链接接口能拿到同一条可用链接（令牌与创建时同一条，
+// /sub/ 能拉到内容）；没密文的旧记录走 legacy 提示。
+func TestSubLinkUserRefresh137(t *testing.T) {
+	s := newTestSubServer(t)
+	rec := callJSON130(t, s.handleSubUsersCreate, "POST", "/api/v1/subscriptions/users", `{"name":"张三"}`)
+	if rec.Code != 200 {
+		t.Fatalf("新建订阅用户应 200，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	created := respMap130(t, rec)
+	createdURL, _ := created["url"].(string)
+	uid, _ := created["id"].(string)
+	if createdURL == "" || uid == "" {
+		t.Fatalf("创建回包应有 url 与 id，实际 %v", created)
+	}
+	// 不用创建回包里的链接，重新取一次：应拿到同一条链接。
+	rec2 := callLink137(t, s, "user", uid)
+	if rec2.Code != 200 {
+		t.Fatalf("重新取订阅用户链接应 200，实际 %d：%s", rec2.Code, rec2.Body.String())
+	}
+	m := linkResp137(t, rec2)
+	if m["legacy"] != false {
+		t.Fatalf("有密文时 legacy 应为 false，实际 %v", m)
+	}
+	url, _ := m["url"].(string)
+	if url != createdURL {
+		t.Fatalf("重新取到的链接应与创建时同一条，创建 %q，取回 %q", createdURL, url)
+	}
+	// 取到的链接真能用：令牌进 /sub/ 应 200。
+	tok := tokenFromSubURL130(t, url)
+	if r := callSub(t, s, tok, "/sub/"+tok, ""); r.Code != 200 {
+		t.Fatalf("取回的链接令牌拉订阅应 200，实际 %d", r.Code)
+	}
+	// 走完整路由 + 登录会话也能取到（只给管理员；未登录仍 401，
+	// 见 TestSubLinkRequiresAuth137）。链接按请求 Host 拼，路由请求
+	// 的 Host 与创建请求不同，只比令牌（同一条链接的核心）。
+	h := s.routes()
+	cookie := loginTestCookie(t, h)
+	req := httptest.NewRequest("GET", "/api/v1/subscriptions/link?kind=user&id="+uid, nil)
+	req.Header.Set("Cookie", cookie)
+	rec3 := httptest.NewRecorder()
+	h.ServeHTTP(rec3, req)
+	if rec3.Code != 200 {
+		t.Fatalf("登录后走路由取订阅用户链接应 200，实际 %d：%s", rec3.Code, rec3.Body.String())
+	}
+	if m3 := linkResp137(t, rec3); tokenFromSubURL130(t, m3["url"].(string)) != tok {
+		t.Fatalf("路由取回的链接令牌应与创建时同一条，实际 %v", m3)
+	}
+	// 没密文的旧记录：legacy:true，带旧链接提示，不编链接。
+	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: "su-legacy", Name: "旧人", TokenHash: "hash-old", CreatedAt: "2026-01-01T00:00:00Z"})
+	rec4 := callLink137(t, s, "user", "su-legacy")
+	if rec4.Code != 200 {
+		t.Fatalf("旧记录取链接应 200（legacy 提示），实际 %d：%s", rec4.Code, rec4.Body.String())
+	}
+	m4 := linkResp137(t, rec4)
+	if m4["legacy"] != true {
+		t.Fatalf("没密文时 legacy 应为 true，实际 %v", m4)
+	}
+	if msg, _ := m4["message"].(string); msg != legacySubLinkMsg {
+		t.Fatalf("旧链接提示不对，实际 %q", msg)
+	}
+	if _, ok := m4["url"]; ok {
+		t.Fatalf("旧链接不应返回 url，实际 %v", m4)
 	}
 }
 
@@ -295,7 +258,8 @@ func mustSubEnc137(t *testing.T, s *Server, url string) string {
 func TestSubRateLimit137(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	// 1.4.27：正确令牌走 SubUser（通用订阅已退场）。
+	subUserForToken1427(t, s, tok)
 	wrongTok := "sub_0000000000000000000000000000000000000000000000000000000000000000"
 	ipA, ipB, ipC, ipD := "203.0.113.9", "203.0.113.10", "203.0.113.11", "203.0.113.12"
 
@@ -374,39 +338,43 @@ func TestSubLinkRequiresAuth137(t *testing.T) {
 	if rec.Code != 401 {
 		t.Fatalf("没登录调取回链接应 401，实际 %d", rec.Code)
 	}
-	// 登录后 → 200（还没生成是 404，不是 401）
+	// 登录后 → 410（取链接接口已随通用/合并订阅退场）。
 	cookie := loginTestCookie(t, h)
 	req = httptest.NewRequest("GET", "/api/v1/subscriptions/link?kind=generic", nil)
 	req.Header.Set("Cookie", cookie)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != 404 {
-		t.Fatalf("登录后没生成时取回应 404，实际 %d：%s", rec.Code, rec.Body.String())
+	if rec.Code != 410 {
+		t.Fatalf("登录后取链接接口应 410（已退场），实际 %d：%s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestSubPlaintextNotInAuditOrExport137(t *testing.T) {
 	s := newTestSubServer(t)
-	// 生成三类令牌并轮换一次、取回一次
-	rec := callJSON130(t, s.handleSubTokenGenerate, "POST", "/api/v1/settings/subscription/generate", "")
-	genTok := tokenFromSubURL130(t, respMap130(t, rec)["url"].(string))
-	rec = callJSON130(t, s.handleSubUsersCreate, "POST", "/api/v1/subscriptions/users", `{"name":"张三"}`)
+	// 1.4.27：只剩订阅用户有令牌（通用/合并订阅已退场，不再生成令牌）。
+	// 新建一个订阅用户并轮换一次、拉取一次。
+	rec := callJSON130(t, s.handleSubUsersCreate, "POST", "/api/v1/subscriptions/users", `{"name":"张三"}`)
+	if rec.Code != 200 {
+		t.Fatalf("新建订阅用户应 200，实际 %d：%s", rec.Code, rec.Body.String())
+	}
 	userTok := tokenFromSubURL130(t, respMap130(t, rec)["url"].(string))
 	uid := respMap130(t, rec)["id"].(string)
-	rec = callJSON130(t, s.handleMergedSubsCreate, "POST", "/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1}]}`)
-	mergedTok := tokenFromSubURL130(t, respMap130(t, rec)["url"].(string))
-	mid := respMap130(t, rec)["id"].(string)
-	_ = callLink137(t, s, "generic", "")
-	_ = callLink137(t, s, "user", uid)
-	_ = callLink137(t, s, "merged", mid)
-	// 错令牌拉取一次（失败也记审计）
+	rec = callJSONPath137(t, s.handleSubUsersRotate, "POST", "/api/v1/subscriptions/users/"+uid+"/rotate", "", uid)
+	if rec.Code != 200 {
+		t.Fatalf("轮换订阅用户应 200，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	newUserTok := tokenFromSubURL130(t, respMap130(t, rec)["url"].(string))
+	// 错令牌拉取一次（失败也记审计），对令牌拉取一次（成功记审计）。
 	_ = callSubIP137(t, s, "sub_0000000000000000000000000000000000000000000000000000000000000000", "203.0.113.9")
+	if r := callSubIP137(t, s, newUserTok, "203.0.113.10"); r.Code != 200 {
+		t.Fatalf("新令牌拉取应 200，实际 %d", r.Code)
+	}
 	// 审计日志里没有任何一条明文令牌
 	b, err := os.ReadFile(filepath.Join(s.env.PanelHome, "audit.log"))
 	if err != nil {
 		t.Fatalf("审计日志不存在：%v", err)
 	}
-	for _, tok := range []string{genTok, userTok, mergedTok} {
+	for _, tok := range []string{userTok, newUserTok} {
 		if strings.Contains(string(b), tok) {
 			t.Fatalf("审计日志里不应出现明文令牌 %s…", tok[:12])
 		}
@@ -417,7 +385,7 @@ func TestSubPlaintextNotInAuditOrExport137(t *testing.T) {
 		t.Fatalf("导出应 200，实际 %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, bad := range []string{"token_enc", "token_hash", genTok, userTok, mergedTok} {
+	for _, bad := range []string{"token_enc", "token_hash", userTok, newUserTok} {
 		if strings.Contains(body, bad) {
 			t.Fatalf("导出里不应出现 %q", bad)
 		}
@@ -428,20 +396,19 @@ func TestSubPlaintextNotInAuditOrExport137(t *testing.T) {
 
 func TestSubQRFromRelink137(t *testing.T) {
 	s := newTestSubServer(t)
-	rec := callJSON130(t, s.handleSubTokenGenerate, "POST", "/api/v1/settings/subscription/generate", "")
-	genURL := respMap130(t, rec)["url"].(string)
-	// 先取回链接，再拿这条链接要二维码
-	m := linkResp137(t, callLink137(t, s, "generic", ""))
-	if m["url"] != genURL {
-		t.Fatalf("取回的链接应与生成时一致：%v", m)
+	// 1.4.27：取链接接口已退场，二维码直接用新建订阅用户回包里的链接生成。
+	rec := callJSON130(t, s.handleSubUsersCreate, "POST", "/api/v1/subscriptions/users", `{"name":"张三"}`)
+	if rec.Code != 200 {
+		t.Fatalf("新建订阅用户应 200，实际 %d：%s", rec.Code, rec.Body.String())
 	}
-	qrBody, _ := json.Marshal(map[string]string{"url": m["url"].(string)})
+	userURL := respMap130(t, rec)["url"].(string)
+	qrBody, _ := json.Marshal(map[string]string{"url": userURL})
 	req := httptest.NewRequest("POST", "/api/v1/subscription/qr", strings.NewReader(string(qrBody)))
 	req.Header.Set("Content-Type", "application/json")
 	rec2 := httptest.NewRecorder()
 	s.handleSubQR(rec2, req)
 	if rec2.Code != 200 {
-		t.Fatalf("用取回的链接生成二维码应 200，实际 %d：%s", rec2.Code, rec2.Body.String())
+		t.Fatalf("用订阅用户链接生成二维码应 200，实际 %d：%s", rec2.Code, rec2.Body.String())
 	}
 	var qr map[string]any
 	if err := json.Unmarshal(rec2.Body.Bytes(), &qr); err != nil {

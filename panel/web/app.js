@@ -1130,6 +1130,8 @@ async function loadNodes() {
     const r = await api('/api/v1/nodes');
     nodesCache = r.nodes || [];
     renderNodesList();
+    // 路由行里的目标节点名靠 nodesCache 对地址：节点到了就重画一次路由行。
+    if (relayRoutesCache.length) renderRelayRoutes();
   } catch (e) {
     wrap.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
   }
@@ -1154,6 +1156,18 @@ function showNodesOnce(token, cmd) {
 // 设置界面的说明文字里出现。
 function normalizeLinkMode(v) { return v === 'direct' || v === 'relay' || v === 'both' ? v : 'both'; }
 function linkModeLabel(v) { return v === 'direct' ? '仅 A' : v === 'relay' ? '仅 B' : 'A 和 B'; }
+// 订阅级链接模式（v1.4.27）：空值＝跟随节点（按节点模式出），显式值
+// 优先于节点级。与节点级 normalizeLinkMode 不同——这里空值是合法值，
+// 不能归一化成 both；列表里缺字段的老记录也按跟随节点显示。
+function normalizeSubLinkMode(v) { return v === 'direct' || v === 'relay' || v === 'both' ? v : ''; }
+function subLinkModeLabel(v) { return v === 'direct' ? '仅 A' : v === 'relay' ? '仅 B' : v === 'both' ? 'A 和 B' : '跟随节点'; }
+function subLinkModeOptions(selected) {
+  const cur = normalizeSubLinkMode(selected);
+  return '<option value=""' + (cur === '' ? ' selected' : '') + '>跟随节点（默认）</option>' +
+    '<option value="direct"' + (cur === 'direct' ? ' selected' : '') + '>仅 A 直连</option>' +
+    '<option value="relay"' + (cur === 'relay' ? ' selected' : '') + '>仅 B 中转</option>' +
+    '<option value="both"' + (cur === 'both' ? ' selected' : '') + '>A 和 B 都出</option>';
+}
 function nodeDetailModalHtml(d, nodeName, nodeId, linkModeEditable) {
   const n = d.node || {};
   const bh = d.backend_health || n.backend_health || {};
@@ -1263,9 +1277,41 @@ async function deleteNode(id, name) {
 // 连接会断开须重连——确认框与 toast 里都写明。
 let relayRoutesCache = [];
 let relayRoutesLocal = true;
+let relayRemotesCache = null; // C 方案：已登记的远程面板（中转机候选），null=未拉过
+let relayPanelId = null; // 当前选中的中转机（远程面板 id），null=本机中转或未选
+let relayPanelName = ''; // 当前选中的中转机名字
+let relayRoutesHint = ''; // 管理面板没登记中转机／远程连不上时，后端回的提示
 function relayRouteNodeName(id) {
   const n = nodesCache.find((x) => Number(x.id) === Number(id));
   return n ? (n.name || n.address || String(id)) : ('节点 ' + id);
+}
+// relayRouteTargetLabel 路由目标的显示：有节点记录写“节点名 地址:端口”；
+// 只填地址的路由（remote_node_id 为 0）写“地址:端口”，地址能在本机
+// 节点列表里对上时补节点名（如美国01）。
+function relayRouteTargetLabel(rt) {
+  const addr = String(rt.remote_addr || '') + ':' + String(rt.remote_port == null ? '' : rt.remote_port);
+  if (rt.remote_node_id) return relayRouteNodeName(rt.remote_node_id) + ' ' + addr;
+  const hit = (nodesCache || []).find((n) => (n.address || '') === rt.remote_addr);
+  return hit ? ((hit.name || hit.address) + ' ' + addr) : addr;
+}
+// renderRelayPanelSel 中转机下拉框（只在管理面板经代理时显示）：
+// 远程面板列表＋每台的 realm 状态，默认选中跑着 realm 的那台。
+function renderRelayPanelSel() {
+  const row = $('#nodes-relay-panel-row');
+  const sel = $('#nodes-relay-panel');
+  if (!row || !sel) return;
+  if (!relayPanelId || !relayRemotesCache || !relayRemotesCache.length) {
+    row.hidden = true;
+    return;
+  }
+  row.hidden = false;
+  sel.innerHTML = relayRemotesCache.map((x) => '<option value="' + esc(x.id) + '"' + (x.id === relayPanelId ? ' selected' : '') + '>' + esc(x.name) + (x.realm ? '（中转运行中）' : '（未运行中转）') + '</option>').join('');
+  sel.onchange = () => {
+    relayPanelId = sel.value;
+    const hit = relayRemotesCache.find((x) => x.id === relayPanelId);
+    relayPanelName = hit ? hit.name : '';
+    loadRelayRoutes();
+  };
 }
 // relayApplyToast 保存／删除／重下发后的提示：下发了就报重启，
 // 没下发就把原因说清（路由已保存，点“重新下发”可重试）。
@@ -1278,9 +1324,35 @@ async function loadRelayRoutes() {
   const wrap = $('#nodes-relay-routes');
   if (!wrap) return;
   try {
-    const r = await api('/api/v1/relay-routes');
-    relayRoutesCache = r.routes || [];
+    if (relayRemotesCache === null) {
+      try {
+        const rr = await api('/api/v1/central/remotes');
+        relayRemotesCache = (rr.remotes || []).map((x) => ({ id: x.id, name: x.name || x.id, realm: !!x.realm_running }));
+      } catch (e) { relayRemotesCache = []; }
+    }
+    let r;
+    if (relayPanelId) {
+      // 已选好中转机（管理面板）：直接拉那台的路由。
+      r = await api('/api/v1/relay-routes?relay_panel_id=' + encodeURIComponent(relayPanelId));
+    } else {
+      r = await api('/api/v1/relay-routes');
+      if (r.local_relay === false && !r.proxied && relayRemotesCache.length) {
+        // 管理面板、登记了多台远程面板、后端没法默认：选一台再拉
+        // （只有一台时后端已默认代理，上面那次就拿到了）。
+        const withRealm = relayRemotesCache.find((x) => x.realm) || relayRemotesCache[0];
+        relayPanelId = withRealm.id;
+        relayPanelName = withRealm.name;
+        r = await api('/api/v1/relay-routes?relay_panel_id=' + encodeURIComponent(relayPanelId));
+      }
+    }
     relayRoutesLocal = r.local_relay !== false;
+    relayRoutesHint = r.relay_hint || '';
+    if (r.proxied) {
+      relayPanelId = r.relay_panel_id || relayPanelId;
+      relayPanelName = r.relay_panel_name || relayPanelName;
+    }
+    relayRoutesCache = r.routes || [];
+    renderRelayPanelSel();
     renderRelayRoutes();
   } catch (e) {
     wrap.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
@@ -1290,13 +1362,18 @@ function renderRelayRoutes() {
   const wrap = $('#nodes-relay-routes');
   if (!wrap) return;
   const note = $('#nodes-relay-note');
-  if (note) note.textContent = relayRoutesLocal ? '' : '本机是管理面板，没有中转：路由只保存，不会下发到中转机。';
+  if (note) {
+    if (relayPanelId) note.textContent = '经代理管理「' + relayPanelName + '」上的中转路由，保存后直接下发到这台中转机。';
+    else if (relayRoutesHint) note.textContent = relayRoutesHint;
+    else if (!relayRoutesLocal) note.textContent = '本机是管理面板，没有中转：路由只保存，不会下发到中转机。';
+    else note.textContent = '';
+  }
   if (!relayRoutesCache.length) { wrap.innerHTML = '<div class="empty">还没有中转路由。点“添加路由”，中转机收到流量就按这里转到目标节点。</div>'; return; }
   wrap.innerHTML = relayRoutesCache.map((rt) => {
     const key = esc(String(rt.relay_id == null ? 0 : rt.relay_id)) + '|' + esc(String(rt.listen_addr || ''));
     return '<div class="list-row" data-relay-row="' + key + '">' +
       '<span class="cell"><b>' + esc(String(rt.listen_addr || '')) + '</b></span>' +
-      '<span class="cell">→ ' + esc(relayRouteNodeName(rt.remote_node_id)) + ' ' + esc(String(rt.remote_addr || '')) + ':' + esc(String(rt.remote_port == null ? '' : rt.remote_port)) + '</span>' +
+      '<span class="cell">→ ' + esc(relayRouteTargetLabel(rt)) + '</span>' +
       '<span class="cell">' + esc(String((rt.proto || 'tcp').toUpperCase())) + (rt.transport && rt.transport !== 'tcp' ? '／' + esc(String(rt.transport)) : '') + '</span>' +
       '<span class="cell">' + (rt.enabled ? '启用' : '停用') + '</span>' +
       '<span class="btn-row"><button class="btn secondary sm" type="button" data-relay-edit="' + key + '">编辑</button>' +
@@ -1332,13 +1409,14 @@ function openRelayRouteModal(route) {
   const errBox = body.querySelector('#nodes-relay-error');
   const listenNote = body.querySelector('#nodes-relay-listen-note');
   const showErr = (msg) => { if (!errBox) return; errBox.textContent = msg; errBox.classList.remove('hidden'); errBox.hidden = false; };
-  if (!nodesCache.length) {
-    nodeSel.innerHTML = '<option value="" disabled selected>（先在上面建一个节点）</option>';
-  } else {
-    nodeSel.innerHTML = nodesCache.map((n) => '<option value="' + esc(String(n.id)) + '">' + esc(n.name || n.address || String(n.id)) + '（' + esc(n.address || '') + '）</option>').join('');
-  }
+  // 目标节点下拉：已配好的节点＋手动填写（不选节点）；手动填只是备用
+  // 口子，选节点自动填落地地址更省事。没建节点也能建路由（只填地址）。
+  nodeSel.innerHTML = nodesCache.map((n) => '<option value="' + esc(String(n.id)) + '">' + esc(n.name || n.address || String(n.id)) + '（' + esc(n.address || '') + '）</option>').join('') +
+    '<option value="">手动填写地址（不选节点）</option>';
   if (isEdit) {
-    nodeSel.value = String(route.remote_node_id);
+    // 路由有节点记录就选中它；只填地址的路由（remote_node_id 为 0）
+    // 或节点已被删的，选“手动填写地址”，落地地址按原值留着。
+    nodeSel.value = (route.remote_node_id && nodesCache.some((n) => String(n.id) === String(route.remote_node_id))) ? String(route.remote_node_id) : '';
     listenInput.value = route.listen_addr || '';
     listenInput.disabled = true;
     if (listenNote) listenNote.hidden = false;
@@ -1350,27 +1428,39 @@ function openRelayRouteModal(route) {
     remotePort.value = '443';
     if (nodesCache.length) nodeSel.value = String(nodesCache[0].id);
   }
-  // 目标节点换了、落地地址还空着时，跟着填新节点的地址。
-  nodeSel.addEventListener('change', () => {
-    if (remoteAddr.value.trim() !== '') return;
+  // 落地地址自动填（R7）：只在地址空着、或地址仍是上次自动填的值时
+  // 跟节点走；用户手填过（值已不是自动填的）就不再覆盖。新建弹窗
+  // 打开时也调同一套逻辑填一次默认选中节点的地址，不另写一份。
+  // 只记自动填的值、不用 input 事件判脏：直接改 .value 的手填
+  // （如测试与粘贴）也不会触发 input 事件，按值比对才认得出来。
+  let autoRemoteAddr = '';
+  const fillRemoteAddrFromNode = () => {
+    if (remoteAddr.value.trim() !== '' && remoteAddr.value.trim() !== autoRemoteAddr) return;
     const n = nodesCache.find((x) => String(x.id) === nodeSel.value);
-    if (n) remoteAddr.value = n.address || '';
-  });
+    if (n) { remoteAddr.value = n.address || ''; autoRemoteAddr = remoteAddr.value; }
+  };
+  nodeSel.addEventListener('change', fillRemoteAddrFromNode);
+  if (!isEdit) fillRemoteAddrFromNode();
   const form = body.querySelector('#nodes-relay-form');
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const nodeId = Number(nodeSel.value);
-    if (!nodeId) { showErr('先在上面建一个节点，再回来加路由。'); return; }
+    const nodeId = Number(nodeSel.value) || 0;
     const listen = listenInput.value.trim();
     if (!listen) { showErr('监听地址不能为空，如 0.0.0.0:30004。'); return; }
+    const addr = remoteAddr.value.trim();
+    if (!nodeId && !addr) { showErr('没选目标节点时请直接填落地地址。'); return; }
     const port = Number(remotePort.value);
     if (!port || port < 1 || port > 65535) { showErr('落地端口须是 1–65535。'); return; }
     const payload = {
       relay_id: isEdit ? (route.relay_id == null ? 0 : route.relay_id) : 0,
-      listen_addr: listen, remote_node_id: nodeId,
-      remote_addr: remoteAddr.value.trim(), remote_port: port,
+      // 经代理建路由时（管理面板），目标节点 id 不发过去：中转面板的
+      // 节点编号是另一套，传了会指错节点；路由只填远端 IP:端口，节点
+      // 下拉框只是用来自动填落地地址。
+      listen_addr: listen, remote_node_id: relayPanelId ? 0 : nodeId,
+      remote_addr: addr, remote_port: port,
       proto: protoSel.value, enabled: enabledSel.value === 'true',
     };
+    if (relayPanelId) payload.relay_panel_id = relayPanelId;
     try {
       const r = isEdit
         ? await api('/api/v1/relay-routes', { method: 'PUT', body: JSON.stringify(payload) })
@@ -1383,11 +1473,13 @@ function openRelayRouteModal(route) {
 }
 async function deleteRelayRoute(relayId, listen) {
   const rt = relayRoutesCache.find((x) => Number(x.relay_id == null ? 0 : x.relay_id) === Number(relayId) && String(x.listen_addr || '') === String(listen));
-  const label = rt ? (rt.listen_addr + ' → ' + relayRouteNodeName(rt.remote_node_id) + ' ' + (rt.remote_addr || '') + ':' + (rt.remote_port == null ? '' : rt.remote_port)) : (listen || '');
+  const label = rt ? (rt.listen_addr + ' → ' + relayRouteTargetLabel(rt)) : (listen || '');
   const ok = await confirmModal('删除中转路由', '<p>确定删除路由 <b>' + esc(label) + '</b> 吗？</p><p>删除后中转配置会重下发、realm 重启，已建立的中转连接会断开、须重连；目标节点本身不受影响。</p>', '删除', true);
   if (!ok) return;
   try {
-    const r = await api('/api/v1/relay-routes', { method: 'DELETE', body: JSON.stringify({ relay_id: relayId, listen_addr: listen }) });
+    const delBody = { relay_id: relayId, listen_addr: listen };
+    if (relayPanelId) delBody.relay_panel_id = relayPanelId;
+    const r = await api('/api/v1/relay-routes', { method: 'DELETE', body: JSON.stringify(delBody) });
     relayApplyToast(r, '已删除路由');
     loadRelayRoutes();
   } catch (e) { toast('删除失败：' + e.message, 'err'); }
@@ -2182,9 +2274,9 @@ const IB_HELP = {
   'route-node': {
     title: '目标节点',
     body: () => [
-      '填什么：流量要转到哪台后端节点，下拉选一台。',
-      '必填：节点须已在节点列表里（没入网的节点选了也转不通）。',
-      '建议：先在上面把节点入网，再回来加路由；落地地址空着就用这台节点的地址。',
+      '填什么：流量要转到哪台后端节点，下拉选一台；也可以不选，直接在落地地址里填 IP 或域名。',
+      '选填：不选节点时，落地地址必填。',
+      '建议：选一台已入网的节点最省事，落地地址自动填；节点换了地址时改落地地址，不用改监听地址。',
     ],
   },
   'route-listen': {
@@ -2199,8 +2291,8 @@ const IB_HELP = {
     title: '落地地址',
     body: () => [
       '填什么：目标节点的 IP 或域名，流量转到这里；端口不填在这里，另填落地端口。',
-      '选填：空着就用目标节点的地址（节点列表里的地址）。',
-      '建议：一般空着就行；节点换了地址时改这里，不用改监听地址。',
+      '不选目标节点时必填；选了节点时可空着用节点地址。',
+      '建议：一般选节点、空着就行；节点换了地址时改这里，不用改监听地址。',
     ],
   },
   'route-remote-port': {
@@ -2225,6 +2317,112 @@ const IB_HELP = {
       '填什么：这条路由现在转不转。',
       '必填，默认启用。',
       '建议：关掉后下次下发就把这段从中转配置里撤掉、realm 重启；想临时停一条路由就关它，不用删。',
+    ],
+  },
+  // 套餐档位字段（v1.4.27，订阅体系统一方案 B）与订阅用户字段：与入站
+  // 表单共用同一套 ⓘ 机制（document 级委托，弹窗里同样生效）。
+  'plan-name': {
+    title: '档位名字',
+    body: () => [
+      '填什么：档位显示名，如 默认、V1、元婴，建用户时下拉选的就是它。',
+      '必填：不能为空。',
+      '建议：按套餐档位起，如 V1–V5；“默认”是兜底档位，至少留一条。',
+    ],
+  },
+  'plan-group': {
+    title: '关联分组',
+    body: () => [
+      '填什么：这个档位的用户默认进哪个权限组，节点范围跟着分组走。',
+      '选填：选“不关联”就是不绑分组，用户建完再单独分组也行。',
+      '建议：先在下面“分组”卡片里建好组再来关联；分组里没配后端节点时，组级指派的用户上不了后端节点。',
+    ],
+  },
+  'plan-traffic': {
+    title: '流量上限',
+    body: () => [
+      '填什么：这个档位一个用户能用多少流量，单位 MB。',
+      '必填：填 0 = 不限流。',
+      '建议：按套餐填，如 100GB 填 102400；建用户时按这个值填好，可再改。',
+    ],
+  },
+  'plan-traffic-mode': {
+    title: '算法',
+    body: () => [
+      '填什么：流量上限怎么算：累计是整个生命周期只给这么多，按月是每月重置。',
+      '必填，默认累计。',
+      '建议：包月套餐选按月，流量包选累计；选了按月才用得上“重置”。',
+    ],
+  },
+  'plan-reset': {
+    title: '重置',
+    body: () => [
+      '填什么：按月算时每月哪天清零重算：每月 1 号、跟随生成日、自定义每月几号。',
+      '选填：算法选累计时不用填；选按月时默认每月 1 号。',
+      '建议：自定义几号时在“几号”里填 1–31；超量停用后等下个周期自动恢复。',
+    ],
+  },
+  'plan-expires': {
+    title: '到期天数',
+    body: () => [
+      '填什么：用这个档位建的用户多少天后到期。',
+      '必填：填 0 = 永久。',
+      '建议：包月填 30、包季填 90、包年填 365；建用户时按这个值算出到期日，可再改。',
+    ],
+  },
+  'plan-content': {
+    title: '内容模式',
+    body: () => [
+      '填什么：这个档位的订阅里要哪些节点：全部、中转、直连。',
+      '必填，默认全部。',
+      '建议：一般选全部；只想给中转用户时选仅中转，只想给直连用户时选仅直连。',
+    ],
+  },
+  'plan-note': {
+    title: '备注',
+    body: () => [
+      '填什么：给档位写一句备注，如价格、适用人群。',
+      '选填：空着也行。',
+      '建议：写清套餐说明，列表里一眼分清各档位。',
+    ],
+  },
+  'user-plan': {
+    title: '套餐档位',
+    body: () => [
+      '填什么：这个人用哪个档位，流量、到期与分组按档位的默认值填好。',
+      '必填，默认“默认”档位。',
+      '建议：选了档位后下面流量、到期、分组会自动按档位填好，还能再改；改档位不会改链接。',
+    ],
+  },
+  'user-username': {
+    title: '登录账号',
+    body: () => [
+      '填什么：这个人在客户端登录用的账号。',
+      '选填：新建时空着自动生成；编辑时空着保持不变。',
+      '建议：给人一眼认得出的账号，如手机号或名字拼音；账号改了要告诉用户用新账号登录。',
+    ],
+  },
+  'user-password': {
+    title: '登录密码',
+    body: () => [
+      '填什么：这个人在客户端登录用的密码。',
+      '新建时必填，最少 6 位；编辑时留空 = 不改，填了 = 重设。',
+      '建议：发给用户后让他自己改；重置密码会吊销该用户已登录的客户端会话，须重新登录。',
+    ],
+  },
+  'user-backend': {
+    title: '后端指派',
+    body: () => [
+      '填什么：这个人上哪些后端节点：跟档位分组走、全部、指定节点、指定入站。',
+      '必填，默认跟档位分组走。',
+      '建议：一般不用改；选“指定节点／入站”时，保存后去列表点“发到节点”勾具体节点／入站；口径与“发到节点”弹窗的四级一致。',
+    ],
+  },
+  'user-link-mode': {
+    title: '链接模式',
+    body: () => [
+      '填什么：这个人的订阅出几条链接：跟随节点、仅 A 直连、仅 B 中转、A 和 B 都出。',
+      '选填，默认“跟随节点”。',
+      '建议：一般不用改；显式选了就按这个订阅的来，覆盖节点上的模式；选“跟随节点”时按节点模式出，和以前一样。',
     ],
   },
 };
@@ -2370,7 +2568,7 @@ function initNodes() {
   on('#nodes-relay-add', 'click', () => openRelayRouteModal(null));
   on('#nodes-relay-reapply', 'click', async () => {
     try {
-      const r = await apiPost('/api/v1/relay-routes/apply', {});
+      const r = await apiPost('/api/v1/relay-routes/apply', relayPanelId ? { relay_panel_id: relayPanelId } : {});
       relayApplyToast(r, '已重新下发');
       loadRelayRoutes();
     } catch (e) { toast('重新下发失败：' + e.message, 'err'); }
@@ -3579,21 +3777,25 @@ async function loadSettingsPage() {
     const ct = st.central_token || {};
     $('#central-token-status').textContent = ct.has_token ? '已生成令牌' + (ct.created_at ? '（生成于 ' + fmtDate(ct.created_at) + '）' : '') + '：主面板登记时用它；轮换后旧令牌立即失效，撤销后任何主面板都连不进来。' : '未生成令牌：没生成就等于没开集中管理，别人连不进来。';
     const sub = st.subscription || {};
-    if (!sub.has_token) {
-      $('#sub-status').textContent = '未生成订阅链接：点“生成订阅链接”，复制链接粘贴到客户端订阅里即可。';
-      const box0 = $('#sub-once');
-      if (box0) { box0.classList.add('hidden'); box0.hidden = true; }
-    } else if (!sub.has_link) {
-      // 1.3.7 之前的旧链接：没有密文，无法恢复，提示轮换一次。
-      $('#sub-status').textContent = '已生成订阅链接' + (sub.created_at ? '（生成于 ' + fmtDate(sub.created_at) + '）' : '') + '：这条是旧链接，面板里没有存它的密文，无法恢复，点“轮换订阅链接”生成一条新的。';
-      const box0 = $('#sub-once');
-      if (box0) { box0.classList.add('hidden'); box0.hidden = true; }
-    } else {
-      $('#sub-status').textContent = '已生成订阅链接' + (sub.created_at ? '（生成于 ' + fmtDate(sub.created_at) + '）' : '') + '：内容' + subModeLabel(sub.mode) + '，链接已加密存在面板里，随时能点复制重新拿。';
-      loadGenericSubLink();
+    // v1.4.27：通用订阅已退场，设置页不再有通用订阅卡片（#sub-status 等
+    // 元素已撤）；有这块元素才回填，没有就跳过，免得空指针把后面初始化拦住。
+    if ($('#sub-status')) {
+      if (!sub.has_token) {
+        $('#sub-status').textContent = '未生成订阅链接：点“生成订阅链接”，复制链接粘贴到客户端订阅里即可。';
+        const box0 = $('#sub-once');
+        if (box0) { box0.classList.add('hidden'); box0.hidden = true; }
+      } else if (!sub.has_link) {
+        // 1.3.7 之前的旧链接：没有密文，无法恢复，提示轮换一次。
+        $('#sub-status').textContent = '已生成订阅链接' + (sub.created_at ? '（生成于 ' + fmtDate(sub.created_at) + '）' : '') + '：这条是旧链接，面板里没有存它的密文，无法恢复，点“轮换订阅链接”生成一条新的。';
+        const box0 = $('#sub-once');
+        if (box0) { box0.classList.add('hidden'); box0.hidden = true; }
+      } else {
+        $('#sub-status').textContent = '已生成订阅链接' + (sub.created_at ? '（生成于 ' + fmtDate(sub.created_at) + '）' : '') + '：内容' + subModeLabel(sub.mode) + '，链接已加密存在面板里，随时能点复制重新拿。';
+        loadGenericSubLink();
+      }
+      // 通用订阅的三选一下拉按存下来的模式预选（没生成过时按上次选择）。
+      if (sub.has_token && sub.mode) syncSubModeSelect($('#sub-token-mode'), sub.mode);
     }
-    // 通用订阅的三选一下拉按存下来的模式预选（没生成过时按上次选择）。
-    if (sub.has_token && sub.mode) syncSubModeSelect($('#sub-token-mode'), sub.mode);
     const subDomain = $('#sub-public-domain');
     if (subDomain) subDomain.value = sub.public_domain || '';
     // 订阅文件名称（v1.3.22）：存过就回填；留空就是回落面板名。
@@ -3651,7 +3853,7 @@ async function loadSettingsPage() {
       '<div class="kv"><span>状态</span><b>' + (st.update_available ? '<span class="badge yellow">有更新</span>' : '<span class="badge green">已是最新</span>') + '</b></div>' +
       '<div class="kv"><span>仓库</span><b><a href="https://github.com/nbbk/relay-node" target="_blank" rel="noopener">relay-node</a></b></div>';
   } catch (e) { toast('设置加载失败：' + e.message, 'err'); }
-  loadAudit(); loadSubUsers(); loadSubGroups(); loadSchedBackups();
+  loadAudit(); loadSubUsers(); loadSubGroups(); loadSubPlans(); loadSchedBackups();
 }
 // 切换面板模式（v1.2.8）：只改 manager_only 开关，数据保留；切完刷新页面重建导航。
 async function switchPanelMode(toManager) {
@@ -4205,25 +4407,10 @@ function initSettings() {
     catch (err) { toast('撤销失败：' + err.message, 'err'); }
   });
   on('#central-token-copy', 'click', (e) => { copyText($('#central-token-value').textContent, e.target); });
-  on('#sub-generate', 'click', async () => { await subTokenGenerate(false); });
-  on('#sub-rotate', 'click', async () => {
-    const ok = await confirmModal('轮换订阅链接', '<p>轮换后旧订阅链接立即失效，客户端里已导入的订阅要换成新链接。确定吗？</p>', '轮换订阅链接', true);
-    if (!ok) return;
-    await subTokenGenerate(true);
-  });
-  on('#sub-revoke', 'click', async () => {
-    const ok = await confirmModal('撤销订阅链接', '<p>撤销后订阅链接立即打不开，客户端里已导入的订阅会失效。确定吗？</p>', '撤销订阅链接', true);
-    if (!ok) return;
-    try { await apiPost('/api/v1/settings/subscription/revoke', {}); toast('订阅链接已撤销', 'ok'); loadSettingsPage(); }
-    catch (err) { toast('撤销失败：' + err.message, 'err'); }
-  });
+  // v1.4.27：通用订阅已退场，通用订阅卡片已撤（生成/轮换/撤销/到期/
+  // 文件名按钮与三选一下拉都不在了），相关绑定一并撤掉；订阅对外域名
+  // 与订阅路径在域名选项卡里，还在。
   on('#sub-public-domain-save', 'click', async () => { await saveSubPublicDomain(); });
-  on('#sub-file-name-save', 'click', async () => { await saveSubFileName(); });
-  // 订阅到期时间与订阅路径（v1.3.20）
-  on('#sub-expiry-permanent', 'change', () => { const d = $('#sub-expiry-date'); if (d) d.disabled = $('#sub-expiry-permanent').checked; });
-  // 订阅用户创建表单“永久”勾选（v1.3.28）：与通用订阅同一模式，勾选时日期框置灰。
-  on('#sub-user-expiry-permanent', 'change', () => { const d = $('#sub-user-expiry-date'); if (d) d.disabled = $('#sub-user-expiry-permanent').checked; });
-  on('#sub-expiry-save', 'click', async () => { await saveSubExpiry(); });
   on('#sub-path-save', 'click', async () => { await saveSubPath(); });
   // 每用户端口段（v1.3.25）：限流订阅的独立转发从这里分配。
   on('#user-port-save', 'click', async () => {
@@ -4245,9 +4432,8 @@ function initSettings() {
       loadSettingsPage();
     } catch (err) { toast('保存失败：' + err.message, 'err'); }
   });
-  // 限流表单联动（v1.3.25）：静态表单里的重置字段按算法与重置模式启用/置灰。
-  wireTrafficLimitUI($('#sub-user-name') ? $('#sub-user-name').closest('.card') : null);
-  wireTrafficLimitUI($('#central-sub-traffic-row'));
+  // v1.4.27：新建订阅用户走弹窗（openSubUserModal），限流联动与“永久”
+  // 勾选都在弹窗里现场绑；静态表单已撤，这里不再绑。
   // 面板 Logo（v1.3.20）
   on('#btn-logo-upload', 'click', async () => { await uploadLogo(); });
   on('#btn-logo-delete', 'click', async () => { await deleteLogo(); });
@@ -4259,22 +4445,9 @@ function initSettings() {
   wireListSearch('#sub-user-search', (q) => { subUserSearch = q; subUserPage = 1; loadSubUsers(); });
   wireListSearch('#audit-search', (q) => { auditSearch = q; auditPage = 1; loadAudit(); });
   wireListSearch('#sched-backup-search', (q) => { schedBackupSearch = q; schedBackupPage = 1; loadSchedBackups(); });
-  on('#sub-copy', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, ''), e.target); });
-  on('#sub-copy-clash', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'clash'), e.target); });
-  on('#sub-copy-singbox', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'singbox'), e.target); });
-  on('#sub-copy-base64', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'base64'), e.target); });
-  on('#sub-copy-plain', 'click', (e) => { copyText(subLinkWithMode($('#sub-url-value').textContent, 'plain'), e.target); });
-  on('#sub-qr', 'click', async () => { await showSubQrModal('generic'); });
-  on('#sub-mode', 'change', async () => { if (openQrKind === 'generic') await refreshSubQrModal('generic'); });
-  // 三选一（内容模式）改了，二维码正显示着就跟着重生成（v1.3.20，v1.3.21 起二维码在弹窗里）：
-  // 二维码编的是令牌 URL，模式跟令牌走，重新拉一次保证扫出来就是新内容。
-  on('#sub-token-mode', 'change', async () => {
-    if (openQrKind === 'generic') await refreshSubQrModal('generic');
-  });
-  on('#sub-user-mode', 'change', async () => {
-    if (openQrKind === 'user') await refreshSubQrModal('user');
-  });
-  on('#sub-user-create', 'click', async () => { await subUserCreate(); });
+  // v1.4.27：通用订阅卡片已撤，通用订阅的复制/二维码/模式绑定一并撤掉；
+  // 订阅用户的复制/二维码还在（#sub-user-once 保留）。
+  on('#sub-user-create', 'click', async () => { await openSubUserModal(); });
   on('#sub-user-copy', 'click', (e) => { copyText(subLinkWithMode($('#sub-user-url-value').textContent, ''), e.target); });
   on('#sub-user-copy-clash', 'click', (e) => { copyText(subLinkWithMode($('#sub-user-url-value').textContent, 'clash'), e.target); });
   on('#sub-user-copy-plain', 'click', (e) => { copyText(subLinkWithMode($('#sub-user-url-value').textContent, 'plain'), e.target); });
@@ -5107,7 +5280,9 @@ async function legacySubPrompt(onRotate) {
 }
 // 取回通用订阅链接并显示在设置页：有密文就显示链接与复制按钮，
 // 旧链接显示轮换提示（取不到就留着状态文案，不报错刷屏）。
+// v1.4.27：通用订阅已退场，卡片已撤；这里只剩防护——元素不在就直接返回。
 async function loadGenericSubLink() {
+  if (!$('#sub-status')) return;
   try {
     const r = await fetchSubLink('generic');
     if (r.legacy) {
@@ -5116,17 +5291,20 @@ async function loadGenericSubLink() {
       if (box) { box.classList.add('hidden'); box.hidden = true; }
       return;
     }
-    $('#sub-url-value').textContent = r.url || '';
+    const urlEl = $('#sub-url-value');
+    if (urlEl) urlEl.textContent = r.url || '';
     const box = $('#sub-once');
     if (box) { box.classList.remove('hidden'); box.hidden = false; }
   } catch (e) { /* 取不到就留着状态文案 */ }
 }
 // 单面板订阅令牌生成/轮换：链接显示在设置页的订阅卡片里，之后随时能复制。
 // 生成方式按卡片上三选一的当前选择存进令牌（轮换也一样，表单的显式选择）。
+// v1.4.27：通用订阅已退场，生成按钮已撤；函数留作防护，元素不在时只发请求不写页面。
 async function subTokenGenerate(rotated) {
   try {
     const r = await apiPost('/api/v1/settings/subscription/generate', { mode: subModeOf('sub-token-mode') });
-    $('#sub-url-value').textContent = r.url || '';
+    const urlEl = $('#sub-url-value');
+    if (urlEl) urlEl.textContent = r.url || '';
     const box = $('#sub-once');
     if (box) { box.classList.remove('hidden'); box.hidden = false; }
     toast(rotated ? '订阅链接已轮换，旧链接已失效' : '订阅链接已生成，随时能复制', 'ok');
@@ -5316,6 +5494,26 @@ function userTrafficText(u) {
   if (u.traffic_warn) warn += '<br><span class="warn">用量可能不准：' + esc(u.traffic_warn) + '</span>';
   return '流量：' + mode + ' ' + usedTxt + reset + tag + warn;
 }
+// 表格里的用量格（v1.4.27）：只写“已用／总流量”，徽标放状态格。
+function subUserTrafficCell(u) {
+  const mb = u.traffic_limit_mb || 0;
+  if (!mb) return '不限流';
+  const limit = mb * 1048576;
+  if (!u.has_used) return '— / ' + fmtBytes(limit);
+  const pct = limit > 0 ? Math.round((u.traffic_used || 0) / limit * 100) : 0;
+  return fmtBytes(u.traffic_used || 0) + ' / ' + fmtBytes(limit) + '（' + pct + '%）';
+}
+// 表格里的状态格（v1.4.27）：停用红、≥80% 黄、其余正常绿。
+function subUserStatusCell(u) {
+  if (u.traffic_disabled) return '<span class="badge red">已停用（' + esc(disabledReasonText(u.disabled_reason) || '流量用完') + '）</span>';
+  const mb = u.traffic_limit_mb || 0;
+  if (mb && u.has_used) {
+    const pct = Math.round((u.traffic_used || 0) / (mb * 1048576) * 100);
+    if (pct >= 100) return '<span class="badge red">已用 ' + pct + '%</span>';
+    if (pct >= 80) return '<span class="badge yellow">已用 ' + pct + '%</span>';
+  }
+  return '<span class="badge green">正常</span>';
+}
 // 手动恢复一条停用的订阅（订阅用户或合并订阅共用）：
 // kind 是 'users' 或 'merged'，恢复后刷新对应列表。
 // v1.4.3：手动停用的恢复不看流量，确认文案按原因区分。
@@ -5357,6 +5555,7 @@ function openUserOpsMenu(kind, u) {
   let html = '<h2>操作：' + esc(name) + '</h2>';
   if (kind === 'user') {
     html += item('data-sub-user-edit="' + esc(id) + '"', '编辑') +
+      item('data-sub-user-reset-pw="' + esc(id) + '"', '重置密码') +
       (disabled ? item('data-sub-user-resume="' + esc(id) + '"', '恢复') : item('data-sub-user-disable="' + esc(id) + '"', '停用')) +
       item('data-sub-user-copy="' + esc(id) + '"', '复制订阅链接') +
       item('data-sub-user-qr="' + esc(id) + '"', '二维码') +
@@ -5380,7 +5579,8 @@ function openUserOpsMenu(kind, u) {
   onIn(m, '#user-ops-close', 'click', closeModal);
   const act = (sel, fn) => { const b = m.querySelector(sel); if (b) b.addEventListener('click', () => { closeModal(); fn(); }); };
   if (kind === 'user') {
-    act('[data-sub-user-edit]', () => openSubEditModal({ kind: 'user', id: u.id, name: u.name, note: u.note, selection: u.selection || [], mode: u.mode, expires_at: u.expires_at, traffic_limit_mb: u.traffic_limit_mb, traffic_limit_mode: u.traffic_limit_mode, reset_mode: u.reset_mode, reset_day: u.reset_day, group_id: u.group_id || '' }));
+    act('[data-sub-user-edit]', () => openSubEditModal({ kind: 'user', id: u.id, name: u.name, note: u.note, selection: u.selection || [], mode: u.mode, expires_at: u.expires_at, traffic_limit_mb: u.traffic_limit_mb, traffic_limit_mode: u.traffic_limit_mode, reset_mode: u.reset_mode, reset_day: u.reset_day, group_id: u.group_id || '', plan_id: u.plan_id || '', plan_name: u.plan_name || '', username: u.username || '', backend_scope: u.backend_scope || '', link_mode: u.link_mode || '' }));
+    act('[data-sub-user-reset-pw]', () => openSubResetPasswordModal(u));
     if (disabled) act('[data-sub-user-resume]', () => resumeSubTraffic('users', id, u.disabled_reason));
     else act('[data-sub-user-disable]', () => disableSubTraffic('users', id));
     act('[data-sub-user-copy]', async () => {
@@ -5459,14 +5659,27 @@ async function loadSubUsers() {
   try {
     const r = await api('/api/v1/subscriptions/users');
     const users = r.users || [];
-    if (!users.length) { list.innerHTML = '<p class="muted small">还没有订阅用户：上面填名字点“新建订阅用户”，每人一条独立链接。</p>'; return; }
-    const filtered = users.filter((u) => matchSubText(subUserSearch, [u.name, u.note, u.summary, u.kind]));
+    if (!users.length) { list.innerHTML = '<p class="muted small">还没有订阅用户：点“新建订阅用户”，选档位、填登录密码，每人一条独立链接。</p>'; return; }
+    const filtered = users.filter((u) => matchSubText(subUserSearch, [u.name, u.note, u.summary, u.kind, u.plan_name, u.username]));
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的订阅用户，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, subUserPage);
     subUserPage = pg.cur;
-    list.innerHTML = '<h3>订阅用户</h3>' + pg.slice.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.group_name ? ' <span class="badge">分组：' + esc(u.group_name) + '</span>' : '') + (u.note ? ' <span class="small muted">（' + esc(u.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(u.kind === 'merged' ? '合并订阅：' + (u.summary || '') : '单面板全量订阅') + ' · 内容' + esc(subModeLabel(u.mode)) + ' · ' + expiryBadge(u.expires_at) + ' · 生成于 ' + esc(fmtDate(u.created_at)) + '</span><br><span class="small">' + userTrafficText(u) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-user-menu="' + esc(u.id) + '">操作</button></span></div>').join('') +
+    // v1.4.27：XBoard 式用户表——一行一个用户，列：ID、名字、档位、
+    // 权限组、已用／总流量、到期、注册时间、状态、链接模式、操作。
+    list.innerHTML = '<h3>订阅用户</h3><div class="table-wrap"><table><thead><tr><th>ID</th><th>名字</th><th>档位</th><th>权限组</th><th>已用／总流量</th><th>到期</th><th>注册时间</th><th>状态</th><th>链接模式</th><th>操作</th></tr></thead><tbody>' +
+      pg.slice.map((u) => '<tr><td class="mono">' + esc(String(u.id)) + '</td>' +
+        '<td>' + esc(u.name || '') + (u.username ? '<br><span class="small muted">' + esc(u.username) + '</span>' : '') + (u.note ? '<br><span class="small muted">（' + esc(u.note) + '）</span>' : '') + '</td>' +
+        '<td>' + esc(u.plan_name || '—') + '</td>' +
+        '<td>' + esc(u.group_name || '—') + '</td>' +
+        '<td>' + subUserTrafficCell(u) + '</td>' +
+        '<td>' + expiryBadge(u.expires_at) + '</td>' +
+        '<td>' + esc(fmtDate(u.created_at)) + '</td>' +
+        '<td>' + subUserStatusCell(u) + '</td>' +
+        '<td>' + esc(subLinkModeLabel(u.link_mode)) + '</td>' +
+        '<td><button class="btn secondary sm" type="button" data-sub-user-menu="' + esc(u.id) + '">操作</button></td></tr>').join('') +
+      '</tbody></table></div>' +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'subuser') +
-      '<p class="muted small">编辑只改勾选与内容，链接不变；撤销只影响那个人，其他人的链接照常；轮换后旧链接立即失效。</p>';
+      '<p class="muted small">编辑只改档位、勾选与内容，链接不变；撤销只影响那个人，其他人的链接照常；轮换后旧链接立即失效。</p>';
     if (pg.totalPages > 1) wirePager(list, 'subuser', pg.cur, pg.totalPages, (p) => { subUserPage = p; loadSubUsers(); });
     $$('[data-sub-user-menu]', list).forEach((b) => b.addEventListener('click', () => {
       const u = users.find((x) => x.id === b.dataset.subUserMenu);
@@ -5653,29 +5866,276 @@ async function rotateNodeUUID(kind, id, name) {
     if (m2) onIn(m2, '#rot-uuid-close', 'click', closeModal);
   } catch (e) { toast('轮换失败：' + e.message, 'err'); }
 }
-async function subUserCreate() {
-  const name = $('#sub-user-name').value.trim();
-  if (!name) { toast('请先填名字（用来认人）', 'err'); return; }
-  try {
-    const scope = $('#sub-user-name').closest('.card');
-    const tl = readTrafficLimit(scope);
-    // 到期时间（v1.3.28）：勾永久 = 空串（永不过期）；不勾 = 日期框的值。
-    const permEl = $('#sub-user-expiry-permanent');
-    const dateEl = $('#sub-user-expiry-date');
+// ---------- 新建订阅用户（v1.4.27，订阅体系统一方案 B） ----------
+// 档位下拉联动：选档位后刷新默认值小字；applyOnOpen 为真时打开弹窗就
+// 按默认档位填好（新建用），为假时只在切换档位时填（编辑用，打开时
+// 不动已保存的值）。
+function wireUserPlanSelect(m, applyOnOpen) {
+  const sel = m.querySelector('[data-uf-plan]');
+  const hint = m.querySelector('[data-uf-plan-hint]');
+  if (!sel) return;
+  const syncHint = () => {
+    const p = (subPlansCache || []).find((x) => x.id === sel.value);
+    if (hint) hint.textContent = p ? planDefaultsLine(p) : '';
+  };
+  sel.addEventListener('change', () => {
+    syncHint();
+    const p = (subPlansCache || []).find((x) => x.id === sel.value);
+    if (p) applyPlanDefaults(m, p);
+  });
+  syncHint();
+  if (applyOnOpen) {
+    const p = (subPlansCache || []).find((x) => x.id === sel.value);
+    if (p) applyPlanDefaults(m, p);
+  }
+}
+// 按档位把流量、到期、分组填好（可再改）：流量按 MB→GB 换算填进限流
+// 表单；到期天数换算成日期；分组切过去（编辑弹窗里切分组会重绘勾选树）。
+function applyPlanDefaults(m, p) {
+  const gbEl = m.querySelector('[data-tl-gb]');
+  if (gbEl) gbEl.value = Math.round((p.traffic_limit_mb || 0) / 1024);
+  const modeEl = m.querySelector('[data-tl-mode]');
+  if (modeEl) { modeEl.value = p.traffic_limit_mode || 'total'; modeEl.dispatchEvent(new Event('change')); }
+  const resetEl = m.querySelector('[data-tl-reset]');
+  if (resetEl) { resetEl.value = p.reset_mode || 'monthly'; resetEl.dispatchEvent(new Event('change')); }
+  const dayEl = m.querySelector('[data-tl-day]');
+  if (dayEl) dayEl.value = p.reset_day || 1;
+  const permEl = m.querySelector('[data-uf-permanent]') || m.querySelector('[data-edit-permanent]');
+  const expEl = m.querySelector('[data-uf-expiry]') || m.querySelector('[data-edit-expiry]');
+  if (permEl && expEl) {
+    if ((p.expires_days || 0) > 0) { permEl.checked = false; expEl.disabled = false; expEl.value = dateInputOfDaysFromNow(p.expires_days); }
+    else { permEl.checked = true; expEl.disabled = true; expEl.value = ''; }
+  }
+  const gsel = m.querySelector('[data-uf-group]') || m.querySelector('[data-edit-group]');
+  if (gsel) { gsel.value = p.group_id || ''; gsel.dispatchEvent(new Event('change')); }
+}
+function dateInputOfDaysFromNow(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + Number(days));
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return d.getFullYear() + '-' + mm + '-' + dd;
+}
+// 新建订阅用户走独立弹窗：名字、档位、登录账号/密码、订阅内容、到期、
+// 限流、分组、后端指派；其余原有字段与校验不动。成功关弹窗回列表，
+// 新链接显示在卡片下方的链接区；失败保留表单与报错。
+async function openSubUserModal() {
+  if (!subPlansCache.length) { try { await loadSubPlans(); } catch (e) { /* 档位拉不到时下拉留空，保存会报后端原因 */ } }
+  if (!subGroupsCache.length) { try { await loadSubGroups(); } catch (e) { /* 分组拉不到时只留“不分组” */ } }
+  const m = openModal('<h2>新建订阅用户</h2>' +
+    '<p class="muted small">每人一条独立链接；登录后按档位拿节点、看流量与到期。选档位后流量、到期、分组按档位默认值填好，可再改。</p>' +
+    '<div class="form-grid">' +
+    '<div><label for="new-user-name">名字 <span class="hint">必填，用来认人</span></label><input id="new-user-name" type="text" placeholder="例如：张三的手机" maxlength="64"></div>' +
+    '<div><label for="new-user-note">备注 <span class="hint">选填</span></label><input id="new-user-note" type="text" placeholder="选填，例如：备用机"></div>' +
+    '<div><label for="new-user-plan">套餐档位 <span class="hint">必填，默认“默认”</span><button type="button" class="ib-help-btn" data-ib-help="user-plan" aria-label="套餐档位填写说明" aria-expanded="false">ⓘ</button></label><select id="new-user-plan" data-uf-plan>' + planSelectOptions(defaultPlanId()) + '</select><div class="small muted" data-uf-plan-hint></div></div>' +
+    '<div><label for="new-user-group">所属分组 <span class="hint">选填</span></label><select id="new-user-group" data-uf-group><option value="">不分组</option>' + (subGroupsCache || []).map((g) => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select><div class="small muted">进了组，订阅按组的落地出内容；自己的勾选保留着，出组后恢复。</div></div>' +
+    '<div><label for="new-user-username">登录账号 <span class="hint">选填，空着自动生成</span><button type="button" class="ib-help-btn" data-ib-help="user-username" aria-label="登录账号填写说明" aria-expanded="false">ⓘ</button></label><input id="new-user-username" type="text" placeholder="留空自动生成" maxlength="64"></div>' +
+    '<div><label for="new-user-password">登录密码 <span class="hint">必填，最少 6 位</span><button type="button" class="ib-help-btn" data-ib-help="user-password" aria-label="登录密码填写说明" aria-expanded="false">ⓘ</button></label><input id="new-user-password" type="password" placeholder="最少 6 位" maxlength="64"></div>' +
+    '<div><label for="new-user-link-mode">链接模式 <span class="hint">选填，默认“跟随节点”</span><button type="button" class="ib-help-btn" data-ib-help="user-link-mode" aria-label="链接模式填写说明" aria-expanded="false">ⓘ</button></label><select id="new-user-link-mode" data-uf-link-mode>' + subLinkModeOptions('') + '</select><div class="small muted">显式选了就按这个订阅的来，覆盖节点上的模式；选“跟随节点”时按节点模式出，和以前一样。</div></div>' +
+    '</div>' +
+    '<div style="margin-top:12px">' + subModeSelectHTML('sub-new-mode', '') + '</div>' +
+    '<div class="form-row"><label class="small">到期时间：<input type="date" data-uf-expiry disabled></label>' +
+    '<label class="small check"><input type="checkbox" data-uf-permanent checked> 永久</label>' +
+    '<span class="small muted">勾永久 = 永不过期；填日期 = 当天 23:59:59 到期，到期后这条订阅打不开。</span></div>' +
+    trafficLimitHTML({}) +
+    '<p class="small muted">开了限流才给这个人建独立转发（独立端口 → 同一落地），不开限流的继续走共享端口；超量时 80% 发 Telegram 提醒、100% 自动停用，续量或等下个周期恢复。统计是上行 + 下行合计、按 L3 字节计（含包头，比客户端显示的多几个百分点），分钟级采样、超一点正常，配额留点余量。</p>' +
+    '<div style="margin-top:12px"><label class="small">后端指派：<select data-uf-backend-scope style="width:220px"><option value="group" selected>跟档位分组走</option><option value="all">全部——所有后端节点，全部入站</option><option value="node">指定节点——保存后去“发到节点”里勾</option><option value="inbound">指定入站——保存后去“发到节点”里勾</option></select> <button type="button" class="ib-help-btn" data-ib-help="user-backend" aria-label="后端指派填写说明" aria-expanded="false">ⓘ</button></label>' +
+    '<span class="small muted">与“发到节点”弹窗的四级口径一致。</span></div>' +
+    '<div class="btn-row" style="margin-top:12px"><button class="btn" type="button" data-uf-save>新建</button>' +
+    '<button class="btn secondary" type="button" data-uf-cancel>取消</button></div>', true);
+  if (!m) return;
+  wireTrafficLimitUI(m);
+  syncSubModeSelect(m.querySelector('select[name="sub-new-mode"]'), 'both');
+  onIn(m, '[data-uf-permanent]', 'change', () => {
+    const d = m.querySelector('[data-uf-expiry]'), p = m.querySelector('[data-uf-permanent]');
+    if (d && p) d.disabled = p.checked;
+  });
+  wireUserPlanSelect(m, true);
+  onIn(m, '[data-uf-cancel]', 'click', closeModal);
+  onIn(m, '[data-uf-save]', 'click', async () => {
+    const name = ((m.querySelector('#new-user-name') || {}).value || '').trim();
+    if (!name) { toast('请先填名字（用来认人）', 'err'); return; }
+    const password = ((m.querySelector('#new-user-password') || {}).value || '');
+    if (!password || password.length < 6) { toast('登录密码必填，最少 6 位', 'err'); return; }
+    const planId = (m.querySelector('[data-uf-plan]') || {}).value || '';
+    if (!planId) { toast('请先选套餐档位（没有档位时先去上面建一条“默认”档位）', 'err'); return; }
+    const permEl = m.querySelector('[data-uf-permanent]');
+    const dateEl = m.querySelector('[data-uf-expiry]');
     const expiresAt = (permEl && permEl.checked) ? '' : (dateEl ? dateEl.value : '');
-    const r = await apiPost('/api/v1/subscriptions/users', { name, note: $('#sub-user-note').value.trim(), mode: subModeOf('sub-user-mode'), expires_at: expiresAt, timezone: browserTimeZone(), traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day, group_id: ($('#sub-user-group') || {}).value || '' });
-    $('#sub-user-url-value').textContent = r.url || '';
-    const box = $('#sub-user-once');
-    if (box) { box.classList.remove('hidden'); box.hidden = false; }
-    $('#sub-user-name').value = ''; $('#sub-user-note').value = '';
-    if (dateEl) { dateEl.value = ''; dateEl.disabled = true; }
-    if (permEl) permEl.checked = true;
-    const gbEl = scope ? scope.querySelector('[data-tl-gb]') : null;
-    if (gbEl) gbEl.value = 0;
-    if (r.warning) toast(r.warning, 'err');
-    else toast('订阅用户已新建，链接显示在下面，随时能复制', 'ok');
-    loadSubUsers();
-  } catch (err) { toast('新建失败：' + err.message, 'err'); }
+    const tl = readTrafficLimit(m);
+    const username = ((m.querySelector('#new-user-username') || {}).value || '').trim();
+    const body = { name, note: ((m.querySelector('#new-user-note') || {}).value || '').trim(), plan_id: planId, password, mode: subModeOf('sub-new-mode'), expires_at: expiresAt, timezone: browserTimeZone(), traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day, group_id: ((m.querySelector('[data-uf-group]') || {}).value || ''), backend_scope: ((m.querySelector('[data-uf-backend-scope]') || {}).value || 'group'), link_mode: ((m.querySelector('[data-uf-link-mode]') || {}).value || '') };
+    if (username) body.username = username;
+    try {
+      const r = await apiPost('/api/v1/subscriptions/users', body);
+      closeModal();
+      const urlEl = $('#sub-user-url-value');
+      if (urlEl) urlEl.textContent = r.url || '';
+      const box = $('#sub-user-once');
+      if (box) { box.classList.remove('hidden'); box.hidden = false; }
+      if (r.warning) toast(r.warning, 'err');
+      else toast('订阅用户已新建，链接显示在下面，随时能复制', 'ok');
+      loadSubUsers();
+    } catch (err) { toast('新建失败：' + err.message, 'err'); }
+  });
+}
+// 重置一个订阅用户的登录密码（v1.4.27）：弹窗只填新密码；重置后该用户
+// 已登录的客户端会话被吊销，须用新密码重新登录；订阅链接不变。
+// 确认说明直接写在弹窗里（不再套一层 confirmModal：confirmModal 会顶掉
+// 当前弹窗，失败时表单就回不来了）。
+async function openSubResetPasswordModal(u) {
+  const m = openModal('<h2>重置密码：' + esc(u.name || u.id) + '</h2>' +
+    '<p class="muted small">重置后该用户已登录的客户端会话将被吊销，须用新密码重新登录；订阅链接不变，其他人照常。</p>' +
+    '<div><label for="reset-pw">新密码 <span class="hint">必填，最少 6 位</span><button type="button" class="ib-help-btn" data-ib-help="user-password" aria-label="登录密码填写说明" aria-expanded="false">ⓘ</button></label><input id="reset-pw" type="password" data-reset-pw placeholder="最少 6 位" maxlength="64"></div>' +
+    '<div class="btn-row" style="margin-top:12px"><button class="btn danger" type="button" data-reset-save>重置密码</button>' +
+    '<button class="btn secondary" type="button" data-reset-cancel>取消</button></div>');
+  if (!m) return;
+  onIn(m, '[data-reset-cancel]', 'click', closeModal);
+  onIn(m, '[data-reset-save]', 'click', async () => {
+    const pw = ((m.querySelector('[data-reset-pw]') || {}).value || '');
+    if (!pw || pw.length < 6) { toast('新密码最少 6 位', 'err'); return; }
+    try {
+      await apiPost('/api/v1/subscriptions/users/' + encodeURIComponent(u.id) + '/reset-password', { password: pw });
+      closeModal();
+      toast('密码已重置，该用户须用新密码重新登录', 'ok');
+    } catch (err) { toast('重置失败：' + err.message, 'err'); }
+  });
+}
+// ---------- 套餐档位（v1.4.27，订阅体系统一方案 B） ----------
+// 一档 = 一套默认值（流量上限、算法、重置、到期天数、内容模式、关联分组），
+// 建用户时选档位按默认值填好，可再改。永远至少有一条“默认”档位。
+let subPlansCache = []; // 最近一次拉到的档位列表（下拉与弹窗共用）
+let subPlanSearch = ''; // 档位列表搜索词
+let subPlanPage = 1;
+function planTrafficText(p) {
+  const mb = p.traffic_limit_mb || 0;
+  return mb ? fmtBytes(mb * 1048576) : '不限流';
+}
+function planExpiresText(p) {
+  const d = p.expires_days || 0;
+  return d ? d + ' 天' : '永久';
+}
+function planResetText(p) {
+  if (p.traffic_limit_mode !== 'monthly') return '累计';
+  if (p.reset_mode === 'anniversary') return '按月，跟随生成日';
+  if (p.reset_mode === 'custom') return '按月，每月 ' + (p.reset_day || 1) + ' 号';
+  return '按月，每月 1 号';
+}
+function defaultPlanId() {
+  const d = (subPlansCache || []).find((p) => p.name === '默认');
+  return d ? d.id : ((subPlansCache[0] || {}).id || '');
+}
+function planDefaultsLine(p) {
+  if (!p) return '';
+  return '档位默认值：流量 ' + planTrafficText(p) + ' · ' + planResetText(p) +
+    ' · 到期 ' + planExpiresText(p) + ' · 分组 ' + (p.group_name || '不关联') + ' · 内容' + subModeLabel(p.mode);
+}
+function planSelectOptions(selectedId) {
+  return (subPlansCache || []).map((p) => '<option value="' + esc(p.id) + '"' + (p.id === selectedId ? ' selected' : '') + '>' + esc(p.name) + '</option>').join('');
+}
+async function loadSubPlans() {
+  const list = $('#sub-plan-list');
+  if (!list) return;
+  try {
+    const r = await api('/api/v1/subscriptions/plans');
+    subPlansCache = r.plans || [];
+    const filtered = subPlansCache.filter((p) => matchSubText(subPlanSearch, [p.name, p.note, p.group_name]));
+    if (!subPlansCache.length) { list.innerHTML = '<p class="muted small">还没有档位：点“新建档位”，先建一条“默认”档位。</p>'; return; }
+    if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的档位，换个关键词试试。</p>'; return; }
+    const pg = paginate(filtered, subPlanPage);
+    subPlanPage = pg.cur;
+    list.innerHTML = '<div class="table-wrap"><table><thead><tr><th>名字</th><th>关联分组</th><th>流量上限</th><th>到期天数</th><th>内容模式</th><th>用户数</th><th>操作</th></tr></thead><tbody>' +
+      pg.slice.map((p) => '<tr><td>' + esc(p.name || '') + (p.note ? '<br><span class="small muted">' + esc(p.note) + '</span>' : '') + '</td>' +
+        '<td>' + esc(p.group_name || '不关联') + '</td>' +
+        '<td>' + esc(planTrafficText(p) + '（' + planResetText(p) + '）') + '</td>' +
+        '<td>' + esc(planExpiresText(p)) + '</td>' +
+        '<td>' + esc(subModeLabel(p.mode)) + '</td>' +
+        '<td>' + esc(String(p.user_count == null ? 0 : p.user_count)) + '</td>' +
+        '<td><button class="btn secondary sm" type="button" data-sub-plan-edit="' + esc(p.id) + '">编辑</button> <button class="btn danger sm" type="button" data-sub-plan-delete="' + esc(p.id) + '">删除</button></td></tr>').join('') +
+      '</tbody></table></div>' + pagerHtml(pg.total, pg.cur, pg.totalPages, 'subplan') +
+      '<p class="muted small">删档位不删用户：有用户在用时后端会拒绝删除，先把这些用户换到别的档位再删。</p>';
+    if (pg.totalPages > 1) wirePager(list, 'subplan', pg.cur, pg.totalPages, (p) => { subPlanPage = p; loadSubPlans(); });
+    $$('[data-sub-plan-edit]', list).forEach((b) => b.addEventListener('click', () => {
+      const p = subPlansCache.find((x) => x.id === b.dataset.subPlanEdit);
+      if (p) openSubPlanModal(p);
+    }));
+    $$('[data-sub-plan-delete]', list).forEach((b) => b.addEventListener('click', async () => {
+      const p = subPlansCache.find((x) => x.id === b.dataset.subPlanDelete);
+      const n = p ? (p.user_count || 0) : 0;
+      const ok = await confirmModal('删除档位', '<p>删掉档位「' + esc(p ? p.name : '') + '」？' + (n > 0 ? '该档位下有 <b>' + n + ' 个用户</b>在用，后端会拒绝删除：要先把这些用户换到别的档位再删。' : '该档位下没有用户。') + '删除后档位本身消失，不删用户、不换链接。确定吗？</p>', '删除', true);
+      if (!ok) return;
+      try { await api('/api/v1/subscriptions/plans/' + encodeURIComponent(b.dataset.subPlanDelete), { method: 'DELETE' }); toast('档位已删除', 'ok'); loadSubPlans(); loadSubUsers(); }
+      catch (e) { toast('删除失败：' + e.message, 'err'); }
+    }));
+  } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
+}
+// 新建/编辑档位弹窗：字段与新建一致（编辑弹窗字段与新建一致）。
+function openSubPlanModal(plan) {
+  const isEdit = !!plan;
+  const p = plan || {};
+  const m = openModal('<h2>' + esc(isEdit ? '编辑档位' : '新建档位') + '</h2>' +
+    '<p class="muted small">档位是一套默认值：建用户时选档位，流量、到期与分组按这里填好，可再改。</p>' +
+    '<div class="form-grid">' +
+    '<div><label for="plan-name">名字 <span class="hint">必填</span><button type="button" class="ib-help-btn" data-ib-help="plan-name" aria-label="名字填写说明" aria-expanded="false">ⓘ</button></label><input id="plan-name" type="text" value="' + esc(p.name || '') + '" placeholder="如 默认、V1" maxlength="64"></div>' +
+    '<div><label for="plan-group">关联分组 <span class="hint">选填</span><button type="button" class="ib-help-btn" data-ib-help="plan-group" aria-label="关联分组填写说明" aria-expanded="false">ⓘ</button></label><select id="plan-group"><option value="">不关联</option>' + (subGroupsCache || []).map((g) => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select></div>' +
+    '<div><label for="plan-traffic-mb">流量上限（MB） <span class="hint">必填，0 = 不限流</span><button type="button" class="ib-help-btn" data-ib-help="plan-traffic" aria-label="流量上限填写说明" aria-expanded="false">ⓘ</button></label><input id="plan-traffic-mb" type="number" min="0" step="1" value="' + esc(String(p.traffic_limit_mb == null ? 0 : p.traffic_limit_mb)) + '"></div>' +
+    '<div><label for="plan-traffic-mode">算法 <span class="hint">必填</span><button type="button" class="ib-help-btn" data-ib-help="plan-traffic-mode" aria-label="算法填写说明" aria-expanded="false">ⓘ</button></label><select id="plan-traffic-mode"><option value="total">累计（整个生命周期）</option><option value="monthly">按月（每月重置）</option></select></div>' +
+    '<div><label for="plan-reset">重置 <span class="hint">按月时有效</span><button type="button" class="ib-help-btn" data-ib-help="plan-reset" aria-label="重置填写说明" aria-expanded="false">ⓘ</button></label><select id="plan-reset"><option value="monthly">每月 1 号</option><option value="anniversary">跟随生成日</option><option value="custom">自定义每月几号</option></select></div>' +
+    '<div><label for="plan-reset-day">几号 <span class="hint">自定义时填 1–31</span></label><input id="plan-reset-day" type="number" min="1" max="31" value="' + esc(String(p.reset_day || 1)) + '"></div>' +
+    '<div><label for="plan-expires">到期天数 <span class="hint">必填，0 = 永久</span><button type="button" class="ib-help-btn" data-ib-help="plan-expires" aria-label="到期天数填写说明" aria-expanded="false">ⓘ</button></label><input id="plan-expires" type="number" min="0" step="1" value="' + esc(String(p.expires_days == null ? 0 : p.expires_days)) + '"></div>' +
+    '<div><label for="plan-mode">内容模式 <span class="hint">必填</span><button type="button" class="ib-help-btn" data-ib-help="plan-content" aria-label="内容模式填写说明" aria-expanded="false">ⓘ</button></label><select id="plan-mode"><option value="both">全部</option><option value="relay">仅中转</option><option value="direct">仅直连</option></select></div>' +
+    '<div class="full"><label for="plan-note">备注 <span class="hint">选填</span><button type="button" class="ib-help-btn" data-ib-help="plan-note" aria-label="备注填写说明" aria-expanded="false">ⓘ</button></label><input id="plan-note" type="text" value="' + esc(p.note || '') + '" placeholder="选填，如价格、适用人群"></div>' +
+    '</div>' +
+    '<div class="btn-row" style="margin-top:12px"><button class="btn" type="button" data-plan-save>保存</button>' +
+    '<button class="btn secondary" type="button" data-plan-cancel>取消</button></div>', true);
+  if (!m) return;
+  const setSel = (id, v) => { const el = m.querySelector('#' + id); if (el) el.value = v; };
+  setSel('plan-group', p.group_id || '');
+  setSel('plan-traffic-mode', p.traffic_limit_mode || 'total');
+  setSel('plan-reset', p.reset_mode || 'monthly');
+  setSel('plan-mode', subModeValid(p.mode || 'both'));
+  // 联动：算法不是按月时重置与几号置灰；重置不是自定义时几号置灰。
+  const syncPlanTl = () => {
+    const mode = m.querySelector('#plan-traffic-mode');
+    const reset = m.querySelector('#plan-reset');
+    const day = m.querySelector('#plan-reset-day');
+    const monthly = mode && mode.value === 'monthly';
+    if (reset) reset.disabled = !monthly;
+    if (day) day.disabled = !(monthly && reset && reset.value === 'custom');
+  };
+  ['#plan-traffic-mode', '#plan-reset'].forEach((s) => { const el = m.querySelector(s); if (el) el.addEventListener('change', syncPlanTl); });
+  syncPlanTl();
+  onIn(m, '[data-plan-cancel]', 'click', closeModal);
+  onIn(m, '[data-plan-save]', 'click', async () => {
+    const name = ((m.querySelector('#plan-name') || {}).value || '').trim();
+    if (!name) { toast('请先填档位名字', 'err'); return; }
+    const trafficMb = Number((m.querySelector('#plan-traffic-mb') || {}).value) || 0;
+    if (trafficMb < 0) { toast('流量上限不能小于 0', 'err'); return; }
+    const expiresDays = Number((m.querySelector('#plan-expires') || {}).value) || 0;
+    if (expiresDays < 0) { toast('到期天数不能小于 0', 'err'); return; }
+    const body = {
+      name,
+      group_id: (m.querySelector('#plan-group') || {}).value || '',
+      traffic_limit_mb: Math.max(0, Math.round(trafficMb)),
+      traffic_limit_mode: (m.querySelector('#plan-traffic-mode') || {}).value || 'total',
+      reset_mode: (m.querySelector('#plan-reset') || {}).value || 'monthly',
+      reset_day: Math.min(31, Math.max(1, Number((m.querySelector('#plan-reset-day') || {}).value) || 1)),
+      expires_days: Math.max(0, Math.round(expiresDays)),
+      mode: subModeValid((m.querySelector('#plan-mode') || {}).value || 'both'),
+      note: ((m.querySelector('#plan-note') || {}).value || '').trim(),
+    };
+    try {
+      if (isEdit) await api('/api/v1/subscriptions/plans/' + encodeURIComponent(plan.id), { method: 'PUT', body: JSON.stringify(body) });
+      else await apiPost('/api/v1/subscriptions/plans', body);
+      closeModal();
+      toast(isEdit ? '档位已保存' : '档位已新建', 'ok');
+      loadSubPlans();
+    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+  });
+}
+function initSubPlans() {
+  on('#sub-plan-create', 'click', () => openSubPlanModal(null));
+  wireListSearch('#sub-plan-search', (q) => { subPlanSearch = q; subPlanPage = 1; loadSubPlans(); });
 }
 // ---------- 分组（权限组，v1.3.26） ----------
 // 一组 = 一组落地 + 一组用户，组里的人用组里的节点。建一次组、加用户就行，
@@ -5691,14 +6151,10 @@ function populateSubGroupSelect(sel, selectedId) {
 }
 async function loadSubGroups() {
   const list = $('#sub-group-list');
-  populateSubGroupSelect($('#sub-user-group'));
-  populateSubGroupSelect($('#central-sub-group'));
   if (!list) return;
   try {
     const r = await api('/api/v1/subscriptions/groups');
     subGroupsCache = r.groups || [];
-    populateSubGroupSelect($('#sub-user-group'));
-    populateSubGroupSelect($('#central-sub-group'));
     const filtered = subGroupsCache.filter((g) => matchSubText(subGroupSearch, [g.name, g.note, g.summary]));
     if (!subGroupsCache.length) { list.innerHTML = '<p class="muted small">还没有分组：点“新建分组”，先勾落地、再勾成员，一次建好。</p>'; return; }
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的分组，换个关键词试试。</p>'; return; }
@@ -5883,12 +6339,24 @@ function subEditTreeSelection(checked) {
 // 保存时 group_id 一起发，进组不改自己的勾选，出组恢复自己勾选。
 async function openSubEditModal(opts) {
   const isMerged = opts.kind === 'merged';
+  // v1.4.27：订阅用户编辑要选档位，档位下拉用缓存；缓存空时先拉一次。
+  if (!isMerged && !subPlansCache.length) { try { await loadSubPlans(); } catch (e) { /* 档位拉不到时下拉留空，保存会报后端原因 */ } }
+  const bs = opts.backend_scope || 'group';
   const m = openModal('<h2>' + esc(isMerged ? '编辑合并订阅' : '编辑订阅用户') + '</h2>' +
     '<p class="muted small">改勾选、改内容，链接不变：保存后旧订阅链接继续能用，下次更新订阅即按新勾选同步。</p>' +
     '<label class="small">' + esc(isMerged ? '归属到人（选填）：' : '名字：') + '<input type="text" data-edit-name style="width:200px" value="' + esc(opts.name || '') + '"></label>' +
     (isMerged ? '' : '<label class="small" style="margin-left:8px">备注：<input type="text" data-edit-note style="width:160px" value="' + esc(opts.note || '') + '" placeholder="选填"></label>') +
     '<div style="margin-top:12px"><label class="small">所属分组：<select data-edit-group style="width:160px"><option value="">不分组</option></select></label>' +
     '<span class="muted small">进了组，订阅按组的落地出内容；自己的勾选保留着，出组后恢复。</span></div>' +
+    (isMerged ? '' :
+      '<div style="margin-top:12px"><label class="small">套餐档位：<select data-uf-plan style="width:160px">' + planSelectOptions(opts.plan_id || defaultPlanId()) + '</select> <button type="button" class="ib-help-btn" data-ib-help="user-plan" aria-label="套餐档位填写说明" aria-expanded="false">ⓘ</button></label>' +
+      '<span class="small muted" data-uf-plan-hint></span></div>' +
+      '<div class="form-row" style="margin-top:8px"><label class="small">登录账号：<input type="text" data-uf-username style="width:180px" value="' + esc(opts.username || '') + '" placeholder="留空 = 保持不变"> <button type="button" class="ib-help-btn" data-ib-help="user-username" aria-label="登录账号填写说明" aria-expanded="false">ⓘ</button></label>' +
+      '<label class="small">登录密码：<input type="password" data-uf-password style="width:180px" placeholder="留空 = 不改"> <button type="button" class="ib-help-btn" data-ib-help="user-password" aria-label="登录密码填写说明" aria-expanded="false">ⓘ</button></label></div>' +
+      '<div style="margin-top:8px"><label class="small">后端指派：<select data-uf-backend-scope style="width:220px"><option value="group"' + (bs === 'group' ? ' selected' : '') + '>跟档位分组走</option><option value="all"' + (bs === 'all' ? ' selected' : '') + '>全部——所有后端节点，全部入站</option><option value="node"' + (bs === 'node' ? ' selected' : '') + '>指定节点——保存后去“发到节点”里勾</option><option value="inbound"' + (bs === 'inbound' ? ' selected' : '') + '>指定入站——保存后去“发到节点”里勾</option></select> <button type="button" class="ib-help-btn" data-ib-help="user-backend" aria-label="后端指派填写说明" aria-expanded="false">ⓘ</button></label>' +
+      '<span class="small muted">与“发到节点”弹窗的四级口径一致；选“指定节点/入站”时，保存后去“发到节点”里勾选具体节点/入站。</span></div>' +
+      '<div style="margin-top:8px"><label class="small">链接模式：<select data-uf-link-mode style="width:180px">' + subLinkModeOptions(opts.link_mode) + '</select> <button type="button" class="ib-help-btn" data-ib-help="user-link-mode" aria-label="链接模式填写说明" aria-expanded="false">ⓘ</button></label>' +
+      '<span class="small muted">显式选了就按这个订阅的来，覆盖节点上的模式；选“跟随节点”时按节点模式出，和以前一样；选回“跟随节点”会把订阅级设置清掉。</span></div>') +
     '<div data-edit-tree style="margin-top:12px">加载中…</div>' +
     '<p class="muted small hidden" data-edit-group-note hidden></p>' +
     '<p class="muted small">' + esc(isMerged ? '合并订阅至少要勾一个落地。' : '全部不勾 = 全部落地（单面板全量订阅）。') + '</p>' +
@@ -5942,12 +6410,21 @@ async function openSubEditModal(opts) {
     if (treeBox) treeBox.innerHTML = '<div class="error-box">勾选树加载失败：' + esc(e.message) + '</div>';
   }
   onIn(m, '[data-edit-group]', 'change', () => { applyEditGroup(groupSel ? groupSel.value : ''); });
+  // R8：记下打开时档位下拉的显示值（无档位用户这里显示的是默认档位，
+  // 不是原值）。保存时只有最终值跟它不一样才发 plan_id，没动就不发，
+  // 后端指针语义缺省=保持原值，就不会悄悄给无档位用户挂上默认档位。
+  const initialPlanId = isMerged ? '' : ((m.querySelector('[data-uf-plan]') || {}).value || '');
+  // v1.4.27：档位下拉只在切换时按档位填默认值（打开时不动已保存的值）。
+  if (!isMerged) wireUserPlanSelect(m, false);
   onIn(m, '[data-edit-cancel]', 'click', closeModal);
   onIn(m, '[data-edit-save]', 'click', async () => {
     const name = ((m.querySelector('[data-edit-name]') || {}).value || '').trim();
     const selection = subEditTreeSelection(checked);
     if (isMerged && !selection.length) { toast('合并订阅至少要勾一个落地', 'err'); return; }
     if (!isMerged && !name) { toast('请先填名字（用来认人）', 'err'); return; }
+    // v1.4.27：编辑时填了密码 = 重设，最少 6 位；留空 = 不改。
+    const password = isMerged ? '' : ((m.querySelector('[data-uf-password]') || {}).value || '');
+    if (password && password.length < 6) { toast('登录密码最少 6 位，留空 = 不改', 'err'); return; }
     const mode = subModeOf('sub-edit-mode');
     // 到期时间：勾永久 = 空串（永不过期）；不勾 = 日期框的值。
     const permEl = m.querySelector('[data-edit-permanent]');
@@ -5961,7 +6438,16 @@ async function openSubEditModal(opts) {
       const tl = readTrafficLimit(m);
       const body = isMerged
         ? { selection, name, mode, expires_at: expiresAt, timezone: browserTimeZone(), group_id: groupId, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day }
-        : { name, note: ((m.querySelector('[data-edit-note]') || {}).value || '').trim(), selection, mode, expires_at: expiresAt, timezone: browserTimeZone(), group_id: groupId, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day };
+        : { name, note: ((m.querySelector('[data-edit-note]') || {}).value || '').trim(), selection, mode, expires_at: expiresAt, timezone: browserTimeZone(), group_id: groupId, traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day, backend_scope: (m.querySelector('[data-uf-backend-scope]') || {}).value || 'group', link_mode: (m.querySelector('[data-uf-link-mode]') || {}).value || '' };
+      if (!isMerged) {
+        // R8：只有档位下拉最终值跟打开时不一样才发 plan_id（后端指针
+        // 语义：缺省=保持原值）；没改就不发该字段。
+        const curPlanId = (m.querySelector('[data-uf-plan]') || {}).value || '';
+        if (curPlanId !== initialPlanId) body.plan_id = curPlanId;
+        const username = ((m.querySelector('[data-uf-username]') || {}).value || '').trim();
+        if (username) body.username = username;
+        if (password) body.password = password;
+      }
       const r = await api(url, { method: 'PUT', body: JSON.stringify(body) });
       closeModal();
       if (r && r.warning) toast(r.warning, 'err');
@@ -6174,33 +6660,20 @@ function openMergedSubModal(url, opts) {
 // selection: [{panel:'local'|远程面板 id, landing:编号}]；name 选填（归属到人，
 // 只在合并订阅生成时传，填了就新起一条、不走轮换）；mode 是内容范围
 // （both|relay|direct），不传默认全部；expiresAt 选填（日期，空 = 永久）。
-async function showSubForSelection(selection, title, name, mode, expiresAt, traffic, groupId) {
-  try {
-    const tl = traffic || { limit_mb: 0, limit_mode: 'total', reset_mode: 'monthly', reset_day: 1 };
-    const r = await apiPost('/api/v1/subscriptions/merged', { selection, name: name || undefined, mode: subModeValid(mode || 'both'), expires_at: expiresAt || '', timezone: browserTimeZone(), traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day, group_id: groupId || '' });
-    openMergedSubModal(r.url || '', { title, rotated: r.rotated, name, mergedId: r.id, mode: r.mode || mode || 'both', expires_at: r.expires_at });
-    if (r.warning) toast(r.warning, 'err');
-    loadMergedSubsList();
-  } catch (err) { toast('生成失败：' + err.message, 'err'); }
+// v1.4.27：合并订阅已退场（创建接口后端回 410）。生成入口（集中管理页
+// 的“生成合并订阅”按钮已撤、各落地详情里的“订阅”按钮）不再发创建请求，
+// 改弹退场提示；旧的生成函数留作防护，任何残留调用都只显示提示。
+function showMergedRetiredNotice() {
+  const m = openModal('<h2>合并订阅已退场</h2><p class="muted">合并订阅已退场，请使用订阅用户：建用户时选套餐档位，登录后按档位拿有权限的全部节点。</p><div class="btn-row"><button class="btn secondary" type="button" data-retired-close>知道了</button></div>');
+  if (m) onIn(m, '[data-retired-close]', 'click', closeModal);
 }
-// 单落地“订阅”按钮：先弹小窗选订阅内容（全部/仅中转/仅直连），再生成。
-// 选择记到这个小窗自己的上次选择里，下次打开还是它。
+async function showSubForSelection(selection, title, name, mode, expiresAt, traffic, groupId) {
+  showMergedRetiredNotice();
+}
+// 单落地“订阅”按钮：以前先弹小窗选订阅内容再生成合并订阅；
+// v1.4.27 合并订阅已退场，直接弹退场提示，不再选模式、不再生成。
 function askSubModeForSelection(selection, title) {
-  const m = openModal('<h2>' + esc(title) + '</h2>' +
-    '<p class="muted small">选这条订阅里要哪些节点：</p>' +
-    '<div>' + subModeSelectHTML('single-sub-mode', 'relay-panel-sub-mode-single') + '</div>' +
-    '<div class="btn-row"><button class="btn" type="button" data-single-sub-go>生成订阅链接</button>' +
-    '<button class="btn secondary" type="button" data-single-sub-cancel>取消</button></div>');
-  if (!m) return;
-  const sel = m.querySelector('select[name="single-sub-mode"]');
-  bindSubModeSelect(sel);
-  syncSubModeSelect(sel, savedSubMode('relay-panel-sub-mode-single'));
-  onIn(m, '[data-single-sub-go]', 'click', async () => {
-    const mode = subModeOf('single-sub-mode');
-    closeModal();
-    await showSubForSelection(selection, title, '', mode);
-  });
-  onIn(m, '[data-single-sub-cancel]', 'click', closeModal);
+  showMergedRetiredNotice();
 }
 // ---------- 集中管理卡片汇总（v1.3.4） ----------
 // 远程落地流量与到期都来自集中管理快照（主面板每 2 分钟拉远程状态，
@@ -6621,7 +7094,8 @@ async function fetchSubTreePanels() {
 }
 async function loadCentralSubTree() {
   const tree = $('#central-sub-tree');
-  if (!tree) return;
+  // v1.4.27：合并订阅生成树已撤，但已生成的合并订阅列表还要刷。
+  if (!tree) { await loadMergedSubsList(); return; }
   try {
     centralSubTree = await fetchSubTreePanels();
     renderCentralSubTree();
@@ -6716,20 +7190,17 @@ async function loadMergedSubsList() {
   try {
     const r = await api('/api/v1/subscriptions/merged');
     const subs = r.subs || [];
-    if (!subs.length) { list.innerHTML = '<p class="muted small">还没有合并订阅：上面勾选落地后点“生成合并订阅”。</p>'; return; }
+    // v1.4.27：合并订阅已退场（后端 GET 列表照常返回已有记录，顶层带
+    // retired:true）：只读展示，每行加“已退场”徽章，操作按钮置灰不可点。
+    if (!subs.length) { list.innerHTML = '<p class="muted small">还没有合并订阅。合并订阅已退场，请使用订阅用户。</p>'; return; }
     const filtered = subs.filter((s) => matchSubText(mergedSubSearch, [s.name, s.summary]));
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的合并订阅，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, mergedSubPage);
     mergedSubPage = pg.cur;
-    list.innerHTML = '<h3>已生成的合并订阅</h3>' + pg.slice.map((s) => '<div class="kv"><span>' + (s.name ? esc(s.name) + ' — ' : '') + (s.group_name ? '<span class="badge">分组：' + esc(s.group_name) + '</span> ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span><br><span class="small">' + userTrafficText(s) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-menu-merged="' + esc(s.id) + '">操作</button></span></div>').join('') +
+    list.innerHTML = '<h3>已生成的合并订阅 <span class="badge grey">已退场</span></h3>' + pg.slice.map((s) => '<div class="kv"><span><span class="badge grey">已退场</span> ' + (s.name ? esc(s.name) + ' — ' : '') + (s.group_name ? '<span class="badge">分组：' + esc(s.group_name) + '</span> ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span><br><span class="small">' + userTrafficText(s) + '</span></span><span><button class="btn secondary sm" type="button" disabled title="合并订阅已退场，链接不可用">操作</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'mergedsub') +
-      '<p class="muted small">编辑只改勾选与内容，链接不变；每条订阅都有“复制”按钮，链接加密存在面板里，随时能重新复制；重新勾选生成（不填名称时同一选择重新生成会轮换；填了名称是新起一条，各归各人）。</p>';
+      '<p class="muted small">合并订阅已退场，请使用订阅用户；旧链接已失效。</p>';
     if (pg.totalPages > 1) wirePager(list, 'mergedsub', pg.cur, pg.totalPages, (p) => { mergedSubPage = p; loadMergedSubsList(); });
-    $$('[data-sub-menu-merged]', list).forEach((b) => b.addEventListener('click', () => {
-      const s = subs.find((x) => x.id === b.dataset.subMenuMerged);
-      if (!s) return;
-      openUserOpsMenu('merged', s);
-    }));
   } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
 }
 // 轮换一条合并订阅（不含确认框，确认由调用方做）：旧链接立即失效，
@@ -7517,25 +7988,8 @@ function initCentral() {
   initCentralTabs(); // v1.3.13：大选项卡绑定 + 恢复上次大选项卡
   initCentralSubTabs(); // v1.3.13：子选项卡事件委托（栏只绑一次）+ 恢复上次子选项卡在重绘时做
   on('#central-refresh', 'click', centralRefreshAll);
-  // 合并订阅创建表单“永久”勾选（v1.3.28）：与通用订阅同一模式，勾选时日期框置灰。
-  on('#central-sub-permanent', 'change', () => { const d = $('#central-sub-expiry-date'); if (d) d.disabled = $('#central-sub-permanent').checked; });
-  on('#central-sub-generate', 'click', async () => {
-    const selection = [];
-    (centralSubTree || []).forEach((p) => p.landings.forEach((l) => {
-      if (centralSubChecked[subTreeKey(p.id, l.index)]) selection.push({ panel: p.id, landing: l.index });
-    }));
-    if (!selection.length) { toast('请先勾选至少一个落地', 'err'); return; }
-    const nameEl = $('#central-sub-name');
-    const expEl = $('#central-sub-expiry-date');
-    const permEl = $('#central-sub-permanent');
-    // 到期时间（v1.3.28）：勾永久 = 空串（永不过期）；不勾 = 日期框的值。
-    const expiresAt = (permEl && permEl.checked) ? '' : (expEl ? expEl.value : '');
-    const tl = readTrafficLimit($('#central-sub-traffic-row'));
-    const groupEl = $('#central-sub-group');
-    await showSubForSelection(selection, '合并订阅', nameEl ? nameEl.value.trim() : '', subModeOf('central-sub-mode'), expiresAt, tl, groupEl ? groupEl.value : '');
-    if (expEl) { expEl.value = ''; expEl.disabled = true; }
-    if (permEl) permEl.checked = true;
-  });
+  // v1.4.27：合并订阅已退场，集中管理页的生成表单（模式/分组/归属/到期/
+  // 限流/“生成合并订阅”按钮）已撤，这里只留合并订阅列表搜索。
   // 合并订阅列表搜索（v1.3.20）：输入即过滤，回到第 1 页。
   wireListSearch('#central-sub-search', (q) => { mergedSubSearch = q; mergedSubPage = 1; loadMergedSubsList(); });
   on('#central-add-form', 'submit', async (e) => {
@@ -7595,6 +8049,7 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initService);
   safeInit(initSettings);
   safeInit(initSubGroups); // v1.3.26：分组卡片新建按钮 + 搜索框绑定
+  safeInit(initSubPlans); // v1.4.27：套餐档位卡片新建按钮 + 搜索框绑定
   safeInit(initMonitorSettings);
   safeInit(initLatencySettings);
   safeInit(initUpdatePoll);

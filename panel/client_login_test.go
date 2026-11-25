@@ -43,10 +43,12 @@ func clientLogin1345(t *testing.T, s *Server, body string) (int, map[string]any)
 }
 
 // TestClientLoginSuccess1345 正确密码登录成功：200、sess_ 令牌（64 位十六进制）、
-// 用户名回显、通用订阅链接、expires_at 约 30 天后；令牌只存哈希不存明文。
+// 用户名回显、expires_at 约 30 天后；令牌只存哈希不存明文。
+// 1.4.27：只有通用订阅、没有 SubUser 时不再给 subscription_url（通用订阅
+// 已退场，登录回包的订阅只取 SubUser 的）。
 func TestClientLoginSuccess1345(t *testing.T) {
 	s := newTestServer144(t)
-	genTok := setupGenericSub1345(t, s)
+	_ = setupGenericSub1345(t, s)
 	code, resp := clientLogin1345(t, s, `{"username":"admin","password":"test-password-123"}`)
 	if code != 200 {
 		t.Fatalf("正确密码应 200，实际 %d：%v", code, resp)
@@ -61,9 +63,14 @@ func TestClientLoginSuccess1345(t *testing.T) {
 	if resp["username"] != "admin" {
 		t.Fatalf("用户名应回显 admin，实际 %v", resp["username"])
 	}
-	u, _ := resp["subscription_url"].(string)
-	if !strings.Contains(u, "/"+s.subPath()+"/"+genTok) {
-		t.Fatalf("订阅链接应含通用订阅令牌，实际 %q", u)
+	if resp["account_type"] != "admin" {
+		t.Fatalf("回包 account_type 应为 admin，实际 %v", resp["account_type"])
+	}
+	if resp["plan"] != nil {
+		t.Fatalf("管理员登录 plan 应为 null，实际 %v", resp["plan"])
+	}
+	if _, ok := resp["subscription_url"]; ok {
+		t.Fatalf("没有 SubUser 时不应给 subscription_url，实际 %v", resp["subscription_url"])
 	}
 	exp, _ := resp["expires_at"].(float64)
 	want := time.Now().Add(clientSessionTTL).Unix()
@@ -111,7 +118,7 @@ func TestClientLoginEmptyFields1345(t *testing.T) {
 	}
 }
 
-// TestClientLoginNoSubscription1345 没生成过通用订阅：登录成功但不给 subscription_url。
+// TestClientLoginNoSubscription1345 没有 SubUser：登录成功但不给 subscription_url。
 func TestClientLoginNoSubscription1345(t *testing.T) {
 	s := newTestServer144(t)
 	code, resp := clientLogin1345(t, s, `{"username":"admin","password":"test-password-123"}`)
@@ -123,8 +130,8 @@ func TestClientLoginNoSubscription1345(t *testing.T) {
 	}
 }
 
-// TestClientLoginLegacySub1345 只有旧链接（有哈希无密文，1.3.7 之前）：
-// 登录成功但不给 subscription_url（解密不了，不编链接）。
+// TestClientLoginLegacySub1345 只有旧通用订阅链接（有哈希无密文，1.3.7 之前）：
+// 登录成功但不给 subscription_url（通用订阅已退场，不再从登录回包取）。
 func TestClientLoginLegacySub1345(t *testing.T) {
 	s := newTestServer144(t)
 	s.cfg.SubTokenHash = "deadbeef"
@@ -259,27 +266,27 @@ func TestClientLoginMux1345(t *testing.T) {
 	}
 }
 
-// TestClientSubURL1345 订阅链接口径：对外域名优先；没填时用主端口
-// （不是登录监听的 9876 端口），scheme 跟主端口的 HTTPS 开关。
+// TestClientSubURL1345 订阅链接口径（现取 SubUser 的订阅）：对外域名优先；
+// 没填时用主端口（不是登录监听的 9876 端口），scheme 跟主端口的 HTTPS 开关。
 func TestClientSubURL1345(t *testing.T) {
 	s := newTestServer144(t)
-	genTok := setupGenericSub1345(t, s)
+	subTok := setupSubUser1426(t, s, "su-1345-a", "u-a")
 	req := httptest.NewRequest("POST", "/api/v1/client/login", nil)
 	req.Host = "panel.example.com:9876"
 	// 对外域名：https://域名/路径/令牌。
 	s.cfg.SubPublicDomain = "cc.example.com"
-	if got := s.clientSubscriptionURL(req); got != "https://cc.example.com/"+s.subPath()+"/"+genTok {
+	if got := s.clientSubscriptionURLForUser(req, &s.cfg.SubUsers[0]); got != "https://cc.example.com/"+s.subPath()+"/"+subTok {
 		t.Fatalf("对外域名时订阅链接应为 https://cc.example.com/路径/令牌，实际 %q", got)
 	}
 	// 没对外域名、主端口开 HTTPS：https://主端口。
 	s.cfg.SubPublicDomain = ""
 	s.cfg.HTTPSEnabled = true
-	if got := s.clientSubscriptionURL(req); got != "https://panel.example.com:11111/"+s.subPath()+"/"+genTok {
+	if got := s.clientSubscriptionURLForUser(req, &s.cfg.SubUsers[0]); got != "https://panel.example.com:11111/"+s.subPath()+"/"+subTok {
 		t.Fatalf("主端口 HTTPS 时订阅链接应走主端口，实际 %q", got)
 	}
 	// 没对外域名、主端口 HTTP：http://主端口。
 	s.cfg.HTTPSEnabled = false
-	if got := s.clientSubscriptionURL(req); got != "http://panel.example.com:11111/"+s.subPath()+"/"+genTok {
+	if got := s.clientSubscriptionURLForUser(req, &s.cfg.SubUsers[0]); got != "http://panel.example.com:11111/"+s.subPath()+"/"+subTok {
 		t.Fatalf("主端口 HTTP 时订阅链接应为 http，实际 %q", got)
 	}
 }

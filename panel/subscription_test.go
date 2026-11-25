@@ -69,10 +69,22 @@ func callSub(t *testing.T, s *Server, tok, target string, ua string) *httptest.R
 	return rec
 }
 
+// subUserForToken1427 给测试面板加一个订阅用户（令牌哈希用给定的明文令牌
+// 算），返回该用户。1.4.27 起订阅内容只走 SubUser 令牌（通用/合并订阅已
+// 退场）：无勾选（单面板全量）、mode 空（=both）、不限流，内容与旧通用
+// 订阅一致；旧测试里 `subUserForToken1427(t, s, tok)` 改成调它
+// 即可继续测内容渲染。
+func subUserForToken1427(t *testing.T, s *Server, tok string) *SubUser {
+	t.Helper()
+	u := SubUser{ID: "su-1427-" + tok[4:10], Name: "测试用户", TokenHash: hashSubToken(tok), CreatedAt: "2026-11-25T00:00:00Z"}
+	s.cfg.SubUsers = append(s.cfg.SubUsers, u)
+	return &s.cfg.SubUsers[len(s.cfg.SubUsers)-1]
+}
+
 func TestSubTokenAuth(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 
 	// 无令牌 → 404（不是 401，避免暴露端点存在）
 	if rec := callSub(t, s, "sub_0000000000000000000000000000000000000000000000000000000000000000", "/sub/x", ""); rec.Code != 404 {
@@ -101,7 +113,7 @@ func TestSubTokenAuth(t *testing.T) {
 func TestSubFormats(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 
 	// plain：明文列表
 	rec := callSub(t, s, tok, "/sub/"+tok+"?format=plain", "")
@@ -135,7 +147,7 @@ func TestSubFormats(t *testing.T) {
 func TestSubUserAgent(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 	url := "/sub/" + tok
 
 	cases := []struct {
@@ -176,52 +188,33 @@ func TestSubUserAgent(t *testing.T) {
 
 func TestSubTokenRotateRevoke(t *testing.T) {
 	s := newTestSubServer(t)
-	// 生成
-	req := httptest.NewRequest("POST", "/api/v1/settings/subscription/generate", strings.NewReader(`{}`))
+	// 1.4.27：通用订阅已退场，生成与撤销接口一律 410；旧通用令牌拉取
+	// 也 410（不再是轮换/撤销语义）。轮换与撤销现在由订阅用户承担，
+	// 见 TestSubUsers130。
+	gen := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/api/v1/settings/subscription/generate", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		s.handleSubTokenGenerate(rec, req)
+		return rec
+	}
+	if rec := gen(`{}`); rec.Code != 410 {
+		t.Fatalf("生成通用订阅应 410（已退场），实际 %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := gen(`{}`); rec.Code != 410 {
+		t.Fatalf("再次生成通用订阅也应 410，实际 %d", rec.Code)
+	}
+	req := httptest.NewRequest("POST", "/api/v1/settings/subscription/revoke", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
-	s.handleSubTokenGenerate(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("生成订阅应 200，实际 %d %s", rec.Code, rec.Body.String())
-	}
-	var resp map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-	url1, _ := resp["url"].(string)
-	if !strings.HasPrefix(url1, "http://") || !strings.Contains(url1, "/sub/sub_") {
-		t.Fatalf("生成应返回订阅 URL：%v", resp)
-	}
-	tok1 := strings.TrimPrefix(url1, "http://example.com/sub/")
-	// 旧链接能用
-	if r := callSub(t, s, tok1, "/sub/"+tok1, ""); r.Code != 200 {
-		t.Fatalf("生成的订阅应能访问：%d", r.Code)
-	}
-	// 轮换：旧链接失效，新链接能用
-	req = httptest.NewRequest("POST", "/api/v1/settings/subscription/generate", strings.NewReader(`{}`))
-	rec = httptest.NewRecorder()
-	s.handleSubTokenGenerate(rec, req)
-	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-	url2, _ := resp["url"].(string)
-	if url2 == url1 {
-		t.Fatalf("轮换应换新链接")
-	}
-	if resp["rotated"] != true {
-		t.Fatalf("轮换应返回 rotated=true：%v", resp)
-	}
-	tok2 := strings.TrimPrefix(url2, "http://example.com/sub/")
-	if r := callSub(t, s, tok1, "/sub/"+tok1, ""); r.Code != 404 {
-		t.Fatalf("轮换后旧链接应 404，实际 %d", r.Code)
-	}
-	if r := callSub(t, s, tok2, "/sub/"+tok2, ""); r.Code != 200 {
-		t.Fatalf("轮换后新链接应 200，实际 %d", r.Code)
-	}
-	// 撤销：订阅 404
-	req = httptest.NewRequest("POST", "/api/v1/settings/subscription/revoke", strings.NewReader(`{}`))
-	rec = httptest.NewRecorder()
 	s.handleSubTokenRevoke(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("撤销应 200，实际 %d %s", rec.Code, rec.Body.String())
+	if rec.Code != 410 {
+		t.Fatalf("撤销通用订阅应 410（已退场），实际 %d %s", rec.Code, rec.Body.String())
 	}
-	if r := callSub(t, s, tok2, "/sub/"+tok2, ""); r.Code != 404 {
-		t.Fatalf("撤销后订阅应 404，实际 %d", r.Code)
+	// 旧通用令牌（直接写配置的遗留记录）拉取 → 410。
+	tok := generateSubToken()
+	s.cfg.SubTokenHash = hashSubToken(tok)
+	if r := callSub(t, s, tok, "/sub/"+tok, ""); r.Code != 410 {
+		t.Fatalf("旧通用订阅链接应 410（已退场），实际 %d", r.Code)
 	}
 }
 
@@ -271,67 +264,32 @@ func TestMergedSubCreate(t *testing.T) {
 		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 		return rec.Code, resp
 	}
-	// 空选择 → 400
-	if code, _ := call(`{"selection":[]}`); code != 400 {
-		t.Fatalf("空选择应 400，实际 %d", code)
+	// 1.4.27：合并订阅已退场，创建一律 410（到不了选择校验）。
+	for _, body := range []string{
+		`{"selection":[]}`,
+		`{"selection":[{"panel":"local","landing":99}]}`,
+		`{"selection":[{"panel":"rm-nope","landing":1}]}`,
+		`{"selection":[{"panel":"local","landing":1}]}`,
+		`{"selection":[{"panel":"local","landing":2}]}`,
+	} {
+		if code, _ := call(body); code != 410 {
+			t.Fatalf("合并订阅创建 %s 应 410（已退场），实际 %d", body, code)
+		}
 	}
-	// 不存在的落地 → 400
-	if code, _ := call(`{"selection":[{"panel":"local","landing":99}]}`); code != 400 {
-		t.Fatalf("不存在的落地应 400，实际 %d", code)
-	}
-	// 不存在的面板 → 400
-	if code, _ := call(`{"selection":[{"panel":"rm-nope","landing":1}]}`); code != 400 {
-		t.Fatalf("不存在的面板应 400，实际 %d", code)
-	}
-	// 只选落地 1 → 200，URL 能用且只含落地 1 的两条链接
-	code, resp := call(`{"selection":[{"panel":"local","landing":1}]}`)
-	if code != 200 {
-		t.Fatalf("有效选择应 200，实际 %d %v", code, resp)
-	}
-	url1, _ := resp["url"].(string)
-	tok1 := strings.TrimPrefix(url1, "http://example.com/sub/")
-	rec := callSub(t, s, tok1, "/sub/"+tok1+"?format=plain", "")
-	if rec.Code != 200 {
-		t.Fatalf("合并订阅应 200，实际 %d", rec.Code)
-	}
-	if strings.Count(rec.Body.String(), "vless://") != 2 || !strings.Contains(rec.Body.String(), "example.com:24443") {
-		t.Fatalf("只选落地 1 应只有它的 2 条链接：%s", rec.Body.String())
-	}
-	// 同一选择再生成 = 轮换：旧链接失效
-	_, resp2 := call(`{"selection":[{"panel":"local","landing":1}]}`)
-	if resp2["rotated"] != true {
-		t.Fatalf("同一选择再生成应 rotated=true：%v", resp2)
-	}
-	if r := callSub(t, s, tok1, "/sub/"+tok1, ""); r.Code != 404 {
-		t.Fatalf("轮换后旧合并链接应 404，实际 %d", r.Code)
-	}
-	// 不同选择 = 新令牌，旧选择的新链接照常用
-	code, resp3 := call(`{"selection":[{"panel":"local","landing":2}]}`)
-	if code != 200 {
-		t.Fatalf("新选择应 200，实际 %d %v", code, resp3)
-	}
-	url3, _ := resp3["url"].(string)
-	tok3 := strings.TrimPrefix(url3, "http://example.com/sub/")
-	url2, _ := resp2["url"].(string)
-	tok2 := strings.TrimPrefix(url2, "http://example.com/sub/")
-	if r := callSub(t, s, tok2, "/sub/"+tok2, ""); r.Code != 200 {
-		t.Fatalf("不同选择的旧链接应继续有效：%d", r.Code)
-	}
-	if r := callSub(t, s, tok3, "/sub/"+tok3+"?format=plain", ""); !strings.Contains(r.Body.String(), "node2.example.com") {
-		t.Fatalf("落地 2 的订阅应含 node2.example.com：%s", r.Body.String())
-	}
-	// 列表里有两条合并订阅（落地 1 与落地 2），不含链接
+	// 列表仍可查（供核对），顶层标 retired:true。
 	req := httptest.NewRequest("GET", "/api/v1/subscriptions/merged", nil)
 	rec2 := httptest.NewRecorder()
 	s.handleMergedSubsList(rec2, req)
+	if rec2.Code != 200 {
+		t.Fatalf("列合并订阅应 200，实际 %d", rec2.Code)
+	}
 	var list map[string]any
 	_ = json.Unmarshal(rec2.Body.Bytes(), &list)
-	subs, _ := list["subs"].([]any)
-	if len(subs) != 2 {
-		t.Fatalf("应有 2 条合并订阅，实际 %v", list)
+	if list["retired"] != true {
+		t.Fatalf("合并订阅列表应标 retired:true，实际 %v", list)
 	}
-	if strings.Contains(rec2.Body.String(), "sub_") {
-		t.Fatalf("列表不应泄露令牌：%s", rec2.Body.String())
+	if subs, _ := list["subs"].([]any); len(subs) != 0 {
+		t.Fatalf("退场后创建失败，列表应为空，实际 %v", list)
 	}
 }
 
@@ -398,25 +356,23 @@ func TestMergedSubFetchRemote(t *testing.T) {
 	defer remote.Close()
 	s.cfg.Remotes = append(s.cfg.Remotes, RemotePanel{ID: "rm-1", Name: "远程-01", BaseURL: remote.URL, Token: "rpt_test"})
 
-	// 生成含本面板落地 1 + 远程落地 1 的合并订阅
-	req := httptest.NewRequest("POST", "/api/v1/subscriptions/merged", strings.NewReader(`{"selection":[{"panel":"local","landing":1},{"panel":"rm-1","landing":1}]}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	s.handleMergedSubsCreate(rec, req)
+	// 1.4.27：合并订阅已退场，改走订阅用户：勾本面板落地 1 + 远程落地 1。
+	rec := callJSON130(t, s.handleSubUsersCreate, "POST", "/api/v1/subscriptions/users",
+		`{"name":"小明","selection":[{"panel":"local","landing":1},{"panel":"rm-1","landing":1}]}`)
 	if rec.Code != 200 {
-		t.Fatalf("生成应 200，实际 %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("新建订阅用户应 200，实际 %d %s", rec.Code, rec.Body.String())
 	}
 	var resp map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	url, _ := resp["url"].(string)
-	tok := strings.TrimPrefix(url, "http://example.com/sub/")
+	tok := tokenFromSubURL130(t, url)
 	// 取订阅：应含本地 2 条 + 远程 1 条
 	r2 := callSub(t, s, tok, "/sub/"+tok+"?format=plain", "")
 	if r2.Code != 200 {
-		t.Fatalf("合并订阅应 200，实际 %d", r2.Code)
+		t.Fatalf("订阅用户应 200，实际 %d", r2.Code)
 	}
 	if strings.Count(r2.Body.String(), "vless://") != 3 || !strings.Contains(r2.Body.String(), "remote.example.com") {
-		t.Fatalf("合并订阅应含本地 2 条 + 远程 1 条：%s", r2.Body.String())
+		t.Fatalf("订阅应含本地 2 条 + 远程 1 条：%s", r2.Body.String())
 	}
 	// 远程挂了：只剩本地 2 条，订阅照常返回 200
 	remote.Close()
@@ -429,7 +385,7 @@ func TestMergedSubFetchRemote(t *testing.T) {
 func TestSubUserinfo(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 	// 没数据时不加头
 	rec := callSub(t, s, tok, "/sub/"+tok, "")
 	if h := rec.Header().Get("subscription-userinfo"); h != "" {

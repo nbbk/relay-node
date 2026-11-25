@@ -48,18 +48,22 @@ port_listening() {
   local proto="$1" port="$2"
   if [ "$proto" = "tcp" ]; then
     if command -v ss >/dev/null 2>&1; then
-      ss -tln 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"
+      # 不用 grep -q：-q 匹配到就退出，ss 再写就收 SIGPIPE 退出 141；
+      # 本脚本 set -o pipefail，141 会让整个管道判失败（偶发“没监听”误报，
+      # 24443 不中招只因它的匹配行在最后、ss 写完才退出）。
+      # 不加 -q、输出丢掉，grep 读完 ss 全部输出才退出，状态只看有没有匹配。
+      ss -tln 2>/dev/null | grep -E "[:.]${port}[[:space:]]" >/dev/null
     elif command -v netstat >/dev/null 2>&1; then
-      netstat -tln 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"
+      netstat -tln 2>/dev/null | grep -E "[:.]${port}[[:space:]]" >/dev/null
     else
       local hex; hex=$(printf '%04X' "$port")
       grep -qiE "^[[:space:]]*[0-9]+:[[:space:]]+[0-9A-Fa-f]+:${hex}[[:space:]]" /proc/net/tcp /proc/net/tcp6 2>/dev/null
     fi
   else
     if command -v ss >/dev/null 2>&1; then
-      ss -uln 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"
+      ss -uln 2>/dev/null | grep -E "[:.]${port}[[:space:]]" >/dev/null
     elif command -v netstat >/dev/null 2>&1; then
-      netstat -uln 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"
+      netstat -uln 2>/dev/null | grep -E "[:.]${port}[[:space:]]" >/dev/null
     else
       local hex; hex=$(printf '%04X' "$port")
       grep -qiE "^[[:space:]]*[0-9]+:[[:space:]]+[0-9A-Fa-f]+:${hex}[[:space:]]" /proc/net/udp /proc/net/udp6 2>/dev/null

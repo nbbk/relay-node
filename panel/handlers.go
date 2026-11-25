@@ -80,6 +80,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/subscriptions/users/{id}/disable", s.requireAuth(s.handleSubUsersDisable))
 	mux.HandleFunc("PUT /api/v1/subscriptions/users/{id}", s.requireAuth(s.handleSubUsersUpdate))
 	mux.HandleFunc("DELETE /api/v1/subscriptions/users/{id}", s.requireAuth(s.handleSubUsersDelete))
+	mux.HandleFunc("POST /api/v1/subscriptions/users/{id}/reset-password", s.requireAuth(s.handleSubUsersResetPassword))
+	mux.HandleFunc("GET /api/v1/subscriptions/plans", s.requireAuth(s.handlePlansList))
+	mux.HandleFunc("POST /api/v1/subscriptions/plans", s.requireAuth(s.handlePlansCreate))
+	mux.HandleFunc("PUT /api/v1/subscriptions/plans/{id}", s.requireAuth(s.handlePlansUpdate))
+	mux.HandleFunc("DELETE /api/v1/subscriptions/plans/{id}", s.requireAuth(s.handlePlansDelete))
 	mux.HandleFunc("GET /api/v1/subscriptions/groups", s.requireAuth(s.handleSubGroupsList))
 	mux.HandleFunc("POST /api/v1/subscriptions/groups", s.requireAuth(s.handleSubGroupsCreate))
 	mux.HandleFunc("PUT /api/v1/subscriptions/groups/{id}", s.requireAuth(s.handleSubGroupsUpdate))
@@ -165,6 +170,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/central/check", s.requireCentralToken(s.handleCheck))
 	mux.HandleFunc("POST /api/v1/central/fix", s.requireCentralToken(s.handleFix))
 	mux.HandleFunc("POST /api/v1/central/service/{action}", s.requireCentralToken(s.handleService))
+	// 中转路由（C 方案）：管理面板把路由代理到中转面板，令牌接口与
+	// 本机 /api/v1/relay-routes 走同一份 handler（中转面板本机有中转、
+	// 走本地分支；管理面板走代理分支）。
+	mux.HandleFunc("GET /api/v1/central/relay-routes", s.requireCentralToken(s.handleRelayRoutesList))
+	mux.HandleFunc("POST /api/v1/central/relay-routes", s.requireCentralToken(s.handleRelayRoutesCreate))
+	mux.HandleFunc("PUT /api/v1/central/relay-routes", s.requireCentralToken(s.handleRelayRoutesUpdate))
+	mux.HandleFunc("DELETE /api/v1/central/relay-routes", s.requireCentralToken(s.handleRelayRoutesDelete))
+	mux.HandleFunc("POST /api/v1/central/relay-routes/apply", s.requireCentralToken(s.handleRelayRoutesApply))
 	// 节点侧 agent（v1.3.30，D10）：rpt_ 令牌认证，与 central/* 同一套。
 	mux.HandleFunc("GET /api/v1/node/users", s.requireCentralToken(s.handleNodeUsers))
 	mux.HandleFunc("POST /api/v1/node/push", s.requireCentralToken(s.handleNodePush))

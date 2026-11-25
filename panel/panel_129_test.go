@@ -32,7 +32,7 @@ func groupBlock129(t *testing.T, body, name string) string {
 func TestClashGroups129(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 	rec := callSub(t, s, tok, "/sub/"+tok+"?format=clash", "")
 	if rec.Code != 200 {
 		t.Fatalf("clash 应 200，实际 %d", rec.Code)
@@ -163,7 +163,7 @@ func TestClashRules129(t *testing.T) {
 func TestSubModeParam(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 	url := "/sub/" + tok
 
 	// 缺省 = 分流
@@ -198,25 +198,24 @@ func TestSubModeParam(t *testing.T) {
 	if strings.Contains(string(dec), "proxy-groups") || strings.Contains(string(dec), "rules:") {
 		t.Fatalf("base64 里不应含 groups/rules：%s", dec)
 	}
-	// 合并订阅同样走 mode：一份只含落地 1 的订阅，global 下 MATCH,手动选择
-	req := httptest.NewRequest("POST", "/api/v1/subscriptions/merged", strings.NewReader(`{"selection":[{"panel":"local","landing":1}]}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec2 := httptest.NewRecorder()
-	s.handleMergedSubsCreate(rec2, req)
+	// 带勾选的订阅用户同样走 mode：一份只含落地 1 的订阅，global 下 MATCH,手动选择
+	// （1.4.27：合并订阅已退场，勾选改挂订阅用户身上）。
+	rec2 := callJSON130(t, s.handleSubUsersCreate, "POST", "/api/v1/subscriptions/users",
+		`{"name":"只选落地1","selection":[{"panel":"local","landing":1}]}`)
 	if rec2.Code != 200 {
-		t.Fatalf("合并订阅生成应 200，实际 %d %s", rec2.Code, rec2.Body.String())
+		t.Fatalf("带勾选新建订阅用户应 200，实际 %d %s", rec2.Code, rec2.Body.String())
 	}
 	// 生成响应里就有带明文令牌的 URL，从里面取令牌再拉订阅验证 mode
 	var merged map[string]any
 	_ = json.Unmarshal(rec2.Body.Bytes(), &merged)
 	murl, _ := merged["url"].(string)
-	mtok := strings.TrimPrefix(murl, "http://example.com/sub/")
+	mtok := tokenFromSubURL130(t, murl)
 	rec = callSub(t, s, mtok, "/sub/"+mtok+"?format=clash&mode=global", "")
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "MATCH,手动选择") {
-		t.Fatalf("合并订阅 mode=global 应是全局：%d %s", rec.Code, rec.Body.String())
+		t.Fatalf("只选落地 1 的订阅 mode=global 应是全局：%d %s", rec.Code, rec.Body.String())
 	}
 	if strings.Count(rec.Body.String(), "type: vless") != 2 || strings.Contains(rec.Body.String(), "node2.example.com") {
-		t.Fatalf("只选落地 1 的合并订阅应只有它的 2 条链接：%s", rec.Body.String())
+		t.Fatalf("只选落地 1 的订阅应只有它的 2 条链接：%s", rec.Body.String())
 	}
 }
 

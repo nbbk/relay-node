@@ -470,12 +470,15 @@ func twinRelayFor(cands []twinRelay, node BackendNode, in NodeInbound) (twinRela
 // 节点顺序按节点 id（listNodes 已排好序），同节点内按入站列表顺序。
 // v1.4.25 twin：每条（节点，入站）按 LinkMode 出直连（-A）与／或中转
 // （-B），同入站先 A 后 B；没有路由的节点照常只出直连；relay 模式
-// 但无路由时该入站不出链接。
+// 但无路由时该入站不出链接。订阅级 LinkMode（Unreleased）：
+// kind="subuser" 时订阅的 LinkMode 非空就优先于节点 LinkMode；
+// 空值 = 跟随节点；MergedSub 没有该字段，走节点模式。
 func (s *Server) backendSubLinksForUser(kind, id string) []subLink {
 	var uuids map[string]string
 	var scope string
 	var targets []string
 	var groupID string
+	var subLinkMode string
 	switch kind {
 	case "subuser":
 		found := false
@@ -486,6 +489,13 @@ func (s *Server) backendSubLinksForUser(kind, id string) []subLink {
 					return nil
 				}
 				uuids, scope, targets, groupID = u.NodeUUIDs, u.BackendScope, u.BackendTargets, u.GroupID
+				// 订阅级链接模式：合法的显式值才接管，空值或非法值
+				// 都按节点模式走（写接口已校验，非法值正常进不来，
+				// 这里是读路径兜底）。
+				switch strings.TrimSpace(u.LinkMode) {
+				case "direct", "relay", "both":
+					subLinkMode = strings.TrimSpace(u.LinkMode)
+				}
 				found = true
 				break
 			}
@@ -533,6 +543,12 @@ func (s *Server) backendSubLinksForUser(kind, id string) []subLink {
 		uuid := uuids[node.Address]
 		allowed := backendAssignInbounds(scope, targets, &node)
 		mode := linkModeOf(&node)
+		if subLinkMode != "" {
+			// 订阅级显式设置优先于节点级（订阅比节点更具体，
+			// 面向具体使用者）；订阅是“跟随节点”（空值）时才按
+			// 节点模式出。只对 kind="subuser" 生效。
+			mode = subLinkMode
+		}
 		for _, in := range node.Inbounds {
 			if allowed != nil {
 				ok := false

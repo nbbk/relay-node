@@ -180,19 +180,20 @@ func TestUserinfoManagerMode1327(t *testing.T) {
 	exp := "2027-05-01T23:59:59Z"
 	want := "expire=" + strconv.FormatInt(unixOf(t, exp), 10)
 
-	// 通用订阅：只设令牌到期，无本地落地数据，头里必须有 expire。
+	// 1.4.27：通用订阅已退场，改走订阅用户：只设用户到期，无本地落地
+	// 数据，头里必须有 expire。
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
-	s.cfg.SubTokenExpiresAt = exp
+	u := subUserForToken1427(t, s, tok)
+	u.ExpiresAt = exp
 	rec := callSub(t, s, tok, "/sub/"+tok, "")
 	if rec.Code != 200 {
-		t.Fatalf("通用订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
+		t.Fatalf("订阅用户应 200，实际 %d：%s", rec.Code, rec.Body.String())
 	}
 	if h := rec.Header().Get("subscription-userinfo"); h != want {
-		t.Fatalf("管理面板通用订阅 userinfo 应只有令牌到期 %q，实际 %q", want, h)
+		t.Fatalf("管理面板订阅用户 userinfo 应只有用户到期 %q，实际 %q", want, h)
 	}
 
-	// 一人一条订阅：同样只设令牌到期。
+	// 一人一条订阅（直接写配置的旧记录）：同样只设令牌到期。
 	tok2 := generateSubToken()
 	enc2, err := s.encryptSubTokenNow(tok2)
 	if err != nil {
@@ -210,23 +211,17 @@ func TestUserinfoManagerMode1327(t *testing.T) {
 		t.Fatalf("管理面板一人一条订阅 userinfo 应只有令牌到期 %q，实际 %q", want, h)
 	}
 
-	// 合并订阅：只勾远程落地（远程离线），令牌设了到期时间。
+	// 只勾远程落地的订阅用户（远程离线），令牌设了到期时间。
 	tok3 := generateSubToken()
-	enc3, err := s.encryptSubTokenNow(tok3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{
-		ID: "m-1327", Name: "12", TokenHash: hashSubToken(tok3), TokenEnc: enc3,
-		Selection: []SubSelection{{Panel: "remote-id-x", Landing: 3}},
-		ExpiresAt: exp,
-	})
+	u3 := subUserForToken1427(t, s, tok3)
+	u3.Selection = []SubSelection{{Panel: "remote-id-x", Landing: 3}}
+	u3.ExpiresAt = exp
 	rec = callSub(t, s, tok3, "/sub/"+tok3, "")
 	if rec.Code != 200 {
-		t.Fatalf("合并订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
+		t.Fatalf("只勾远程落地的订阅用户应 200，实际 %d：%s", rec.Code, rec.Body.String())
 	}
 	if h := rec.Header().Get("subscription-userinfo"); h != want {
-		t.Fatalf("管理面板合并订阅 userinfo 应只有令牌到期 %q，实际 %q", want, h)
+		t.Fatalf("管理面板远程勾选订阅 userinfo 应只有令牌到期 %q，实际 %q", want, h)
 	}
 }
 
@@ -234,11 +229,10 @@ func TestUserinfoManagerModeNoData1327(t *testing.T) {
 	s := newTestManagerServer1327(t)
 	// 令牌永久、又没有本地落地数据：三项全无时不发头（不编数据）。
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
-	s.cfg.SubTokenExpiresAt = ""
+	subUserForToken1427(t, s, tok)
 	rec := callSub(t, s, tok, "/sub/"+tok, "")
 	if rec.Code != 200 {
-		t.Fatalf("通用订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
+		t.Fatalf("订阅用户应 200，实际 %d：%s", rec.Code, rec.Body.String())
 	}
 	if h := rec.Header().Get("subscription-userinfo"); h != "" {
 		t.Fatalf("无任何数据时不应发 userinfo 头，实际 %q", h)

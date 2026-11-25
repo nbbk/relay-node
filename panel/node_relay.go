@@ -43,6 +43,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"sort"
@@ -190,7 +191,7 @@ func (s *Server) applyBackendRelayRoutesLocked() (bool, error) {
 		newToml = nt
 	}
 	// realm 无 endpoint 会 panic：一个不剩就留占位（与删落地／
-// applyUserForwards 同一路数）。
+	// applyUserForwards 同一路数）。
 	if !strings.Contains(string(newToml), "[[endpoints]]") {
 		newToml = append(newToml, []byte("\n[[endpoints]]\nlisten = \"127.0.0.1:9\"\nremote = \"127.0.0.1:9\"\n")...)
 	}
@@ -262,7 +263,7 @@ func listenPortOf(listenAddr string) int {
 }
 
 // normalizeRemoteAddr 落地地址归一化：空着调用方用节点地址补；
-// 非空时不许含空白与冒号（端口另填），IP 或域名都行。
+// 非空时不许含空白与冒号（端口另填），须是合法 IP 或域名。
 func normalizeRemoteAddr(in string) (string, error) {
 	v := strings.TrimSpace(in)
 	if v == "" {
@@ -271,7 +272,37 @@ func normalizeRemoteAddr(in string) (string, error) {
 	if strings.ContainsAny(v, " \t\r\n/:") {
 		return "", fmt.Errorf("落地地址不对：填 IP 或域名，不要带端口（端口另填）")
 	}
+	if ip := net.ParseIP(v); ip != nil {
+		return v, nil
+	}
+	if !validDomainName(v) {
+		return "", fmt.Errorf("落地地址不对：填合法的 IP 或域名，如 203.0.113.1 或 example.com")
+	}
 	return v, nil
+}
+
+// validDomainName 域名格式校验：点分标签，每段由字母数字与连字符组成、
+// 不以连字符开头或结尾；单标签主机名（如内网名）也放行。IP 走 net.ParseIP，
+// 不走这里。
+func validDomainName(v string) bool {
+	if len(v) == 0 || len(v) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(v, ".") {
+		if len(label) == 0 || len(label) > 63 {
+			return false
+		}
+		for i, c := range label {
+			ok := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-'
+			if !ok {
+				return false
+			}
+			if c == '-' && (i == 0 || i == len(label)-1) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // ---------- 管理接口（会话认证） ----------
@@ -288,8 +319,17 @@ func (n *nodeBackendStore) findRelayRoute(relayID int64, listenAddr string) int 
 
 // handleRelayRoutesList GET /api/v1/relay-routes：中转路由列表。
 // local_relay 告诉前端本机有没有中转（管理面板上没有，下发按钮要
-// 写明“只保存、未下发”）。
+// 写明“只保存、未下发”）。管理面板上不列本地的死路由：列表代理到
+// 选中的中转面板（query 里带 relay_panel_id，没带时只有一台就用它），
+// 回包里补上 proxied／relay_panel_id／relay_panel_name；没登记中转
+// 面板或远程连不上时回空列表＋relay_hint，前端显示提示、不弹错。
+// 管理面板本地以前存过的死路由（C 之前建的、从未下发过）不再列出，
+// 它们从未生效过，留在 nodes.json 里不动。
 func (s *Server) handleRelayRoutesList(w http.ResponseWriter, r *http.Request) {
+	if !s.managesLocalRelay() {
+		s.proxyRelayRoutesList(w, r)
+		return
+	}
 	s.nodes.mu.Lock()
 	routes := append([]BackendRelayRoute{}, s.nodes.data.Routes...)
 	s.nodes.mu.Unlock()
@@ -304,8 +344,11 @@ func (s *Server) handleRelayRoutesList(w http.ResponseWriter, r *http.Request) {
 
 // relayRouteReq 路由增改请求的公共字段（enabled／use_udp 用指针：
 // 没填＝创建时默认 true／改时保持原值）。
+// RelayPanelID 只在管理面板上用：代理到哪台中转面板（远程面板 id），
+// 远程收到后忽略它（路由存在中转面板本机，relay_id 仍是 0）。
 type relayRouteReq struct {
 	RelayID      int64  `json:"relay_id"`
+	RelayPanelID string `json:"relay_panel_id"`
 	ListenAddr   string `json:"listen_addr"`
 	RemoteNodeID int64  `json:"remote_node_id"`
 	RemoteAddr   string `json:"remote_addr"`
@@ -316,44 +359,51 @@ type relayRouteReq struct {
 	UseUDP       *bool  `json:"use_udp"`
 }
 
-// validateRelayRoute 校验并归一化一条路由（新建／修改共用；exclude
-// 是修改时要排除的自己下标，-1＝新建）。node 与 routes 由调用方在
-// 持锁时快照后传进来（纯函数，自己不加锁）；used 是已占用的监听端口
-// 集合（落地监听、按人转发、面板端口）。
-// 校验：监听地址合法、目标节点存在、落地地址（空＝节点地址）、落地
-// 端口 1–65535、协议 tcp／udp、传输 tcp／tls／ws、同中转机监听端口不
-// 撞其他路由与已占用的监听端口（落地监听、按人转发、面板端口）。
-func validateRelayRoute(req relayRouteReq, exclude int, node *BackendNode, routes []BackendRelayRoute, used map[int]bool) (BackendRelayRoute, error) {
+// relayRouteFormat 校验后归一化的路由格式字段（不含节点存在与撞端口
+// 检查；管理面板代理前也用它先拦格式错，见 validateRelayRouteFormat）。
+type relayRouteFormat struct {
+	ListenAddr string
+	RemoteAddr string // 可能为空：调用方再按节点补
+	RemotePort int
+	Proto      string
+	Transport  string
+	Enabled    bool
+	UseUDP     bool
+	RelayID    int64
+}
+
+// errRelayNoTarget 没选目标节点、落地地址又空着时的报错（C 方案：
+// 只填远端 IP:端口建路由时，落地地址必须直接填）。
+const errRelayNoTarget = "落地地址不能为空：没选目标节点时请直接填落地 IP 或域名"
+
+// validateRelayRouteFormat 只校验路由的格式（监听地址、落地地址、
+// 落地端口、协议、传输、启用），不查节点存在、不查撞端口；返回归一化
+// 后的字段。管理面板代理前调它先拦格式错，远程收到后再走完整校验。
+func validateRelayRouteFormat(req relayRouteReq) (relayRouteFormat, error) {
 	listen, err := normalizeListenAddr(req.ListenAddr)
 	if err != nil {
-		return BackendRelayRoute{}, err
-	}
-	if node == nil {
-		return BackendRelayRoute{}, fmt.Errorf("目标节点不存在")
+		return relayRouteFormat{}, err
 	}
 	remoteAddr, err := normalizeRemoteAddr(req.RemoteAddr)
 	if err != nil {
-		return BackendRelayRoute{}, err
-	}
-	if remoteAddr == "" {
-		remoteAddr = strings.TrimSpace(node.Address)
+		return relayRouteFormat{}, err
 	}
 	if req.RemotePort < 1 || req.RemotePort > 65535 {
-		return BackendRelayRoute{}, fmt.Errorf("落地端口须是 1–65535")
+		return relayRouteFormat{}, fmt.Errorf("落地端口须是 1–65535")
 	}
 	proto := strings.ToLower(strings.TrimSpace(req.Proto))
 	if proto == "" {
 		proto = "tcp"
 	}
 	if proto != "tcp" && proto != "udp" {
-		return BackendRelayRoute{}, fmt.Errorf("协议只能是 tcp 或 udp")
+		return relayRouteFormat{}, fmt.Errorf("协议只能是 tcp 或 udp")
 	}
 	transport := strings.ToLower(strings.TrimSpace(req.Transport))
 	if transport == "" {
 		transport = "tcp"
 	}
 	if transport != "tcp" && transport != "tls" && transport != "ws" {
-		return BackendRelayRoute{}, fmt.Errorf("传输只能是 tcp、tls 或 ws")
+		return relayRouteFormat{}, fmt.Errorf("传输只能是 tcp、tls 或 ws")
 	}
 	enabled := true
 	if req.Enabled != nil {
@@ -363,26 +413,59 @@ func validateRelayRoute(req relayRouteReq, exclude int, node *BackendNode, route
 	if req.UseUDP != nil {
 		useUDP = *req.UseUDP
 	}
-	relayID := req.RelayID // v1 只支持本机中转：前端不填即 0
+	return relayRouteFormat{
+		ListenAddr: listen, RemoteAddr: remoteAddr, RemotePort: req.RemotePort,
+		Proto: proto, UseUDP: useUDP, Transport: transport, Enabled: enabled,
+		RelayID: req.RelayID, // v1 只支持本机中转：前端不填即 0
+	}, nil
+}
+
+// validateRelayRoute 校验并归一化一条路由（新建／修改共用；exclude
+// 是修改时要排除的自己下标，-1＝新建）。node 与 routes 由调用方在
+// 持锁时快照后传进来（纯函数，自己不加锁）；used 是已占用的监听端口
+// 集合（落地监听、按人转发、面板端口）。
+// 校验：监听地址合法、目标（节点记录或直接填的落地地址）、落地端口
+// 1–65535、协议 tcp／udp、传输 tcp／tls／ws、同中转机监听端口不撞其
+// 他路由与已占用的监听端口（落地监听、按人转发、面板端口）。
+// 目标（C 方案）：remote_node_id 指到的节点存在就用它（落地地址空着
+// 时补节点地址）；没选节点（remote_node_id 为 0）时落地地址必须直接
+// 填，不再要求节点记录存在——登记那一步就此省掉。
+func validateRelayRoute(req relayRouteReq, exclude int, node *BackendNode, routes []BackendRelayRoute, used map[int]bool) (BackendRelayRoute, error) {
+	f, err := validateRelayRouteFormat(req)
+	if err != nil {
+		return BackendRelayRoute{}, err
+	}
+	remoteAddr := f.RemoteAddr
+	if node == nil {
+		if req.RemoteNodeID != 0 {
+			return BackendRelayRoute{}, fmt.Errorf("目标节点不存在")
+		}
+		if remoteAddr == "" {
+			return BackendRelayRoute{}, fmt.Errorf(errRelayNoTarget)
+		}
+	} else if remoteAddr == "" {
+		remoteAddr = strings.TrimSpace(node.Address)
+	}
+	relayID := f.RelayID
 	// 同中转机监听端口不撞其他路由（只比启用的；停用的不占端口）。
 	for i, rt := range routes {
 		if i == exclude || rt.RelayID != relayID || !rt.Enabled {
 			continue
 		}
-		if rt.ListenAddr == listen {
-			return BackendRelayRoute{}, fmt.Errorf("监听地址 %s 已有中转路由", listen)
+		if rt.ListenAddr == f.ListenAddr {
+			return BackendRelayRoute{}, fmt.Errorf("监听地址 %s 已有中转路由", f.ListenAddr)
 		}
 	}
 	// 不撞已占用的监听端口（落地监听、按人转发、面板端口）。
-	if enabled {
-		if used[listenPortOf(listen)] {
-			return BackendRelayRoute{}, fmt.Errorf("监听端口 %d 已被占用（落地监听／按人转发／面板端口），换一个", listenPortOf(listen))
+	if f.Enabled {
+		if used[listenPortOf(f.ListenAddr)] {
+			return BackendRelayRoute{}, fmt.Errorf("监听端口 %d 已被占用（落地监听／按人转发／面板端口），换一个", listenPortOf(f.ListenAddr))
 		}
 	}
 	return BackendRelayRoute{
-		RelayID: relayID, ListenAddr: listen, RemoteNodeID: req.RemoteNodeID,
-		RemoteAddr: remoteAddr, RemotePort: req.RemotePort,
-		Proto: proto, UseUDP: useUDP, Transport: transport, Enabled: enabled,
+		RelayID: relayID, ListenAddr: f.ListenAddr, RemoteNodeID: req.RemoteNodeID,
+		RemoteAddr: remoteAddr, RemotePort: f.RemotePort,
+		Proto: f.Proto, UseUDP: f.UseUDP, Transport: f.Transport, Enabled: f.Enabled,
 	}, nil
 }
 
@@ -402,14 +485,159 @@ func (s *Server) applyAfterRouteChange() (bool, string) {
 	return applied, ""
 }
 
+// ---------- 管理面板代理（C 方案：放宽校验＋代理） ----------
+//
+// 管理面板（ManagerOnly，本机无中转）不再本地存路由：增删改／重下发
+// 一律代理到选中的中转面板（远程面板）的令牌接口
+// /api/v1/central/relay-routes*，中转面板在自己本机上走同一份
+// handler 存路由、下发 realm。列表也代理，并在回包里补上代理信息
+// （proxied／relay_panel_id／relay_panel_name），前端一次拿到、
+// 不用再猜。路由的目标只填远端 IP:端口、不再要求节点记录存在
+// （validateRelayRoute 的放宽口径），登记那一步就此省掉。
+//
+// 选哪台中转机：请求里带 relay_panel_id（写操作放 body、列表放
+// query）；没带时已登记的远程面板只有一台就用它，多台须指明，
+// 一台没有就回提示。代理走集中式代理同一套 remoteCall（令牌认证），
+// 版本门是本版（远程低于本版时没有这个令牌接口，直接提示升级）。
+
+// decodeRelayRouteBody 读路由请求体并严格解码（未知字段直接 400，
+// 与 decodeJSON 同口径）；返回原请求体（代理时原样转发）与解出的请求。
+func decodeRelayRouteBody(r *http.Request) ([]byte, relayRouteReq, error) {
+	var req relayRouteReq
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		return nil, req, fmt.Errorf("请求读失败")
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return nil, req, fmt.Errorf("请求格式不对")
+	}
+	return body, req, nil
+}
+
+// resolveRelayProxyRemote 解析中转路由代理的目标远程面板。
+// id 为空时，已登记的远程面板只有一台就用它；多台须指明；一台没有
+// 就回提示。返回 (nil, hint) 时调用方按读写分别处理：写操作直接
+// 400，读操作回空列表＋提示（不弹错）。
+func (s *Server) resolveRelayProxyRemote(id string) (*RemotePanel, string) {
+	id = strings.TrimSpace(id)
+	if id != "" {
+		if rem := s.remoteByID(id); rem != nil {
+			return rem, ""
+		}
+		return nil, "没有登记过这台远程面板"
+	}
+	switch len(s.cfg.Remotes) {
+	case 0:
+		return nil, "还没登记中转面板：先在集中管理页登记一台远程面板，再回来建路由。"
+	case 1:
+		return &s.cfg.Remotes[0], ""
+	default:
+		return nil, "登记了多台远程面板，请先在上面选一台中转机。"
+	}
+}
+
+// relayProxyPanelID 取本次代理的中转面板 id：写操作优先 body 里的
+// relay_panel_id，没有就看 query 参数（DELETE 空 body 时用得上）。
+func relayProxyPanelID(r *http.Request, req *relayRouteReq) string {
+	if req != nil && strings.TrimSpace(req.RelayPanelID) != "" {
+		return strings.TrimSpace(req.RelayPanelID)
+	}
+	return strings.TrimSpace(r.URL.Query().Get("relay_panel_id"))
+}
+
+// proxyRelayRouteWrite 把中转路由的写操作代理到一台远程面板：
+// method/path 是远程的令牌接口；auditAction 记在管理面板审计日志里
+// 的动作（沿用集中式代理先校验、再转发、再记审计的路数）。
+func (s *Server) proxyRelayRouteWrite(w http.ResponseWriter, r *http.Request, rem *RemotePanel, method, path string, body []byte, auditAction, auditDetail string) {
+	s.proxyRemoteWriteMinVer(w, r, *rem, method, path, body, 60*time.Second, Version)
+	s.audit(s.currentUser(r), auditAction, auditDetail+"（经 "+rem.Name+"）", "已转发到远程面板", "")
+}
+
+// proxyRelayRoutesList 管理面板代理拉一台中转面板的路由列表，并在
+// 回包里补上代理信息（proxied／relay_panel_id／relay_panel_name）。
+// 远程版本低／连不上时回空列表＋提示（读操作不弹错，前端显示提示）。
+func (s *Server) proxyRelayRoutesList(w http.ResponseWriter, r *http.Request) {
+	rem, hint := s.resolveRelayProxyRemote(r.URL.Query().Get("relay_panel_id"))
+	empty := func(hint string) {
+		m := map[string]any{
+			"routes": []BackendRelayRoute{}, "local_relay": false,
+			"relay_hint": hint,
+		}
+		if rem != nil {
+			m["relay_panel_id"] = rem.ID
+			m["relay_panel_name"] = rem.Name
+		}
+		writeJSON(w, 200, okResp(m))
+	}
+	if rem == nil {
+		empty(hint)
+		return
+	}
+	if ok, msg := s.remoteVersionOK(rem.ID, Version); !ok {
+		empty(msg)
+		return
+	}
+	status, respBody, err := s.remoteCall(*rem, "GET", "/api/v1/central/relay-routes", nil, 10*time.Second)
+	if err != nil {
+		_, msg := remoteSideOf(err)
+		if status == 404 {
+			msg = fmt.Sprintf("远程面板版本太旧（需要 %s+），请先升级远程面板", Version)
+		}
+		empty(msg)
+		return
+	}
+	var remote struct {
+		Routes     []BackendRelayRoute `json:"routes"`
+		LocalRelay bool                `json:"local_relay"`
+	}
+	if err := json.Unmarshal(respBody, &remote); err != nil || remote.Routes == nil {
+		remote.Routes = []BackendRelayRoute{}
+	}
+	writeJSON(w, 200, okResp(map[string]any{
+		"routes": remote.Routes, "local_relay": true,
+		"proxied": true, "relay_panel_id": rem.ID, "relay_panel_name": rem.Name,
+	}))
+}
+
+// relayRouteTargetLabel 审计日志里的路由目标写法：有节点记录写
+// “节点 <id> <地址>:<端口>”，只填地址的路由写“<地址>:<端口>”。
+func relayRouteTargetLabel(route BackendRelayRoute) string {
+	if route.RemoteNodeID != 0 {
+		return fmt.Sprintf("节点 %d %s:%d", route.RemoteNodeID, route.RemoteAddr, route.RemotePort)
+	}
+	return fmt.Sprintf("%s:%d", route.RemoteAddr, route.RemotePort)
+}
+
 // handleRelayRoutesCreate POST /api/v1/relay-routes：新增中转路由。
 // 先存路由、再下发（改完重启 realm 已建立的中转连接会断，须重连——
-// 前端确认框里写明）。
+// 前端确认框里写明）。管理面板上不本地存，直接代理到选中的中转面板。
 func (s *Server) handleRelayRoutesCreate(w http.ResponseWriter, r *http.Request) {
-	var req relayRouteReq
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	if err := decodeJSON(r, &req); err != nil {
-		writeJSON(w, 400, errResp("请求格式不对"))
+	body, req, err := decodeRelayRouteBody(r)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	if !s.managesLocalRelay() {
+		// 代理前先在本地拦格式错（监听／落地地址／端口／协议）；
+		// 没选节点时落地地址必须直接填；撞端口等要查远程路由表，
+		// 留给远程的完整校验。
+		if _, err := validateRelayRouteFormat(req); err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+		if req.RemoteNodeID == 0 && strings.TrimSpace(req.RemoteAddr) == "" {
+			writeJSON(w, 400, errResp(errRelayNoTarget))
+			return
+		}
+		rem, hint := s.resolveRelayProxyRemote(relayProxyPanelID(r, &req))
+		if rem == nil {
+			writeJSON(w, 400, errResp(hint))
+			return
+		}
+		s.proxyRelayRouteWrite(w, r, rem, "POST", "/api/v1/central/relay-routes", body,
+			"代理新增中转路由", fmt.Sprintf("监听 %s → %s", req.ListenAddr, relayRouteTargetLabel(BackendRelayRoute{RemoteNodeID: req.RemoteNodeID, RemoteAddr: strings.TrimSpace(req.RemoteAddr), RemotePort: req.RemotePort})))
 		return
 	}
 	if !s.tryOpLock(w) {
@@ -435,7 +663,7 @@ func (s *Server) handleRelayRoutesCreate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	applied, applyErr := s.applyAfterRouteChangeLocked()
-	s.audit(s.currentUser(r), "新增中转路由", fmt.Sprintf("监听 %s → 节点 %d %s:%d（%s）", route.ListenAddr, route.RemoteNodeID, route.RemoteAddr, route.RemotePort, route.Proto), "成功", "")
+	s.audit(s.currentUser(r), "新增中转路由", fmt.Sprintf("监听 %s → %s（%s）", route.ListenAddr, relayRouteTargetLabel(route), route.Proto), "成功", "")
 	writeJSON(w, 200, okResp(map[string]any{
 		"route": route, "applied": applied, "apply_error": applyErr,
 	}))
@@ -458,12 +686,23 @@ func (s *Server) applyAfterRouteChangeLocked() (bool, string) {
 
 // handleRelayRoutesUpdate PUT /api/v1/relay-routes：改一条路由
 // （键是 relay_id＋listen_addr，监听地址本身不可改，改监听请删了重建；
-// 没填的字段保持原值）。
+// 没填的字段保持原值）。管理面板上不本地改，直接代理到选中的中转面板
+// （部分字段可缺省，远程收到后按自己的路由表补齐再校验，管理面板
+// 本地不做格式预校验）。
 func (s *Server) handleRelayRoutesUpdate(w http.ResponseWriter, r *http.Request) {
-	var req relayRouteReq
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	if err := decodeJSON(r, &req); err != nil {
-		writeJSON(w, 400, errResp("请求格式不对"))
+	body, req, err := decodeRelayRouteBody(r)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	if !s.managesLocalRelay() {
+		rem, hint := s.resolveRelayProxyRemote(relayProxyPanelID(r, &req))
+		if rem == nil {
+			writeJSON(w, 400, errResp(hint))
+			return
+		}
+		s.proxyRelayRouteWrite(w, r, rem, "PUT", "/api/v1/central/relay-routes", body,
+			"代理修改中转路由", fmt.Sprintf("监听 %s", strings.TrimSpace(req.ListenAddr)))
 		return
 	}
 	if strings.TrimSpace(req.ListenAddr) == "" {
@@ -487,8 +726,10 @@ func (s *Server) handleRelayRoutesUpdate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	// 没填的字段用原值补齐，再走同一份校验（自己排除在外）。
+	// RemoteNodeID 为 0 且落地地址也空着＝没提供目标，用原值补；
+	// 只填了落地地址、没选节点＝改成只填地址的路由（C 方案），不补节点。
 	cur := s.nodes.data.Routes[idx]
-	if req.RemoteNodeID == 0 {
+	if req.RemoteNodeID == 0 && strings.TrimSpace(req.RemoteAddr) == "" {
 		req.RemoteNodeID = cur.RemoteNodeID
 	}
 	if strings.TrimSpace(req.RemoteAddr) == "" {
@@ -524,22 +765,35 @@ func (s *Server) handleRelayRoutesUpdate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	applied, applyErr := s.applyAfterRouteChangeLocked()
-	s.audit(s.currentUser(r), "修改中转路由", fmt.Sprintf("监听 %s → 节点 %d %s:%d（%s）", route.ListenAddr, route.RemoteNodeID, route.RemoteAddr, route.RemotePort, route.Proto), "成功", "")
+	s.audit(s.currentUser(r), "修改中转路由", fmt.Sprintf("监听 %s → %s（%s）", route.ListenAddr, relayRouteTargetLabel(route), route.Proto), "成功", "")
 	writeJSON(w, 200, okResp(map[string]any{
 		"route": route, "applied": applied, "apply_error": applyErr,
 	}))
 }
 
 // handleRelayRoutesDelete DELETE /api/v1/relay-routes：删一条路由
-// （body 里带 relay_id＋listen_addr）。
+// （body 里带 relay_id＋listen_addr）。管理面板上不本地删，直接代理
+// 到选中的中转面板。
 func (s *Server) handleRelayRoutesDelete(w http.ResponseWriter, r *http.Request) {
 	var req relayRouteReq
+	var body []byte
 	if r.ContentLength != 0 {
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-		if err := decodeJSON(r, &req); err != nil {
-			writeJSON(w, 400, errResp("请求格式不对"))
+		b, decoded, err := decodeRelayRouteBody(r)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
 			return
 		}
+		body, req = b, decoded
+	}
+	if !s.managesLocalRelay() {
+		rem, hint := s.resolveRelayProxyRemote(relayProxyPanelID(r, &req))
+		if rem == nil {
+			writeJSON(w, 400, errResp(hint))
+			return
+		}
+		s.proxyRelayRouteWrite(w, r, rem, "DELETE", "/api/v1/central/relay-routes", body,
+			"代理删除中转路由", fmt.Sprintf("监听 %s", strings.TrimSpace(req.ListenAddr)))
+		return
 	}
 	listen, err := normalizeListenAddr(req.ListenAddr)
 	if err != nil {
@@ -564,15 +818,36 @@ func (s *Server) handleRelayRoutesDelete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	applied, applyErr := s.applyAfterRouteChangeLocked()
-	s.audit(s.currentUser(r), "删除中转路由", fmt.Sprintf("监听 %s → 节点 %d", route.ListenAddr, route.RemoteNodeID), "成功", "")
+	s.audit(s.currentUser(r), "删除中转路由", fmt.Sprintf("监听 %s → %s", route.ListenAddr, relayRouteTargetLabel(route)), "成功", "")
 	writeJSON(w, 200, okResp(map[string]any{
 		"deleted": listen, "applied": applied, "apply_error": applyErr,
 	}))
 }
 
 // handleRelayRoutesApply POST /api/v1/relay-routes/apply：按当前路由表
-// 重新下发一次（下发失败后重试用；无变化时不重启）。
+// 重新下发一次（下发失败后重试用；无变化时不重启）。管理面板上不本地
+// 下发，直接代理到选中的中转面板（body 里可带 relay_panel_id）。
 func (s *Server) handleRelayRoutesApply(w http.ResponseWriter, r *http.Request) {
+	var req relayRouteReq
+	var body []byte
+	if r.ContentLength != 0 {
+		b, decoded, err := decodeRelayRouteBody(r)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+		body, req = b, decoded
+	}
+	if !s.managesLocalRelay() {
+		rem, hint := s.resolveRelayProxyRemote(relayProxyPanelID(r, &req))
+		if rem == nil {
+			writeJSON(w, 400, errResp(hint))
+			return
+		}
+		s.proxyRelayRouteWrite(w, r, rem, "POST", "/api/v1/central/relay-routes/apply", body,
+			"代理重新下发中转路由", "")
+		return
+	}
 	if !s.tryOpLock(w) {
 		return
 	}

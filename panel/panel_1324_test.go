@@ -24,22 +24,17 @@ func unixOf(t *testing.T, rfc3339 string) int64 {
 
 func TestUserinfoMergedTokenExpiry1324(t *testing.T) {
 	s := newTestSubServer(t)
-	// 合并订阅：只勾远程落地（本面板无本地落地数据——用户管理面板的情形），
-	// 令牌设了到期时间。远程离线时链接为空，但头里必须有 expire。
+	// 1.4.27：合并订阅已退场，改走订阅用户：只勾远程落地（本面板无本地
+	// 落地数据——用户管理面板的情形），用户设了到期时间。远程离线时
+	// 链接为空，但头里必须有 expire。
 	tok := generateSubToken()
-	enc, err := s.encryptSubTokenNow(tok)
-	if err != nil {
-		t.Fatal(err)
-	}
 	exp := "2027-05-01T23:59:59Z"
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{
-		ID: "m-1324", Name: "合并", TokenHash: hashSubToken(tok), TokenEnc: enc,
-		Selection: []SubSelection{{Panel: "remote-id-x", Landing: 3}},
-		ExpiresAt: exp,
-	})
+	u := subUserForToken1427(t, s, tok)
+	u.Selection = []SubSelection{{Panel: "remote-id-x", Landing: 3}}
+	u.ExpiresAt = exp
 	rec := callSub(t, s, tok, "/sub/"+tok, "")
 	if rec.Code != 200 {
-		t.Fatalf("合并订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
+		t.Fatalf("订阅用户应 200，实际 %d：%s", rec.Code, rec.Body.String())
 	}
 	h := rec.Header().Get("subscription-userinfo")
 	want := "expire=" + strconv.FormatInt(unixOf(t, exp), 10)
@@ -51,26 +46,26 @@ func TestUserinfoMergedTokenExpiry1324(t *testing.T) {
 func TestUserinfoTokenVsLandingExpiry1324(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	u := subUserForToken1427(t, s, tok)
 	// 落地 1 有到期日（比令牌到期晚）
 	s.stateMu.Lock()
 	s.state.Landings["203.0.113.1"] = &LandingExt{Expiry: "2027-02-16T00:00:00Z"}
 	s.stateMu.Unlock()
 
 	// 令牌到期比落地早 → 取令牌到期
-	s.cfg.SubTokenExpiresAt = "2027-01-10T23:59:59Z"
+	u.ExpiresAt = "2027-01-10T23:59:59Z"
 	h := callSub(t, s, tok, "/sub/"+tok, "").Header().Get("subscription-userinfo")
 	if !strings.Contains(h, "expire="+strconv.FormatInt(unixOf(t, "2027-01-10T23:59:59Z"), 10)) {
 		t.Fatalf("令牌到期更早时 expire 应取令牌到期，实际 %q", h)
 	}
 	// 令牌到期比落地晚 → 取落地到期
-	s.cfg.SubTokenExpiresAt = "2027-03-01T23:59:59Z"
+	u.ExpiresAt = "2027-03-01T23:59:59Z"
 	h = callSub(t, s, tok, "/sub/"+tok, "").Header().Get("subscription-userinfo")
 	if !strings.Contains(h, "expire="+strconv.FormatInt(unixOf(t, "2027-02-16T00:00:00Z"), 10)) {
 		t.Fatalf("落地到期更早时 expire 应取落地到期，实际 %q", h)
 	}
 	// 令牌永久 → 仍取落地到期（1.3.23 行为不变）
-	s.cfg.SubTokenExpiresAt = ""
+	u.ExpiresAt = ""
 	h = callSub(t, s, tok, "/sub/"+tok, "").Header().Get("subscription-userinfo")
 	if !strings.Contains(h, "expire="+strconv.FormatInt(unixOf(t, "2027-02-16T00:00:00Z"), 10)) {
 		t.Fatalf("令牌永久时 expire 应取落地到期，实际 %q", h)

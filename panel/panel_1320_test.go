@@ -118,46 +118,26 @@ func TestSubPermanentTokenUnaffected(t *testing.T) {
 	}
 }
 
-// TestSubGenericExpirySetRotateKeepsExpiry 通用订阅：设到期时间后轮换，
-// 到期时间不变（轮换只换令牌）；重新复制的链接带 expires_at。
+// TestSubGenericExpirySetRotateKeepsExpiry 1.4.27：通用订阅已退场，
+// 生成、设到期、取链接接口一律 410。“到期时间轮换不变”的行为现在
+// 由订阅用户承担，见 TestSubUserEditExpiry。
 func TestSubGenericExpirySetRotateKeepsExpiry(t *testing.T) {
 	s := newTestSubServer(t)
-	// 先生成通用订阅
 	code, resp := subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleSubTokenGenerate(w, r) },
 		"/api/v1/settings/subscription/generate", `{"mode":"both"}`)
-	if code != 200 {
-		t.Fatalf("生成通用订阅应 200，实际 %d %v", code, resp)
+	if code != 410 {
+		t.Fatalf("生成通用订阅应 410（已退场），实际 %d %v", code, resp)
 	}
-	// 设到期时间 2027-02-17
 	code, resp = subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleSubTokenSetExpiry(w, r) },
 		"/api/v1/settings/subscription/expiry", `{"expires_at":"2027-02-17"}`)
-	if code != 200 {
-		t.Fatalf("设到期时间应 200，实际 %d %v", code, resp)
+	if code != 410 {
+		t.Fatalf("设通用订阅到期时间应 410（已退场），实际 %d %v", code, resp)
 	}
-	exp, _ := resp["expires_at"].(string)
-	if !strings.HasPrefix(exp, "2027-02-17T23:59:59") {
-		t.Fatalf("到期时间应是 2027-02-17 23:59:59，实际 %s", exp)
-	}
-	// 轮换：到期时间必须原样不动
-	code, _ = subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleSubTokenGenerate(w, r) },
-		"/api/v1/settings/subscription/generate", `{"mode":"both"}`)
-	if code != 200 {
-		t.Fatalf("轮换应 200，实际 %d", code)
-	}
-	if !strings.HasPrefix(s.cfg.SubTokenExpiresAt, "2027-02-17T23:59:59") {
-		t.Fatalf("轮换后到期时间应不变，实际 %s", s.cfg.SubTokenExpiresAt)
-	}
-	// 重新复制：链接响应里带 expires_at
 	req := httptest.NewRequest("GET", "/api/v1/subscriptions/link?kind=generic", nil)
 	rec := httptest.NewRecorder()
 	s.handleSubLink(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("重新复制应 200，实际 %d", rec.Code)
-	}
-	var linkResp map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &linkResp)
-	if exp2, _ := linkResp["expires_at"].(string); !strings.HasPrefix(exp2, "2027-02-17T23:59:59") {
-		t.Fatalf("重新复制的链接应带到期时间，实际 %v", linkResp)
+	if rec.Code != 410 {
+		t.Fatalf("取通用订阅链接应 410（已退场），实际 %d", rec.Code)
 	}
 }
 
@@ -224,7 +204,7 @@ func TestSubUsersListReturnsExpiresAt(t *testing.T) {
 func TestSubCustomPathRouting(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 	serve := func(h http.Handler, target string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", target, nil)
 		rec := httptest.NewRecorder()
@@ -260,7 +240,7 @@ func TestSubContentDispositionFileName1322(t *testing.T) {
 	s := newTestSubServer(t)
 	s.cfg.PanelName = "CP管理"
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 	// Clash UA → YAML 文件名：filename* 里是编码后的面板名
 	rec := callSub(t, s, tok, "/sub/"+tok+"?format=clash", "Clash")
 	cd := rec.Header().Get("Content-Disposition")

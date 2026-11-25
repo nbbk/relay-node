@@ -143,54 +143,28 @@ func TestManualDisableSubUser1403(t *testing.T) {
 	}
 }
 
-// ---------- 2. 合并订阅停用／恢复走接口 ----------
+// ---------- 2. 合并订阅停用／恢复已退场（410） ----------
 
 func TestManualDisableMerged1403(t *testing.T) {
 	s := newTestServer1400(t)
 	h := s.routes()
-	cookie := loginTestCookie(t, h)
+	cookie := loginCookie144(t, h)
 	writeRealmStubs1403(t, s)
 	createNode1400(t, h, cookie, "新落地-01", "203.0.113.1")
-	_, _, m1 := seedUsers1402(s)
+	_, _, _ = seedUsers1402(s)
 	if code, body := authed1400(t, h, cookie, "PUT", "/api/v1/nodes/1/users", `{"user_ids":null}`); code != 200 {
 		t.Fatalf("节点 1 指派全部应 200，实际 %d：%s", code, body)
 	}
-	v1Before := nodeVersion1402(t, s, 1)
-
-	if code, body := authed1400(t, h, cookie, "POST", "/api/v1/subscriptions/merged/ms-test1/disable", "{}"); code != 200 {
-		t.Fatalf("停用合并订阅应 200，实际 %d：%s", code, body)
+	// 1.4.27：合并订阅已退场，停用/恢复接口一律 410。
+	// 停用/恢复语义现在由订阅用户承担，见 TestManualDisableSubUser1403。
+	if code, body := authed1400(t, h, cookie, "POST", "/api/v1/subscriptions/merged/ms-test1/disable", "{}"); code != 410 {
+		t.Fatalf("停用合并订阅应 410（已退场），实际 %d：%s", code, body)
 	}
-	if got := nodeVersion1402(t, s, 1); got != v1Before+1 {
-		t.Fatalf("停用后节点 1 ConfigVersion 应＋1，实际 %d→%d", v1Before, got)
+	if code, body := authed1400(t, h, cookie, "POST", "/api/v1/subscriptions/merged/ms-test1/resume", "{}"); code != 410 {
+		t.Fatalf("恢复合并订阅应 410（已退场），实际 %d：%s", code, body)
 	}
-	m := nodeUsers1402(t, h, cookie, 1)
-	if nodeUserIDs1402(m)[m1] {
-		t.Fatalf("停用后节点 1 不应再下发该合并订阅：%v", m)
-	}
-	item := findItem1403(t, mergedSubs1403(t, h, cookie), "ms-test1")
-	if item["traffic_disabled"] != true {
-		t.Fatalf("停用后列表 traffic_disabled 应为 true：%v", item)
-	}
-	if item["disabled_reason"] != "手动停用" {
-		t.Fatalf("停用后列表 disabled_reason 应为“手动停用”：%v", item)
-	}
-
-	// 恢复。
-	v1Before = nodeVersion1402(t, s, 1)
-	if code, body := authed1400(t, h, cookie, "POST", "/api/v1/subscriptions/merged/ms-test1/resume", "{}"); code != 200 {
-		t.Fatalf("恢复应 200，实际 %d：%s", code, body)
-	}
-	if got := nodeVersion1402(t, s, 1); got != v1Before+1 {
-		t.Fatalf("恢复后节点 1 ConfigVersion 应＋1，实际 %d→%d", v1Before, got)
-	}
-	m = nodeUsers1402(t, h, cookie, 1)
-	if !nodeUserIDs1402(m)[m1] {
-		t.Fatalf("恢复后节点 1 应重新下发该合并订阅：%v", m)
-	}
-	item = findItem1403(t, mergedSubs1403(t, h, cookie), "ms-test1")
-	if item["traffic_disabled"] == true {
-		t.Fatalf("恢复后列表 traffic_disabled 应清除：%v", item)
-	}
+	// 合并订阅列表仍可查（供核对）。
+	_ = mergedSubs1403(t, h, cookie)
 }
 
 // ---------- 3. 404／401 ----------
@@ -202,8 +176,8 @@ func TestManualDisableNotFound1403(t *testing.T) {
 	if code, body := authed1400(t, h, cookie, "POST", "/api/v1/subscriptions/users/su-nope/disable", "{}"); code != 404 {
 		t.Fatalf("停用不存在的用户应 404，实际 %d：%s", code, body)
 	}
-	if code, body := authed1400(t, h, cookie, "POST", "/api/v1/subscriptions/merged/ms-nope/disable", "{}"); code != 404 {
-		t.Fatalf("停用不存在的合并订阅应 404，实际 %d：%s", code, body)
+	if code, body := authed1400(t, h, cookie, "POST", "/api/v1/subscriptions/merged/ms-nope/disable", "{}"); code != 410 {
+		t.Fatalf("停用合并订阅应 410（已退场，到不了查 id），实际 %d：%s", code, body)
 	}
 	if code, _ := authed1400(t, h, "", "POST", "/api/v1/subscriptions/users/su-test1/disable", "{}"); code != 401 {
 		t.Fatalf("未登录停用应 401，实际 %d", code)
@@ -213,7 +187,7 @@ func TestManualDisableNotFound1403(t *testing.T) {
 // ---------- 4. 版本断言 ----------
 
 func TestVersion1403(t *testing.T) {
-	if Version != "1.4.26" {
-		t.Fatalf("Version 应为 1.4.23，实际 %q", Version)
+	if Version != "1.4.27" {
+		t.Fatalf("Version 应为 1.4.27，实际 %q", Version)
 	}
 }

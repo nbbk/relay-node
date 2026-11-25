@@ -249,7 +249,7 @@ func newTestHy2TuicServer1339(t *testing.T) *Server {
 func TestSingboxHy2TuicViaHTTP1339(t *testing.T) {
 	s := newTestHy2TuicServer1339(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 
 	rec := callSub(t, s, tok, "/sub/"+tok+"?format=singbox", "")
 	if rec.Code != 200 {

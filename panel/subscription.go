@@ -34,9 +34,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -176,6 +174,20 @@ func normalizeSubMode(m string) (string, error) {
 		return strings.TrimSpace(m), nil
 	default:
 		return "", fmt.Errorf("生成方式只支持 全部/仅中转/仅直连")
+	}
+}
+
+// normalizeSubLinkMode 校验订阅级链接模式（Unreleased）：空 = 跟随
+// 节点（默认，按节点模式出）；只认 direct/relay/both，非法值报错。
+// 订阅级显式设置优先于节点级，只影响订阅拼链接。
+func normalizeSubLinkMode(m string) (string, error) {
+	switch strings.TrimSpace(m) {
+	case "":
+		return "", nil
+	case "direct", "relay", "both":
+		return strings.TrimSpace(m), nil
+	default:
+		return "", fmt.Errorf("链接模式只支持 跟随节点/仅直连/仅中转/两者都出")
 	}
 }
 
@@ -1554,14 +1566,46 @@ func (s *Server) findMergedSub(tok string) (*MergedSub, bool) {
 	return nil, false
 }
 
+// ---------- 退场（v1.4.27，方案 B） ----------
+// 通用订阅与合并订阅直接退场、旧链接不保留：命中这两类令牌的订阅请求
+// 一律 410；新建/轮换/恢复/停用/编辑合并订阅与通用订阅的全部管理接口
+// 同样 410。config 里的 MergedSubs/SubToken* 字段与备份记录留着备查
+// 与回滚，只是不再提供内容与新建。
+const retiredSubMsg = "该订阅已退场，请使用新的订阅链接"
+
+// handleRetiredSub 退场接口的统一回包：410＋退场文案。
+func handleRetiredSub(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 410, errResp(retiredSubMsg))
+}
+
+// isRetiredSubToken 令牌是不是已退场的订阅（通用订阅或任一合并订阅）。
+// SubUser 令牌不是退场的，走正常流程。
+func (s *Server) isRetiredSubToken(tok string) bool {
+	if tok != "" && s.cfg.SubTokenHash != "" && verifySubToken(tok, s.cfg.SubTokenHash) {
+		return true
+	}
+	if _, ok := s.findMergedSub(tok); ok {
+		return true
+	}
+	return false
+}
+
 // handleSub 公开订阅端点：GET /sub/{token}。令牌不对返回 404
 // （不返回 401，避免暴露端点存在）；内容实时生成。
 // 限流（v1.3.7）：先验令牌，对的永远放行（正常客户端不受影响）；
 // 错的才看锁——锁了返回 429，没锁记一次失败（只记 IP 与时间，绝不记令牌）
 // 再返回 404。
+// v1.4.27：通用订阅与合并订阅已退场，命中这两类令牌直接 410（旧链接
+// 失效）；SubUser 令牌走正常流程；无效令牌仍 404。
 func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 	tok := r.PathValue("token")
 	ip := clientIP(r)
+	if s.isRetiredSubToken(tok) {
+		s.subFailed(ip)
+		s.audit("订阅客户端", "拉取订阅", ip, "失败", "订阅已退场")
+		http.Error(w, retiredSubMsg, http.StatusGone)
+		return
+	}
 	if s.subTokenValid(tok) {
 		// 到期检查（v1.3.20）：令牌本身对，但到期时间已过 → 410（不是 404，
 		// 让客户端分得清“令牌错了”还是“订阅到期了”），审计记“已过期”。
@@ -1632,8 +1676,10 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 	var userLimit int64
 	var userLimitMode string
 	if tok != "" && s.cfg.SubTokenHash != "" && verifySubToken(tok, s.cfg.SubTokenHash) {
-		links = s.collectSubLinks(nil)
-		contentMode = s.cfg.SubTokenMode
+		// v1.4.27：通用订阅已退场（handleSub 已拦，这里是兜底，绝不
+		// 再提供内容）。
+		http.Error(w, retiredSubMsg, http.StatusGone)
+		return
 	} else if u, ok := s.findSubUser(tok); ok {
 		// 一人一条（v1.3.0）：没勾选 = 单面板全量订阅，有勾选 = 合并订阅
 		// 分组（v1.3.26）：进了组的用组的落地集合，自己的勾选保留在记录里
@@ -1649,13 +1695,11 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 			links, localIndices = s.collectMergedSubLinks(&MergedSub{Selection: sel}, userKey)
 		}
 	} else if ms, ok := s.findMergedSub(tok); ok {
-		backendKind, backendID = "merged", ms.ID
-		contentMode = ms.Mode
-		if ms.TrafficLimitBytes > 0 {
-			userKey, userLimit, userLimitMode = userSubKey("merged", ms.ID), ms.TrafficLimitBytes, ms.TrafficLimitMode
-		}
-		// 分组（v1.3.26）：进了组的用组的落地集合。
-		links, localIndices = s.collectMergedSubLinks(&MergedSub{Selection: s.effectiveSelectionForMerged(ms)}, userKey)
+		// v1.4.27：合并订阅已退场（handleSub 已拦，这里是兜底，绝不
+		// 再提供内容）。
+		_ = ms
+		http.Error(w, retiredSubMsg, http.StatusGone)
+		return
 	} else {
 		http.NotFound(w, r)
 		return
@@ -1806,13 +1850,8 @@ func (s *Server) subURL(r *http.Request, tok string) string {
 }
 
 func (s *Server) handleSubTokenGet(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, okResp(map[string]any{
-		"has_token":  s.cfg.SubTokenHash != "",
-		"has_link":   s.cfg.SubTokenEnc != "",
-		"created_at": s.cfg.SubTokenCreatedAt,
-		"mode":       s.cfg.SubTokenMode,
-		"expires_at": s.cfg.SubTokenExpiresAt,
-	}))
+	// v1.4.27：通用订阅已退场（见文件顶部退场注释）。
+	handleRetiredSub(w, r)
 }
 
 // handleSubTokenGenerate 生成（或轮换）单面板订阅令牌：哈希与密文一起存，
@@ -1822,108 +1861,21 @@ func (s *Server) handleSubTokenGet(w http.ResponseWriter, r *http.Request) {
 // v1.3.20：请求可带 expires_at（日期或 RFC3339，空串 = 永久）；不带
 // expires_at 字段时保持原到期时间（轮换不改到期时间）。
 func (s *Server) handleSubTokenGenerate(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Mode      string  `json:"mode"`
-		ExpiresAt *string `json:"expires_at"`
-		Timezone  string  `json:"timezone,omitempty"`
-	}
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeJSON(w, 400, errResp("请求格式不对"))
-		return
-	}
-	subMode, err := normalizeSubMode(req.Mode)
-	if err != nil {
-		writeJSON(w, 400, errResp(err.Error()))
-		return
-	}
-	expiresAt := s.cfg.SubTokenExpiresAt
-	if req.ExpiresAt != nil {
-		expiresAt, err = parseSubExpiryIn(*req.ExpiresAt, req.Timezone)
-		if err != nil {
-			writeJSON(w, 400, errResp(err.Error()))
-			return
-		}
-	}
-	tok := generateSubToken()
-	enc, err := s.encryptSubTokenNow(tok)
-	if err != nil {
-		writeJSON(w, 500, errResp("令牌加密失败："+err.Error()))
-		return
-	}
-	rotated := s.cfg.SubTokenHash != ""
-	s.cfg.SubTokenHash = hashSubToken(tok)
-	s.cfg.SubTokenEnc = enc
-	s.cfg.SubTokenCreatedAt = time.Now().UTC().Format(time.RFC3339)
-	s.cfg.SubTokenMode = subMode
-	s.cfg.SubTokenExpiresAt = expiresAt
-	if err := s.saveConfig(); err != nil {
-		writeJSON(w, 500, errResp("保存失败："+err.Error()))
-		return
-	}
-	action := "生成订阅链接"
-	if rotated {
-		action = "轮换订阅链接"
-	}
-	s.audit(s.currentUser(r), action, "", "成功", "旧订阅链接已失效")
-	writeJSON(w, 200, okResp(map[string]any{"url": s.subURL(r, tok), "rotated": rotated, "mode": subMode, "expires_at": expiresAt}))
+	// v1.4.27：通用订阅已退场，不再生成/轮换。
+	handleRetiredSub(w, r)
 }
 
 // handleSubTokenSetExpiry 只改通用订阅的到期时间，不换令牌、不换链接
 // （v1.3.20，设置页用）：expires_at 空 = 永久；填日期（如 2026-12-31）
 // 或 RFC3339。没有通用订阅令牌时 400。
 func (s *Server) handleSubTokenSetExpiry(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ExpiresAt string `json:"expires_at"`
-		Timezone  string `json:"timezone,omitempty"`
-	}
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeJSON(w, 400, errResp("请求格式不对"))
-		return
-	}
-	if s.cfg.SubTokenHash == "" {
-		writeJSON(w, 400, errResp("还没有通用订阅链接，先点“生成订阅链接”"))
-		return
-	}
-	expiresAt, err := parseSubExpiryIn(req.ExpiresAt, req.Timezone)
-	if err != nil {
-		writeJSON(w, 400, errResp(err.Error()))
-		return
-	}
-	old := s.cfg.SubTokenExpiresAt
-	s.cfg.SubTokenExpiresAt = expiresAt
-	if err := s.saveConfig(); err != nil {
-		s.cfg.SubTokenExpiresAt = old
-		writeJSON(w, 500, errResp("保存失败："+err.Error()))
-		return
-	}
-	detail := "改成永久"
-	if expiresAt != "" {
-		detail = "改成 " + expiresAt[:10]
-	}
-	s.audit(s.currentUser(r), "设置通用订阅到期时间", "", "成功", detail)
-	writeJSON(w, 200, okResp(map[string]any{"expires_at": expiresAt}))
+	// v1.4.27：通用订阅已退场。
+	handleRetiredSub(w, r)
 }
 
 func (s *Server) handleSubTokenRevoke(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.SubTokenHash == "" {
-		writeJSON(w, 400, errResp("本来就没有订阅链接，不用撤销"))
-		return
-	}
-	s.cfg.SubTokenHash = ""
-	s.cfg.SubTokenEnc = ""
-	s.cfg.SubTokenCreatedAt = ""
-	s.cfg.SubTokenMode = ""
-	s.cfg.SubTokenExpiresAt = ""
-	if err := s.saveConfig(); err != nil {
-		writeJSON(w, 500, errResp("保存失败："+err.Error()))
-		return
-	}
-	s.audit(s.currentUser(r), "撤销订阅链接", "", "成功", "订阅链接已失效")
-	writeJSON(w, 200, okResp(nil))
+	// v1.4.27：通用订阅已退场。
+	handleRetiredSub(w, r)
 }
 
 // ---------- 重新复制订阅链接（v1.3.7，会话认证） ----------
@@ -1933,64 +1885,48 @@ func (s *Server) handleSubTokenRevoke(w http.ResponseWriter, r *http.Request) {
 // （轮换一次后就有密文了）；密钥丢了/密文损坏也按旧链接处理，不编链接。
 // 绝不走公开的 /sub/ 路径；复制是只读操作，不记审计日志（明文令牌
 // 绝不进审计日志）。
+// v1.4.27：通用订阅与合并订阅已退场，kind=generic|merged 一律 410；
+// kind=user 仍可取（订阅用户的链接只存了密文，创建/轮换回包丢了之后
+// 只能从这里恢复，否则刷新页面后就只能轮换——轮换让旧链接立即失效）。
+// 路由已包 requireAuth，只给管理员取。
 
 const legacySubLinkMsg = "这条是旧链接（1.3.7 之前生成的），面板里没有存它的密文，无法恢复。点轮换生成一条新的，旧链接立即失效。"
 
 func (s *Server) handleSubLink(w http.ResponseWriter, r *http.Request) {
 	kind := r.URL.Query().Get("kind")
-	id := r.URL.Query().Get("id")
-	var enc string
-	expiresAt := ""
-	switch kind {
-	case "generic":
-		if s.cfg.SubTokenHash == "" {
-			writeJSON(w, 404, errResp("还没有订阅链接"))
+	if kind != "user" {
+		// 通用订阅与合并订阅已退场（见文件顶部退场注释）；非法 kind 400。
+		if kind == "generic" || kind == "merged" {
+			handleRetiredSub(w, r)
 			return
 		}
-		enc = s.cfg.SubTokenEnc
-		expiresAt = s.cfg.SubTokenExpiresAt
-	case "user":
-		found := false
-		for i := range s.cfg.SubUsers {
-			if s.cfg.SubUsers[i].ID == id {
-				enc = s.cfg.SubUsers[i].TokenEnc
-				expiresAt = s.cfg.SubUsers[i].ExpiresAt
-				found = true
-				break
-			}
-		}
-		if !found {
-			writeJSON(w, 404, errResp("没有这个订阅用户"))
-			return
-		}
-	case "merged":
-		found := false
-		for i := range s.cfg.MergedSubs {
-			if s.cfg.MergedSubs[i].ID == id {
-				enc = s.cfg.MergedSubs[i].TokenEnc
-				expiresAt = s.cfg.MergedSubs[i].ExpiresAt
-				found = true
-				break
-			}
-		}
-		if !found {
-			writeJSON(w, 404, errResp("没有这条合并订阅"))
-			return
-		}
-	default:
-		writeJSON(w, 400, errResp("kind 只支持 generic/user/merged"))
+		writeJSON(w, 400, errResp("没有这种订阅"))
 		return
 	}
-	if enc == "" {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		writeJSON(w, 400, errResp("没有这个订阅用户"))
+		return
+	}
+	u := findSubUserByID(s.cfg.SubUsers, id)
+	if u == nil {
+		writeJSON(w, 404, errResp("没有这个订阅用户"))
+		return
+	}
+	if strings.TrimSpace(u.TokenEnc) == "" {
 		writeJSON(w, 200, okResp(map[string]any{"legacy": true, "message": legacySubLinkMsg}))
 		return
 	}
-	tok, err := s.decryptSubTokenNow(enc)
+	tok, err := s.decryptSubTokenNow(u.TokenEnc)
 	if err != nil {
 		writeJSON(w, 200, okResp(map[string]any{"legacy": true, "message": legacySubLinkMsg}))
 		return
 	}
-	writeJSON(w, 200, okResp(map[string]any{"url": s.subURL(r, tok), "legacy": false, "expires_at": expiresAt}))
+	mode := u.Mode
+	if mode == "" {
+		mode = "both"
+	}
+	writeJSON(w, 200, okResp(map[string]any{"url": s.subURL(r, tok), "legacy": false, "id": u.ID, "name": u.Name, "mode": mode, "expires_at": u.ExpiresAt}))
 }
 
 // ---------- 订阅对外域名（v1.3.2，会话认证） ----------
@@ -2156,6 +2092,20 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 		// （列表徽章用）；进了组时 Summary 是组的落地摘要。
 		GroupID   string `json:"group_id,omitempty"`
 		GroupName string `json:"group_name,omitempty"`
+		// 套餐档位与登录账号（v1.4.27）：PlanID/PlanName 是档位；
+		// Username 是登录账号；HasLogin 是不是设了登录密码（没设
+		// 密码的账号登不进来）。PasswordHash 绝不返回。
+		// 后端指派（v1.4.27，前端编辑弹窗回显用）：BackendScope/
+		// BackendTargets 取该用户记录上的值（空 scope = 全部）。
+		PlanID         string   `json:"plan_id,omitempty"`
+		PlanName       string   `json:"plan_name,omitempty"`
+		Username       string   `json:"username,omitempty"`
+		HasLogin       bool     `json:"has_login"`
+		BackendScope   string   `json:"backend_scope,omitempty"`
+		BackendTargets []string `json:"backend_targets,omitempty"`
+		// 订阅级链接模式（Unreleased）："" = 跟随节点；direct/relay/
+		// both = 订阅级显式设置（优先于节点级）。
+		LinkMode string `json:"link_mode,omitempty"`
 	}
 	items := []item{}
 	for _, u := range s.cfg.SubUsers {
@@ -2174,7 +2124,7 @@ func (s *Server) handleSubUsersList(w http.ResponseWriter, r *http.Request) {
 		if u.TrafficLimitBytes > 0 {
 			limitWarn = s.userLimitVersionWarn(s.effectiveSelectionForSubUser(&u))
 		}
-		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode, Selection: u.Selection, ExpiresAt: u.ExpiresAt, LimitMB: u.TrafficLimitBytes / 1024 / 1024, LimitMode: u.TrafficLimitMode, ResetMode: u.ResetMode, ResetDay: u.ResetDay, NextResetAt: u.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: u.Disabled, DisabledReason: u.DisabledReason, ForwardCount: len(s.userForwardsFor(userSubKey("subuser", u.ID))), TrafficWarn: s.userTrafficWarnFor(userSubKey("subuser", u.ID), s.effectiveSelectionForSubUser(&u)), LimitWarn: limitWarn, GroupID: u.GroupID, GroupName: s.groupNameOf(u.GroupID)})
+		items = append(items, item{ID: u.ID, Name: u.Name, Note: u.Note, CreatedAt: u.CreatedAt, Kind: kind, Summary: summary, HasLink: u.TokenEnc != "", Mode: u.Mode, Selection: u.Selection, ExpiresAt: u.ExpiresAt, LimitMB: u.TrafficLimitBytes / 1024 / 1024, LimitMode: u.TrafficLimitMode, ResetMode: u.ResetMode, ResetDay: u.ResetDay, NextResetAt: u.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: u.Disabled, DisabledReason: u.DisabledReason, ForwardCount: len(s.userForwardsFor(userSubKey("subuser", u.ID))), TrafficWarn: s.userTrafficWarnFor(userSubKey("subuser", u.ID), s.effectiveSelectionForSubUser(&u)), LimitWarn: limitWarn, GroupID: u.GroupID, GroupName: s.groupNameOf(u.GroupID), PlanID: u.PlanID, PlanName: s.planNameOf(u.PlanID), Username: u.Username, HasLogin: u.PasswordHash != "", BackendScope: u.BackendScope, BackendTargets: u.BackendTargets, LinkMode: u.LinkMode})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"users": items}))
 }
@@ -2203,6 +2153,19 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 		TrafficLimitMode string `json:"traffic_limit_mode"`
 		ResetMode        string `json:"reset_mode"`
 		ResetDay         int    `json:"reset_day"`
+		// 套餐档位与登录账号（v1.4.27）：plan_id 选档位（没给的分组/
+		// 限流/模式/重置/到期用档位的值）；username 空着自动生成
+		// u-＋6 位随机十六进制；password 不给 = 这个用户先不设登录
+		// 密码（登不进来），给了最少 6 位。backend_scope/targets
+		// 不给时按档位分组走（有分组跟分组、没分组全部）。
+		// 订阅级链接模式（Unreleased）：link_mode 不给 = 跟随节点
+		// （按节点模式出），给了只认 direct/relay/both。
+		PlanID         string   `json:"plan_id"`
+		Username       string   `json:"username"`
+		Password       string   `json:"password"`
+		BackendScope   string   `json:"backend_scope"`
+		BackendTargets []string `json:"backend_targets"`
+		LinkMode       string   `json:"link_mode"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -2224,6 +2187,56 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errResp("备注太长，最多 200 个字"))
 		return
 	}
+	// 套餐档位（v1.4.27）：plan_id 给了必须存在；没给也保证默认档位
+	// 存在（写路径上建，见 plans.go），之后没挂档位的用户也能在列表
+	// 里看到默认档位兜底。
+	if err := s.ensureDefaultPlan(); err != nil {
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	var plan *Plan
+	planID := strings.TrimSpace(req.PlanID)
+	if planID != "" {
+		plan = s.findPlan(planID)
+		if plan == nil {
+			writeJSON(w, 400, errResp("没有这个套餐档位"))
+			return
+		}
+	}
+	// 登录账号（v1.4.27）：username 空着自动生成；给了就校验唯一
+	// （与已有订阅用户或管理员账号重名都 400）；password 不给 =
+	// 先不设登录密码，给了最少 6 位。
+	username := strings.TrimSpace(req.Username)
+	if username == "" {
+		for {
+			username = "u-" + randomTokenHex(6)
+			if s.findSubUserByUsername(username) == nil {
+				break
+			}
+		}
+	} else {
+		if username == s.cfg.Username {
+			writeJSON(w, 400, errResp("这个登录账号名和管理员账号重名，换一个"))
+			return
+		}
+		if s.findSubUserByUsername(username) != nil {
+			writeJSON(w, 400, errResp("已经有这个登录账号："+username))
+			return
+		}
+	}
+	passwordHash := ""
+	if req.Password != "" {
+		if len([]rune(req.Password)) < 6 {
+			writeJSON(w, 400, errResp("登录密码最少 6 位"))
+			return
+		}
+		h, err := hashPassword(req.Password)
+		if err != nil {
+			writeJSON(w, 500, errResp("密码加密失败："+err.Error()))
+			return
+		}
+		passwordHash = h
+	}
 	var sel []SubSelection
 	if len(req.Selection) > 0 {
 		var err error
@@ -2231,6 +2244,30 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeJSON(w, 400, errResp(err.Error()))
 			return
+		}
+	}
+	// 档位默认值＋个人覆盖（v1.4.27）：没给 group_id 就用档位的
+	// GroupID；没给流量上限/模式/重置就用档位的值；没给 mode 就用
+	// 档位的 Mode；没给到期、档位 ExpiresDays>0 时按天数算。
+	// 给了的个人值优先。
+	if plan != nil {
+		if strings.TrimSpace(req.GroupID) == "" {
+			req.GroupID = plan.GroupID
+		}
+		if req.TrafficLimitMB == 0 && plan.TrafficLimitBytes > 0 {
+			req.TrafficLimitMB = plan.TrafficLimitBytes / 1024 / 1024
+		}
+		if strings.TrimSpace(req.TrafficLimitMode) == "" {
+			req.TrafficLimitMode = plan.TrafficLimitMode
+		}
+		if strings.TrimSpace(req.ResetMode) == "" {
+			req.ResetMode = plan.ResetMode
+		}
+		if req.ResetDay == 0 {
+			req.ResetDay = plan.ResetDay
+		}
+		if strings.TrimSpace(req.Mode) == "" {
+			req.Mode = plan.Mode
 		}
 	}
 	groupID, err := s.validateGroupID(req.GroupID)
@@ -2243,6 +2280,13 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
 	}
+	// 订阅级链接模式（Unreleased）：空 = 跟随节点，非法值 400。
+	linkMode, err := normalizeSubLinkMode(req.LinkMode)
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	nowTime := time.Now().UTC()
 	expiresAt := ""
 	if req.ExpiresAt != nil {
 		expiresAt, err = parseSubExpiryIn(*req.ExpiresAt, req.Timezone)
@@ -2250,10 +2294,32 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 400, errResp(err.Error()))
 			return
 		}
+	} else if plan != nil && plan.ExpiresDays > 0 {
+		expiresAt = nowTime.AddDate(0, 0, plan.ExpiresDays).Format(time.RFC3339)
 	}
-	nowTime := time.Now().UTC()
 	limitBytes, limitMode, resetMode, resetDay, nextResetAt, err := normalizeUserLimitFields(mbToBytes(req.TrafficLimitMB), req.TrafficLimitMode, req.ResetMode, req.ResetDay, nowTime, nowTime)
 	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	// 后端指派（v1.4.27）：创建时一次做完。语义定死（前端契约）：
+	// 不给 backend_scope = 默认发 group（跟档位分组走）；档位没关联
+	// 分组（groupID 为空）时 group 回落到全部（all）；显式发 group
+	// 但用户没分组时同样回落到全部；显式发 all 就是全部；显式发
+	// node/inbound 但 targets 为空 = 该用户先不上任何后端节点（等在
+	// 「发到节点」里勾了才上，见 validateBackendAssignment 的注释）。
+	// 校验先做（失败直接 400，用户还没建），写在用户落盘后。
+	assignScope, assignTargets := strings.TrimSpace(req.BackendScope), req.BackendTargets
+	if assignScope == "" {
+		if groupID != "" {
+			assignScope, assignTargets = "group", []string{groupID}
+		} else {
+			assignScope = "all"
+		}
+	} else if assignScope == "group" && groupID == "" {
+		assignScope, assignTargets = "all", nil
+	}
+	if _, _, err := s.validateBackendAssignment(assignScope, assignTargets, groupID); err != nil {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
 	}
@@ -2265,9 +2331,20 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	now := nowTime.Format(time.RFC3339)
 	id := "su-" + randomTokenHex(6)
-	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: id, Name: name, Note: note, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt, GroupID: groupID, TrafficLimitBytes: limitBytes, TrafficLimitMode: limitMode, ResetMode: resetMode, ResetDay: resetDay, NextResetAt: nextResetAt})
+	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: id, Name: name, Note: note, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt, GroupID: groupID, TrafficLimitBytes: limitBytes, TrafficLimitMode: limitMode, ResetMode: resetMode, ResetDay: resetDay, NextResetAt: nextResetAt, PlanID: planID, Username: username, PasswordHash: passwordHash, LinkMode: linkMode})
 	// 每人 UUID（v1.3.35）：新建即按生效勾选生成（进了组按组的落地）。
 	s.ensureNodeUUIDsForSubUser(&s.cfg.SubUsers[len(s.cfg.SubUsers)-1])
+	if err := s.saveConfig(); err != nil {
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	// 后端指派（v1.4.27）：创建时一次做完，用户记录＋节点 UserIDs
+	// 两边写（applyBackendAssignment，与 PUT 指派接口同一份逻辑）。
+	assignNodes, assignErr := s.applyBackendAssignment("subuser", id, assignScope, assignTargets, groupID)
+	if assignErr != nil {
+		writeJSON(w, 500, errResp("后端指派失败："+assignErr.Error()))
+		return
+	}
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
@@ -2282,7 +2359,13 @@ func (s *Server) handleSubUsersCreate(w http.ResponseWriter, r *http.Request) {
 			effSel = g.Selection
 		}
 	}
-	resp := map[string]any{"id": id, "url": s.subURL(r, tok), "name": name, "mode": subMode, "expires_at": expiresAt, "group_id": groupID, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
+	// 回包里的指派用落盘后的规范化值（"all" 时 targets 为空，见
+	// validateBackendAssignment）。
+	storedScope, storedTargets := assignScope, assignTargets
+	if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
+		storedScope, storedTargets = u.BackendScope, u.BackendTargets
+	}
+	resp := map[string]any{"id": id, "url": s.subURL(r, tok), "name": name, "mode": subMode, "expires_at": expiresAt, "group_id": groupID, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt, "plan_id": planID, "plan_name": s.planNameOf(planID), "username": username, "has_login": passwordHash != "", "backend_scope": storedScope, "backend_targets": storedTargets, "backend_nodes": assignNodes, "link_mode": linkMode}
 	warn := s.syncUserForwardsWarning("subuser", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt)
 	// 集中用户表（v1.3.36）：新建订阅也要同步到各远程面板（不限流的
 	// 用户也要计量，同步不看限流开关）。
@@ -2334,6 +2417,7 @@ func (s *Server) handleSubUsersRotate(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSubUsersDelete 撤销一个订阅用户：他的订阅链接立即失效，其他人照常。
+// v1.4.27：同时吊销该用户的全部客户端会话（按 subUserID）。
 func (s *Server) handleSubUsersDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	for i := range s.cfg.SubUsers {
@@ -2346,6 +2430,8 @@ func (s *Server) handleSubUsersDelete(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, 500, errResp("保存失败："+err.Error()))
 				return
 			}
+			// v1.4.27：删用户即吊销他的客户端会话（登录态立即失效）。
+			s.clientSessions.revokeBySubUserID(id)
 			// 按人限流（v1.3.25）：订阅删了就回收它的转发与端口
 			// （本机 + 各远程面板）。
 			s.opMu.Lock()
@@ -2402,6 +2488,20 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		TrafficLimitMode *string `json:"traffic_limit_mode"`
 		ResetMode        *string `json:"reset_mode"`
 		ResetDay         *int    `json:"reset_day"`
+		// 套餐档位与登录账号（v1.4.27）：plan_id 指针 = 没给保持原档
+		// 位，给了就改档位（"" = 取消档位）；username 指针 = 没给
+		// 保持原账号，给了非空就改（唯一校验）；password 非空时重设
+		// （最少 6 位，重设后吊销该用户的客户端会话）。
+		// backend_scope 指针 = 没给不动指派，给了就按新指派写两边。
+		// 订阅级链接模式（Unreleased）：link_mode 指针 = 没给保持原
+		// 值，给了就改（"" = 回到跟随节点）；非法值 400；只改它不
+		// bump 节点 ConfigVersion。
+		PlanID         *string  `json:"plan_id"`
+		Username       *string  `json:"username"`
+		Password       string   `json:"password"`
+		BackendScope   *string  `json:"backend_scope"`
+		BackendTargets []string `json:"backend_targets"`
+		LinkMode       *string  `json:"link_mode"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -2450,6 +2550,20 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
 	}
+	// 订阅级链接模式（Unreleased）：指针 = 没给保持原值，给了就改
+	// （"" = 回到跟随节点）；非法值 400。只改它不 bump 节点
+	// ConfigVersion（不碰后端指派，见下面的指派分支）。
+	linkModeGiven := false
+	newLinkMode := ""
+	if req.LinkMode != nil {
+		linkModeGiven = true
+		var err error
+		newLinkMode, err = normalizeSubLinkMode(*req.LinkMode)
+		if err != nil {
+			writeJSON(w, 400, errResp(err.Error()))
+			return
+		}
+	}
 	expiresAt := ""
 	expiresGiven := false
 	if req.ExpiresAt != nil {
@@ -2460,16 +2574,76 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// 档位与登录账号的先行校验（v1.4.27）：改档位前档位必须存在；
+	// 改账号名前账号名必须唯一（不与别的订阅用户或管理员账号重名）；
+	// 重设密码先算哈希（最少 6 位）。
+	var newPlan *Plan
+	planIDGiven := false
+	planID := ""
+	if req.PlanID != nil {
+		planIDGiven = true
+		planID = strings.TrimSpace(*req.PlanID)
+		if planID != "" {
+			newPlan = s.findPlan(planID)
+			if newPlan == nil {
+				writeJSON(w, 400, errResp("没有这个套餐档位"))
+				return
+			}
+		}
+	}
+	usernameGiven := false
+	newUsername := ""
+	if req.Username != nil {
+		usernameGiven = true
+		newUsername = strings.TrimSpace(*req.Username)
+		if newUsername != "" {
+			if newUsername == s.cfg.Username {
+				writeJSON(w, 400, errResp("这个登录账号名和管理员账号重名，换一个"))
+				return
+			}
+			for _, ou := range s.cfg.SubUsers {
+				if ou.ID != id && ou.Username == newUsername {
+					writeJSON(w, 400, errResp("已经有这个登录账号："+newUsername))
+					return
+				}
+			}
+		}
+	}
+	newPasswordHash := ""
+	if req.Password != "" {
+		if len([]rune(req.Password)) < 6 {
+			writeJSON(w, 400, errResp("登录密码最少 6 位"))
+			return
+		}
+		h, herr := hashPassword(req.Password)
+		if herr != nil {
+			writeJSON(w, 500, errResp("密码加密失败："+herr.Error()))
+			return
+		}
+		newPasswordHash = h
+	}
 	for i := range s.cfg.SubUsers {
 		if s.cfg.SubUsers[i].ID != id {
 			continue
 		}
 		u := &s.cfg.SubUsers[i]
+		// 改档位（v1.4.27）：GroupID/限流/mode/到期按新档位重算覆盖；
+		// 请求里单独给的值（group_id、限流指针、mode、expires_at）
+		// 仍优先。取消档位（plan_id 给 ""）时只清档位，不改现值。
+		planChanged := false
+		if planIDGiven && planID != u.PlanID {
+			planChanged = true
+			u.PlanID = planID
+		}
 		// 限流字段：没给的保持原值，给了的按新值算（anchor 是订阅创建
 		// 时间，anniversary 取它的日）。没给限流时直接用原字节数，
-		// 不经过 MB 换算（避免丢精度）。
+		// 不经过 MB 换算（避免丢精度）。改档位时基数先换成档位值，
+		// 再让请求里的指针覆盖。
 		newLimit := u.TrafficLimitBytes
 		newMode, newResetMode, newResetDay := u.TrafficLimitMode, u.ResetMode, u.ResetDay
+		if planChanged && newPlan != nil {
+			newLimit, newMode, newResetMode, newResetDay = newPlan.TrafficLimitBytes, newPlan.TrafficLimitMode, newPlan.ResetMode, newPlan.ResetDay
+		}
 		if req.TrafficLimitMB != nil {
 			newLimit = mbToBytes(*req.TrafficLimitMB)
 		}
@@ -2488,14 +2662,39 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 400, errResp(err.Error()))
 			return
 		}
+		// 改档位时内容模式与到期也按新档位重算（请求里没给才重算，
+		// 给了的个人值优先）；新档位 ExpiresDays=0 = 永久。
+		if planChanged && strings.TrimSpace(req.Mode) == "" {
+			if newPlan != nil {
+				subMode, _ = normalizeSubMode(newPlan.Mode)
+			} else {
+				subMode = u.Mode
+				if subMode == "" {
+					subMode = "both"
+				}
+			}
+		}
+		if planChanged && !expiresGiven {
+			expiresGiven = true
+			if newPlan != nil && newPlan.ExpiresDays > 0 {
+				expiresAt = time.Now().UTC().AddDate(0, 0, newPlan.ExpiresDays).Format(time.RFC3339)
+			} else {
+				expiresAt = ""
+			}
+		}
 		// 调高上限后不再超量就自动恢复（清停用标志，让 reconcile 把
 		// endpoints 加回去）；仍超量就继续停用。
 		s.maybeResumeUser(userSubKey("subuser", id), limitBytes, limitMode)
-		// 分组（v1.3.26）：给了 group_id 就改归属；进了组，自己的
-		// Selection 不动（保留在记录里，出组后恢复），订阅按组的落地出；
-		// 出组后按请求里的新勾选出。
+		// 分组（v1.3.26）：给了 group_id 就改归属；没给但改了档位
+		// 就跟新档位的分组；进了组，自己的 Selection 不动（保留在
+		// 记录里，出组后恢复），订阅按组的落地出；出组后按请求里的
+		// 新勾选出。
 		if groupGiven {
 			u.GroupID = groupID
+		} else if planChanged && newPlan != nil {
+			u.GroupID = newPlan.GroupID
+		} else if planChanged {
+			u.GroupID = ""
 		}
 		if u.GroupID == "" {
 			u.Selection = sel
@@ -2512,11 +2711,62 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		if expiresGiven {
 			u.ExpiresAt = expiresAt
 		}
+		// 登录账号（v1.4.27）：给了非空账号名就改；重设了密码就换哈希，
+		// 保存后吊销该用户的客户端会话。
+		if usernameGiven && newUsername != "" {
+			u.Username = newUsername
+		}
+		passwordChanged := false
+		if newPasswordHash != "" {
+			u.PasswordHash = newPasswordHash
+			passwordChanged = true
+		}
+		// 订阅级链接模式（Unreleased）：给了就改（"" = 回到跟随节点）；
+		// 只改它不走后端指派、不 bump 节点 ConfigVersion（订阅内容
+		// 是实时生成的，agent 不用重新拉配置）。
+		if linkModeGiven {
+			u.LinkMode = newLinkMode
+		}
+		// 后端指派先校验（失败直接 400，改动还没落盘；u.GroupID 到这
+		// 里已经是改后的分组）。
+		if req.BackendScope != nil {
+			if _, _, verr := s.validateBackendAssignment(*req.BackendScope, req.BackendTargets, u.GroupID); verr != nil {
+				writeJSON(w, 400, errResp(verr.Error()))
+				return
+			}
+		}
 		// 每人 UUID（v1.3.35）：勾选/分组变了就按新生效勾选补齐。
 		s.ensureNodeUUIDsForSubUser(u)
 		if err := s.saveConfig(); err != nil {
 			writeJSON(w, 500, errResp("保存失败："+err.Error()))
 			return
+		}
+		if passwordChanged {
+			s.clientSessions.revokeBySubUserID(id)
+		}
+		// 后端指派（v1.4.27）：给了 backend_scope 就按新指派写两边；
+		// 没给但改了档位、且原指派是跟分组走的，就按新分组重算。
+		assignNote := ""
+		if req.BackendScope != nil {
+			if _, aerr := s.applyBackendAssignment("subuser", id, *req.BackendScope, req.BackendTargets, u.GroupID); aerr != nil {
+				writeJSON(w, 400, errResp(aerr.Error()))
+				return
+			}
+			if err := s.saveConfig(); err != nil {
+				writeJSON(w, 500, errResp("保存失败："+err.Error()))
+				return
+			}
+		} else if planChanged && u.BackendScope == "group" {
+			newScope, newTargets := "group", []string{u.GroupID}
+			if u.GroupID == "" {
+				newScope, newTargets = "all", nil
+			}
+			if _, aerr := s.applyBackendAssignment("subuser", id, newScope, newTargets, u.GroupID); aerr != nil {
+				assignNote = "后端指派没跟上新分组：" + aerr.Error()
+			} else if err := s.saveConfig(); err != nil {
+				writeJSON(w, 500, errResp("保存失败："+err.Error()))
+				return
+			}
 		}
 		kind := "single"
 		summary := "单面板全量订阅（全部落地）"
@@ -2531,7 +2781,17 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		if selOut == nil {
 			selOut = []SubSelection{}
 		}
-		resp := map[string]any{"id": id, "name": name, "kind": kind, "summary": summary, "mode": subMode, "selection": selOut, "expires_at": u.ExpiresAt, "group_id": u.GroupID, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
+		resp := map[string]any{"id": id, "name": name, "kind": kind, "summary": summary, "mode": subMode, "selection": selOut, "expires_at": u.ExpiresAt, "group_id": u.GroupID, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt, "plan_id": u.PlanID, "plan_name": s.planNameOf(u.PlanID), "username": u.Username, "has_login": u.PasswordHash != "", "backend_scope": u.BackendScope, "backend_targets": u.BackendTargets, "link_mode": u.LinkMode}
+		if planChanged {
+			if newPlan != nil {
+				resp["plan_note"] = "已按档位「" + newPlan.Name + "」重算：分组、限流、内容模式与到期已更新为档位值（请求里单独给的值仍优先）"
+			} else {
+				resp["plan_note"] = "已取消档位，现有分组、限流、内容模式与到期保持不变"
+			}
+		}
+		if assignNote != "" {
+			resp["backend_note"] = assignNote
+		}
 		warn := s.syncUserForwardsWarning("subuser", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt)
 		// 集中用户表（v1.3.36）：编辑订阅也要同步到各远程面板。
 		if w := s.syncCentralUsersWarning(); w != "" {
@@ -2551,6 +2811,45 @@ func (s *Server) handleSubUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 404, errResp("没有这个订阅用户"))
+}
+
+// handleSubUsersResetPassword POST /api/v1/subscriptions/users/{id}/reset-password：
+// 重设一个订阅用户的登录密码（body {password}，最少 6 位）。重设后吊销
+// 该用户的全部客户端会话（旧密码登进来的客户端须重新登录）。
+// v1.4.27。
+func (s *Server) handleSubUsersResetPassword(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Password string `json:"password"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	if len([]rune(req.Password)) < 6 {
+		writeJSON(w, 400, errResp("登录密码最少 6 位"))
+		return
+	}
+	u := findSubUserByID(s.cfg.SubUsers, id)
+	if u == nil {
+		writeJSON(w, 404, errResp("没有这个订阅用户"))
+		return
+	}
+	h, err := hashPassword(req.Password)
+	if err != nil {
+		writeJSON(w, 500, errResp("密码加密失败："+err.Error()))
+		return
+	}
+	u.PasswordHash = h
+	if err := s.saveConfig(); err != nil {
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	s.clientSessions.revokeBySubUserID(id)
+	s.audit(s.currentUser(r), "重设订阅用户登录密码", u.Name, "成功", "该用户的客户端会话已全部吊销")
+	writeJSON(w, 200, okResp(map[string]any{"id": id, "username": u.Username, "has_login": true}))
 }
 
 // ---------- Worker 反代代码生成（v1.3.0，会话认证） ----------
@@ -2942,7 +3241,9 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: summary, HasLink: ms.TokenEnc != "", Mode: ms.Mode, ExpiresAt: ms.ExpiresAt, LimitMB: ms.TrafficLimitBytes / 1024 / 1024, LimitMode: ms.TrafficLimitMode, ResetMode: ms.ResetMode, ResetDay: ms.ResetDay, NextResetAt: ms.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: ms.Disabled, DisabledReason: ms.DisabledReason, ForwardCount: len(s.userForwardsFor(userSubKey("merged", ms.ID))), TrafficWarn: s.userTrafficWarnFor(userSubKey("merged", ms.ID), s.effectiveSelectionForMerged(&ms)), LimitWarn: limitWarn, GroupID: ms.GroupID, GroupName: s.groupNameOf(ms.GroupID)})
 	}
-	writeJSON(w, 200, okResp(map[string]any{"subs": items}))
+	// v1.4.27：合并订阅已退场，列表只供核对（顶层 retired:true，旧链接
+	// 已失效，不再提供内容与新建）。
+	writeJSON(w, 200, okResp(map[string]any{"subs": items, "retired": true}))
 }
 
 // handleMergedSubsCreate 生成合并订阅：不填名称时同一选择重新生成 = 轮换
@@ -2955,245 +3256,16 @@ func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
 // v1.3.20：请求可带 expires_at（日期或 RFC3339，空串 = 永久；不带 = 永久；
 // 同一选择重新生成时不带 expires_at 字段 = 保持原到期时间）。
 func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Selection []SubSelection `json:"selection"`
-		Name      string         `json:"name"`
-		Mode      string         `json:"mode"`
-		ExpiresAt *string        `json:"expires_at"`
-		Timezone  string         `json:"timezone,omitempty"`
-		// 分组（v1.3.26）：指针 = 没给保持原分组（轮换那条的）；给了 "" =
-		// 不分组，给了 "sg-…" = 进组（订阅按组的落地出，自己的勾选保留）。
-		GroupID *string `json:"group_id"`
-		// 流量上限（v1.3.25）：指针 = 没给保持原值（轮换时）或不限流
-		// （新建时），给了按新值（给 0 = 取消限流）。
-		TrafficLimitMB   *int64  `json:"traffic_limit_mb"`
-		TrafficLimitMode *string `json:"traffic_limit_mode"`
-		ResetMode        *string `json:"reset_mode"`
-		ResetDay         *int    `json:"reset_day"`
-	}
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeJSON(w, 400, errResp("请求格式不对"))
-		return
-	}
-	name := strings.TrimSpace(req.Name)
-	if len(name) > 64 {
-		writeJSON(w, 400, errResp("名字太长，最多 64 个字"))
-		return
-	}
-	sel, key, err := s.validateMergedSelection(req.Selection)
-	if err != nil {
-		writeJSON(w, 400, errResp(err.Error()))
-		return
-	}
-	// 分组（v1.3.26）：没给 group_id = 保持原分组（轮换那条的）；给了就校验。
-	groupGiven := false
-	groupID := ""
-	if req.GroupID != nil {
-		groupGiven = true
-		var err error
-		groupID, err = s.validateGroupID(*req.GroupID)
-		if err != nil {
-			writeJSON(w, 400, errResp(err.Error()))
-			return
-		}
-	}
-	subMode, err := normalizeSubMode(req.Mode)
-	if err != nil {
-		writeJSON(w, 400, errResp(err.Error()))
-		return
-	}
-	expiresAt := ""
-	if req.ExpiresAt != nil {
-		expiresAt, err = parseSubExpiryIn(*req.ExpiresAt, req.Timezone)
-		if err != nil {
-			writeJSON(w, 400, errResp(err.Error()))
-			return
-		}
-	}
-	tok := generateSubToken()
-	enc, err := s.encryptSubTokenNow(tok)
-	if err != nil {
-		writeJSON(w, 500, errResp("令牌加密失败："+err.Error()))
-		return
-	}
-	nowTime := time.Now().UTC()
-	now := nowTime.Format(time.RFC3339)
-	rotated := false
-	id := ""
-	// 限流字段：新建时没给 = 不限流；轮换时没给 = 保持原值，给了按新值。
-	// anchor 是订阅创建时间（新建是现在，轮换时 CreatedAt 会刷新到
-	// 现在，anniversary 锚点跟着走）。
-	limitBytes, limitMode, resetMode, resetDay, nextResetAt := int64(0), "", "", 0, ""
-	limitOf := func(curLimit int64, curMode, curResetMode string, curDay int) (int64, string, string, int, string, error) {
-		limit := curLimit
-		mode, rm, day := curMode, curResetMode, curDay
-		if req.TrafficLimitMB != nil {
-			limit = mbToBytes(*req.TrafficLimitMB)
-		}
-		if req.TrafficLimitMode != nil {
-			mode = *req.TrafficLimitMode
-		}
-		if req.ResetMode != nil {
-			rm = *req.ResetMode
-		}
-		if req.ResetDay != nil {
-			day = *req.ResetDay
-		}
-		return normalizeUserLimitFields(limit, mode, rm, day, nowTime, nowTime)
-	}
-	if name != "" {
-		var err error
-		limitBytes, limitMode, resetMode, resetDay, nextResetAt, err = limitOf(0, "", "", 0)
-		if err != nil {
-			writeJSON(w, 400, errResp(err.Error()))
-			return
-		}
-		id = "ms-" + randomTokenHex(6)
-		s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, Name: name, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt, TrafficLimitBytes: limitBytes, TrafficLimitMode: limitMode, ResetMode: resetMode, ResetDay: resetDay, NextResetAt: nextResetAt})
-	} else {
-		for i := range s.cfg.MergedSubs {
-			// 只轮换同样没填名称的记录：已归属到人的那条不能被误轮换
-			if s.cfg.MergedSubs[i].Name != "" {
-				continue
-			}
-			if _, k := canonicalSelection(s.cfg.MergedSubs[i].Selection); k == key {
-				var err error
-				limitBytes, limitMode, resetMode, resetDay, nextResetAt, err = limitOf(s.cfg.MergedSubs[i].TrafficLimitBytes, s.cfg.MergedSubs[i].TrafficLimitMode, s.cfg.MergedSubs[i].ResetMode, s.cfg.MergedSubs[i].ResetDay)
-				if err != nil {
-					writeJSON(w, 400, errResp(err.Error()))
-					return
-				}
-				s.cfg.MergedSubs[i].TokenHash = hashSubToken(tok)
-				s.cfg.MergedSubs[i].TokenEnc = enc
-				s.cfg.MergedSubs[i].CreatedAt = now
-				// 同一选择重新生成：按表单当前选择存；表单没传模式时保持原模式
-				if strings.TrimSpace(req.Mode) != "" {
-					s.cfg.MergedSubs[i].Mode = subMode
-				} else {
-					subMode = s.cfg.MergedSubs[i].Mode
-					if subMode == "" {
-						subMode = "both"
-					}
-				}
-				// 同一选择重新生成：表单传了 expires_at 才改到期时间，没传保持原到期时间
-				if req.ExpiresAt != nil {
-					s.cfg.MergedSubs[i].ExpiresAt = expiresAt
-				} else {
-					expiresAt = s.cfg.MergedSubs[i].ExpiresAt
-				}
-				s.cfg.MergedSubs[i].TrafficLimitBytes = limitBytes
-				s.cfg.MergedSubs[i].TrafficLimitMode = limitMode
-				s.cfg.MergedSubs[i].ResetMode = resetMode
-				s.cfg.MergedSubs[i].ResetDay = resetDay
-				s.cfg.MergedSubs[i].NextResetAt = nextResetAt
-				id = s.cfg.MergedSubs[i].ID
-				rotated = true
-				break
-			}
-		}
-		if id == "" {
-			var err error
-			limitBytes, limitMode, resetMode, resetDay, nextResetAt, err = limitOf(0, "", "", 0)
-			if err != nil {
-				writeJSON(w, 400, errResp(err.Error()))
-				return
-			}
-			id = "ms-" + randomTokenHex(6)
-			s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: id, TokenHash: hashSubToken(tok), TokenEnc: enc, CreatedAt: now, Selection: sel, Mode: subMode, ExpiresAt: expiresAt, TrafficLimitBytes: limitBytes, TrafficLimitMode: limitMode, ResetMode: resetMode, ResetDay: resetDay, NextResetAt: nextResetAt})
-		}
-	}
-	// 分组（v1.3.26）：新建与轮换都按请求里的 group_id 归属；没给就保持
-	// 轮换那条的原分组。生效勾选 = 组的落地集合（进了组）或自己的勾选。
-	finalGroupID := ""
-	if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-		if groupGiven {
-			ms.GroupID = groupID
-		}
-		finalGroupID = ms.GroupID
-	}
-	effSel := sel
-	if finalGroupID != "" {
-		if g := s.findSubGroup(finalGroupID); g != nil {
-			effSel = g.Selection
-		}
-	}
-	// 每人 UUID（v1.3.35）：新建/轮换即按生效勾选生成。
-	if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-		s.ensureNodeUUIDsForMerged(ms)
-	}
-	if err := s.saveConfig(); err != nil {
-		writeJSON(w, 500, errResp("保存失败："+err.Error()))
-		return
-	}
-	action := "生成合并订阅"
-	if rotated {
-		action = "轮换合并订阅"
-	}
-	target := s.selectionSummary(effSel)
-	if finalGroupID != "" {
-		target = "分组「" + s.groupNameOf(finalGroupID) + "」：" + target
-	}
-	if name != "" {
-		target = name + "（" + target + "）"
-	}
-	resp := map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": rotated, "selection": sel, "summary": s.selectionSummary(effSel), "mode": subMode, "expires_at": expiresAt, "group_id": finalGroupID, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
-	warn := s.syncUserForwardsWarning("merged", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt)
-	// 集中用户表（v1.3.36）：新建/轮换合并订阅也要同步到各远程面板。
-	if w := s.syncCentralUsersWarning(); w != "" {
-		if warn != "" {
-			warn += "；" + w
-		} else {
-			warn = w
-		}
-	}
-	if warn != "" {
-		resp["warning"] = warn
-		s.audit(s.currentUser(r), action, target, "部分成功", warn)
-	} else {
-		s.audit(s.currentUser(r), action, target, "成功", "链接已加密存好，随时能复制")
-	}
-	writeJSON(w, 200, okResp(resp))
+	// v1.4.27：合并订阅已退场，不再新建。
+	handleRetiredSub(w, r)
 }
 
 // handleMergedSubsRotate 轮换一条合并订阅：同一勾选集合与同一归属人换一个
 // 新令牌，旧链接立即失效；新链接在这一次返回（弹窗里直接显示），之后
 // 随时能点复制重新拿。模式保持不变（不带 mode 参数）。
 func (s *Server) handleMergedSubsRotate(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	for i := range s.cfg.MergedSubs {
-		if s.cfg.MergedSubs[i].ID != id {
-			continue
-		}
-		tok := generateSubToken()
-		enc, err := s.encryptSubTokenNow(tok)
-		if err != nil {
-			writeJSON(w, 500, errResp("令牌加密失败："+err.Error()))
-			return
-		}
-		s.cfg.MergedSubs[i].TokenHash = hashSubToken(tok)
-		s.cfg.MergedSubs[i].TokenEnc = enc
-		s.cfg.MergedSubs[i].CreatedAt = time.Now().UTC().Format(time.RFC3339)
-		if err := s.saveConfig(); err != nil {
-			writeJSON(w, 500, errResp("保存失败："+err.Error()))
-			return
-		}
-		sel := s.cfg.MergedSubs[i].Selection
-		summary := s.selectionSummary(sel)
-		target := summary
-		if s.cfg.MergedSubs[i].Name != "" {
-			target = s.cfg.MergedSubs[i].Name + "（" + summary + "）"
-		}
-		s.audit(s.currentUser(r), "轮换合并订阅", target, "成功", "旧订阅链接已失效")
-		mode := s.cfg.MergedSubs[i].Mode
-		if mode == "" {
-			mode = "both"
-		}
-		writeJSON(w, 200, okResp(map[string]any{"id": id, "url": s.subURL(r, tok), "rotated": true, "selection": sel, "summary": summary, "mode": mode}))
-		return
-	}
-	writeJSON(w, 404, errResp("没有这条合并订阅"))
+	// v1.4.27：合并订阅已退场。
+	handleRetiredSub(w, r)
 }
 
 // handleMergedSubsDelete 撤销一条合并订阅（该订阅链接立即失效）。
@@ -3247,153 +3319,8 @@ func (s *Server) handleMergedSubsDelete(w http.ResponseWriter, r *http.Request) 
 // v1.3.20：请求可带 expires_at（日期或 RFC3339，空串 = 永久）；不带
 // expires_at 字段时保持原到期时间。
 func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var req struct {
-		Selection []SubSelection `json:"selection"`
-		Name      string         `json:"name"`
-		Mode      string         `json:"mode"`
-		ExpiresAt *string        `json:"expires_at"`
-		Timezone  string         `json:"timezone,omitempty"`
-		// 分组（v1.3.26）：指针 = 没给保持原分组；给了 "" = 出组（恢复自己
-		// 勾选），给了 "sg-…" = 进组（订阅按组的落地出，自己的勾选保留在
-		// 记录里不动）。进组时请求里的 selection 不动自己的勾选。
-		GroupID *string `json:"group_id"`
-		// 流量上限（v1.3.25）：指针 = 没给保持原值，给了按新值
-		// （limit_mb 给 0 = 取消限流，回共享端口）。
-		TrafficLimitMB   *int64  `json:"traffic_limit_mb"`
-		TrafficLimitMode *string `json:"traffic_limit_mode"`
-		ResetMode        *string `json:"reset_mode"`
-		ResetDay         *int    `json:"reset_day"`
-	}
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeJSON(w, 400, errResp("请求格式不对"))
-		return
-	}
-	name := strings.TrimSpace(req.Name)
-	if len(name) > 64 {
-		writeJSON(w, 400, errResp("名字太长，最多 64 个字"))
-		return
-	}
-	sel, _, err := s.validateMergedSelection(req.Selection)
-	if err != nil {
-		writeJSON(w, 400, errResp(err.Error()))
-		return
-	}
-	// 分组（v1.3.26）：没给 group_id = 保持原分组；给了 "" = 出组；
-	// 给了 "sg-…" = 进组（校验存在）。
-	groupGiven := false
-	groupID := ""
-	if req.GroupID != nil {
-		groupGiven = true
-		var err error
-		groupID, err = s.validateGroupID(*req.GroupID)
-		if err != nil {
-			writeJSON(w, 400, errResp(err.Error()))
-			return
-		}
-	}
-	subMode, err := normalizeSubMode(req.Mode)
-	if err != nil {
-		writeJSON(w, 400, errResp(err.Error()))
-		return
-	}
-	expiresAt := ""
-	expiresGiven := false
-	if req.ExpiresAt != nil {
-		expiresGiven = true
-		expiresAt, err = parseSubExpiryIn(*req.ExpiresAt, req.Timezone)
-		if err != nil {
-			writeJSON(w, 400, errResp(err.Error()))
-			return
-		}
-	}
-	for i := range s.cfg.MergedSubs {
-		if s.cfg.MergedSubs[i].ID != id {
-			continue
-		}
-		ms := &s.cfg.MergedSubs[i]
-		// 限流字段：没给的保持原值，给了的按新值算（anchor 是订阅创建
-		// 时间，anniversary 取它的日；没给限流时直接用原字节数，
-		// 不经过 MB 换算，避免丢精度）。
-		newLimit := ms.TrafficLimitBytes
-		newMode, newResetMode, newResetDay := ms.TrafficLimitMode, ms.ResetMode, ms.ResetDay
-		if req.TrafficLimitMB != nil {
-			newLimit = mbToBytes(*req.TrafficLimitMB)
-		}
-		if req.TrafficLimitMode != nil {
-			newMode = *req.TrafficLimitMode
-		}
-		if req.ResetMode != nil {
-			newResetMode = *req.ResetMode
-		}
-		if req.ResetDay != nil {
-			newResetDay = *req.ResetDay
-		}
-		anchor, _ := time.Parse(time.RFC3339, ms.CreatedAt)
-		limitBytes, limitMode, resetMode, resetDay, nextResetAt, err := normalizeUserLimitFields(newLimit, newMode, newResetMode, newResetDay, anchor, time.Now().UTC())
-		if err != nil {
-			writeJSON(w, 400, errResp(err.Error()))
-			return
-		}
-		// 调高上限后不再超量就自动恢复（清停用标志，让 reconcile 把
-		// endpoints 加回去）；仍超量就继续停用。
-		s.maybeResumeUser(userSubKey("merged", id), limitBytes, limitMode)
-		// 分组（v1.3.26）：给了 group_id 就改归属；进了组，自己的
-		// Selection 不动（保留在记录里，出组后恢复），订阅按组的落地出；
-		// 出组后按请求里的新勾选出。
-		if groupGiven {
-			ms.GroupID = groupID
-		}
-		if ms.GroupID == "" {
-			ms.Selection = sel
-		}
-		effSel := s.effectiveSelectionForMerged(ms)
-		ms.Mode = subMode
-		ms.Name = name
-		ms.TrafficLimitBytes = limitBytes
-		ms.TrafficLimitMode = limitMode
-		ms.ResetMode = resetMode
-		ms.ResetDay = resetDay
-		ms.NextResetAt = nextResetAt
-		if expiresGiven {
-			ms.ExpiresAt = expiresAt
-		}
-		// 每人 UUID（v1.3.35）：勾选/分组变了就按新生效勾选补齐。
-		s.ensureNodeUUIDsForMerged(ms)
-		if err := s.saveConfig(); err != nil {
-			writeJSON(w, 500, errResp("保存失败："+err.Error()))
-			return
-		}
-		summary := s.selectionSummary(effSel)
-		if ms.GroupID != "" {
-			summary = "分组「" + s.groupNameOf(ms.GroupID) + "」：" + summary
-		}
-		target := summary
-		if name != "" {
-			target = name + "（" + summary + "）"
-		}
-		resp := map[string]any{"id": id, "name": name, "summary": summary, "mode": subMode, "selection": ms.Selection, "expires_at": ms.ExpiresAt, "group_id": ms.GroupID, "traffic_limit_mb": limitBytes / 1024 / 1024, "traffic_limit_mode": limitMode, "reset_mode": resetMode, "reset_day": resetDay, "next_reset_at": nextResetAt}
-		warn := s.syncUserForwardsWarning("merged", id, name, effSel, limitBytes, limitMode, resetMode, resetDay, nextResetAt)
-		// 集中用户表（v1.3.36）：编辑合并订阅也要同步到各远程面板。
-		if w := s.syncCentralUsersWarning(); w != "" {
-			if warn != "" {
-				warn += "；" + w
-			} else {
-				warn = w
-			}
-		}
-		if warn != "" {
-			resp["warning"] = warn
-			s.audit(s.currentUser(r), "编辑合并订阅", target, "部分成功", warn)
-		} else {
-			s.audit(s.currentUser(r), "编辑合并订阅", target, "成功", "链接不变，下次更新订阅即按新勾选同步")
-		}
-		writeJSON(w, 200, okResp(resp))
-		return
-	}
-	writeJSON(w, 404, errResp("没有这条合并订阅"))
+	// v1.4.27：合并订阅已退场。
+	handleRetiredSub(w, r)
 }
 
 // ---------- 按订阅限流：手动恢复（v1.3.25） ----------
@@ -3473,61 +3400,15 @@ func (s *Server) handleSubUsersDisable(w http.ResponseWriter, r *http.Request) {
 
 // handleMergedSubsResume 手动恢复一条合并订阅（超量停用后）。
 func (s *Server) handleMergedSubsResume(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	found := false
-	name := ""
-	var sel []SubSelection
-	for i := range s.cfg.MergedSubs {
-		if s.cfg.MergedSubs[i].ID == id {
-			found = true
-			name = s.cfg.MergedSubs[i].Name
-			sel = s.cfg.MergedSubs[i].Selection
-			break
-		}
-	}
-	if !found {
-		writeJSON(w, 404, errResp("没有这条合并订阅"))
-		return
-	}
-	manual := s.userDisabledReason(userSubKey("merged", id)) == "手动停用"
-	if err := s.resumeSub("merged", id); err != nil {
-		writeJSON(w, 400, errResp(err.Error()))
-		return
-	}
-	target := name
-	if target == "" {
-		target = s.selectionSummary(sel)
-	}
-	detail := "流量已回到上限以下，转发已恢复"
-	if manual {
-		detail = "手动停用已解除，转发已恢复"
-	}
-	s.audit(s.currentUser(r), "手动恢复合并订阅", target, "成功", detail)
-	writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name}))
+	// v1.4.27：合并订阅已退场。
+	handleRetiredSub(w, r)
 }
 
 // handleMergedSubsDisable 手动停用一条合并订阅（v1.4.3）：与单用户停用
 // 同一套状态机；已停用时幂等返回成功。
 func (s *Server) handleMergedSubsDisable(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	found := false
-	name := ""
-	for i := range s.cfg.MergedSubs {
-		if s.cfg.MergedSubs[i].ID == id {
-			found = true
-			name = s.cfg.MergedSubs[i].Name
-			break
-		}
-	}
-	if !found {
-		writeJSON(w, 404, errResp("没有这条合并订阅"))
-		return
-	}
-	if _, err := s.disableUserForwardsManual(userSubKey("merged", id), s.currentUser(r)); err != nil {
-		writeJSON(w, 500, errResp("停用已记下，但中转转发重建失败："+err.Error()))
-		return
-	}
-	writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name}))
+	// v1.4.27：合并订阅已退场。
+	handleRetiredSub(w, r)
 }
 
 // ---------- 合并订阅的内容来源 ----------

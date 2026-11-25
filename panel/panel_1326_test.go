@@ -300,29 +300,29 @@ func groupList1326(t *testing.T, s *Server) []map[string]any {
 	return out
 }
 
-// 通用订阅（全量）不进分组：建组、改组、删组都不影响它。
+// 不进分组的订阅用户（全量）不受分组影响：建组、改组、删组都不影响它。
 func TestSubGroupGeneralUnaffected1326(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 	uid, _, gid := setupGroupUser1326(t, s)
-	// 建组后通用订阅仍是全部 4 条
+	// 建组后不进组的订阅仍是全部 4 条
 	links := plainSubLinks1326(t, s, tok)
 	if len(links) != 4 {
-		t.Fatalf("建组后通用订阅应仍有 4 条链接，实际 %d：%v", len(links), links)
+		t.Fatalf("建组后不进组的订阅应仍有 4 条链接，实际 %d：%v", len(links), links)
 	}
 	// 改组、删组后也一样
 	if code, _ := callJSON1326(t, s.handleSubGroupsUpdate, "PUT", "/api/v1/subscriptions/groups/"+gid, `{"name":"智利组","selection":[{"panel":"local","landing":2}],"members":[{"kind":"user","id":"`+uid+`"}]}`, gid); code != 200 {
 		t.Fatalf("改组应 200，实际 %d", code)
 	}
 	if len(plainSubLinks1326(t, s, tok)) != 4 {
-		t.Fatalf("改组后通用订阅应仍有 4 条链接")
+		t.Fatalf("改组后不进组的订阅应仍有 4 条链接")
 	}
 	if code, _ := callJSON1326(t, s.handleSubGroupsDelete, "DELETE", "/api/v1/subscriptions/groups/"+gid, "", gid); code != 200 {
 		t.Fatalf("删组应 200，实际 %d", code)
 	}
 	if len(plainSubLinks1326(t, s, tok)) != 4 {
-		t.Fatalf("删组后通用订阅应仍有 4 条链接")
+		t.Fatalf("删组后不进组的订阅应仍有 4 条链接")
 	}
 }
 
@@ -354,49 +354,25 @@ func TestSubGroupRemoteLanding1326(t *testing.T) {
 }
 
 // 合并订阅进组：订阅按组的落地出；出组后恢复自己勾选。
+// 订阅用户进组：订阅按组的落地出；出组后恢复自己勾选。
+// （1.4.27：合并订阅已退场，进组的成员改走订阅用户；合并订阅进组的
+// 旧用例不再适用，组行为本身由本用例覆盖。）
 func TestSubGroupMergedSub1326(t *testing.T) {
 	s := newTestSubServer(t)
-	// 新建一条合并订阅（落地 2）
-	code, resp := callJSON1326(t, s.handleMergedSubsCreate, "POST", "/api/v1/subscriptions/merged", `{"name":"小明的合并","selection":[{"panel":"local","landing":2}]}`, "")
-	if code != 200 {
-		t.Fatalf("建合并订阅应 200，实际 %d：%v", code, resp)
-	}
-	mid, _ := resp["id"].(string)
-	urlStr, _ := resp["url"].(string)
-	u, _ := url.Parse(urlStr)
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	tok := parts[len(parts)-1]
-	// 进组前：落地 2
-	assertLinkFragments1326(t, plainSubLinks1326(t, s, tok), []string{"test-中转", "test-直连"}, []string{"智利-中转", "智利-直连"})
-	// 建组（落地 1）拉合并订阅进去
-	code, resp = callJSON1326(t, s.handleSubGroupsCreate, "POST", "/api/v1/subscriptions/groups", `{"name":"智利组","selection":[{"panel":"local","landing":1}],"members":[{"kind":"merged","id":"`+mid+`"}]}`, "")
-	if code != 200 {
-		t.Fatalf("建组应 200，实际 %d：%v", code, resp)
-	}
-	gid, _ := resp["id"].(string)
+	// 订阅用户自己勾落地 2，建落地 1 的分组把他拉进去。
+	uid, tok, gid := setupGroupUser1326(t, s)
 	// 进组后：落地 1
 	assertLinkFragments1326(t, plainSubLinks1326(t, s, tok), []string{"智利-中转", "智利-直连"}, []string{"test-中转", "test-直连"})
-	// 合并订阅列表行带分组徽章
-	req := httptest.NewRequest("GET", "/api/v1/subscriptions/merged", nil)
-	rec := httptest.NewRecorder()
-	s.handleMergedSubsList(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("合并订阅列表应 200，实际 %d", rec.Code)
-	}
-	var listResp map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &listResp)
-	subs, _ := listResp["subs"].([]any)
-	if len(subs) != 1 {
-		t.Fatalf("应有 1 条合并订阅，实际 %d", len(subs))
-	}
-	item := subs[0].(map[string]any)
+	// 订阅用户列表行带分组徽章
+	item := subUserListItem(t, s, uid)
 	if item["group_id"] != gid || item["group_name"] != "智利组" {
-		t.Fatalf("合并订阅列表行应带 group_id/group_name，实际 %v", item)
+		t.Fatalf("订阅用户列表行应带 group_id/group_name，实际 %v", item)
 	}
-	// 编辑合并订阅出组：恢复自己勾选（落地 2）
-	code, resp = subEditPUT(t, s.handleMergedSubsUpdate, "/api/v1/subscriptions/merged/"+mid, mid, `{"name":"小明的合并","selection":[{"panel":"local","landing":2}],"group_id":""}`)
+	// 编辑订阅用户出组：恢复自己勾选（落地 2）
+	code, resp := subEditPUT(t, func(w http.ResponseWriter, r *http.Request) { s.handleSubUsersUpdate(w, r) },
+		"/api/v1/subscriptions/users/"+uid, uid, `{"name":"小明","selection":[{"panel":"local","landing":2}],"group_id":""}`)
 	if code != 200 {
-		t.Fatalf("编辑合并订阅出组应 200，实际 %d：%v", code, resp)
+		t.Fatalf("编辑订阅用户出组应 200，实际 %d：%v", code, resp)
 	}
 	assertLinkFragments1326(t, plainSubLinks1326(t, s, tok), []string{"test-中转", "test-直连"}, []string{"智利-中转", "智利-直连"})
 }

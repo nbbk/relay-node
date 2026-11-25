@@ -136,7 +136,7 @@ func TestSingboxDNSEmptyConfig1338(t *testing.T) {
 func TestSingboxDNSDetourViaHTTP1338(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 	rec := callSub(t, s, tok, "/sub/"+tok+"?format=singbox", "")
 	if rec.Code != 200 {
 		t.Fatalf("singbox 应 200，实际 %d %s", rec.Code, rec.Body.String())

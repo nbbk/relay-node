@@ -124,37 +124,19 @@ func TestSubUserEditKeepsToken(t *testing.T) {
 func TestMergedSubEditKeepsToken(t *testing.T) {
 	s := newTestSubServer(t)
 
-	// 建合并订阅：只勾落地 1，仅中转 → 旧令牌只有 1 条中转链接
+	// 1.4.27：合并订阅已退场，创建与编辑一律 410。
+	// “编辑不换令牌、内容跟着新勾选走”的行为现在由订阅用户承担，
+	// 见 TestSubUserEditKeepsToken。
 	code, resp := subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsCreate(w, r) },
 		"/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1}],"mode":"relay"}`)
-	if code != 200 {
-		t.Fatalf("建合并订阅应 200，实际 %d %v", code, resp)
+	if code != 410 {
+		t.Fatalf("建合并订阅应 410（已退场），实际 %d %v", code, resp)
 	}
-	mid, _ := resp["id"].(string)
-	url, _ := resp["url"].(string)
-	tok := strings.TrimPrefix(url, "http://example.com/sub/")
-	if links := subPlainLinks(t, s, tok); len(links) != 1 || !strings.Contains(links[0], "-中转") {
-		t.Fatalf("编辑前旧令牌应只有 1 条中转链接，实际 %v", links)
-	}
-	hashBefore := subMergedTokenHash(t, s, mid)
-
-	// 编辑：勾选改成只勾落地 2、模式改仅直连、归属改名 —— 令牌必须原样不动
 	code, resp = subEditPUT(t, func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsUpdate(w, r) },
-		"/api/v1/subscriptions/merged/"+mid, mid,
+		"/api/v1/subscriptions/merged/ms-x", "ms-x",
 		`{"selection":[{"panel":"local","landing":2}],"mode":"direct","name":"王五"}`)
-	if code != 200 {
-		t.Fatalf("编辑合并订阅应 200，实际 %d %v", code, resp)
-	}
-	if resp["mode"] != "direct" || resp["name"] != "王五" {
-		t.Fatalf("编辑后应是 王五/direct，实际 %v", resp)
-	}
-	if subMergedTokenHash(t, s, mid) != hashBefore {
-		t.Fatalf("编辑后合并订阅令牌哈希变了（应保持不变）")
-	}
-	// 旧链接继续能用，内容已按新勾选出：只有落地 2 的直连链接
-	links := subPlainLinks(t, s, tok)
-	if len(links) != 1 || !strings.Contains(links[0], "-直连") || !strings.Contains(links[0], "203.0.113.2") {
-		t.Fatalf("编辑后旧令牌应只有落地 2 的 1 条直连链接，实际 %v", links)
+	if code != 410 {
+		t.Fatalf("编辑合并订阅应 410（已退场），实际 %d %v", code, resp)
 	}
 }
 
@@ -186,28 +168,25 @@ func TestSubEditValidation(t *testing.T) {
 		t.Fatalf("编辑不存在的用户应 404，实际 %d %v", code, resp)
 	}
 
-	// 合并订阅：空勾选必须 400（至少要一个落地）；非法模式 400；不存在的 id 404
+	// 1.4.27：合并订阅已退场，创建与编辑一律 410（到不了校验）。
 	code, resp = subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsCreate(w, r) },
 		"/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1}],"mode":"both"}`)
-	if code != 200 {
-		t.Fatalf("建合并订阅应 200，实际 %d %v", code, resp)
+	if code != 410 {
+		t.Fatalf("建合并订阅应 410（已退场），实际 %d %v", code, resp)
 	}
-	mid, _ := resp["id"].(string)
 	mergedH := func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsUpdate(w, r) }
-	if code, resp := subEditPUT(t, mergedH, "/api/v1/subscriptions/merged/"+mid, mid, `{"selection":[]}`); code != 400 {
-		t.Fatalf("合并订阅空勾选应 400，实际 %d %v", code, resp)
-	}
-	if code, resp := subEditPUT(t, mergedH, "/api/v1/subscriptions/merged/"+mid, mid,
-		`{"selection":[{"panel":"local","landing":1}],"mode":"bogus"}`); code != 400 {
-		t.Fatalf("合并订阅非法模式应 400，实际 %d %v", code, resp)
-	}
-	if code, resp := subEditPUT(t, mergedH, "/api/v1/subscriptions/merged/"+mid, mid,
-		`{"selection":[{"panel":"local","landing":99}]}`); code != 400 {
-		t.Fatalf("合并订阅不存在的落地应 400，实际 %d %v", code, resp)
+	for _, body := range []string{
+		`{"selection":[]}`,
+		`{"selection":[{"panel":"local","landing":1}],"mode":"bogus"}`,
+		`{"selection":[{"panel":"local","landing":99}]}`,
+	} {
+		if code, resp := subEditPUT(t, mergedH, "/api/v1/subscriptions/merged/ms-x", "ms-x", body); code != 410 {
+			t.Fatalf("编辑合并订阅 %s 应 410（已退场），实际 %d %v", body, code, resp)
+		}
 	}
 	if code, resp := subEditPUT(t, mergedH, "/api/v1/subscriptions/merged/no-such-id", "no-such-id",
-		`{"selection":[{"panel":"local","landing":1}]}`); code != 404 {
-		t.Fatalf("编辑不存在的合并订阅应 404，实际 %d %v", code, resp)
+		`{"selection":[{"panel":"local","landing":1}]}`); code != 410 {
+		t.Fatalf("编辑不存在的合并订阅也应 410（已退场），实际 %d %v", code, resp)
 	}
 }
 

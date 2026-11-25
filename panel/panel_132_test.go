@@ -53,21 +53,28 @@ func TestValidPublicDomain132(t *testing.T) {
 
 // TestSubPublicDomainSet132 订阅对外域名：设置后新生成的订阅链接改用
 // https://域名/sub/…；非法值 400 且不改动已保存的值；清空后恢复成面板地址。
+// TestSubPublicDomainSet132 订阅对外域名：设置后新生成的订阅链接改用
+// https://域名/sub/…；非法值 400 且不改动已保存的值；清空后恢复成面板地址。
+// （1.4.27：通用订阅已退场，链接改走订阅用户创建回包。）
 func TestSubPublicDomainSet132(t *testing.T) {
 	s := newTestSubServer(t)
+	mkUserURL := func() string {
+		t.Helper()
+		rec := callJSON130(t, s.handleSubUsersCreate, "POST", "/api/v1/subscriptions/users", `{"name":"张三的手机"}`)
+		if rec.Code != 200 {
+			t.Fatalf("新建订阅用户应 200，实际 %d：%s", rec.Code, rec.Body.String())
+		}
+		return respMap130(t, rec)["url"].(string)
+	}
 
 	// 没填时用面板自己的地址
-	rec := callJSON130(t, s.handleSubTokenGenerate, "POST", "/api/v1/settings/subscription/generate", "")
-	if rec.Code != 200 {
-		t.Fatalf("生成订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
-	}
-	u := respMap130(t, rec)["url"].(string)
+	u := mkUserURL()
 	if !strings.HasPrefix(u, "http://203.0.113.1:11111/sub/sub_") {
 		t.Fatalf("没填对外域名时应用面板地址：%s", u)
 	}
 
 	// 设置合法域名
-	rec = callJSON130(t, s.handleSubPublicDomainSet, "POST", "/api/v1/settings/subscription-domain", `{"domain":"relay.example.com"}`)
+	rec := callJSON130(t, s.handleSubPublicDomainSet, "POST", "/api/v1/settings/subscription-domain", `{"domain":"relay.example.com"}`)
 	if rec.Code != 200 || respMap130(t, rec)["domain"] != "relay.example.com" {
 		t.Fatalf("设置对外域名应 200 且回显：%d %s", rec.Code, rec.Body.String())
 	}
@@ -80,16 +87,10 @@ func TestSubPublicDomainSet132(t *testing.T) {
 	if sub == nil || sub["public_domain"] != "relay.example.com" {
 		t.Fatalf("settings 订阅信息应带 public_domain：%s", rec.Body.String())
 	}
-	// 之后生成的链接改用域名（通用订阅、每人订阅都走 subURL）
-	rec = callJSON130(t, s.handleSubTokenGenerate, "POST", "/api/v1/settings/subscription/generate", "")
-	u = respMap130(t, rec)["url"].(string)
+	// 之后生成的订阅用户链接改用域名
+	u = mkUserURL()
 	if !strings.HasPrefix(u, "https://relay.example.com/sub/sub_") {
 		t.Fatalf("填了对外域名后链接应用域名开头：%s", u)
-	}
-	rec = callJSON130(t, s.handleSubUsersCreate, "POST", "/api/v1/subscriptions/users", `{"name":"张三的手机"}`)
-	u = respMap130(t, rec)["url"].(string)
-	if !strings.HasPrefix(u, "https://relay.example.com/sub/sub_") {
-		t.Fatalf("订阅用户链接也应用域名开头：%s", u)
 	}
 
 	// 非法值 400，旧值不动
@@ -108,8 +109,7 @@ func TestSubPublicDomainSet132(t *testing.T) {
 	if rec.Code != 200 || respMap130(t, rec)["domain"] != "" {
 		t.Fatalf("清空对外域名应 200 且回显空：%d %s", rec.Code, rec.Body.String())
 	}
-	rec = callJSON130(t, s.handleSubTokenGenerate, "POST", "/api/v1/settings/subscription/generate", "")
-	u = respMap130(t, rec)["url"].(string)
+	u = mkUserURL()
 	if !strings.HasPrefix(u, "http://203.0.113.1:11111/sub/sub_") {
 		t.Fatalf("清空后链接应恢复成面板地址：%s", u)
 	}
@@ -117,24 +117,16 @@ func TestSubPublicDomainSet132(t *testing.T) {
 
 // TestMergedSubsRotate132 合并订阅轮换：同一勾选集合与同一归属人换新令牌，
 // 旧链接 404、新链接 200，选择与名称不变；不存在的 id 返回 404。
+// TestMergedSubsRotate132 1.4.27：合并订阅已退场，创建与轮换一律 410；
+// 列表仍可查（供核对）。轮换语义现在由订阅用户承担，见 TestSubUsers130。
 func TestMergedSubsRotate132(t *testing.T) {
 	s := newTestSubServer(t)
 	sel := `[{"panel":"local","landing":1}]`
 	rec := callJSON130(t, s.handleMergedSubsCreate, "POST", "/api/v1/subscriptions/merged",
 		`{"selection":`+sel+`,"name":"张三"}`)
-	if rec.Code != 200 {
-		t.Fatalf("生成合并订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
+	if rec.Code != 410 {
+		t.Fatalf("生成合并订阅应 410（已退场），实际 %d：%s", rec.Code, rec.Body.String())
 	}
-	m := respMap130(t, rec)
-	id, _ := m["id"].(string)
-	tokOld := tokenFromSubURL130(t, m["url"].(string))
-	if id == "" {
-		t.Fatalf("生成合并订阅应返回 id")
-	}
-	if rec := callSub(t, s, tokOld, "/sub/"+tokOld, ""); rec.Code != 200 {
-		t.Fatalf("轮换前旧链接应 200，实际 %d", rec.Code)
-	}
-
 	rotate := func(id string) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest("POST", "/api/v1/subscriptions/merged/"+id+"/rotate", nil)
@@ -145,65 +137,50 @@ func TestMergedSubsRotate132(t *testing.T) {
 		s.handleMergedSubsRotate(rec, req)
 		return rec
 	}
-	rec = rotate(id)
-	if rec.Code != 200 {
-		t.Fatalf("轮换合并订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
+	if rec := rotate("ms-000000000000"); rec.Code != 410 {
+		t.Fatalf("轮换合并订阅应 410（已退场），实际 %d：%s", rec.Code, rec.Body.String())
 	}
-	rm := respMap130(t, rec)
-	if rm["rotated"] != true {
-		t.Fatalf("轮换应返回 rotated=true")
-	}
-	tokNew := tokenFromSubURL130(t, rm["url"].(string))
-	if tokNew == tokOld {
-		t.Fatalf("轮换后令牌应变")
-	}
-	// 旧链接 404，新链接 200
-	if rec := callSub(t, s, tokOld, "/sub/"+tokOld, ""); rec.Code != 404 {
-		t.Fatalf("轮换后旧链接应 404，实际 %d", rec.Code)
-	}
-	if rec := callSub(t, s, tokNew, "/sub/"+tokNew, ""); rec.Code != 200 {
-		t.Fatalf("轮换后新链接应 200，实际 %d", rec.Code)
-	}
-	// 选择与归属人不变：列表里还是张三、还是落地 1
 	rec = callJSON130(t, s.handleMergedSubsList, "GET", "/api/v1/subscriptions/merged", "")
-	body := rec.Body.String()
-	if !strings.Contains(body, "张三") {
-		t.Fatalf("轮换后列表应仍有归属人张三：%s", body)
-	}
-	if len(s.cfg.MergedSubs) != 1 || len(s.cfg.MergedSubs[0].Selection) != 1 || s.cfg.MergedSubs[0].Selection[0].Landing != 1 {
-		t.Fatalf("轮换不应改动勾选集合：%+v", s.cfg.MergedSubs)
-	}
-	// 不存在的 id 返回 404
-	if rec := rotate("ms-000000000000"); rec.Code != 404 {
-		t.Fatalf("不存在的合并订阅轮换应 404，实际 %d", rec.Code)
+	if rec.Code != 200 {
+		t.Fatalf("列合并订阅应 200，实际 %d", rec.Code)
 	}
 }
 
 // TestMergedSubsRotateRevokes132 轮换后撤销：撤销掉轮换后的令牌，新链接也 404。
+// TestMergedSubsRotateRevokes132 1.4.27：合并订阅已退场，创建与轮换一律
+// 410；删除接口保留（清理用），删后旧令牌 404。
 func TestMergedSubsRotateRevokes132(t *testing.T) {
 	s := newTestSubServer(t)
 	rec := callJSON130(t, s.handleMergedSubsCreate, "POST", "/api/v1/subscriptions/merged",
 		`{"selection":[{"panel":"local","landing":1}]}`)
-	id, _ := respMap130(t, rec)["id"].(string)
-	req := httptest.NewRequest("POST", "/api/v1/subscriptions/merged/"+id+"/rotate", nil)
-	req.SetPathValue("id", id)
+	if rec.Code != 410 {
+		t.Fatalf("生成合并订阅应 410（已退场），实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	// 直接写一条合并订阅记录（供核对与清理），删掉它。
+	tok := generateSubToken()
+	enc, err := s.encryptSubTokenNow(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: "ms-132", Name: "待删", TokenHash: hashSubToken(tok), TokenEnc: enc, Selection: []SubSelection{{Panel: "local", Landing: 1}}})
+	req := httptest.NewRequest("POST", "/api/v1/subscriptions/merged/ms-132/rotate", nil)
+	req.SetPathValue("id", "ms-132")
 	req.Header.Set("Content-Type", "application/json")
 	req.Host = "203.0.113.1:11111"
 	rec2 := httptest.NewRecorder()
 	s.handleMergedSubsRotate(rec2, req)
-	if rec2.Code != 200 {
-		t.Fatalf("轮换应 200，实际 %d", rec2.Code)
+	if rec2.Code != 410 {
+		t.Fatalf("轮换合并订阅应 410（已退场），实际 %d", rec2.Code)
 	}
-	tokNew := tokenFromSubURL130(t, respMap130(t, rec2)["url"].(string))
-	del := httptest.NewRequest("DELETE", "/api/v1/subscriptions/merged/"+id, nil)
-	del.SetPathValue("id", id)
+	del := httptest.NewRequest("DELETE", "/api/v1/subscriptions/merged/ms-132", nil)
+	del.SetPathValue("id", "ms-132")
 	rec3 := httptest.NewRecorder()
 	s.handleMergedSubsDelete(rec3, del)
 	if rec3.Code != 200 {
-		t.Fatalf("撤销应 200，实际 %d", rec3.Code)
+		t.Fatalf("删除合并订阅应 200（清理用），实际 %d", rec3.Code)
 	}
-	if rec := callSub(t, s, tokNew, "/sub/"+tokNew, ""); rec.Code != 404 {
-		t.Fatalf("撤销后新链接应 404，实际 %d", rec.Code)
+	if rec := callSub(t, s, tok, "/sub/"+tok, ""); rec.Code != 404 {
+		t.Fatalf("删除后旧链接应 404，实际 %d", rec.Code)
 	}
 }
 

@@ -35,7 +35,7 @@ func groupMembers131(t *testing.T, body, name string) []string {
 func TestClashGlobalGroup131(t *testing.T) {
 	s := newTestSubServer(t)
 	tok := generateSubToken()
-	s.cfg.SubTokenHash = hashSubToken(tok)
+	subUserForToken1427(t, s, tok)
 	rec := callSub(t, s, tok, "/sub/"+tok+"?format=clash", "")
 	if rec.Code != 200 {
 		t.Fatalf("clash 应 200，实际 %d", rec.Code)
