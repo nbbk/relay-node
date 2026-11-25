@@ -1722,6 +1722,12 @@ function renderNodeInbounds(inbounds) {
       '<button class="btn secondary sm" type="button" data-ib-edit="' + esc(String(inb.inbound_id)) + '"' + dis + '>编辑</button>' +
       '<button class="btn secondary sm" type="button" data-ib-change-port="' + esc(String(inb.inbound_id)) + '" data-ib-tag="' + esc(inb.inbound_tag || '') + '"' + dis + '>换端口</button>' +
       (isReality ? '<button class="btn secondary sm" type="button" data-ib-rotate="' + esc(String(inb.inbound_id)) + '" data-ib-tag="' + esc(inb.inbound_tag || '') + '"' + dis + '>轮换密钥</button>' : '') +
+      // 单条入站链接＋二维码（v1.4.22，v1.4.23 补全到八种协议）：
+      // 后端在入站列表里给 linkable／link_reason；不支持的（XHTTP
+      // 只作服务端 fallback、VLESS 明文）按钮置灰并写明原因。
+      // 点开弹窗选用户后显示链接与二维码。
+      '<button class="btn secondary sm" type="button" data-ib-link="' + esc(String(inb.inbound_id)) + '"' + (inb.linkable === false ? ' disabled title="' + esc(inb.link_reason || '该入站不支持单条链接') + '"' : '') + '>复制链接</button>' +
+      '<button class="btn secondary sm" type="button" data-ib-qr="' + esc(String(inb.inbound_id)) + '"' + (inb.linkable === false ? ' disabled title="' + esc(inb.link_reason || '该入站不支持单条链接') + '"' : '') + '>二维码</button>' +
       '<button class="btn danger sm" type="button" data-ib-del="' + esc(String(inb.inbound_id)) + '" data-ib-tag="' + esc(inb.inbound_tag || '') + '">删除</button></div></div>';
   }).join('');
   $$('[data-ib-toggle]', wrap).forEach((b) => b.addEventListener('click', async () => {
@@ -1762,6 +1768,89 @@ function renderNodeInbounds(inbounds) {
       loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
     } catch (e) { showInboundsError(e.message); }
   }));
+  // 单条入站链接＋二维码（v1.4.22）：「复制链接」「二维码」共用同一个
+  // 弹窗（openInboundLinkModal），先选用户再显示链接与二维码。
+  $$('[data-ib-link]', wrap).forEach((b) => b.addEventListener('click', () => {
+    const inb = inbounds.find((x) => String(x.inbound_id) === String(b.dataset.ibLink));
+    if (inb) openInboundLinkModal(inb);
+  }));
+  $$('[data-ib-qr]', wrap).forEach((b) => b.addEventListener('click', () => {
+    const inb = inbounds.find((x) => String(x.inbound_id) === String(b.dataset.ibQr));
+    if (inb) openInboundLinkModal(inb);
+  }));
+}
+// 单条入站链接＋二维码（v1.4.22，v1.4.23 补全到八种协议）：入站卡片上的「复制链接」「二维码」
+// 共用这一个弹窗。先选用户（UUID 制协议：链接里嵌这个用户的 UUID；换用户链接就
+// 变了，旧链接失效；SS／SOCKS5：凭证是入站级全员共用，换用户链接内容不变），
+// 再显示这条入站的链接与二维码（复用订阅页的
+// linksHtml 布局：链接框＋复制按钮、二维码图＋复制／下载按钮）。
+// 链接与订阅里同一条入站的链接逐字一致（后端同一套拼法）。
+// 节点上还没有用户时给直白提示＋去建用户的入口（订阅用户页）。
+// 拉取失败时报错留在弹窗里，不关弹窗，换个用户可再试。
+async function openInboundLinkModal(inb) {
+  const tag = inb.inbound_tag || '';
+  const m = openModal('<h2>入站链接 —— ' + esc(tag) + '</h2>' +
+    '<p class="muted">这条入站的单条链接：扫码或复制后直接导入客户端就能连，不用走整个订阅。链接与订阅里同一条入站的链接完全一致。</p>' +
+    '<div id="ib-link-body"><p class="muted">正在加载用户…</p></div>' +
+    '<div class="btn-row"><button class="btn secondary" type="button" id="ib-link-back">返回入站模板</button></div>');
+  if (!m) return;
+  // 返回入站模板（v1.4.22）：链接弹窗一次只开一个，打开它就顶掉了入站
+  // 模板弹窗；点返回时重新打开模板弹窗（列表重新拉取），照编辑弹窗的
+  // 做法，不让用户回到节点列表再手动点一次。
+  const back = m.querySelector('#ib-link-back');
+  if (back) back.addEventListener('click', () => {
+    closeModal();
+    if (currentInboundsNodeId) loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+  });
+  const body = m.querySelector('#ib-link-body');
+  if (!body) return;
+  let users = [];
+  try {
+    const r = await api('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/users');
+    users = r.users || [];
+  } catch (e) {
+    body.innerHTML = '<p>加载用户失败：' + esc(e.message) + '</p>';
+    return;
+  }
+  if (!users.length) {
+    body.innerHTML = '<p>这个节点还没有用户：先去「订阅用户」里新建一个用户（新建时勾上这个节点），再回来复制链接。</p>' +
+      '<div class="btn-row"><button class="btn" type="button" id="ib-link-goto-users">去订阅用户里建用户</button></div>';
+    const go = body.querySelector('#ib-link-goto-users');
+    if (go) go.addEventListener('click', () => { closeModal(); goto('links'); });
+    return;
+  }
+  // 用户下拉框（真正 select，不是 datalist）：选项是能访问这个节点的
+  // 用户；合并订阅的用户标出来。默认选中第一个，打开就直接出它的链接。
+  // SS／SOCKS5（v1.4.23）：凭证是入站级全员共用，轮换影响全部人；
+  // 换用户链接内容不变，别以为换用户链接就变。
+  const sharedCred = inb.protocol === 'shadowsocks' || inb.protocol === 'socks';
+  const optHtml = users.map((u) => {
+    const kind = String(u.user_id || '').indexOf('merged:') === 0 ? '（合并订阅）' : '';
+    return '<option value="' + esc(u.user_id || '') + '">' + esc((u.username || u.user_id || '') + kind) + '</option>';
+  }).join('');
+  body.innerHTML = '<label for="ib-link-user">用户：</label>' +
+    '<select id="ib-link-user">' + optHtml + '</select>' +
+    (sharedCred ?
+      '<p class="muted" id="ib-link-shared-hint">凭证是入站级全员共用，轮换影响全部人；换用户链接内容不变。</p>' :
+      '<p class="muted">选一个能访问这个节点的用户：链接里嵌这个用户的 UUID；换用户链接就变了，旧链接失效。</p>') +
+    '<div id="ib-link-result"><p class="muted">正在生成链接…</p></div>';
+  const sel = body.querySelector('#ib-link-user');
+  const result = body.querySelector('#ib-link-result');
+  const load = async () => {
+    const key = sel ? sel.value : '';
+    if (!key || !result) return;
+    result.innerHTML = '<p class="muted">正在生成链接…</p>';
+    try {
+      const r = await api('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/' + encodeURIComponent(inb.inbound_id) + '/link?user_id=' + encodeURIComponent(key));
+      const label = r.label || tag || '入站';
+      result.innerHTML = linksHtml([{ label: label, link: r.link }], r.qr ? { [label]: r.qr } : null) +
+        (r.qr ? '' : '<p class="muted">二维码生成失败，仅显示链接。</p>');
+    } catch (e) {
+      result.innerHTML = '<p>生成链接失败：' + esc(e.message) + '</p>';
+    }
+  };
+  if (sel) sel.addEventListener('change', load);
+  load();
 }
 function ibCompositeValue(inb) {
   if (inb.protocol === 'vless' && inb.transport === 'reality') return 'vless-reality';

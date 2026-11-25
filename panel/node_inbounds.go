@@ -336,8 +336,18 @@ func nodeIDFromPath(r *http.Request) (int64, bool) {
 	return id, err == nil && id > 0
 }
 
+// nodeInboundListItem 入站列表里的一条：入站本身＋单条链接可行性
+// （v1.4.22：linkable／link_reason 由 backendInboundLinkable 算，
+// 前端据此置灰「复制链接」「二维码」按钮并写明原因；不进 config，
+// 只在列表响应里现算）。
+type nodeInboundListItem struct {
+	NodeInbound
+	Linkable   bool   `json:"linkable"`
+	LinkReason string `json:"link_reason,omitempty"`
+}
+
 // handleNodeInboundsList GET /api/v1/nodes/{id}/inbounds：入站列表
-// （私钥不返回）。
+// （私钥不返回；每条附 linkable／link_reason，见 nodeInboundListItem）。
 func (s *Server) handleNodeInboundsList(w http.ResponseWriter, r *http.Request) {
 	id, ok := nodeIDFromPath(r)
 	if !ok {
@@ -353,7 +363,135 @@ func (s *Server) handleNodeInboundsList(w http.ResponseWriter, r *http.Request) 
 	}
 	inbounds := sanitizedInbounds(node.Inbounds)
 	s.nodes.mu.Unlock()
-	writeJSON(w, 200, okResp(map[string]any{"node_id": id, "inbounds": inbounds}))
+	items := make([]nodeInboundListItem, 0, len(inbounds))
+	for _, in := range inbounds {
+		ok, reason := backendInboundLinkable(in)
+		items = append(items, nodeInboundListItem{NodeInbound: in, Linkable: ok, LinkReason: reason})
+	}
+	writeJSON(w, 200, okResp(map[string]any{"node_id": id, "inbounds": items}))
+}
+
+// handleNodeInboundLink GET /api/v1/nodes/{id}/inbounds/{inbound_id}/link?user_id=...
+// （v1.4.22）：单条入站链接＋二维码。user_id 是用户键（subuser:su-…／
+// merged:ms-…，节点用户列表返回的 user_id 原样传）。
+// 校验：节点存在、入站存在、用户存在且未停用、用户能访问该节点
+// （节点侧 UserIDs＋用户侧四级指派，含入站级）、UUID 制协议要求该
+// 用户在该节点有 UUID（v1.4.23：SS／SOCKS5 不要求 UUID，没 UUID
+// 也能出链接）、入站能出单条链接（backendInboundLink，与订阅同一
+// 套拼法）。
+// 只读：不生成 UUID、不写 config、不 bump 版本（UUID 缺失时报错，
+// 让调用方先拉一次节点用户列表——那条接口会补生成 UUID）。
+// 链接与订阅里同一条入站的链接逐字一致；二维码用 qrDataURI（与订阅
+// 同一套 go-qrcode，Medium 纠错、256px）；二维码生成失败时仍返回链接，
+// qr 为空，前端显示“二维码生成失败，仅显示链接”。
+func (s *Server) handleNodeInboundLink(w http.ResponseWriter, r *http.Request) {
+	id, ok := nodeIDFromPath(r)
+	if !ok {
+		writeJSON(w, 400, errResp("节点 id 不对"))
+		return
+	}
+	inboundID, err := strconv.ParseInt(r.PathValue("inbound_id"), 10, 64)
+	if err != nil || inboundID <= 0 {
+		writeJSON(w, 400, errResp("入站 id 不对"))
+		return
+	}
+	userKey := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	kind, userID, found := strings.Cut(userKey, ":")
+	if !found || (kind != "subuser" && kind != "merged") || strings.TrimSpace(userID) == "" {
+		writeJSON(w, 400, errResp("请先选一个用户"))
+		return
+	}
+	if !s.tryOpLock(w) {
+		return
+	}
+	defer s.opMu.Unlock()
+	s.nodes.mu.Lock()
+	defer s.nodes.mu.Unlock()
+	node := s.nodes.getNode(id)
+	if node == nil {
+		writeJSON(w, 404, errResp("节点不存在"))
+		return
+	}
+	var in *NodeInbound
+	for i := range node.Inbounds {
+		if node.Inbounds[i].InboundID == inboundID {
+			in = &node.Inbounds[i]
+			break
+		}
+	}
+	if in == nil {
+		writeJSON(w, 404, errResp("入站不存在"))
+		return
+	}
+	// 用户：存在、未停用、能访问该节点（含入站级指派）。
+	var uuids map[string]string
+	var scope string
+	var targets []string
+	var groupID string
+	var userName string
+	var disabled bool
+	switch kind {
+	case "subuser":
+		u := findSubUserByID(s.cfg.SubUsers, userID)
+		if u == nil {
+			writeJSON(w, 404, errResp("用户不存在"))
+			return
+		}
+		uuids, scope, targets, groupID, userName, disabled = u.NodeUUIDs, u.BackendScope, u.BackendTargets, u.GroupID, u.Name, u.Disabled
+	case "merged":
+		m := findMergedSubByID(s.cfg.MergedSubs, userID)
+		if m == nil {
+			writeJSON(w, 404, errResp("用户不存在"))
+			return
+		}
+		uuids, scope, targets, groupID, userName, disabled = m.NodeUUIDs, m.BackendScope, m.BackendTargets, m.GroupID, m.Name, m.Disabled
+	}
+	if disabled {
+		writeJSON(w, 400, errResp("该用户已停用"))
+		return
+	}
+	if !nodeHasUser(node, userKey) || !s.backendAssignAllows(scope, targets, groupID, node) {
+		writeJSON(w, 403, errResp("该用户不能访问这个节点"))
+		return
+	}
+	if allowed := backendAssignInbounds(scope, targets, node); allowed != nil {
+		found := false
+		for _, tag := range allowed {
+			if tag == in.InboundTag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeJSON(w, 403, errResp("该用户没有被指派这个入站"))
+			return
+		}
+	}
+	uuid := ""
+	if uuids != nil {
+		uuid = uuids[node.Address]
+	}
+	// UUID 门控在协议级（v1.4.23）：只有 UUID 制协议要求 UUID，
+	// SS／SOCKS5 不要求，没 UUID 也能出链接。
+	if backendInboundNeedsUUID(*in) && uuid == "" {
+		writeJSON(w, 400, errResp("该用户在该节点还没有 UUID：先打开节点用户列表同步一次，再回来复制链接"))
+		return
+	}
+	l, ok := backendInboundLink(*node, *in, uuid)
+	if !ok {
+		_, reason := backendInboundLinkable(*in)
+		if reason == "" {
+			reason = "该入站现在出不了单条链接"
+		}
+		writeJSON(w, 400, errResp(reason))
+		return
+	}
+	qr, _ := qrDataURI(l.Link)
+	writeJSON(w, 200, okResp(map[string]any{
+		"node_id": id, "inbound_id": inboundID, "inbound_tag": in.InboundTag,
+		"user_id": userKey, "username": userName,
+		"label": l.Name, "link": l.Link, "qr": qr,
+	}))
 }
 
 // inboundRequest 入站的新增／修改请求体（§4.3 字段；私钥不接受，

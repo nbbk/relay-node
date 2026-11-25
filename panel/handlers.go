@@ -202,6 +202,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("PUT /api/v1/relay-routes", s.requireAuth(s.handleRelayRoutesUpdate))
 	mux.HandleFunc("DELETE /api/v1/relay-routes", s.requireAuth(s.handleRelayRoutesDelete))
 	mux.HandleFunc("POST /api/v1/relay-routes/apply", s.requireAuth(s.handleRelayRoutesApply))
+	// 轻量节点后端（v1.4.22）：单条入站链接＋二维码（会话认证）。
+	mux.HandleFunc("GET /api/v1/nodes/{id}/inbounds/{inbound_id}/link", s.requireAuth(s.handleNodeInboundLink))
 	// 轻量节点后端（v1.4.2，切片 3）：一键换端口＋每节点用户指派＋轮换 UUID（会话认证）。
 	mux.HandleFunc("POST /api/v1/nodes/{id}/inbounds/{inbound_id}/change-port", s.requireAuth(s.handleNodeInboundChangePort))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/users", s.requireAuth(s.handleNodeUsersList))

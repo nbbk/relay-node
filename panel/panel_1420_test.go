@@ -15,8 +15,10 @@ package main
 //     AnyTLS／SOCKS5 的关键字段、每节点一个 fallback 组。
 //   - XHTTP 不进订阅：后端 XHTTP 入站不产生链接；粘贴进来的 XHTTP
 //     链接在 renderSubContent 层被滤掉，四种格式都不进。
-//   - 范围：停用的入站／HY2／TUIC／SS／VLESS-TLS 的后端入站不进订阅；
-//     没 UUID 的节点跳过；节点指派／入站级指派／停用的订阅都不进。
+//   - 范围（v1.4.23 更新）：停用的入站／XHTTP／VLESS 明文不进订阅；
+//     HY2／TUIC／SS／SS2022／VLESS-TLS／Trojan 都进；没 UUID 的节点
+//     只出 SS／SOCKS5（UUID 门控下移到协议级）；节点指派／入站级指派／
+//     停用的订阅都不进。
 //   - 粘贴注册与 twin 推导：parseNodeLink 认 AnyTLS；REALITY／AnyTLS
 //     链接的 SNI 不被 CertDomain 覆盖（computeTwinLinks）；真 install.sh
 //     的 --twin／--door 对 AnyTLS 与 REALITY 只换地址、参数全留；
@@ -35,8 +37,8 @@ import (
 )
 
 func TestVersion1420(t *testing.T) {
-	if Version != "1.4.21" {
-		t.Fatalf("Version 应为 1.4.21，实际 %q", Version)
+	if Version != "1.4.23" {
+		t.Fatalf("Version 应为 1.4.23，实际 %q", Version)
 	}
 }
 
@@ -343,7 +345,8 @@ func TestBackendSubLinksScope1420(t *testing.T) {
 	id := seedContractNode1420(t, s, h, cookie)
 	s.nodes.mu.Lock()
 	n := s.nodes.getNode(id)
-	// 停用的 REALITY、HY2、TUIC、SS、VLESS-TLS 各一条：本切片都不进订阅。
+	// 停用的 REALITY 一条仍不进；HY2、TUIC、SS、VLESS-TLS 各一条：
+	// v1.4.23 起都进订阅（共 3＋4＝7 条）。
 	n.Inbounds = append(n.Inbounds,
 		NodeInbound{InboundID: 10, InboundTag: "reality-off", Protocol: "vless", Transport: "reality", Security: "reality",
 			Port: 4443, SNI: "www.microsoft.com", RealityPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -359,18 +362,40 @@ func TestBackendSubLinksScope1420(t *testing.T) {
 	)
 	s.nodes.mu.Unlock()
 	links := s.backendSubLinksForUser("subuser", "su-1420")
-	if len(links) != 3 {
-		t.Fatalf("范围外入站不应进订阅，应仍是 3 条，实际 %d：%v", len(links), links)
+	if len(links) != 7 {
+		t.Fatalf("停用的入站不应进订阅，其余 4 条新协议应进，应是 7 条，实际 %d：%v", len(links), links)
 	}
-	// 没 UUID 的节点跳过。
+	for _, name := range []string{"example-node-hy2-443", "example-node-tuic-443", "example-node-ss-8388", "example-node-tls-443"} {
+		found := false
+		for _, l := range links {
+			if l.Name == name {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("订阅里应有 %s，实际 %v", name, links)
+		}
+	}
+	// 没 UUID 的节点：UUID 制协议跳过，只出 SOCKS5 一条（契约入站里
+	// 唯一的共享凭证协议；v1.4.23 的协议级门控）。
 	s.nodes.mu.Lock()
 	n2 := &BackendNode{ID: 99, Name: "no-uuid-node", Address: "203.0.113.99", Inbounds: contractInbounds1420()}
 	s.nodes.data.Nodes = append(s.nodes.data.Nodes, n2)
 	s.nodes.mu.Unlock()
 	links = s.backendSubLinksForUser("subuser", "su-1420")
-	if len(links) != 3 {
-		t.Fatalf("没 UUID 的节点应跳过，应仍是 3 条，实际 %d：%v", len(links), links)
+	if len(links) != 8 {
+		t.Fatalf("没 UUID 的节点应只出 SOCKS5 一条，应是 7＋1＝8 条，实际 %d：%v", len(links), links)
 	}
+	// 撤掉无 UUID 的节点，后面的指派检查只看主节点。
+	s.nodes.mu.Lock()
+	kept := s.nodes.data.Nodes[:0]
+	for _, nd := range s.nodes.data.Nodes {
+		if nd.ID != 99 {
+			kept = append(kept, nd)
+		}
+	}
+	s.nodes.data.Nodes = kept
+	s.nodes.mu.Unlock()
 	// 节点指派：只指派给别人时，该用户一条都拿不到。
 	s.nodes.mu.Lock()
 	n.UserIDs = []string{"subuser:su-other"}

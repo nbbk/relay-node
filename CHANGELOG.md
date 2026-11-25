@@ -436,7 +436,8 @@
   - 一键修复坏按钮：check.sh 发 `tls_unreachable`，handleFix 的 switch 里没有这一项，点下去返回 400。现在 handleFix 有 `tls_unreachable` 和 `udp_disabled` 两个 case：前者先做与 check.sh 同款的分段定位，只有 realm 本身的问题才调 restartRealm()，其它原因返回 `{ok:true, need_manual:true, reason, guide}`，不再 400；后者改开关 + 重启。
   - 前端：fixIssue / centralFixIssue 收到 need_manual 时弹“需要手动处理”展示原因 + 指引，不再误 toast“修复已执行”；渲染 issues 时只有可修复的才画“一键修复”按钮，没有修复办法的（fix=manual，如指纹不一致）改成“查看原因”按钮，点开直接弹原因文案、不发修复请求。本地体检与远程体检两处同款逻辑。
 - 测试：go test -race 全过（443 个测试函数，1346 文件新增 16 个：NEEDS_UDP 计算与解析、删落地重排后值跟着走、编辑重建写回、use_udp 读写与同步、tls_unreachable 四档分流——被占用/没人监听/直连正常/直连也失败、udp_disabled 修复与已开着不再重启、补原始链接重算 NEEDS_UDP、check.sh --json 四档——跳过 UDP/报真因/直连正常/被占用、tls_unreachable 不再 400；版本断言同步改到 1.3.46；gofmt 干净、go vet 过）；jsdom test-1346.js 19 项全过（本地与远程体检的按钮渲染、查看原因、need_manual 弹窗、修复成功 toast）。check.sh 另有 9 档 bash 模拟验证全过（桩 ss/openssl/systemctl + 真 TCP 监听：跳过 UDP、use_udp 关着报真因、老 relay.conf 两档、TLS 直连正常/直连失败/SNI 问题/被 nginx 占用/realm 在监听但握手失败）。未测：真机、香港 2 真机复核、iPhone Safari、远程面板联调、干净机器。
-- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。已装好的老 relay.conf 没有 NEEDS_UDP 标记，升级后下次加落地/编辑落地/补原始链接时面板会自动补上，在此之前 UDP 检查按旧行为走；中转机上 install.sh 新装的落地自带启发值。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。
+
 
 ### v1.3.47 更新
 
@@ -577,12 +578,6 @@
 - 测试：新增 jsdom test-1409.js（登录成功触发重载、二次验证第一步不重载、登录失败不重载、二次验证第二步提交成功重载），test-1404／test-1406／test-1408 对 1.4.9 回归全过；面板 `TZ=UTC go test -race` 全量全过（版本断言已一并升到 1.4.9）。
 - 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。
 
-### v1.4.11 更新
-
-- 添加入站表单字段帮助：每个字段的 label 旁加一个 ⓘ 按钮（10 个字段：入站 tag/名称、协议、端口、监听地址、SNI／域名、REALITY 指纹、SS 加密方法、SS 密码、SOCKS5 用户名、SOCKS5 密码），点开弹出提示框（再点一次关、点页面别处关、按 Esc 关、点 × 关，一次只开一个；键盘可操作）。提示内容写清三件事：该填什么、必填还是选填、建议填什么；端口、SNI／域名、REALITY 指纹、SS 加密方法、SS 密码五处跟协议联动（选不同协议内容跟着变，开着提示框切换协议也会刷新）。口径以实现为准：SS／SS2022 端口留空走默认 8388、SOCKS5 留空走默认 1080；REALITY 留空填占位值 www.example.com 但部署前必须改真实域名；SS2022 密码须是对应长度的 base64 密钥（128-gcm 16 字节、256-gcm／chacha20 32 字节），手填不对保存时直接 400；SOCKS5 用户名必填（空着节点上应用失败）。示例一律用 example.com、203.0.113.1、假 UUID。
-- 测试：新增 jsdom test-1411.js（71 项全过：10 个字段都有提示按钮、弹出／关闭／一次只开一个、协议联动 SS2022／SOCKS5／REALITY／HY2、开着切换协议刷新、提交时关掉）与 Go panel_1411_test.go（版本断言、10 个按钮、帮助内容口径、样式）；test-1404（44 项）／test-1406（12 项）／test-1408（22 项）／test-1409（14 项）／test-1410（32 项）对 1.4.11 回归全过；面板 `TZ=UTC go test -race` 全量 552 项全过（360.9 秒，0 失败）。
-- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。
-
 ### v1.4.10 更新
 
 - 轻量节点后端切片 6（面板侧）：备用协议 SS／SS2022／SOCKS5 手动开启。入站详情页加 SOCKS5 手动配置卡（地址用节点地址，端口、用户名、密码照入站字段显示，样式沿用 kv 行；SOCKS5 不进订阅，手动填进客户端）；新建入站选 Shadowsocks／SS2022 时端口默认 8388，选 SOCKS5 时默认 1080（选协议时端口空着自动填，手填的不覆盖；提交时端口留空也行，后端新建时按协议补默认值）；新建 SS／SOCKS5 入站密码留空时自动生成 16 位随机密码（可改；只在新建时生成，编辑留空不改）；添加表单补上 SOCKS5 用户名／密码字段。顺带把前端随机密码字符集与后端对齐（去掉易混淆的 L，两边同一套字符）。
@@ -590,6 +585,12 @@
 - 节点详情弹窗「核心版本」显示修复：以前弹窗根本没有这一行（上报健康里有 singbox_version、没有 xray_version，前端也无处可读），现在加「核心版本」行，以 agent 健康上报的 xray_version 为准（26.11.9）；没上报过时显示 —，不编造版本号。面板代码里没有任何 25.11.8 字面量与写死的版本 fallback，agent 上报的就是 26.11.9；真机上看到的 25.11.8 以修复后的显示为准再核对。
 - 订阅核对（未改订阅链）：核过 panel/subscription.go，后端入站目前一条都不进订阅（切片 10 的活，只挂后端节点的订阅仍为空）；SS／SS2022 在原有六协议落地链里的订阅渲染是现成的（plain／base64／Clash／sing-box 四种格式都出 SS 节点），SOCKS5 不进订阅（订阅代码里没有任何 socks:// 链接构造）。
 - 测试：新增 Go panel_1410_test.go（备用协议默认值与密码自动生成、SS2022 密钥格式与手填校验、核心版本取上报值、订阅核对）与 jsdom test-1410.js（32 项全过：SOCKS5 配置卡四项、默认端口 8388／1080、密码自动生成 16 位、SS2022 base64 定长密钥、SS／SS2022 订阅渲染、SOCKS5 不进订阅、核心版本与上报一致及无上报时显示 —）；test-1404／test-1406／test-1408／test-1409 对 1.4.10 回归全过；面板 `TZ=UTC go test -race` 全量 548 项全过（434.3 秒，0 失败）。第一轮全量曾红 1 项（TestInboundsValidation1401 里“SS 缺密码应 400”的旧断言与新口径冲突——缺密码现自动生成），已按新口径改成“SS 缺方法应 400”，第二轮全量全绿。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。
+
+### v1.4.11 更新
+
+- 添加入站表单字段帮助：每个字段的 label 旁加一个 ⓘ 按钮（10 个字段：入站 tag/名称、协议、端口、监听地址、SNI／域名、REALITY 指纹、SS 加密方法、SS 密码、SOCKS5 用户名、SOCKS5 密码），点开弹出提示框（再点一次关、点页面别处关、按 Esc 关、点 × 关，一次只开一个；键盘可操作）。提示内容写清三件事：该填什么、必填还是选填、建议填什么；端口、SNI／域名、REALITY 指纹、SS 加密方法、SS 密码五处跟协议联动（选不同协议内容跟着变，开着提示框切换协议也会刷新）。口径以实现为准：SS／SS2022 端口留空走默认 8388、SOCKS5 留空走默认 1080；REALITY 留空填占位值 www.example.com 但部署前必须改真实域名；SS2022 密码须是对应长度的 base64 密钥（128-gcm 16 字节、256-gcm／chacha20 32 字节），手填不对保存时直接 400；SOCKS5 用户名必填（空着节点上应用失败）。示例一律用 example.com、203.0.113.1、假 UUID。
+- 测试：新增 jsdom test-1411.js（71 项全过：10 个字段都有提示按钮、弹出／关闭／一次只开一个、协议联动 SS2022／SOCKS5／REALITY／HY2、开着切换协议刷新、提交时关掉）与 Go panel_1411_test.go（版本断言、10 个按钮、帮助内容口径、样式）；test-1404（44 项）／test-1406（12 项）／test-1408（22 项）／test-1409（14 项）／test-1410（32 项）对 1.4.11 回归全过；面板 `TZ=UTC go test -race` 全量 552 项全过（360.9 秒，0 失败）。
 - 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。
 
 ### v1.4.12 更新
@@ -680,3 +681,21 @@
 - 切片 11 标志版（轻量节点后端切片 11：安装脚本定稿）：面板行为无变化。本版只抬版本号（VERSION 1.4.20 → 1.4.21）并补回归断言，不动任何面板代码——一键安装命令的生成逻辑（`node_backend.go` 的 `nodeInstallCommand`，1.4.12 落地的 wget 兜底：有 curl 用 curl、没有用 wget、两个都没有就明说请先装 curl 或 wget 并 exit 1）形状不变。
 - 测试：新增 Go panel_1421_test.go（2 个测试函数：版本断言 1.4.21；安装命令回归：逐字比对整条命令、curl 分支在前／wget 分支在后、两个分支的脚本 URL 与参数原样相同、bash 只跑两次、无两者时明说＋exit 1、一行无换行、HTTPS 面板时 scheme 为 https）与 jsdom test-1421.js（22 项：VERSION 文件是 1.4.21、启动后侧栏版本号显示 1.4.21、安装命令生成源码形状回归、新建节点后安装命令原样显示在“#nodes-once-cmd”里，全部通过）；回归 .reg-206（test-1404／test-1406／test-1408～test-1419＋test-1421）共 1258 项全过、0 失败（其中回归基底 13 个文件 1236 项，与已修正的 .reg-205 基线一致，0 新增回归）；面板 `TZ=UTC go test -race` 全量通过（492.770 秒，642 个测试函数，0 失败，日志 kit-206-1421-full.log；版本断言已一并升到 1.4.21）；push-1421.py 已建、未 dry-run（等统一串行干跑）。未测：真机（安装命令在新落地机上实跑）、iPhone Safari。
 - 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。
+
+### v1.4.22 更新
+
+- 后端入站一键复制链接＋二维码：入站模板弹窗里每个入站卡片上加「复制链接」「二维码」两个按钮。点开弹窗先选用户（下拉框，列出能访问这个节点的用户；链接里嵌这个用户的 UUID，换用户链接就变了），再显示这条入站的单条链接与二维码（复用订阅页的链接框＋复制按钮、二维码图＋复制／下载按钮布局）。链接与订阅里同一条入站的链接逐字一致——后端新接口 `GET /api/v1/nodes/{id}/inbounds/{inbound_id}/link?user_id=...` 直接复用订阅的 `backendInboundLink` 拼法（VLESS+REALITY、AnyTLS、SOCKS5），二维码复用现成的服务端 go-qrcode（Medium 纠错、256px），不引入新依赖。入站列表每条附 `linkable`／`link_reason`（`backendInboundLinkable` 是唯一事实来源）：XHTTP（只作服务端 fallback）、HY2／TUIC（暂不进订阅）、SS／SS2022／Trojan／VLESS-TLS（不进后端订阅）等按钮置灰并写明原因。节点上还没有用户时弹窗给直白提示＋「去订阅用户里建用户」按钮（跳到订阅用户页）。接口校验：节点／入站／用户不存在、没选用户、用户不能访问该节点（含入站级指派）、用户在该节点没 UUID、停用的用户都返回明确错误；只读，不生成 UUID、不写 config、不 bump 版本；私钥绝不进响应。打开链接弹窗会顶掉入站模板弹窗（一次只开一个），弹窗里有「返回入站模板」按钮，点后重新打开模板弹窗。
+- 入站模板弹窗布局（用户补充）：「手动添加入站」按钮从列表下面上移到与「一键生成默认三件套」同一行（同一 `.btn-row`，视觉上一组操作）；三件套是主按钮，手动添加是次要按钮（`.btn.secondary`）。
+- 测试：新增 Go panel_1422_test.go（6 个测试函数：版本断言 1.4.22；backendInboundLinkable 各协议与缺字段／停用；入站列表 linkable／link_reason 与私钥不返回；单条链接接口三条链接与订阅逐字一致＋二维码 data URI＋校验全套；访问控制：不能访问节点／没 UUID（只读不生成）／停用／入站级未指派；单条链接与订阅端到端逐字一致）与 jsdom test-1422.js（43 项：静态断言、启动后侧栏 1.4.22、模板弹窗三条入站按钮状态、链接弹窗选用户／链接与契约逐字一致／二维码／换用户、没用户提示与去建用户入口、接口失败报错留弹窗、手动添加按钮同行布局，全部通过）；test-1421.js 版本断言升到 1.4.22（22 项全过）；回归 .reg-206（test-1404／test-1406／test-1408～test-1419＋test-1421＋test-1422）共 1301 项全过、0 失败；面板 `TZ=UTC go test -race` 全量通过（499.219 秒，648 个测试函数，0 失败，日志 kit-206-1422-full.log；版本断言已一并升到 1.4.22）；push-1422.py dry-run 通过（未 --push，等用户点头）。未测：真机（手机扫码直连 REALITY、HY2 入站仍置灰）、iPhone Safari。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。已装好的老 relay.conf 没有 NEEDS_UDP 标记，升级后下次加落地/编辑落地/补原始链接时面板会自动补上，在此之前 UDP 检查按旧行为走；中转机上 install.sh 新装的落地自带启发值。
+
+### v1.4.23 更新
+
+- 后端入站链接扩展到全部协议：订阅与单条链接共用同一套拼法（`panel/node_backend_sub.go` 的 `backendInboundLink`／`backendInboundLinkable`），VLESS-TLS／HY2／TUIC／SS／SS2022／Trojan 全部进订阅与单条链接。链接模板按订阅渲染器与客户端解析器逐字拼：VLESS-TLS 是 `vless://<uuid>@<host>:<port>?encryption=none&security=tls&sni=<sni>&type=tcp#<节点名>-<tag>`、HY2 是 `hysteria2://<uuid>@<host>:<port>?sni=<sni>&alpn=h3#<节点名>-<tag>`（密码＝UUID，alpn=h3 写死，不带 obfs）、TUIC 是 `tuic://<uuid>:<uuid>@<host>:<port>?congestion_control=bbr&alpn=h3&sni=<sni>#<节点名>-<tag>`、SS／SS2022 是 `ss://<base64url(method:password)>@<host>:<port>#<节点名>-<tag>`（SIP002 形式，整体 base64 RawURLEncoding 去=，不带 query 参数）、Trojan 是 `trojan://<uuid>@<host>:<port>?security=tls&sni=<sni>&type=tcp#<节点名>-<tag>`。VLESS-TLS／Trojan 必须带 `security=tls` 与 `type=tcp`（否则渲染器与客户端解析器都默认当 WS，导入后连不上；只在模板里写死，不改渲染器的 WS 默认值），不要带 fp/alpn。已支持的 VLESS+REALITY、AnyTLS、SOCKS5 拼法一字不动。XHTTP 仍不进（只作服务端 fallback，`filterXHTTPSubLinks` 不动）；VLESS 明文仍不进。证书不纳入 linkable 检查（保持 1.4.22 口径）。
+- UUID 门控下移到协议级：以前 `backendSubLinksForUser` 里没 UUID 就整个节点跳过、单条链接接口也在拼链接前要求 UUID 非空，SS／SOCKS5 会被误拦（它们根本不用 UUID）。现在只有 6 种 UUID 制协议（VLESS+REALITY、VLESS-TLS、HY2、TUIC、AnyTLS、Trojan）要求 UUID（新 helper `backendInboundNeedsUUID`，`backendInboundLink` 与单条链接接口共用）；SS／SOCKS5 用入站级共享凭证，没 UUID 的用户也能拿到这两条链接。用户在节点上的指派校验（节点侧 UserIDs＋用户侧四级指派，含入站级）保持不变；仍只读，不现生成 UUID、不写 config。
+- linkable 校验（每种新协议只看入站必填字段，缺了给直白原因，按钮置灰并写明）：VLESS-TLS／HY2／TUIC／Trojan 要求 SNI 非空；SS 要求 SSMethod／SSPassword 非空，SS2022 长度复用 `validateSS2022Password`（与保存时同一口径）。停用的入站仍不可出链接。入站卡片上 5 种新协议的按钮从置灰变可用（列表接口已逐条算 linkable／link_reason，不用改）。
+- 单条链接弹窗：SS／SOCKS5 加一句提示——凭证是入站级全员共用，轮换影响全部人；换用户链接内容不变（别以为换用户链接就变）。弹窗选用户逻辑不变；UUID 制协议仍是换用户链接就变。
+- 已知缺口（客户端侧，只汇报、不动手）：客户端 sing-box JSON／Clash YAML 订阅解析器（`_nodeFromSingboxOutbound`／`_nodeFromClashProxy`）没有 HY2／TUIC 的凭证分支——`NodeProtocolLabel.fromString` 认这两个类型，但取凭证的 switch 里没有它们，走到 `_ => null` 就返回 null、整条被丢掉（解析器里的注释还写着“HY2／TUIC 在这里会被面板跳过”，1.4.23 起面板不再跳过，这句假设已失效）。所以客户端用 sing-box／Clash 订阅拉取时 HY2／TUIC 节点不出现，须改走 base64／plain 订阅（链接解析器 `_nodeFromHy2Link`／`_nodeFromTuicLink` 有这两支，链接层 8 种都通）。HY2 的 alpn、TUIC 的 congestion_control／alpn 在客户端 Node 模型里没字段，解析与配置生成都丢（`_tlsObject` 只写 enabled＋server_name，客户端代码里根本没有 `alpn` 字串；配置生成也不写 congestion_control）。真实 sing-box 1.14.4 侧已验证通过（见测试）。
+- 顺带修 CHANGELOG 节错位：1.4.11 一节之前错排在 1.4.10 之前，现已换回正确顺序；全文件 85 节逐节核对，无重复、顺序无错位。
+- 测试：新增 Go panel_1423_test.go（7 个测试函数：版本断言 1.4.23；5 种新协议的 linkable 校验与缺字段／停用；9 条链接逐字断言＋SS 整体 base64url 与无 query；UUID 门控下移——没 UUID 的用户只拿 SS／SS2022／SOCKS5 三条，单条接口 SS 没 UUID 也 200、REALITY 没 UUID 仍 400；订阅四种格式渲染——plain／base64 九行、sing-box 六种新出站字段、Clash 六种新 proxy 与 fallback 组 9 成员；单条链接接口 5 种新协议与订阅逐字一致＋二维码；入站列表 9 条全可出链接、XHTTP 仍置灰）与 jsdom test-1423.js（54 项：静态断言、启动后侧栏 1.4.23、模板弹窗 10 条入站按钮状态、HY2 链接逐字一致与换用户变链接、SS／SOCKS5 共享凭证提示与换用户链接不变、VLESS-TLS／TUIC／Trojan 链接格式逐字断言，全部通过）；panel_1420_test.go 的范围测试与 panel_1422_test.go 的 linkable 测试已按新口径改过来（1420：停用仍不进、HY2／TUIC／SS／VLESS-TLS 都进、没 UUID 的节点只出 SOCKS5；1422：HY2 可出链接，XHTTP／VLESS 明文仍不可）；test-1421.js／test-1422.js 版本断言升到 1.4.23（22／43 项全过）；回归 17 个 live 文件共 1349 项全过、0 失败；面板 `TZ=UTC go test -race` 全量通过（530.336 秒，655 个测试函数，0 失败，日志 kit-206-1423-full.log；版本断言已一并升到 1.4.23）。兼容性验证（真实 sing-box 1.14.4 二进制）：9 条链接渲染出的完整订阅配置 `sing-box check` 通过、`sing-box run` 正常启动，urltest 测速实际拨过 9 个出站（含 HY2／TUIC／SS／SS2022／Trojan／VLESS-TLS）；Clash YAML 用解析器验过，9 个 proxy、fallback 组与 75 条规则都在；自家客户端链接层 8 种都通（见上，sing-box／Clash 订阅解析丢 HY2／TUIC 是客户端侧缺口）；push-1423.py dry-run 通过（未 --push，等用户点头）。未测：真机（手机扫码直连新协议、订阅四格式真机导入＋连通）、iPhone Safari。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；不用改任何设置。已发出去的订阅链接内容会变（多了 5 种协议的节点），客户端重新拉取即更新，不用重新导入；SS／SS2022 密码是入站级共享凭证，轮换影响该入站的全部人。
