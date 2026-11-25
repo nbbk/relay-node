@@ -474,8 +474,8 @@ func TestSubUserinfoHeaderForUser1325(t *testing.T) {
 	// 没用量记录 → 仍有 total=上限（v1.3.27 改了契约：管理面板模式下本机
 	// 永远没有用量记录，以前直接返回 ""，小火箭看不到上限与到期；现在
 	// 不编用量，只拼上限与到期；三项全无时才返回 ""）。
-	if h := s.subUserinfoHeaderForUser(key, limit, "total", "", map[int]bool{}); h != "total=10737418240" {
-		t.Fatalf("无用量记录时头里应只有 total=上限，实际 %q", h)
+	if h := s.subUserinfoHeaderForUser(key, limit, "total", "", map[int]bool{}); h != "total=10737418240; expire=0" {
+		t.Fatalf("无用量记录时头里应只有 total=上限与 expire=0（永久），实际 %q", h)
 	}
 	if h := s.subUserinfoHeaderForUser(key, 0, "total", "", map[int]bool{}); h != "" {
 		t.Fatalf("三项全无时应返回空串，实际 %q", h)

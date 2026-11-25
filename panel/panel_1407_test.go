@@ -53,7 +53,7 @@ func TestNodeTrafficSingboxHealth1407(t *testing.T) {
 // ---------- 版本断言 ----------
 
 func TestVersion1407(t *testing.T) {
-	if Version != "1.4.23" {
+	if Version != "1.4.24" {
 		t.Fatalf("Version 应为 1.4.23，实际 %q", Version)
 	}
 }

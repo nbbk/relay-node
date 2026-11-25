@@ -43,7 +43,7 @@ func TestCentralUserForwardsList1333(t *testing.T) {
 	if !resp.OK || len(resp.Forwards) != 2 {
 		t.Fatalf("应返回 2 条转发，实际 %+v", resp)
 	}
-	if resp.PanelVer != "1.4.23" {
+	if resp.PanelVer != "1.4.24" {
 		t.Fatalf("panel_version 应为 1.4.23，实际 %q", resp.PanelVer)
 	}
 	used := map[int]bool{}

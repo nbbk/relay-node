@@ -1726,6 +1726,11 @@ func (s *Server) subUserinfoHeaderForUser(key string, limitBytes int64, limitMod
 	}
 	if !earliest.IsZero() {
 		parts = append(parts, "expire="+strconv.FormatInt(earliest.Unix(), 10))
+	} else if len(parts) > 0 {
+		// v1.4.24：头非空但无到期（永久订阅）时补 expire=0，否则小火箭
+		// 解析失败、把整条头原样显示成 UPLOAD=...; DOWNLOAD=...; TOTAL=...；
+		// 三项全无时 parts 为空、仍返回空串（不编数据口径不变）。
+		parts = append(parts, "expire=0")
 	}
 	return strings.Join(parts, "; ")
 }

@@ -591,7 +591,7 @@ func TestCentralCachePreferredOverLocalStub1327(t *testing.T) {
 	}
 	// 订阅头：upload/download 也应是缓存的 3MB/2MB。
 	h := s.subUserinfoHeaderForUser(key, 1024*mb, "total", "", nil)
-	want := "upload=" + strconv.FormatInt(3*mb, 10) + "; download=" + strconv.FormatInt(2*mb, 10) + "; total=" + strconv.FormatInt(1024*mb, 10)
+	want := "upload=" + strconv.FormatInt(3*mb, 10) + "; download=" + strconv.FormatInt(2*mb, 10) + "; total=" + strconv.FormatInt(1024*mb, 10) + "; expire=0"
 	if h != want {
 		t.Fatalf("userinfo 头应用聚合缓存，期望 %q，实际 %q", want, h)
 	}

@@ -1469,6 +1469,10 @@ func resolveSubFormat(r *http.Request) (string, error) {
 // （只有令牌到期时头里就只有 expire 一项）。三项全都没有时才返回空
 // （不编数据口径不变）。1.3.24 的 tokenExpiry 修法本意就是让管理面板
 // 只靠令牌到期也能显示，但这个 early return 把它全堵死了。
+// v1.4.24：永久订阅（无到期）时也带 expire=0——小火箭解析
+// subscription-userinfo 头时缺 expire 就失败、把整条头原样显示成
+// UPLOAD=...; DOWNLOAD=...; TOTAL=...；三项全无时 parts 为空、
+// 仍返回空串（不编数据口径不变）。
 func (s *Server) subUserinfoHeader(localIndices map[int]bool, tokenExpiry string) string {
 	rc, _, err := s.readRelayConf()
 	var landings []Landing
@@ -1521,6 +1525,9 @@ func (s *Server) subUserinfoHeader(localIndices map[int]bool, tokenExpiry string
 	}
 	if !earliest.IsZero() {
 		parts = append(parts, "expire="+strconv.FormatInt(earliest.Unix(), 10))
+	} else if len(parts) > 0 {
+		// v1.4.24：头非空但无到期（永久订阅）时补 expire=0，见函数头注释。
+		parts = append(parts, "expire=0")
 	}
 	return strings.Join(parts, "; ")
 }

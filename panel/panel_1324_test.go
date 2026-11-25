@@ -75,13 +75,25 @@ func TestUserinfoTokenVsLandingExpiry1324(t *testing.T) {
 	if !strings.Contains(h, "expire="+strconv.FormatInt(unixOf(t, "2027-02-16T00:00:00Z"), 10)) {
 		t.Fatalf("令牌永久时 expire 应取落地到期，实际 %q", h)
 	}
-	// 两者都没有 → 不含 expire 项
+	// 两者都没有 → 头里没有其他数据时仍不发头（不编数据）。
 	s.stateMu.Lock()
 	delete(s.state.Landings, "203.0.113.1")
 	s.stateMu.Unlock()
 	h = callSub(t, s, tok, "/sub/"+tok, "").Header().Get("subscription-userinfo")
-	if strings.Contains(h, "expire=") {
-		t.Fatalf("两者都无到期时不应有 expire 项，实际 %q", h)
+	if h != "" {
+		t.Fatalf("三项全无时不应发 userinfo 头，实际 %q", h)
+	}
+	// 有流量数据但无到期（永久订阅）→ 头里含 expire=0（v1.4.24：小火箭
+	// 缺 expire 就解析失败、把整条头原样显示）。
+	lt := s.traffic.get("203.0.113.1")
+	lt.UpTotal = 123456
+	lt.DownTotal = 789012
+	h = callSub(t, s, tok, "/sub/"+tok, "").Header().Get("subscription-userinfo")
+	if !strings.Contains(h, "upload=123456") || !strings.Contains(h, "download=789012") {
+		t.Fatalf("有流量数据时头里应有 upload/download，实际 %q", h)
+	}
+	if !strings.Contains(h, "expire=0") {
+		t.Fatalf("永久订阅头里应有 expire=0，实际 %q", h)
 	}
 }
 
