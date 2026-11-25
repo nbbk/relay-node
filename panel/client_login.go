@@ -3,7 +3,8 @@ package main
 // 客户端账号密码登录（v1.3.45，契约见客户端仓 docs/api/client-login.md）：
 // 面板在 9870-9880 上另起 HTTPS 监听（只挂 /api/v1/client/*），
 // POST /api/v1/client/login 用管理后台同一套账号校验，成功返回会话令牌
-// sess_+64 位十六进制（只存 SHA-256 哈希）与该账号的通用订阅链接。
+// sess_+64 位十六进制（只存 SHA-256 哈希）与该账号的订阅链接（v1.4.26：
+// 优先合并订阅，见 clientSubscriptionURL）。
 
 import (
 	"context"
@@ -126,8 +127,8 @@ func (s *Server) requireClientAuth(next http.HandlerFunc) http.HandlerFunc {
 
 // handleClientLogin POST /api/v1/client/login（公开端点，无须事先认证）。
 // 账号与管理后台同一套（cfg.Username + cfg.PasswordHash，PBKDF2）；
-// 成功返回会话令牌与通用订阅链接，失败一律 401（账号不存在与密码不对
-// 不区分，不给枚举账号的口子）。防刷复用管理登录的同一套逻辑：同一 IP
+// 成功返回会话令牌与订阅链接（v1.4.26：优先合并订阅，见 clientSubscriptionURL），
+// 失败一律 401（账号不存在与密码不对不区分，不给枚举账号的口子）。防刷复用管理登录的同一套逻辑：同一 IP
 // 5 次失败锁 5 分钟，锁定期内返回 429 + Retry-After（契约 §3.3）。
 func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
@@ -179,12 +180,28 @@ func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
-// clientSubscriptionURL 登录成功返回的通用订阅完整链接（契约 §3.2）。
-// 口径与 subURL 一致（对外域名 + 自定义路径）；没生成过通用订阅、
-// 或只有旧链接（1.3.7 之前，无密文）时返回 ""，调用方不给 subscription_url 字段。
-// 注意：subURL 用 r.Host 拼链接；登录请求走的是 9870-9880 监听，订阅端点
-// 只在主端口上服务，Host 里的端口不能直接用，换成主端口。
+// clientSubscriptionURL 登录成功返回的订阅完整链接（契约 §3.2）。
+// 规则（v1.4.26）：优先返回合并订阅——按 cfg.MergedSubs 的顺序（创建顺序，
+// 先创建的在前），取第一份已启用（Disabled=false）且有链接（TokenEnc != ""）
+// 的，解密令牌后拼链接；解密失败的那份跳过、继续找下一份。没有任何可用的
+// 合并订阅时，回落到通用订阅（老行为：cfg.SubTokenHash/SubTokenEnc 那条）。
+// 合并订阅才有节点内容——管理面板本机没节点，通用订阅内容是空的，登录后
+// 客户端要自动带节点，必须优先合并订阅；回落只为向后兼容（通用订阅仍是
+// 老行为，有内容的老面板不受影响）。
+// 没生成过通用订阅、或只有旧链接（1.3.7 之前，无密文）且又无可用合并订阅
+// 时返回 ""，调用方不给 subscription_url 字段。
 func (s *Server) clientSubscriptionURL(r *http.Request) string {
+	for i := range s.cfg.MergedSubs {
+		ms := &s.cfg.MergedSubs[i]
+		if ms.Disabled || strings.TrimSpace(ms.TokenEnc) == "" {
+			continue
+		}
+		tok, err := s.decryptSubTokenNow(ms.TokenEnc)
+		if err != nil {
+			continue
+		}
+		return s.clientSubscriptionLink(r, tok)
+	}
 	if s.cfg.SubTokenHash == "" || s.cfg.SubTokenEnc == "" {
 		return ""
 	}
@@ -192,6 +209,14 @@ func (s *Server) clientSubscriptionURL(r *http.Request) string {
 	if err != nil {
 		return ""
 	}
+	return s.clientSubscriptionLink(r, tok)
+}
+
+// clientSubscriptionLink 按令牌拼订阅完整链接：口径与 subURL 一致（对外
+// 域名 + 自定义路径）；没填对外域名时用请求 Host 但把端口换成主端口。
+// 注意：subURL 用 r.Host 拼链接；登录请求走的是 9870-9880 监听，订阅端点
+// 只在主端口上服务，Host 里的端口不能直接用，换成主端口。
+func (s *Server) clientSubscriptionLink(r *http.Request, tok string) string {
 	if d := strings.TrimSpace(s.cfg.SubPublicDomain); d != "" {
 		return "https://" + d + "/" + s.subPath() + "/" + tok
 	}
