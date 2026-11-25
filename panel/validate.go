@@ -93,11 +93,13 @@ type ParsedLink struct {
 	Name string
 }
 
-// parseNodeLink 解析 vless/trojan/ss/vmess/hysteria2/tuic 链接，取出协议/地址/端口/SNI。
+// parseNodeLink 解析 vless/trojan/ss/vmess/hysteria2/tuic/anytls 链接，取出协议/地址/端口/SNI。
 // HY2 链接：hysteria2://<密码>@<地址>:<端口>?sni=<域名>&alpn=h3（也认 hy2://
 // 别名、obfs=salamander + obfs-password）；TUIC 链接：
 // tuic://<uuid>:<密码>@<地址>:<端口>?congestion_control=bbr&alpn=h3&sni=<域名>。
 // （落地 install.sh 生成的格式；与 1.3.39 订阅输出认的格式一致。）
+// AnyTLS 链接：anytls://<UUID>@<地址>:<端口>?sni=<域名>（v1.4.20，切片 10：
+// 粘贴注册与 twin 推导补 AnyTLS；与 vless 同款 userinfo@host:port 形状）。
 // HY2 没密码、TUIC 没 uuid/密码的链接不算有效节点，直接报错（订阅侧同
 // 样是字段缺失就跳过不断链，注册侧在入口就拦住）。
 func parseNodeLink(link string) (*ParsedLink, error) {
@@ -109,6 +111,21 @@ func parseNodeLink(link string) (*ParsedLink, error) {
 	pl := &ParsedLink{Scheme: scheme}
 	switch scheme {
 	case "vless", "trojan":
+		host := u.Hostname()
+		p, _ := strconv.Atoi(u.Port())
+		pl.Host, pl.Port = host, p
+		pl.Name = u.Fragment
+		pl.SNI = u.Query().Get("sni")
+		if pl.SNI == "" {
+			pl.SNI = u.Query().Get("host")
+		}
+		if pl.SNI == "" && !isIP(host) {
+			pl.SNI = host
+		}
+	case "anytls":
+		// AnyTLS（v1.4.20，切片 10）：与 vless 同款 userinfo@host:port
+		// 形状，sni 是节点域名（TLS 的 SNI）；UUID 不在这里校验
+		// （与 vless 同口径，订阅侧字段缺失时跳过）。
 		host := u.Hostname()
 		p, _ := strconv.Atoi(u.Port())
 		pl.Host, pl.Port = host, p
@@ -231,12 +248,34 @@ func parseNodeLink(link string) (*ParsedLink, error) {
 			pl.SNI = pl.Host
 		}
 	default:
-		return nil, fmt.Errorf("不支持的链接协议：%s（只支持 vless/trojan/ss/vmess/hysteria2/tuic）", scheme)
+		return nil, fmt.Errorf("不支持的链接协议：%s（只支持 vless/trojan/ss/vmess/hysteria2/tuic/anytls）", scheme)
 	}
 	if pl.Host == "" {
 		return nil, fmt.Errorf("链接里没有地址")
 	}
 	return pl, nil
+}
+
+// twinOwnSNI 链接自带的 SNI（v1.4.20，切片 10）：REALITY 与 AnyTLS 链接
+// 的 SNI 是链接自己的（REALITY 的伪装目标／AnyTLS 的节点域名），twin
+// 推导时不能被调用方传的证书域名覆盖（computeTwinLinks 里用）；其它
+// 协议返回 ""（走调用方传的 sni）。链接本身没写 sni 时也返回 ""，
+// 调用方再按原逻辑回退。
+func twinOwnSNI(link string) string {
+	u, err := url.Parse(strings.TrimSpace(link))
+	if err != nil {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	switch scheme {
+	case "anytls":
+		return strings.TrimSpace(u.Query().Get("sni"))
+	case "vless":
+		if strings.EqualFold(u.Query().Get("security"), "reality") {
+			return strings.TrimSpace(u.Query().Get("sni"))
+		}
+	}
+	return ""
 }
 
 // linkHostDomain 取链接的域名部分（用于 add-node 第 2 步校验：必须等于填的子域名）。

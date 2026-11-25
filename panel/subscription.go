@@ -77,10 +77,16 @@ func verifySubToken(tok, hash string) bool {
 // subLink 订阅里的一条节点：Name 是客户端里显示的名字（沿用 twin 备注），
 // Link 是完整的节点链接。LandingAddr 是这条节点所属落地的地址（内部用，
 // 按人转发改写端口时定位，不序列化进 JSON）。
+// NodeName 是这条节点所属的后端节点名（v1.4.20，切片 10）：只有后端节点
+// 生成的链接才填（Name 就是“<节点名>-<入站 tag>”）；旧链（nodes.txt
+// 的 twin 链接）留空。渲染器按它做同节点多入站分组（Clash fallback 组、
+// sing-box urltest 组）；经 /api/v1/central/subscription 跨面板取时随
+// JSON 带过去，不丢分组信息。
 type subLink struct {
 	Name        string `json:"name"`
 	Link        string `json:"link"`
 	LandingAddr string `json:"-"`
+	NodeName    string `json:"node_name,omitempty"`
 }
 
 // ---------- 节点链接来源 ----------
@@ -226,13 +232,40 @@ func dedupSubLinks(links []subLink) []subLink {
 	return out
 }
 
+// isXHTTPSubLink 判断一条节点链接是不是 XHTTP 传输的 VLESS 链接
+// （v1.4.20，切片 10，§8.3）：XHTTP 入站只作服务端 fallback，不进订阅。
+// 判据是 scheme=vless 且 query 的 type=xhttp（REALITY＋XHTTP 的入站
+// 就是这个形状；type 为空或 tcp/ws 时不是 XHTTP，不误伤）。
+func isXHTTPSubLink(link string) bool {
+	u, err := url.Parse(strings.TrimSpace(link))
+	if err != nil || !strings.EqualFold(u.Scheme, "vless") {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(u.Query().Get("type")), "xhttp")
+}
+
+// filterXHTTPSubLinks 从订阅链接里去掉全部 XHTTP 链接（v1.4.20，切片 10，
+// §8.3）：四种格式（base64／plain／sing-box／Clash）都走 renderSubContent，
+// 在这里过滤一次就全覆盖；后端入站生成侧（backendInboundLink）本来就
+// 不产生 XHTTP 链接，这里是第二道防线（粘贴进来的旧链 XHTTP 链接也拦住）。
+func filterXHTTPSubLinks(links []subLink) []subLink {
+	out := make([]subLink, 0, len(links))
+	for _, l := range links {
+		if isXHTTPSubLink(l.Link) {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
 // renderSubContent 把节点链接渲染成订阅内容：plain=明文列表，
 // base64=标准 base64 编码的列表，clash=Clash YAML（dns 段 + proxies +
 // 策略组 + 分流规则），singbox=sing-box 完整配置 JSON。mode 只影响
 // clash（split 分流 / global 全局），base64/plain/singbox 原样不动
 // （sing-box JSON 始终按分流出）；format 不合法返回错误。
 func renderSubContent(links []subLink, format, mode string) (string, string, error) {
-	links = dedupSubLinks(links)
+	links = filterXHTTPSubLinks(dedupSubLinks(links))
 	switch format {
 	case "plain":
 		var lines []string
@@ -287,9 +320,11 @@ func hy2TuicTLS(sni string, q url.Values) map[string]any {
 }
 
 // singboxOutboundFromLink 把一条节点链接转成 sing-box outbound
-// （map 形式，由 renderSingboxJSON 统一 Marshal）。支持 vless /
-// trojan / vmess / ss / hysteria2 / tuic；字段缺失（如 hy2 没密码、
-// tuic 没 uuid/密码）返回失败、调用方跳过这条，不断链。
+// （map 形式，由 renderSingboxJSON 统一 Marshal）。支持 vless（含
+// REALITY，tls.reality 块按 §8.2 的形状写，v1.4.20 切片 10）/
+// trojan / vmess / ss / hysteria2 / tuic / anytls / socks5；字段缺失
+// （如 hy2 没密码、tuic 没 uuid/密码、REALITY 没 pbk/sid、anytls 没
+// UUID、socks5 没用户名/密码）返回失败、调用方跳过这条，不断链。
 func singboxOutboundFromLink(l subLink) (map[string]any, bool) {
 	u, err := url.Parse(strings.TrimSpace(l.Link))
 	if err != nil || u.Scheme == "" {
@@ -307,6 +342,29 @@ func singboxOutboundFromLink(l subLink) (map[string]any, bool) {
 			"method": cipher, "password": pw,
 		}, true
 	}
+	if scheme == "socks5" {
+		// SOCKS5 链接：socks5://<用户名>:<密码>@<地址>:<端口>
+		// （v1.4.20，切片 10；用户名／密码取入站配置）。
+		user := ""
+		pw := ""
+		if u.User != nil {
+			user = u.User.Username()
+			pw, _ = u.User.Password()
+		}
+		if user == "" || pw == "" {
+			return nil, false
+		}
+		host := u.Hostname()
+		port, _ := strconv.Atoi(u.Port())
+		if host == "" || port <= 0 {
+			return nil, false
+		}
+		return map[string]any{
+			"type": "socks", "tag": l.Name,
+			"server": host, "server_port": port,
+			"version": "5", "username": user, "password": pw,
+		}, true
+	}
 	q := u.Query()
 	host := u.Hostname()
 	port, _ := strconv.Atoi(u.Port())
@@ -314,6 +372,18 @@ func singboxOutboundFromLink(l subLink) (map[string]any, bool) {
 		return nil, false
 	}
 	tlsOn := strings.EqualFold(q.Get("security"), "tls")
+	// isReality REALITY 入站（v1.4.20，切片 10，§8.2）：VLESS＋
+	// security=reality。flow 与 fp 缺省时按 §8.2 的默认值补
+	// （xtls-rprx-vision／chrome）；pbk 与 sid 缺一个就整条跳过。
+	isReality := false
+	realityFlow := ""
+	if scheme == "vless" && strings.EqualFold(q.Get("security"), "reality") {
+		isReality = true
+		realityFlow = strings.TrimSpace(q.Get("flow"))
+		if realityFlow == "" {
+			realityFlow = "xtls-rprx-vision"
+		}
+	}
 	sni := q.Get("sni")
 	if sni == "" {
 		sni = q.Get("host")
@@ -321,6 +391,11 @@ func singboxOutboundFromLink(l subLink) (map[string]any, bool) {
 	network := q.Get("type")
 	if network == "" {
 		network = "ws"
+	}
+	if isReality && q.Get("type") == "" {
+		// REALITY 是 TCP 承载：链接里没写 type 时按 tcp 算，别落到
+		// 上面默认的 ws 去（否则会多出一个 ws transport，起不来）。
+		network = "tcp"
 	}
 	path := q.Get("path")
 	wsHost := q.Get("host")
@@ -335,6 +410,9 @@ func singboxOutboundFromLink(l subLink) (map[string]any, bool) {
 			return nil, false
 		}
 		ob = map[string]any{"type": "vless", "tag": l.Name, "server": host, "server_port": port, "uuid": uuid}
+		if isReality {
+			ob["flow"] = realityFlow
+		}
 	case "trojan":
 		pw := ""
 		if u.User != nil {
@@ -403,10 +481,47 @@ func singboxOutboundFromLink(l subLink) (map[string]any, bool) {
 			ob["congestion_control"] = cc
 		}
 		return ob, true
+	case "anytls":
+		// AnyTLS 链接：anytls://<UUID>@<地址>:<端口>?sni=<域名>
+		// （v1.4.20，切片 10；凭证口径与 §9.4 一致：password＝UUID，
+		// name＝用户 email 是计量用的，不进链接）。TLS 恒开，server_name
+		// 取 sni（没有就不写，sing-box 默认用 server）。
+		pw := ""
+		if u.User != nil {
+			pw = u.User.Username()
+		}
+		if pw == "" {
+			return nil, false
+		}
+		tls := map[string]any{"enabled": true}
+		if sni != "" {
+			tls["server_name"] = sni
+		}
+		return map[string]any{"type": "anytls", "tag": l.Name, "server": host, "server_port": port, "password": pw, "tls": tls}, true
 	default:
 		return nil, false
 	}
-	if tlsOn {
+	if isReality {
+		// REALITY 的 tls 块（v1.4.20，切片 10，§8.2 一字不差）：
+		// server_name 是 SNI 目标，utls 指纹默认 chrome，reality
+		// 块写公钥与 short id；pbk／sid 缺一个整条跳过（不断链）。
+		pbk := strings.TrimSpace(q.Get("pbk"))
+		sid := strings.TrimSpace(q.Get("sid"))
+		if pbk == "" || sid == "" {
+			return nil, false
+		}
+		fp := strings.TrimSpace(q.Get("fp"))
+		if fp == "" {
+			fp = "chrome"
+		}
+		tls := map[string]any{"enabled": true}
+		if sni != "" {
+			tls["server_name"] = sni
+		}
+		tls["utls"] = map[string]any{"enabled": true, "fingerprint": fp}
+		tls["reality"] = map[string]any{"enabled": true, "public_key": pbk, "short_id": sid}
+		ob["tls"] = tls
+	} else if tlsOn {
 		tls := map[string]any{"enabled": true}
 		if sni != "" {
 			tls["server_name"] = sni
@@ -442,6 +557,13 @@ func renderSingboxJSON(links []subLink) string {
 	var tags []string
 	var nodeObs []map[string]any
 	directTag := ""
+	// nodeGroups 同节点多入站分组（v1.4.20，切片 10）：键是后端节点名
+	// （subLink.NodeName，旧链留空、不分组），值是该节点渲染出来的
+	// outbound tag（去重后的真 tag）；nodeOrder 是节点首次出现的顺序，
+	// 保证输出顺序稳定。成员少于 2 个的节点不单独成组（一个入站没
+	// 必要切，仍在全局 Proxy／自动选择组里）。
+	nodeGroups := map[string][]string{}
+	var nodeOrder []string
 	for _, l := range links {
 		name := l.Name
 		if n, ok := used[name]; ok {
@@ -456,6 +578,12 @@ func renderSingboxJSON(links []subLink) string {
 		}
 		tags = append(tags, name)
 		nodeObs = append(nodeObs, ob)
+		if l.NodeName != "" {
+			if _, seen := nodeGroups[l.NodeName]; !seen {
+				nodeOrder = append(nodeOrder, l.NodeName)
+			}
+			nodeGroups[l.NodeName] = append(nodeGroups[l.NodeName], name)
+		}
 		if directTag == "" && strings.HasSuffix(l.Name, "-直连") {
 			directTag = name
 		}
@@ -517,6 +645,26 @@ func renderSingboxJSON(links []subLink) string {
 		outbounds = append(outbounds,
 			map[string]any{"type": "selector", "tag": "Proxy", "outbounds": tags, "default": def},
 			map[string]any{"type": "urltest", "tag": "自动选择", "outbounds": tags, "url": "http://www.gstatic.com/generate_204", "interval": "5m"},
+		)
+		// 每节点一个 urltest 组（v1.4.20，切片 10）：组名就是节点名，
+		// 成员是该节点的 outbound tag；健康检查失败时自动切到同组
+		// 另一个入站。url／interval 沿用上面“自动选择”组的惯例。
+		// 组名撞上保留 tag（Proxy／自动选择／direct／block）时跳过，
+		// 不让非法配置流出去。
+		for _, nodeName := range nodeOrder {
+			members := nodeGroups[nodeName]
+			if len(members) < 2 {
+				continue
+			}
+			switch nodeName {
+			case "Proxy", "自动选择", "direct", "block":
+				continue
+			}
+			outbounds = append(outbounds,
+				map[string]any{"type": "urltest", "tag": nodeName, "outbounds": members, "url": "http://www.gstatic.com/generate_204", "interval": "5m"},
+			)
+		}
+		outbounds = append(outbounds,
 			map[string]any{"type": "direct", "tag": "direct"},
 			map[string]any{"type": "block", "tag": "block"},
 		)
@@ -556,7 +704,8 @@ func writeClashAlpn(b *strings.Builder, q url.Values) {
 }
 
 // clashProxyFromLink 把一条节点链接转成一个 Clash proxy 条目（YAML 行块）。
-// 支持 vless / trojan / vmess / ss / hysteria2 / tuic；字段缺失返回失败、
+// 支持 vless（含 REALITY，reality-opts 按 §8.2 写，v1.4.20 切片 10）/
+// trojan / vmess / ss / hysteria2 / tuic / anytls / socks5；字段缺失返回失败、
 // 调用方跳过这条。所有条目都写 udp: true——mihomo 的 udp
 // 默认 false，不写等于禁用 UDP 中继，TikTok 大量走的 QUIC 就不通。
 func clashProxyFromLink(l subLink) (string, bool) {
@@ -589,6 +738,17 @@ func clashProxyFromLink(l subLink) (string, bool) {
 		return "", false
 	}
 	tlsOn := strings.EqualFold(q.Get("security"), "tls")
+	// isReality REALITY 入站（v1.4.20，切片 10，§8.2）：VLESS＋
+	// security=reality。flow／fp 缺省时按 §8.2 默认值补；pbk 与 sid
+	// 缺一个整条跳过（在 vless 分支里拦）。
+	isReality := false
+	realityPBK := ""
+	realitySID := ""
+	if scheme == "vless" && strings.EqualFold(q.Get("security"), "reality") {
+		isReality = true
+		realityPBK = strings.TrimSpace(q.Get("pbk"))
+		realitySID = strings.TrimSpace(q.Get("sid"))
+	}
 	sni := q.Get("sni")
 	if sni == "" {
 		sni = q.Get("host")
@@ -596,6 +756,10 @@ func clashProxyFromLink(l subLink) (string, bool) {
 	network := q.Get("type")
 	if network == "" {
 		network = "ws"
+	}
+	if isReality && q.Get("type") == "" {
+		// REALITY 是 TCP 承载：没写 type 时按 tcp 算，别落到 ws 去。
+		network = "tcp"
 	}
 	path := q.Get("path")
 	wsHost := q.Get("host")
@@ -609,6 +773,9 @@ func clashProxyFromLink(l subLink) (string, bool) {
 			uuid = u.User.Username()
 		}
 		if uuid == "" {
+			return "", false
+		}
+		if isReality && (realityPBK == "" || realitySID == "") {
 			return "", false
 		}
 		b.WriteString("    type: vless\n")
@@ -714,11 +881,60 @@ func clashProxyFromLink(l subLink) (string, bool) {
 		}
 		b.WriteString("    udp: true\n")
 		return b.String(), true
+	case "anytls":
+		// AnyTLS（v1.4.20，切片 10）：password＝UUID，sni 取链接 sni。
+		pw := ""
+		if u.User != nil {
+			pw = u.User.Username()
+		}
+		if pw == "" {
+			return "", false
+		}
+		b.WriteString("    type: anytls\n")
+		b.WriteString("    server: " + yamlDQ(host) + "\n")
+		b.WriteString("    port: " + strconv.Itoa(port) + "\n")
+		b.WriteString("    password: " + yamlDQ(pw) + "\n")
+		if sni != "" {
+			b.WriteString("    sni: " + yamlDQ(sni) + "\n")
+		}
+		b.WriteString("    udp: true\n")
+		return b.String(), true
+	case "socks5":
+		// SOCKS5（v1.4.20，切片 10）：用户名／密码取入站配置。
+		user := ""
+		pw := ""
+		if u.User != nil {
+			user = u.User.Username()
+			pw, _ = u.User.Password()
+		}
+		if user == "" || pw == "" {
+			return "", false
+		}
+		b.WriteString("    type: socks5\n")
+		b.WriteString("    server: " + yamlDQ(host) + "\n")
+		b.WriteString("    port: " + strconv.Itoa(port) + "\n")
+		b.WriteString("    username: " + yamlDQ(user) + "\n")
+		b.WriteString("    password: " + yamlDQ(pw) + "\n")
+		b.WriteString("    udp: true\n")
+		return b.String(), true
 	default:
 		return "", false
 	}
 	b.WriteString("    udp: true\n")
-	if tlsOn {
+	if isReality {
+		// REALITY（v1.4.20，切片 10，§8.2）：tls 恒开、servername 是
+		// SNI 目标、指纹默认 chrome、network 是 tcp、flow 默认
+		// xtls-rprx-vision、reality-opts 写公钥与 short id。
+		b.WriteString("    tls: true\n")
+		if sni != "" {
+			b.WriteString("    servername: " + yamlDQ(sni) + "\n")
+		}
+		fp := strings.TrimSpace(q.Get("fp"))
+		if fp == "" {
+			fp = "chrome"
+		}
+		b.WriteString("    fingerprint: " + yamlDQ(fp) + "\n")
+	} else if tlsOn {
 		b.WriteString("    tls: true\n")
 		if sni != "" {
 			b.WriteString("    servername: " + yamlDQ(sni) + "\n")
@@ -727,6 +943,16 @@ func clashProxyFromLink(l subLink) (string, bool) {
 		b.WriteString("    tls: false\n")
 	}
 	b.WriteString("    network: " + yamlDQ(network) + "\n")
+	if isReality {
+		flow := strings.TrimSpace(q.Get("flow"))
+		if flow == "" {
+			flow = "xtls-rprx-vision"
+		}
+		b.WriteString("    flow: " + yamlDQ(flow) + "\n")
+		b.WriteString("    reality-opts:\n")
+		b.WriteString("      public-key: " + yamlDQ(realityPBK) + "\n")
+		b.WriteString("      short-id: " + yamlDQ(realitySID) + "\n")
+	}
 	if network == "ws" {
 		b.WriteString("    ws-opts:\n")
 		if path != "" {
@@ -1017,7 +1243,9 @@ func renderClashHeader(domains []string) string {
 }
 
 // renderClashYAML 渲染 Clash 订阅：dns 段 + proxies 列表 + 7 个策略组 +
-// 分流规则。名字去重（Clash 要求 proxy 名唯一），不支持的协议跳过；mode 是
+// 分流规则（v1.4.20 再加每节点一个 fallback 组：同一后端节点的多个入站
+// 为一组，组名就是节点名，健康检查失败自动切同组另一个入站；成员少于
+// 2 个的节点不单独成组）。名字去重（Clash 要求 proxy 名唯一），不支持的协议跳过；mode 是
 // split（分流，MATCH,DIRECT）或 global（全局，MATCH,手动选择）。
 // GLOBAL 组只在客户端切全局模式时生效，规则模式下只看 rules，不走它。
 // 节点为空时（v1.3.22 修）：订阅里没有任何能进 Clash 的节点（节点为空，
@@ -1032,6 +1260,11 @@ func renderClashYAML(links []subLink, mode string) string {
 	used := map[string]int{}
 	var names []string
 	var kinds []string // 与 names 一一对应：relay / direct / ""（无后缀）
+	// nodeGroups 同节点多入站分组（v1.4.20，切片 10）：键是后端节点名
+	// （subLink.NodeName，旧链留空、不分组），值是该节点的 proxy 名
+	// （去重后的真名）；nodeOrder 是节点首次出现的顺序。
+	nodeGroups := map[string][]string{}
+	var nodeOrder []string
 	domainSet := map[string]bool{}
 	for _, l := range links {
 		kind := ""
@@ -1054,6 +1287,12 @@ func renderClashYAML(links []subLink, mode string) string {
 		}
 		names = append(names, name)
 		kinds = append(kinds, kind)
+		if l.NodeName != "" {
+			if _, seen := nodeGroups[l.NodeName]; !seen {
+				nodeOrder = append(nodeOrder, l.NodeName)
+			}
+			nodeGroups[l.NodeName] = append(nodeGroups[l.NodeName], name)
+		}
 		proxies.WriteString(proxy)
 		for _, d := range subLinkDomains(l.Link) {
 			domainSet[d] = true
@@ -1083,7 +1322,7 @@ func renderClashYAML(links []subLink, mode string) string {
 	writeGroup := func(name, typ string, members []string) {
 		b.WriteString("  - name: " + yamlDQ(name) + "\n")
 		b.WriteString("    type: " + typ + "\n")
-		if typ == "url-test" {
+		if typ == "url-test" || typ == "fallback" {
 			b.WriteString("    url: \"http://www.gstatic.com/generate_204\"\n")
 			b.WriteString("    interval: 300\n")
 		}
@@ -1107,6 +1346,22 @@ func renderClashYAML(links []subLink, mode string) string {
 	}
 	writeGroup("社交", "select", names)
 	writeGroup("流媒体", "select", names)
+	// 每节点一个 fallback 组（v1.4.20，切片 10）：组名就是节点名，成员
+	// 是该节点的 proxy 名；健康检查失败时按顺序切到同组下一个入站。
+	// 成员少于 2 个的节点不单独成组；组名撞上保留组名（自动选择／
+	// GLOBAL／手动选择／中转节点／直连节点／社交／流媒体）时跳过，
+	// 不让非法配置流出去。
+	for _, nodeName := range nodeOrder {
+		members := nodeGroups[nodeName]
+		if len(members) < 2 {
+			continue
+		}
+		switch nodeName {
+		case "自动选择", "GLOBAL", "手动选择", "中转节点", "直连节点", "社交", "流媒体":
+			continue
+		}
+		writeGroup(nodeName, "fallback", members)
+	}
 	// 分流规则：TikTok → 社交 → 流媒体 → 测 IP → MATCH（先命中先走）。
 	b.WriteString("rules:\n")
 	seenSuffix := map[string]bool{}
@@ -1358,6 +1613,9 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 	// contentMode 是令牌上存的订阅内容范围（both|relay|direct，老记录空 = both），
 	// 与上面 resolveSubMode 的分流模式（split|global）是两回事。
 	contentMode := "both"
+	// backendKind/backendID 按人订阅的用户身份（v1.4.20，切片 10）：
+	// 后端节点链接只进按人订阅，通用订阅没有用户身份、不含后端节点。
+	backendKind, backendID := "", ""
 	// 按人限流（v1.3.25）：命中的订阅开了限流时，订阅里的中转节点改用
 	// 该用户的端口（本面板上的转发），SNI 与域名不变。已停用的订阅
 	// （超量）链接照常返回、端口已死（endpoints 已撤），与落地级停用
@@ -1373,6 +1631,7 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 		// 一人一条（v1.3.0）：没勾选 = 单面板全量订阅，有勾选 = 合并订阅
 		// 分组（v1.3.26）：进了组的用组的落地集合，自己的勾选保留在记录里
 		// （出组/删组后恢复）；没进组按自己的勾选。
+		backendKind, backendID = "subuser", u.ID
 		contentMode = u.Mode
 		if u.TrafficLimitBytes > 0 {
 			userKey, userLimit, userLimitMode = userSubKey("subuser", u.ID), u.TrafficLimitBytes, u.TrafficLimitMode
@@ -1383,6 +1642,7 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 			links, localIndices = s.collectMergedSubLinks(&MergedSub{Selection: sel}, userKey)
 		}
 	} else if ms, ok := s.findMergedSub(tok); ok {
+		backendKind, backendID = "merged", ms.ID
 		contentMode = ms.Mode
 		if ms.TrafficLimitBytes > 0 {
 			userKey, userLimit, userLimitMode = userSubKey("merged", ms.ID), ms.TrafficLimitBytes, ms.TrafficLimitMode
@@ -1392,6 +1652,12 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 	} else {
 		http.NotFound(w, r)
 		return
+	}
+	// 后端节点进订阅（v1.4.20，切片 10）：按人订阅追加该用户在后端
+	// 节点上的链接（REALITY／AnyTLS／SOCKS5，XHTTP 已在渲染层滤掉）；
+	// 通用订阅（backendKind 为空）不追加。
+	if backendKind != "" {
+		links = append(links, s.backendSubLinksForUser(backendKind, backendID)...)
 	}
 	links = filterSubLinksByKind(links, contentMode)
 	if userKey != "" {
@@ -3340,6 +3606,12 @@ func (s *Server) handleCentralSubscription(w http.ResponseWriter, r *http.Reques
 	links := s.collectSubLinks(indices)
 	if links == nil {
 		links = []subLink{}
+	}
+	// 后端节点进订阅（v1.4.20，切片 10）：for_user 指定的那份按人订阅
+	// 在本面板后端节点上的链接（与主面板 serveSubContent 同口径；
+	// 没 for_user 时不追加，合并订阅的远程部分由主面板按 for_user 取）。
+	if fu := strings.TrimSpace(r.URL.Query().Get("for_user")); fu != "" {
+		links = append(links, s.backendSubLinksForUserKey(fu)...)
 	}
 	// for_user（v1.3.25）：按该订阅在本面板上的转发改写中转节点链接
 	// 端口（远程面板是其转发记录的唯一事实来源，改写在这里做）。

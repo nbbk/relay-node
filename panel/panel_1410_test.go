@@ -55,8 +55,8 @@ func setupNode1410(t *testing.T) (*Server, http.Handler, string, int64) {
 }
 
 func TestVersion1410(t *testing.T) {
-	if Version != "1.4.19" {
-		t.Fatalf("VERSION 应是 1.4.19，实际 %q", Version)
+	if Version != "1.4.20" {
+		t.Fatalf("VERSION 应是 1.4.20，实际 %q", Version)
 	}
 }
 
@@ -238,10 +238,11 @@ func TestInboundCoreVersion1410(t *testing.T) {
 	}
 }
 
-// TestSubscriptionSSAndNoSocks1410 订阅核对：后端入站一条都不进订阅
+// TestSubscriptionSSAndSocks1420 订阅核对：后端入站一条都不进订阅
 // （切片 10 的活）；落地链的 SS／SS2022 链接四种格式都渲染；SOCKS5
-// 在 Clash 与 sing-box 里不出节点。
-func TestSubscriptionSSAndNoSocks1410(t *testing.T) {
+// 在 Clash 与 sing-box 里也渲染（1.4.20 切片 10 改了 1.4.10 的旧口径：
+// 旧名 TestSubscriptionSSAndNoSocks1410，旧断言是“不出节点”，已作废）。
+func TestSubscriptionSSAndSocks1420(t *testing.T) {
 	s := newTestServer1400(t)
 
 	// 只有后端节点的面板：订阅链接集合为空，后端入站不进订阅。
@@ -280,8 +281,11 @@ func TestSubscriptionSSAndNoSocks1410(t *testing.T) {
 		!strings.Contains(clash, `cipher: "2022-blake3-aes-128-gcm"`) || !strings.Contains(clash, "port: 8388") {
 		t.Fatalf("Clash 里应有两条 SS proxy：\n%s", clash)
 	}
-	if strings.Contains(clash, "测试-S5") {
-		t.Fatalf("Clash 里不应有 SOCKS5 节点：\n%s", clash)
+	if strings.Contains(clash, "测试-S5") && strings.Contains(clash, "type: socks5") &&
+		strings.Contains(clash, `username: "socks-user"`) && strings.Contains(clash, "port: 1080") {
+		// SOCKS5 在 Clash 里渲染为 socks5 proxy（1.4.20 切片 10 新口径）。
+	} else {
+		t.Fatalf("Clash 里应有 SOCKS5 proxy（type: socks5，测试-S5，1080）：\n%s", clash)
 	}
 	sb, _, err := renderSubContent(sub, "singbox", "split")
 	if err != nil {
@@ -306,12 +310,16 @@ func TestSubscriptionSSAndNoSocks1410(t *testing.T) {
 		}
 		if om["type"] == "socks" {
 			socksCount++
+			if om["server"] != "203.0.113.1" || om["server_port"] != float64(1080) ||
+				om["version"] != "5" || om["username"] != "socks-user" || om["password"] != "socks-pw" {
+				t.Fatalf("sing-box SOCKS5 出站字段不对：%v", om)
+			}
 		}
 	}
 	if ssCount != 2 {
 		t.Fatalf("sing-box 里应有 2 条 SS 出站，实际 %d", ssCount)
 	}
-	if socksCount != 0 {
-		t.Fatalf("sing-box 里不应有 SOCKS5 出站，实际 %d", socksCount)
+	if socksCount != 1 {
+		t.Fatalf("sing-box 里应有 1 条 SOCKS5 出站，实际 %d", socksCount)
 	}
 }

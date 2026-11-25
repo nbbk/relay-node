@@ -2770,6 +2770,13 @@ func (s *Server) computeTwinLinks(origLink, landingIP, sni string, landing *Land
 	if _, err := parseNodeLink(origLink); err != nil {
 		return origLink, "", "中转", "链接不对：" + err.Error()
 	}
+	// REALITY／AnyTLS 的 SNI 是链接自己的（v1.4.20，切片 10）：调用方
+	// 传的证书域名（加落地／补粘贴时取的 CertDomain）不能覆盖它，
+	// 否则直连 twin 的 sni 会被改成证书域名、握手失败；链接自带 sni
+	// 时以链接为准，没有才用传入值。
+	if ownSNI := twinOwnSNI(origLink); ownSNI != "" {
+		sni = ownSNI
+	}
 	relayLabel = "中转"
 	isDoor := landing != nil && landing.Mode == "door"
 	if isDoor {
@@ -2944,7 +2951,7 @@ func setLinkPort(link string, newPort int) string {
 		return link
 	}
 	switch pl.Scheme {
-	case "vless", "trojan", "hysteria2", "hy2", "tuic":
+	case "vless", "trojan", "hysteria2", "hy2", "tuic", "anytls":
 		u, err := neturlParse(link)
 		if err != nil {
 			return link

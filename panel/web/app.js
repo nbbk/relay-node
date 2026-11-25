@@ -831,7 +831,7 @@ function buildAddPayload() {
   const name = $('#add-name') ? $('#add-name').value.trim() : '';
   if (name && name.length > 64) { toast('名称不能超过 64 字', 'err'); return null; }
   const origLink = $('#add-orig-link') ? $('#add-orig-link').value.trim() : '';
-  if (origLink && !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2:// 或 tuic:// 开头', 'err'); return null; }
+  if (origLink && !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic|anytls):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2://、anytls:// 或 tuic:// 开头', 'err'); return null; }
   const linkName = $('#add-link-name') ? $('#add-link-name').value.trim() : '';
   if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return null; }
   return {
@@ -2706,7 +2706,7 @@ function buildEditPayload(m) {
   const name = $('#edit-name', m).value.trim();
   if (name && name.length > 64) { toast('名称不能超过 64 字', 'err'); return null; }
   const origLink = $('#edit-orig-link', m).value.trim();
-  if (origLink && !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2:// 或 tuic:// 开头', 'err'); return null; }
+  if (origLink && !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic|anytls):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2://、anytls:// 或 tuic:// 开头', 'err'); return null; }
   const linkName = $('#edit-link-name', m).value.trim();
   if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return null; }
   return {
@@ -2732,14 +2732,14 @@ async function pasteOrigLink(index) {
   const l = landingsCache.find((x) => x.index === index);
   const m = openModal('<h2>补粘贴原始链接' + (l ? '：' + esc(displayNameOf(l)) : '') + '</h2>' +
     '<p class="muted">把落地机上生成的节点链接粘贴进来，面板会算出中转 + 直连链接，卡片上直接显示，历史记录里也会记一笔。原始链接只存在面板自己的状态文件里，不会进日志与审计。</p>' +
-    '<label>原始节点链接 <span class="hint">vless:// / trojan:// / ss:// / vmess:// 开头</span></label><input id="paste-orig-link" placeholder="vless://…">' +
+    '<label>原始节点链接 <span class="hint">vless:// / trojan:// / ss:// / vmess:// / anytls:// 开头</span></label><input id="paste-orig-link" placeholder="vless://…">' +
     '<label>节点名称 <span class="hint">选填；直连备注“&lt;名称&gt;-直连”、中转备注“&lt;名称&gt;-中转”，空着用原链接备注名</span></label><input id="paste-link-name" placeholder="如 香港-01" maxlength="64">' +
     '<div class="btn-row"><button class="btn" id="paste-ok" type="button">生成中转链接</button><button class="btn secondary" id="paste-cancel" type="button">取消</button></div>');
   onIn(m, '#paste-cancel', 'click', closeModal);
   onIn(m, '#paste-ok', 'click', async () => {
     const origLink = $('#paste-orig-link', m).value.trim();
     const linkName = $('#paste-link-name', m).value.trim();
-    if (!origLink || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(origLink)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
+    if (!origLink || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic|anytls):\/\//.test(origLink)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
     if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return; }
     closeModal();
     try {
@@ -2819,7 +2819,7 @@ async function addNodeWizard(index) {
       onIn(m2, '#wz-back', 'click', () => addNodeWizard(index));
       onIn(m2, '#wz-done', 'click', async () => {
         const link = $('#wz-link', m2).value.trim();
-        if (!link || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(link)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
+        if (!link || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic|anytls):\/\//.test(link)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
         try {
           const r2 = await apiPost('/api/v1/landings/' + index + '/add-node', { subdomain: sub, new_link: link });
           closeModal();
@@ -2989,7 +2989,7 @@ function initTwin() {
     const sni = $('#twin-sni').value.trim();
     const name = $('#twin-name') ? $('#twin-name').value.trim() : '';
     if (name && name.length > 64) { toast('节点名称不能超过 64 字', 'err'); return; }
-    if (!/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(link)) { toast('链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2:// 或 tuic:// 开头', 'err'); return; }
+    if (!/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic|anytls):\/\//.test(link)) { toast('链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2://、anytls:// 或 tuic:// 开头', 'err'); return; }
     if (!landingIp) { toast('请填写落地 IP', 'err'); return; }
     try {
       const r = await apiPost('/api/v1/links/twin', { link, landing_ip: landingIp, sni, name: name || undefined, mode: twinMode() });
@@ -6889,7 +6889,7 @@ function buildCentralAddPayload(m) {
   const name = $('#central-add-name', m).value.trim();
   if (name && name.length > 64) { toast('名称不能超过 64 字', 'err'); return null; }
   const origLink = $('#central-add-orig-link', m).value.trim();
-  if (origLink && !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2:// 或 tuic:// 开头', 'err'); return null; }
+  if (origLink && !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic|anytls):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2://、anytls:// 或 tuic:// 开头', 'err'); return null; }
   const linkName = $('#central-add-link-name', m).value.trim();
   if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return null; }
   return {
@@ -6947,7 +6947,7 @@ async function centralAddNodeWizard(remoteId, index, label) {
       onIn(m2, '#central-wz-back', 'click', () => centralAddNodeWizard(remoteId, index, label));
       onIn(m2, '#central-wz-done', 'click', async () => {
         const link = $('#central-wz-link', m2).value.trim();
-        if (!link || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(link)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
+        if (!link || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic|anytls):\/\//.test(link)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
         try {
           const r2 = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/landings/' + index + '/add-node', { subdomain: sub, new_link: link });
           if (r2.ok === false) { toast(centralOpError(r2), 'err'); return; }
@@ -7099,7 +7099,7 @@ function buildCentralEditPayload(m) {
   const name = $('#central-edit-name', m).value.trim();
   if (name && name.length > 64) { toast('名称不能超过 64 字', 'err'); return null; }
   const origLink = $('#central-edit-orig-link', m).value.trim();
-  if (origLink && !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2:// 或 tuic:// 开头', 'err'); return null; }
+  if (origLink && !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic|anytls):\/\//.test(origLink)) { toast('原始节点链接格式不正确，需以 vless://、trojan://、ss://、vmess://、hysteria2://、anytls:// 或 tuic:// 开头', 'err'); return null; }
   const linkName = $('#central-edit-link-name', m).value.trim();
   if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return null; }
   return {
@@ -7196,14 +7196,14 @@ async function centralDeleteSubnode(remoteId, index, domain) {
 async function centralPasteOrigLink(remoteId, index, l) {
   const m = openModal('<h2>给远程落地补粘贴原始链接' + (l ? '：' + esc(centralLandingTitle(l)) : '') + '</h2>' +
     '<p class="muted">把落地机上生成的节点链接粘贴进来，远程面板会算出中转 + 直连链接，卡片上直接显示，历史记录里也会记一笔。原始链接只存在远程面板自己的状态文件里，不会进日志与审计。</p>' +
-    '<label>原始节点链接 <span class="hint">vless:// / trojan:// / ss:// / vmess:// 开头</span></label><input id="central-paste-orig-link" placeholder="vless://…">' +
+    '<label>原始节点链接 <span class="hint">vless:// / trojan:// / ss:// / vmess:// / anytls:// 开头</span></label><input id="central-paste-orig-link" placeholder="vless://…">' +
     '<label>节点名称 <span class="hint">选填；直连备注“&lt;名称&gt;-直连”、中转备注“&lt;名称&gt;-中转”，空着用原链接备注名</span></label><input id="central-paste-link-name" placeholder="如 香港-01" maxlength="64">' +
     '<div class="btn-row"><button class="btn" id="central-paste-ok" type="button">生成中转链接</button><button class="btn secondary" id="central-paste-cancel" type="button">取消</button></div>');
   onIn(m, '#central-paste-cancel', 'click', closeModal);
   onIn(m, '#central-paste-ok', 'click', async () => {
     const origLink = $('#central-paste-orig-link', m).value.trim();
     const linkName = $('#central-paste-link-name', m).value.trim();
-    if (!origLink || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic):\/\//.test(origLink)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
+    if (!origLink || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic|anytls):\/\//.test(origLink)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
     if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return; }
     closeModal();
     try {

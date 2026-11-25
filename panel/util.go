@@ -1146,7 +1146,7 @@ func setLinkHost(link, newHost string) string {
 		return link
 	}
 	switch pl.Scheme {
-	case "vless", "trojan", "hysteria2", "hy2", "tuic":
+	case "vless", "trojan", "hysteria2", "hy2", "tuic", "anytls":
 		u, err := url.Parse(strings.TrimSpace(link))
 		if err != nil || u.Host == "" {
 			return link
@@ -1257,7 +1257,7 @@ func setLinkName(link, name string) string {
 		return link
 	}
 	switch pl.Scheme {
-	case "vless", "trojan", "ss", "hysteria2", "hy2", "tuic":
+	case "vless", "trojan", "ss", "hysteria2", "hy2", "tuic", "anytls":
 		u, err := url.Parse(strings.TrimSpace(link))
 		if err != nil {
 			return link
