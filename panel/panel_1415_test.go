@@ -14,8 +14,8 @@ import (
 // 桩沿用 panel_1349_test.go 的 stubDNSHTTP1349 与 newTestServer144。
 
 func TestVersion1415(t *testing.T) {
-	if Version != "1.4.20" {
-		t.Fatalf("Version 应为 1.4.20，实际 %q", Version)
+	if Version != "1.4.21" {
+		t.Fatalf("Version 应为 1.4.21，实际 %q", Version)
 	}
 }
 
