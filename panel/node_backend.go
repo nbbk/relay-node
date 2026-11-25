@@ -73,6 +73,10 @@ type BackendNode struct {
 	// 按人流量先乘它（再乘中转倍率、归一化、上限 100，见
 	// effectiveBackendMultiplier）。0 = 没填，按 1 算；默认 1。
 	Multiplier float64 `json:"multiplier,omitempty"`
+	// LinkMode 订阅链接模式（v1.4.25）：direct＝只出直连、relay＝只出
+	// 中转、both＝两者都出（twin：同入站先 -A 后 -B）；空值＝默认 both。
+	// 只影响面板侧拼订阅，不影响 agent 配置，改它不 bump ConfigVersion。
+	LinkMode string `json:"link_mode,omitempty"`
 	// InboundTraffic 各入站累计流量（v1.4.4）：tag → [上行, 下行]
 	// （原始字节，不乘倍率；agent 每次上报累加，随节点存 nodes.json）。
 	InboundTraffic map[string][2]int64 `json:"inbound_traffic,omitempty"`
@@ -785,6 +789,7 @@ func nodeRowForList(n BackendNode) map[string]any {
 		"singbox_version": n.SingBoxVersion, "health": nodeHealth(&n),
 		"backend_health": nodeBackendHealthMap(&n, time.Now()),
 		"last_seen":      lastSeen, "config_version": n.ConfigVersion,
+		"link_mode":  n.LinkMode,
 		"joined":     n.Joined,
 		"created_at": time.Unix(n.CreatedAt, 0).UTC().Format(time.RFC3339),
 		"user_count": 0,
@@ -830,6 +835,53 @@ func (s *Server) handleNodesGet(w http.ResponseWriter, r *http.Request) {
 	payload := s.nodeDetailPayload(node)
 	s.nodes.mu.Unlock()
 	writeJSON(w, 200, okResp(payload))
+}
+
+// handleNodeLinkMode PUT /api/v1/nodes/{id}/link-mode（v1.4.25）：改节点
+// 的订阅链接模式。body {"link_mode": "direct"|"relay"|"both"}，空串当
+// both（重置为默认）；其它值 400 并直白说明可选值。只影响面板侧拼
+// 订阅（backendSubLinksForUser 按它决定出直连／中转／两者），不影响
+// agent 配置：不 bump 节点 ConfigVersion，只落盘 nodes.json
+// （s.nodes.saveLocked；节点存在 nodes.json 里，不在 config.json 里，
+// saveConfig 存不到它）。
+func (s *Server) handleNodeLinkMode(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, 400, errResp("节点 id 不对"))
+		return
+	}
+	var req struct {
+		LinkMode string `json:"link_mode"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	mode := strings.TrimSpace(req.LinkMode)
+	if mode == "" {
+		mode = "both"
+	}
+	if mode != "direct" && mode != "relay" && mode != "both" {
+		writeJSON(w, 400, errResp("链接模式不对：只能是 direct（只出直连）、relay（只出中转）或 both（两者都出）"))
+		return
+	}
+	if !s.tryOpLock(w) {
+		return
+	}
+	defer s.opMu.Unlock()
+	s.nodes.mu.Lock()
+	defer s.nodes.mu.Unlock()
+	node := s.nodes.getNode(id)
+	if node == nil {
+		writeJSON(w, 404, errResp("节点不存在"))
+		return
+	}
+	node.LinkMode = mode
+	if err := s.nodes.saveLocked(); err != nil {
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	writeJSON(w, 200, okResp(map[string]any{"node_id": id, "link_mode": mode}))
 }
 
 // handleNodesDelete DELETE /api/v1/nodes/{id}：删除节点。

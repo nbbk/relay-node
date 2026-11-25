@@ -179,6 +179,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/nodes", s.requireAuth(s.handleNodesList))
 	mux.HandleFunc("GET /api/v1/nodes/{id}", s.requireAuth(s.handleNodesGet))
 	mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.requireAuth(s.handleNodesDelete))
+	// 轻量节点后端（v1.4.25）：订阅链接模式 direct／relay／both（会话认证）。
+	mux.HandleFunc("PUT /api/v1/nodes/{id}/link-mode", s.requireAuth(s.handleNodeLinkMode))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/join-token", s.requireAuth(s.handleNodesRegenJoinToken))
 	mux.HandleFunc("POST /api/v1/node-backend/join", s.handleNodeBackendJoin)
 	// 轻量节点后端（v1.4.1，切片 2）：入站模板（会话认证）。
@@ -419,7 +421,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, okResp(map[string]any{
 			"realm":   map[string]any{"running": realmRunning(), "version": realmVersion(), "uptime_seconds": realmUptimeSeconds(), "bbr": bbrEnabled()},
 			"share80": false, "share443": false, "panel_version": Version, "relay_addr": "",
-			"landings": []any{}, "note": "relay.conf 不存在：中转还没装好",
+			"machine_ip": machineIP(), "landings": []any{}, "note": "relay.conf 不存在：中转还没装好",
 		}))
 		return
 	}
@@ -540,7 +542,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, okResp(map[string]any{
 		"realm":   map[string]any{"running": realmRunning(), "version": realmVersion(), "uptime_seconds": realmUptimeSeconds(), "bbr": bbrEnabled()},
-		"share80": rc.Share80, "share443": rc.Share443, "panel_version": Version, "relay_addr": rc.RelayAddr, "landings": landings,
+		"share80": rc.Share80, "share443": rc.Share443, "panel_version": Version, "relay_addr": rc.RelayAddr, "machine_ip": machineIP(), "landings": landings,
 	}))
 }
 

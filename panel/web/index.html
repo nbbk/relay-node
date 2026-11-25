@@ -66,6 +66,7 @@
     <header class="topbar">
       <button class="icon-btn menu-btn" id="menu-btn" type="button" aria-label="打开菜单" aria-expanded="false">☰</button>
       <div class="title" id="page-title">总览</div>
+      <div class="topbar-ip" title="本机 IP（面板对外服务的地址）">本机 IP：<b id="machine-ip">—</b><button class="icon-btn sm" id="machine-ip-copy" type="button" title="复制本机 IP">复制</button></div>
       <button class="icon-btn" id="theme-btn" type="button" title="切换深色 / 浅色">🌙 深色</button>
       <button class="icon-btn" id="refresh-btn" type="button"><span class="spin-ico">↻</span> 刷新</button>
     </header>
@@ -307,7 +308,7 @@
                 <option value="manual">手动模式</option>
               </select></div>
             </div>
-            <div class="btn-row"><button class="btn" type="submit">签发证书</button></div>
+            <div class="btn-row"><button class="btn" type="submit" id="node-cert-issue-btn">签发证书</button></div>
           </form>
           <p class="muted hidden" id="node-cert-provider-hint" hidden>还没有配置任何 DNS 服务商凭证，去设置页 DNS 服务商卡片里配凭证，配好后这里才会出现；也可以直接选手动模式签发（不用配凭证）。</p>
           <div id="node-cert-error" class="error-box hidden" hidden></div>

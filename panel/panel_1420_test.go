@@ -37,7 +37,7 @@ import (
 )
 
 func TestVersion1420(t *testing.T) {
-	if Version != "1.4.24" {
+	if Version != "1.4.25" {
 		t.Fatalf("Version 应为 1.4.23，实际 %q", Version)
 	}
 }
@@ -48,11 +48,11 @@ const (
 	contract1420UUID    = "11111111-2222-3333-4444-555555555555"
 	contract1420Node    = "example-node"
 	contract1420Addr    = "203.0.113.1"
-	contract1420Reality = "vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443?encryption=none&security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=abcdef01&sni=www.microsoft.com&fp=chrome&type=tcp&flow=xtls-rprx-vision#example-node-reality-443"
-	contract1420AnyTLS  = "anytls://11111111-2222-3333-4444-555555555555@203.0.113.1:443?sni=example.com#example-node-anytls-443"
-	contract1420Socks   = "socks5://user1:pass1234@203.0.113.1:1080#example-node-socks-1080"
+	contract1420Reality = "vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443?encryption=none&security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=abcdef01&sni=www.microsoft.com&fp=chrome&type=tcp&flow=xtls-rprx-vision#example-node-reality-443-A"
+	contract1420AnyTLS  = "anytls://11111111-2222-3333-4444-555555555555@203.0.113.1:443?sni=example.com#example-node-anytls-443-A"
+	contract1420Socks   = "socks5://user1:pass1234@203.0.113.1:1080#example-node-socks-1080-A"
 	// 契约 subscription-base64.txt 的内容（base64(links.txt 三行＋末尾换行)）。
-	contract1420Base64 = "dmxlc3M6Ly8xMTExMTExMS0yMjIyLTMzMzMtNDQ0NC01NTU1NTU1NTU1NTVAMjAzLjAuMTEzLjE6NDQzP2VuY3J5cHRpb249bm9uZSZzZWN1cml0eT1yZWFsaXR5JnBiaz1BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBJnNpZD1hYmNkZWYwMSZzbmk9d3d3Lm1pY3Jvc29mdC5jb20mZnA9Y2hyb21lJnR5cGU9dGNwJmZsb3c9eHRscy1ycHJ4LXZpc2lvbiNleGFtcGxlLW5vZGUtcmVhbGl0eS00NDMKYW55dGxzOi8vMTExMTExMTEtMjIyMi0zMzMzLTQ0NDQtNTU1NTU1NTU1NTU1QDIwMy4wLjExMy4xOjQ0Mz9zbmk9ZXhhbXBsZS5jb20jZXhhbXBsZS1ub2RlLWFueXRscy00NDMKc29ja3M1Oi8vdXNlcjE6cGFzczEyMzRAMjAzLjAuMTEzLjE6MTA4MCNleGFtcGxlLW5vZGUtc29ja3MtMTA4MAo="
+	contract1420Base64 = "dmxlc3M6Ly8xMTExMTExMS0yMjIyLTMzMzMtNDQ0NC01NTU1NTU1NTU1NTVAMjAzLjAuMTEzLjE6NDQzP2VuY3J5cHRpb249bm9uZSZzZWN1cml0eT1yZWFsaXR5JnBiaz1BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBJnNpZD1hYmNkZWYwMSZzbmk9d3d3Lm1pY3Jvc29mdC5jb20mZnA9Y2hyb21lJnR5cGU9dGNwJmZsb3c9eHRscy1ycHJ4LXZpc2lvbiNleGFtcGxlLW5vZGUtcmVhbGl0eS00NDMtQQphbnl0bHM6Ly8xMTExMTExMS0yMjIyLTMzMzMtNDQ0NC01NTU1NTU1NTU1NTVAMjAzLjAuMTEzLjE6NDQzP3NuaT1leGFtcGxlLmNvbSNleGFtcGxlLW5vZGUtYW55dGxzLTQ0My1BCnNvY2tzNTovL3VzZXIxOnBhc3MxMjM0QDIwMy4wLjExMy4xOjEwODAjZXhhbXBsZS1ub2RlLXNvY2tzLTEwODAtQQo="
 )
 
 // contractInbounds1420 契约的三条入站（REALITY／AnyTLS／SOCKS5）。
@@ -112,7 +112,7 @@ func TestBackendSubLinksContract1420(t *testing.T) {
 		if links[i].Link != w {
 			t.Fatalf("第 %d 条链接与契约逐字不一致：\n实际 %q\n期望 %q", i+1, links[i].Link, w)
 		}
-		if links[i].Name != contract1420Node+"-"+[]string{"reality-443", "anytls-443", "socks-1080"}[i] {
+		if links[i].Name != contract1420Node+"-"+[]string{"reality-443", "anytls-443", "socks-1080"}[i]+"-A" {
 			t.Fatalf("第 %d 条备注名不对：%q", i+1, links[i].Name)
 		}
 		if links[i].NodeName != contract1420Node {
@@ -167,9 +167,9 @@ func TestSingboxRender1420(t *testing.T) {
 	obs := singboxOutbounds1420(t, links)
 
 	// REALITY：tls 块按 §8.2 一字不差。
-	r, ok := obs["example-node-reality-443"]
+	r, ok := obs["example-node-reality-443-A"]
 	if !ok {
-		t.Fatalf("sing-box 里没有 example-node-reality-443：%v", obs)
+		t.Fatalf("sing-box 里没有 example-node-reality-443-A：%v", obs)
 	}
 	if r["type"] != "vless" || r["server"] != "203.0.113.1" || r["server_port"] != float64(443) ||
 		r["uuid"] != contract1420UUID || r["flow"] != "xtls-rprx-vision" {
@@ -192,9 +192,9 @@ func TestSingboxRender1420(t *testing.T) {
 		t.Fatalf("REALITY 是 TCP 承载，不应有 transport：%v", r)
 	}
 	// AnyTLS。
-	a, ok := obs["example-node-anytls-443"]
+	a, ok := obs["example-node-anytls-443-A"]
 	if !ok {
-		t.Fatalf("sing-box 里没有 example-node-anytls-443")
+		t.Fatalf("sing-box 里没有 example-node-anytls-443-A")
 	}
 	if a["type"] != "anytls" || a["password"] != contract1420UUID {
 		t.Fatalf("AnyTLS outbound 不对：%v", a)
@@ -204,9 +204,9 @@ func TestSingboxRender1420(t *testing.T) {
 		t.Fatalf("AnyTLS tls 块不对：%v", atls)
 	}
 	// SOCKS5。
-	sk, ok := obs["example-node-socks-1080"]
+	sk, ok := obs["example-node-socks-1080-A"]
 	if !ok {
-		t.Fatalf("sing-box 里没有 example-node-socks-1080")
+		t.Fatalf("sing-box 里没有 example-node-socks-1080-A")
 	}
 	if sk["type"] != "socks" || sk["version"] != "5" || sk["server_port"] != float64(1080) ||
 		sk["username"] != "user1" || sk["password"] != "pass1234" {
@@ -221,7 +221,7 @@ func TestSingboxRender1420(t *testing.T) {
 		t.Fatalf("example-node 组应是 urltest，实际 %v", g["type"])
 	}
 	members, _ := g["outbounds"].([]any)
-	want := []string{"example-node-reality-443", "example-node-anytls-443", "example-node-socks-1080"}
+	want := []string{"example-node-reality-443-A", "example-node-anytls-443-A", "example-node-socks-1080-A"}
 	if len(members) != 3 {
 		t.Fatalf("example-node 组成员应为 3 个，实际 %v", members)
 	}
@@ -254,13 +254,13 @@ func TestClashRender1420(t *testing.T) {
 		t.Fatalf("clash 渲染：%v", err)
 	}
 	for _, want := range []string{
-		`name: "example-node-reality-443"`, "type: vless", "tls: true",
+		`name: "example-node-reality-443-A"`, "type: vless", "tls: true",
 		`servername: "www.microsoft.com"`, `fingerprint: "chrome"`, `network: "tcp"`,
 		`flow: "xtls-rprx-vision"`, "reality-opts:",
 		`public-key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"`, `short-id: "abcdef01"`,
-		`name: "example-node-anytls-443"`, "type: anytls",
+		`name: "example-node-anytls-443-A"`, "type: anytls",
 		`password: "11111111-2222-3333-4444-555555555555"`, `sni: "example.com"`,
-		`name: "example-node-socks-1080"`, "type: socks5",
+		`name: "example-node-socks-1080-A"`, "type: socks5",
 		`username: "user1"`, `password: "pass1234"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -276,7 +276,7 @@ func TestClashRender1420(t *testing.T) {
 	if !strings.Contains(seg, "type: fallback") {
 		t.Fatalf("example-node 组应是 fallback：\n%s", seg)
 	}
-	for _, m := range []string{`"example-node-reality-443"`, `"example-node-anytls-443"`, `"example-node-socks-1080"`} {
+	for _, m := range []string{`"example-node-reality-443-A"`, `"example-node-anytls-443-A"`, `"example-node-socks-1080-A"`} {
 		if !strings.Contains(seg, "- "+m) {
 			t.Fatalf("example-node fallback 组成员缺 %s：\n%s", m, seg)
 		}
@@ -316,7 +316,7 @@ func TestXHTTPFiltered1420(t *testing.T) {
 	xhttpLink := "vless://11111111-2222-3333-4444-555555555555@203.0.113.1:8443?encryption=none&security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=abcdef01&sni=www.microsoft.com&fp=chrome&type=xhttp&flow=xtls-rprx-vision#xhttp-node"
 	mixed := []subLink{
 		{Name: "xhttp-node", Link: xhttpLink},
-		{Name: "example-node-reality-443", Link: contract1420Reality},
+		{Name: "example-node-reality-443-A", Link: contract1420Reality},
 	}
 	for _, format := range []string{"plain", "base64", "singbox", "clash"} {
 		body, _, err := renderSubContent(mixed, format, "split")
@@ -365,7 +365,7 @@ func TestBackendSubLinksScope1420(t *testing.T) {
 	if len(links) != 7 {
 		t.Fatalf("停用的入站不应进订阅，其余 4 条新协议应进，应是 7 条，实际 %d：%v", len(links), links)
 	}
-	for _, name := range []string{"example-node-hy2-443", "example-node-tuic-443", "example-node-ss-8388", "example-node-tls-443"} {
+	for _, name := range []string{"example-node-hy2-443-A", "example-node-tuic-443-A", "example-node-ss-8388-A", "example-node-tls-443-A"} {
 		found := false
 		for _, l := range links {
 			if l.Name == name {
@@ -438,7 +438,7 @@ func TestParseNodeLinkAnyTLS1420(t *testing.T) {
 		t.Fatalf("AnyTLS 链接应解析通过：%v", err)
 	}
 	if pl.Scheme != "anytls" || pl.Host != "203.0.113.1" || pl.Port != 443 ||
-		pl.SNI != "example.com" || pl.Name != "example-node-anytls-443" {
+		pl.SNI != "example.com" || pl.Name != "example-node-anytls-443-A" {
 		t.Fatalf("AnyTLS 解析结果不对：%+v", pl)
 	}
 	// 没写 sni 时 SNI 回退到域名 host。
@@ -511,14 +511,14 @@ func TestComputeTwinRealitySNI1420(t *testing.T) {
 		}
 	}
 	du, _ := url.Parse(direct)
-	if du.Hostname() != contract1420Addr || du.Fragment != "example-node-reality-443-直连" {
+	if du.Hostname() != contract1420Addr || du.Fragment != "example-node-reality-443-A-直连" {
 		t.Fatalf("直连 twin 应换成落地地址＋-直连备注：%s", direct)
 	}
 	ru, _ := url.Parse(relay)
 	if ru.Hostname() != "203.0.113.1" && ru.Hostname() != "example.com" {
 		t.Fatalf("中转 twin 地址不对：%s", relay)
 	}
-	if ru.Fragment != "example-node-reality-443-中转" {
+	if ru.Fragment != "example-node-reality-443-A-中转" {
 		t.Fatalf("中转 twin 备注应为 -中转：%s", relay)
 	}
 	// 中转与直连只差地址：去掉 host 与备注后其余参数相同。
@@ -549,12 +549,12 @@ func TestHandleTwinAnyTLS1420(t *testing.T) {
 		t.Fatalf("直连 twin 解析失败：%v：%s", err, dl)
 	}
 	if du.Hostname() != "203.0.113.1" || du.Query().Get("sni") != "example.com" ||
-		du.Fragment != "example-node-anytls-443-直连" {
+		du.Fragment != "example-node-anytls-443-A-直连" {
 		t.Fatalf("AnyTLS 直连 twin 不对：%s", dl)
 	}
 	rl, _ := resp["relay_link"].(string)
 	ru, _ := url.Parse(rl)
-	if ru.Fragment != "example-node-anytls-443-中转" || ru.Query().Get("sni") != "example.com" {
+	if ru.Fragment != "example-node-anytls-443-A-中转" || ru.Query().Get("sni") != "example.com" {
 		t.Fatalf("AnyTLS 中转 twin 不对：%s", rl)
 	}
 }

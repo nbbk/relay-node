@@ -59,6 +59,10 @@ p{margin:6px 0}
   background:var(--surface); border-bottom:1px solid var(--border); position:sticky; top:0; z-index:20;
 }
 .topbar .title{font-size:18px; font-weight:700; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+/* v1.4.25：顶栏本机 IP（常驻显示＋一键复制），不换行、贴着标题右边。 */
+.topbar-ip{display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); white-space:nowrap}
+.topbar-ip b{color:var(--text); font-weight:600}
+.topbar-ip .icon-btn{padding:4px 8px; font-size:12px}
 .icon-btn{
   background:var(--surface-muted); border:1px solid var(--border); color:var(--text);
   border-radius:10px; padding:8px 12px; font-size:14px; white-space:nowrap;

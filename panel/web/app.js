@@ -518,6 +518,8 @@ async function loadOverview() {
       }
     }
     if (s.panel_version) $('#side-version').textContent = s.panel_version;
+    // v1.4.25：顶栏显示本机 IP（status 回的 machine_ip，优先公网 IP）。
+    if (s.machine_ip) { const ipEl = $('#machine-ip'); if (ipEl) ipEl.textContent = s.machine_ip; }
   } catch (e) {
     $('#overview-stats').innerHTML = '<div class="card"><div class="error-box">总览加载失败：' + esc(e.message) + '</div></div>';
   }
@@ -1146,12 +1148,23 @@ function showNodesOnce(token, cmd) {
 // 节点详情弹窗的 HTML（v1.4.19，切片 9）：openNodeDetailModal（本机）与
 // openCentralNodeDetail（远程代理）共用——两边接口形状一致（节点行＋
 // 入站＋流量＋健康），抽出来免得两份 drift。改文案只改这里。
-function nodeDetailModalHtml(d, nodeName, nodeId) {
+// 订阅链接模式（v1.4.25）：后端订阅 twin 链接按节点配——direct 只出
+// 直连（A），relay 只出中转（B），both 两条都出；空值默认 both。
+// 链接名本身只带 -A／-B 后缀，不出现「中转」「直连」；这两个词只在
+// 设置界面的说明文字里出现。
+function normalizeLinkMode(v) { return v === 'direct' || v === 'relay' || v === 'both' ? v : 'both'; }
+function linkModeLabel(v) { return v === 'direct' ? '仅 A' : v === 'relay' ? '仅 B' : 'A 和 B'; }
+function nodeDetailModalHtml(d, nodeName, nodeId, linkModeEditable) {
   const n = d.node || {};
   const bh = d.backend_health || n.backend_health || {};
   const tr = d.traffic || { users: [], inbounds: [], up_period: 0, down_period: 0, up_total: 0, down_total: 0 };
   const users = tr.users || [];
   const inbounds = tr.inbounds || [];
+  const linkMode = normalizeLinkMode(n.link_mode);
+  // 远程节点详情共用本模板：远程节点的模式须到远程面板上改，本机
+  // 不代写，select 置灰（避免 PUT 到本机错误的节点 id 上）。
+  const linkModeDisabled = linkModeEditable === false ? ' disabled' : '';
+  const linkModeHint = linkModeEditable === false ? '远程节点的链接模式请到远程面板上改。' : 'A＝直连链接（链接名后缀 -A），B＝中转链接（链接名后缀 -B）。「仅 A」只出直连，「A 和 B」两条都出，「仅 B」只出中转；改完立即生效，下次拉订阅就按新模式出链接。';
   // sing-box 行（v1.4.7，切片 5）：只在节点配了 sing-box 入站
   // （HY2／TUIC／AnyTLS）时显示；无 sing-box 入站的节点上 agent
   // 本就不起 sing-box，Running=false 不是故障，不显示。
@@ -1171,6 +1184,13 @@ function nodeDetailModalHtml(d, nodeName, nodeId) {
     '<div class="kv"><span>Xray 重启次数</span><b>' + esc(String(bh.xray_restarts == null ? '—' : bh.xray_restarts)) + '</b></div>' +
     sbRow +
     '<div class="kv"><span>CPU／内存</span><b>' + esc(bh.cpu_percent == null ? '—' : String(bh.cpu_percent) + '% ／ ' + String(bh.mem_mb == null ? '—' : bh.mem_mb) + ' MB') + '</b></div>' +
+    '<h3>订阅链接</h3>' +
+    '<div><label for="node-link-mode">节点链接模式 <span class="hint">决定后端订阅里这台节点每条入站出几条链接</span></label>' +
+    '<select id="node-link-mode" data-prev="' + linkMode + '"' + linkModeDisabled + '>' +
+    '<option value="direct"' + (linkMode === 'direct' ? ' selected' : '') + '>仅 A</option>' +
+    '<option value="both"' + (linkMode === 'both' ? ' selected' : '') + '>A 和 B</option>' +
+    '<option value="relay"' + (linkMode === 'relay' ? ' selected' : '') + '>仅 B</option></select></div>' +
+    '<p class="muted small">' + linkModeHint + '</p>' +
     '<h3>流量（本期按人合计）</h3>' +
     '<div class="kv"><span>本期上行／下行</span><b>' + esc(fmtBytes(tr.up_period || 0)) + ' ／ ' + esc(fmtBytes(tr.down_period || 0)) + '</b></div>' +
     '<div class="kv"><span>累计上行／下行</span><b>' + esc(fmtBytes(tr.up_total || 0)) + ' ／ ' + esc(fmtBytes(tr.down_total || 0)) + '</b></div>' +
@@ -1185,6 +1205,21 @@ async function openNodeDetailModal(nodeId, nodeName) {
   catch (e) { toast('加载节点详情失败：' + e.message, 'err'); return; }
   const m = openModal(nodeDetailModalHtml(d, nodeName, nodeId));
   if (m) onIn(m, '#node-detail-close', 'click', closeModal);
+  // v1.4.25：链接模式改 select 立即 PUT，不整页刷新；失败恢复原值。
+  if (m) onIn(m, '#node-link-mode', 'change', async (e) => {
+    const sel = e.target;
+    const prev = normalizeLinkMode(sel.dataset.prev);
+    const next = sel.value;
+    if (next === prev) return;
+    if (normalizeLinkMode(next) !== next) { sel.value = prev; toast('链接模式不合法', 'err'); return; }
+    try {
+      const r = await api('/api/v1/nodes/' + encodeURIComponent(nodeId) + '/link-mode', { method: 'PUT', body: JSON.stringify({ link_mode: next }) });
+      const saved = normalizeLinkMode(r.link_mode || next);
+      sel.dataset.prev = saved;
+      sel.value = saved;
+      toast('节点链接模式已改成「' + linkModeLabel(saved) + '」，下次拉订阅生效', 'ok');
+    } catch (err) { sel.value = prev; toast('修改失败：' + err.message, 'err'); }
+  });
 }
 // 远程节点详情（v1.4.19，切片 9）：经管理面板代理调远程的
 // /api/v1/central/nodes/{remote_id}/{node_id}，形状与本地节点详情一致，
@@ -1193,7 +1228,7 @@ async function openCentralNodeDetail(remoteId, nodeId, nodeName) {
   let d;
   try { d = await api('/api/v1/central/nodes/' + encodeURIComponent(remoteId) + '/' + encodeURIComponent(nodeId)); }
   catch (e) { toast('加载远程节点详情失败：' + e.message, 'err'); return; }
-  const m = openModal(nodeDetailModalHtml(d, nodeName, nodeId));
+  const m = openModal(nodeDetailModalHtml(d, nodeName, nodeId, false));
   if (m) onIn(m, '#node-detail-close', 'click', closeModal);
 }
 async function deleteNode(id, name) {
@@ -2608,23 +2643,31 @@ function initNodeCerts() {
     const domain = $('#node-cert-domain').value.trim().toLowerCase();
     const provider = $('#node-cert-provider').value;
     if (!domain) { toast('证书域名要填', 'err'); return; }
-    if (provider === 'manual') {
-      try {
-        const r = await apiPost('/api/v1/node-certs/manual/start', { domain });
-        toast('手动签发已下单：去 DNS 后台加 TXT 记录，再点“继续验证”', 'ok');
-        if (r.warning) toast(r.warning, 'ok'); // v1.4.13：覆盖关系只警告、不拦截
-        loadNodeCerts();
-      } catch (err) { showNodeCertError(err.message); }
-      return;
-    }
+    // v1.4.25：点下后立即禁用＋「签发中…」，防重复点、给进行中反馈；
+    // 成功／失败都在 finally 里恢复按钮（登录／添加落地同款写法）。
+    const btn = $('#node-cert-issue-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '签发中…'; }
     try {
-      const r = await apiPost('/api/v1/node-certs', { domain, provider });
-      toast('证书已签发，节点 60 秒内拉到', 'ok');
-      if (r.warning) toast(r.warning, 'ok'); // v1.4.13：覆盖关系只警告、不拦截
-      $('#node-cert-issue-form').reset();
-      loadNodeCerts();
-      if (currentInboundsNodeId) loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
-    } catch (err) { showNodeCertError(err.message); }
+      if (provider === 'manual') {
+        try {
+          const r = await apiPost('/api/v1/node-certs/manual/start', { domain });
+          toast('手动签发已下单：去 DNS 后台加 TXT 记录，再点“继续验证”', 'ok');
+          if (r.warning) toast(r.warning, 'ok'); // v1.4.13：覆盖关系只警告、不拦截
+          loadNodeCerts();
+        } catch (err) { showNodeCertError(err.message); }
+        return;
+      }
+      try {
+        const r = await apiPost('/api/v1/node-certs', { domain, provider });
+        toast('证书已签发，节点 60 秒内拉到', 'ok');
+        if (r.warning) toast(r.warning, 'ok'); // v1.4.13：覆盖关系只警告、不拦截
+        $('#node-cert-issue-form').reset();
+        loadNodeCerts();
+        if (currentInboundsNodeId) loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
+      } catch (err) { showNodeCertError(err.message); }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '签发证书'; }
+    }
   });
   on('#node-cert-manual-confirm', 'click', async () => {
     const box = $('#node-cert-manual-box');
@@ -7514,6 +7557,18 @@ function initCentral() {
 }
 
 /* ---------- 启动 ---------- */
+// initMachineIP v1.4.25：顶栏本机 IP 一键复制。IP 由 loadOverview 从
+// status 回的 machine_ip 填进 #machine-ip；点复制时读当前文本，
+// 没拿到（还是 —）就提示、不复制。复用 copyText（clipboard＋execCommand
+// 兜底，成功 toast「已复制」＋按钮短暂变「已复制 ✓」）。
+function initMachineIP() {
+  on('#machine-ip-copy', 'click', (e) => {
+    const ip = ($('#machine-ip') || {}).textContent || '';
+    if (!ip || ip === '—') { toast('本机 IP 还没拿到，稍后再试', 'err'); return; }
+    copyText(ip, e.target.closest('button'));
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   // 启动成功标记：index.html 里的内联兜底脚本靠它判断 app.js 是否跑起来了
   window.__panelBooted = true;
@@ -7548,6 +7603,7 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initCentral);
   safeInit(initNodes); // v1.4.0：节点页建节点表单与复制按钮绑定
   safeInit(initNodeCerts); // v1.4.12：节点证书页签发／续签／删除／手动两步走绑定
+  safeInit(initMachineIP); // v1.4.25：顶栏本机 IP 一键复制
   let refreshing = false;
   const refreshBtn = on('#refresh-btn', 'click', async () => {
     if (refreshing || !refreshBtn) return; // 正在刷时再点无效

@@ -29,7 +29,7 @@ import (
 )
 
 func TestVersion1422(t *testing.T) {
-	if Version != "1.4.24" {
+	if Version != "1.4.25" {
 		t.Fatalf("Version 应为 1.4.23，实际 %q", Version)
 	}
 }
@@ -202,10 +202,10 @@ func TestInboundLinkEndpoint1422(t *testing.T) {
 		link  string
 		label string
 	}{
-		1: {contract1420Reality, "example-node-reality-443"},
-		2: {contract1420AnyTLS, "example-node-anytls-443"},
-		3: {contract1420Socks, "example-node-socks-1080"},
-		5: {contract1423HY2, "example-node-hy2-443"},
+		1: {contract1420Reality, "example-node-reality-443-A"},
+		2: {contract1420AnyTLS, "example-node-anytls-443-A"},
+		3: {contract1420Socks, "example-node-socks-1080-A"},
+		5: {contract1423HY2, "example-node-hy2-443-A"},
 	}
 	for inboundID, w := range want {
 		code, m := getInboundLink1422(t, h, cookie, id, inboundID, userKey)
@@ -346,12 +346,12 @@ func TestInboundLinkMatchesSubscription1422(t *testing.T) {
 	subLinks := s.backendSubLinksForUser("subuser", "su-1420")
 	var subReality string
 	for _, l := range subLinks {
-		if l.Name == "example-node-reality-443" {
+		if l.Name == "example-node-reality-443-A" {
 			subReality = l.Link
 		}
 	}
 	if subReality == "" {
-		t.Fatalf("订阅里没有 example-node-reality-443")
+		t.Fatalf("订阅里没有 example-node-reality-443-A")
 	}
 	code, m := getInboundLink1422(t, h, cookie, id, 1, "subuser:su-1420")
 	if code != 200 {

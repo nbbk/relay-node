@@ -30,7 +30,7 @@ import (
 )
 
 func TestVersion1423(t *testing.T) {
-	if Version != "1.4.24" {
+	if Version != "1.4.25" {
 		t.Fatalf("Version 应为 1.4.23，实际 %q", Version)
 	}
 }
@@ -40,12 +40,12 @@ func TestVersion1423(t *testing.T) {
 const (
 	// 32 字节全 0 密钥的 base64（SS2022 密码，2022-blake3-aes-256-gcm 要 32 字节）。
 	contract1423SS2022Password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-	contract1423VLESS_TLS      = "vless://11111111-2222-3333-4444-555555555555@203.0.113.1:8444?encryption=none&security=tls&sni=example.com&type=tcp#example-node-tls-8444"
-	contract1423HY2            = "hysteria2://11111111-2222-3333-4444-555555555555@203.0.113.1:443?sni=example.com&alpn=h3#example-node-hy2-443"
-	contract1423TUIC           = "tuic://11111111-2222-3333-4444-555555555555:11111111-2222-3333-4444-555555555555@203.0.113.1:4443?congestion_control=bbr&alpn=h3&sni=example.com#example-node-tuic-4443"
-	contract1423SS             = "ss://YWVzLTI1Ni1nY206c2VjcmV0@203.0.113.1:8388#example-node-ss-8388"
-	contract1423SS2022         = "ss://MjAyMi1ibGFrZTMtYWVzLTI1Ni1nY206QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQT0@203.0.113.1:8389#example-node-ss2022-8389"
-	contract1423Trojan         = "trojan://11111111-2222-3333-4444-555555555555@203.0.113.1:8443?security=tls&sni=example.com&type=tcp#example-node-trojan-8443"
+	contract1423VLESS_TLS      = "vless://11111111-2222-3333-4444-555555555555@203.0.113.1:8444?encryption=none&security=tls&sni=example.com&type=tcp#example-node-tls-8444-A"
+	contract1423HY2            = "hysteria2://11111111-2222-3333-4444-555555555555@203.0.113.1:443?sni=example.com&alpn=h3#example-node-hy2-443-A"
+	contract1423TUIC           = "tuic://11111111-2222-3333-4444-555555555555:11111111-2222-3333-4444-555555555555@203.0.113.1:4443?congestion_control=bbr&alpn=h3&sni=example.com#example-node-tuic-4443-A"
+	contract1423SS             = "ss://YWVzLTI1Ni1nY206c2VjcmV0@203.0.113.1:8388#example-node-ss-8388-A"
+	contract1423SS2022         = "ss://MjAyMi1ibGFrZTMtYWVzLTI1Ni1nY206QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQT0@203.0.113.1:8389#example-node-ss2022-8389-A"
+	contract1423Trojan         = "trojan://11111111-2222-3333-4444-555555555555@203.0.113.1:8443?security=tls&sni=example.com&type=tcp#example-node-trojan-8443-A"
 )
 
 // contractInbounds1423 契约的 9 条入站（顺序即订阅里的顺序）。
@@ -348,9 +348,9 @@ func TestBackendSubLinksFourFormats1423(t *testing.T) {
 	// sing-box JSON：6 种新出站的字段。
 	obs := singboxOutbounds1420(t, links)
 	// VLESS-TLS：tls 恒开、server_name 是 SNI、TCP 承载无 transport。
-	vt, ok := obs["example-node-tls-8444"]
+	vt, ok := obs["example-node-tls-8444-A"]
 	if !ok {
-		t.Fatalf("sing-box 里没有 example-node-tls-8444")
+		t.Fatalf("sing-box 里没有 example-node-tls-8444-A")
 	}
 	if vt["type"] != "vless" || vt["uuid"] != contract1420UUID || vt["server_port"] != float64(8444) {
 		t.Fatalf("VLESS-TLS outbound 基本字段不对：%v", vt)
@@ -363,9 +363,9 @@ func TestBackendSubLinksFourFormats1423(t *testing.T) {
 		t.Fatalf("VLESS-TLS 是 TCP 承载，不应有 transport：%v", vt)
 	}
 	// HY2：tls 恒开、server_name 是 SNI、alpn 是 [h3]。
-	hy, ok := obs["example-node-hy2-443"]
+	hy, ok := obs["example-node-hy2-443-A"]
 	if !ok {
-		t.Fatalf("sing-box 里没有 example-node-hy2-443")
+		t.Fatalf("sing-box 里没有 example-node-hy2-443-A")
 	}
 	if hy["type"] != "hysteria2" || hy["password"] != contract1420UUID {
 		t.Fatalf("HY2 outbound 基本字段不对：%v", hy)
@@ -381,9 +381,9 @@ func TestBackendSubLinksFourFormats1423(t *testing.T) {
 		t.Fatalf("HY2 不应有 obfs：%v", hy)
 	}
 	// TUIC：uuid 与 password 都是 UUID、congestion_control 是 bbr、alpn 是 [h3]。
-	tu, ok := obs["example-node-tuic-4443"]
+	tu, ok := obs["example-node-tuic-4443-A"]
 	if !ok {
-		t.Fatalf("sing-box 里没有 example-node-tuic-4443")
+		t.Fatalf("sing-box 里没有 example-node-tuic-4443-A")
 	}
 	if tu["type"] != "tuic" || tu["uuid"] != contract1420UUID || tu["password"] != contract1420UUID ||
 		tu["congestion_control"] != "bbr" {
@@ -397,25 +397,25 @@ func TestBackendSubLinksFourFormats1423(t *testing.T) {
 		t.Fatalf("TUIC tls.alpn 应是 [h3]，实际 %v", tutls["alpn"])
 	}
 	// SS：方法与密码解回正确。
-	ss, ok := obs["example-node-ss-8388"]
+	ss, ok := obs["example-node-ss-8388-A"]
 	if !ok {
-		t.Fatalf("sing-box 里没有 example-node-ss-8388")
+		t.Fatalf("sing-box 里没有 example-node-ss-8388-A")
 	}
 	if ss["type"] != "shadowsocks" || ss["method"] != "aes-256-gcm" || ss["password"] != "secret" {
 		t.Fatalf("SS outbound 不对：%v", ss)
 	}
-	ss2, ok := obs["example-node-ss2022-8389"]
+	ss2, ok := obs["example-node-ss2022-8389-A"]
 	if !ok {
-		t.Fatalf("sing-box 里没有 example-node-ss2022-8389")
+		t.Fatalf("sing-box 里没有 example-node-ss2022-8389-A")
 	}
 	if ss2["type"] != "shadowsocks" || ss2["method"] != "2022-blake3-aes-256-gcm" ||
 		ss2["password"] != contract1423SS2022Password {
 		t.Fatalf("SS2022 outbound 不对：%v", ss2)
 	}
 	// Trojan：密码是 UUID、tls 恒开、server_name 是 SNI。
-	tj, ok := obs["example-node-trojan-8443"]
+	tj, ok := obs["example-node-trojan-8443-A"]
 	if !ok {
-		t.Fatalf("sing-box 里没有 example-node-trojan-8443")
+		t.Fatalf("sing-box 里没有 example-node-trojan-8443-A")
 	}
 	if tj["type"] != "trojan" || tj["password"] != contract1420UUID {
 		t.Fatalf("Trojan outbound 基本字段不对：%v", tj)
@@ -439,12 +439,12 @@ func TestBackendSubLinksFourFormats1423(t *testing.T) {
 		t.Fatalf("clash 渲染：%v", err)
 	}
 	for _, want := range []string{
-		`name: "example-node-tls-8444"`, "type: vless", `servername: "example.com"`, `network: "tcp"`,
-		`name: "example-node-hy2-443"`, "type: hysteria2", `password: "11111111-2222-3333-4444-555555555555"`, `sni: "example.com"`,
-		`name: "example-node-tuic-4443"`, "type: tuic", `uuid: "11111111-2222-3333-4444-555555555555"`, "congestion-controller: bbr",
-		`name: "example-node-ss-8388"`, "type: ss", `cipher: "aes-256-gcm"`, `password: "secret"`,
-		`name: "example-node-ss2022-8389"`, `cipher: "2022-blake3-aes-256-gcm"`,
-		`name: "example-node-trojan-8443"`, "type: trojan",
+		`name: "example-node-tls-8444-A"`, "type: vless", `servername: "example.com"`, `network: "tcp"`,
+		`name: "example-node-hy2-443-A"`, "type: hysteria2", `password: "11111111-2222-3333-4444-555555555555"`, `sni: "example.com"`,
+		`name: "example-node-tuic-4443-A"`, "type: tuic", `uuid: "11111111-2222-3333-4444-555555555555"`, "congestion-controller: bbr",
+		`name: "example-node-ss-8388-A"`, "type: ss", `cipher: "aes-256-gcm"`, `password: "secret"`,
+		`name: "example-node-ss2022-8389-A"`, `cipher: "2022-blake3-aes-256-gcm"`,
+		`name: "example-node-trojan-8443-A"`, "type: trojan",
 	} {
 		if !strings.Contains(cbody, want) {
 			t.Fatalf("Clash YAML 缺 %q：\n%s", want, cbody)
@@ -456,8 +456,8 @@ func TestBackendSubLinksFourFormats1423(t *testing.T) {
 		t.Fatalf("Clash 里没有 example-node fallback 组：\n%s", cbody)
 	}
 	seg := cbody[fb:]
-	for _, m := range []string{`"example-node-tls-8444"`, `"example-node-hy2-443"`, `"example-node-tuic-4443"`,
-		`"example-node-ss-8388"`, `"example-node-ss2022-8389"`, `"example-node-trojan-8443"`} {
+	for _, m := range []string{`"example-node-tls-8444-A"`, `"example-node-hy2-443-A"`, `"example-node-tuic-4443-A"`,
+		`"example-node-ss-8388-A"`, `"example-node-ss2022-8389-A"`, `"example-node-trojan-8443-A"`} {
 		if !strings.Contains(seg, "- "+m) {
 			t.Fatalf("example-node fallback 组成员缺 %s：\n%s", m, seg)
 		}

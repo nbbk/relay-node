@@ -73,6 +73,23 @@ func domainOrIP(domain string) string {
 	return "relay-panel"
 }
 
+// machineIP v1.4.25：本机 IP（顶栏显示＋一键复制用）。优先公网 IP
+// （非内网、非链路本地——VPS 的网卡上一般直接就是公网 IP）；没有
+// 公网 IP 就取第一块网卡的 IP（内网也行，至少能认出是哪台机）；
+// 一个都没有就返回 ""（前端显示 —、复制按钮提示未拿到）。
+func machineIP() string {
+	ips, err := localIPs()
+	if err != nil || len(ips) == 0 {
+		return ""
+	}
+	for _, ip := range ips {
+		if !ip.IsPrivate() && !ip.IsLinkLocalUnicast() {
+			return ip.String()
+		}
+	}
+	return ips[0].String()
+}
+
 func localIPs() ([]net.IP, error) {
 	var out []net.IP
 	ifaces, err := net.Interfaces()

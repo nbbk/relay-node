@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -101,6 +102,26 @@ type RemoteStatusSnapshot struct {
 	// NodesSupported 该远程面板的版本支不支持节点摘要（v1.4.19+ 才下发
 	// nodes；更旧的版本拉得到状态但看不到节点，前端据此写明版本太旧）。
 	NodesSupported bool `json:"nodes_supported"`
+	// RelayRoutes 该远程面板启用的中转路由摘要（v1.4.25）：随
+	// central/status 下发，走已有的 2 分钟拉取链，不另起轮询。
+	// 只含启用的路由（远程面板发之前已过滤）；从没拉成功过时为空，
+	// 界面标“尚未拉取”。管理面板拼 twin 订阅（B 链接）靠它匹配。
+	RelayRoutes []centralRelayRoute `json:"relay_routes"`
+	// RelayRoutesSupported 该远程面板的版本支不支持中转路由摘要
+	// （v1.4.25+ 才下发 relay_routes；更旧的版本拉得到状态但看不到
+	// 路由，twin 只出直连，前端据此写明版本太旧）。
+	RelayRoutesSupported bool `json:"relay_routes_supported"`
+}
+
+// centralRelayRoute 一条中转路由的同步摘要（v1.4.25）：只含启用的路由，
+// 来源是远程面板本机的 s.nodes.data.Routes。proto 已归一化：UDP 路由
+// （Proto=="udp" 或 UseUDP）发 "udp"，其余发 "tcp"，见
+// centralRelayRoutesSummary——接收方只凭 proto 判 UDP，不用 UseUDP。
+type centralRelayRoute struct {
+	ListenAddr string `json:"listen_addr"`
+	RemoteAddr string `json:"remote_addr"`
+	RemotePort int    `json:"remote_port"`
+	Proto      string `json:"proto"`
 }
 
 // centralNodeSummary 一台后端节点的摘要（v1.4.19，切片 9）：集中管理页
@@ -373,10 +394,37 @@ func (s *Server) centralNodesSummary() []centralNodeSummary {
 	return out
 }
 
+// centralRelayRoutesSummary 本机启用的中转路由摘要（v1.4.25）：
+// 供 handleCentralStatus 下发。自己拿 nodes.mu（调用方不用持锁）；
+// 只含启用的路由；proto 归一化（routeIsUDP 即 "udp"，其余 "tcp"），
+// 接收方只凭它判 UDP；按 listen_addr 排序，结果稳定。没有路由时
+// 返回空数组（不是 null，前端不用判空）。
+func (s *Server) centralRelayRoutesSummary() []centralRelayRoute {
+	s.nodes.mu.Lock()
+	defer s.nodes.mu.Unlock()
+	out := make([]centralRelayRoute, 0, len(s.nodes.data.Routes))
+	for _, r := range s.nodes.data.Routes {
+		if !r.Enabled {
+			continue
+		}
+		proto := "tcp"
+		if routeIsUDP(r) {
+			proto = "udp"
+		}
+		out = append(out, centralRelayRoute{
+			ListenAddr: r.ListenAddr, RemoteAddr: r.RemoteAddr,
+			RemotePort: r.RemotePort, Proto: proto,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ListenAddr < out[j].ListenAddr })
+	return out
+}
+
 // handleCentralStatus 被管端总览摘要（令牌认证）：版本、realm 是否在跑、
 // 落地列表（域名/IP、监听端口、在线状态、延迟）、根分区磁盘使用率。
 // v1.4.19：多带本机后端节点摘要（nodes），主面板随 2 分钟拉取链收走，
 // 不另起轮询。
+// v1.4.25：多带本机启用的中转路由摘要（relay_routes），同款拉取链。
 func (s *Server) handleCentralStatus(w http.ResponseWriter, r *http.Request) {
 	data, err := s.localStatusPayload()
 	if err != nil {
@@ -398,6 +446,7 @@ func (s *Server) handleCentralStatus(w http.ResponseWriter, r *http.Request) {
 		"disk_used_bytes":  st.DiskUsedBytes,
 		"disk_free_bytes":  st.DiskFreeBytes,
 		"nodes":            s.centralNodesSummary(),
+		"relay_routes":     s.centralRelayRoutesSummary(),
 	}))
 }
 
@@ -475,6 +524,7 @@ func (s *Server) fetchRemoteStatus(rem RemotePanel) (*RemoteStatusSnapshot, erro
 		RelayAddr    string                 `json:"relay_addr"`
 		Landings     []remoteLandingSummary `json:"landings"`
 		Nodes        []centralNodeSummary   `json:"nodes"`
+		RelayRoutes  []centralRelayRoute    `json:"relay_routes"`
 		Error        string                 `json:"error"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -504,16 +554,23 @@ func (s *Server) fetchRemoteStatus(rem RemotePanel) (*RemoteStatusSnapshot, erro
 		Online: true, Version: resp.PanelVersion, LandingCount: len(resp.Landings),
 		DiskPct: resp.DiskPct, RealmRunning: resp.Realm.Running, RelayAddr: resp.RelayAddr,
 		Landings: resp.Landings, LastCheckedAt: now, LastOKAt: now,
-		Nodes: resp.Nodes,
+		Nodes:       resp.Nodes,
+		RelayRoutes: resp.RelayRoutes,
 		// 节点摘要是 1.4.19 才下发的：远程版本低于 1.4.19 时 nodes 为空不是
 		// “没有节点”，是“看不到”，前端据此写明版本太旧；版本号空着时放行。
 		NodesSupported: resp.PanelVersion == "" || !isNewerVersion("1.4.19", resp.PanelVersion),
+		// 中转路由摘要是 1.4.25 才下发的（同款版本门：低于 1.4.25 时
+		// relay_routes 为空是“看不到”，twin 只出直连）。
+		RelayRoutesSupported: resp.PanelVersion == "" || !isNewerVersion("1.4.25", resp.PanelVersion),
 	}
 	if snap.Landings == nil {
 		snap.Landings = []remoteLandingSummary{}
 	}
 	if snap.Nodes == nil {
 		snap.Nodes = []centralNodeSummary{}
+	}
+	if snap.RelayRoutes == nil {
+		snap.RelayRoutes = []centralRelayRoute{}
 	}
 	return snap, nil
 }
@@ -575,7 +632,7 @@ func (s *Server) pollOneRemote(rem RemotePanel) *RemoteStatusSnapshot {
 	var alert string
 	if err != nil {
 		if prev == nil {
-			prev = &RemoteStatusSnapshot{ID: rem.ID, Name: rem.Name, BaseURL: rem.BaseURL, Landings: []remoteLandingSummary{}, Nodes: []centralNodeSummary{}}
+			prev = &RemoteStatusSnapshot{ID: rem.ID, Name: rem.Name, BaseURL: rem.BaseURL, Landings: []remoteLandingSummary{}, Nodes: []centralNodeSummary{}, RelayRoutes: []centralRelayRoute{}}
 		}
 		wasOnline := st.seen && st.wasOnline
 		prev.Online = false
@@ -625,7 +682,7 @@ func (s *Server) handleCentralRemotesList(w http.ResponseWriter, r *http.Request
 		if snap, ok := s.centralCache[rem.ID]; ok && snap != nil {
 			out = append(out, *snap)
 		} else {
-			out = append(out, RemoteStatusSnapshot{ID: rem.ID, Name: rem.Name, BaseURL: rem.BaseURL, Landings: []remoteLandingSummary{}, Nodes: []centralNodeSummary{}})
+			out = append(out, RemoteStatusSnapshot{ID: rem.ID, Name: rem.Name, BaseURL: rem.BaseURL, Landings: []remoteLandingSummary{}, Nodes: []centralNodeSummary{}, RelayRoutes: []centralRelayRoute{}})
 		}
 	}
 	// 节点统计（v1.3.52）：总数 + 本机一行 + 每台远程一行，只计数；

@@ -973,7 +973,7 @@ func TestMaybeRenewManualSkipped1349(t *testing.T) {
 // ---------- 10. 版本断言 ----------
 
 func TestVersion1349(t *testing.T) {
-	if Version != "1.4.24" {
+	if Version != "1.4.25" {
 		t.Fatalf("VERSION 应是 1.4.23，实际 %q", Version)
 	}
 }
