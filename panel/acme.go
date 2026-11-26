@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -73,14 +74,44 @@ func domainOrIP(domain string) string {
 	return "relay-panel"
 }
 
+// localIPsFunc 是 localIPs 的包级替身（默认就是真实现）：machineIP
+// 经它拿本机网卡 IP，测试里可替换成“空列表”走回显那路；
+// ensureSelfSigned 与 domainOrIP 仍直接调 localIPs()，不受替身影响。
+var localIPsFunc = localIPs
+
+// publicIPEchoURL 是公网 IP 回显地址（只回纯文本 IP），包级变量只为
+// 测试能指向本地 httptest 假服务端（默认 api.ipify.org）。
+var publicIPEchoURL = "https://api.ipify.org"
+
+// machineIPEchoCache 是回显结果的进程内缓存：成功只问一次（进程内
+// 一直有效）；失败只记 5 分钟，5 分钟后下一次 status 调用重新问，
+// 不让一次外网抖动把顶栏钉死一整个进程生命周期。仍不新增后台任务
+// 与轮询，只在 status 调用时惰性判断时间窗。
+// machineIPNow 与 machineIPEchoRetryAfter 是包级变量只为测试能注入
+// 时钟/改时间窗（仿照 acme.go 其他可替换写法）。
+var (
+	machineIPEchoMu         sync.Mutex
+	machineIPEchoDone       bool
+	machineIPEchoIP         string
+	machineIPEchoFailAt     time.Time
+	machineIPNow            = time.Now
+	machineIPEchoRetryAfter = 5 * time.Minute
+)
+
 // machineIP v1.4.25：本机 IP（顶栏显示＋一键复制用）。优先公网 IP
 // （非内网、非链路本地——VPS 的网卡上一般直接就是公网 IP）；没有
 // 公网 IP 就取第一块网卡的 IP（内网也行，至少能认出是哪台机）；
 // 一个都没有就返回 ""（前端显示 —、复制按钮提示未拿到）。
+// v1.4.30：本地枚举一个 IPv4 都读不到时（管理面板那台机就是这样：
+// 公网 IP 是 NAT 映射、本来就不在网卡上，连内网 IP 也没读到），问
+// 一次公网 IP 回显兜底（publicIPEchoIP，3 秒超时；成功进程内缓存，
+// 失败只记 5 分钟、5 分钟后下一次 status 调用重试）；回显失败仍回
+// ""，不阻塞、不报错。本地能拿到 IP 的机器行为不变，本地枚举的逻辑
+// 本身不动。
 func machineIP() string {
-	ips, err := localIPs()
+	ips, err := localIPsFunc()
 	if err != nil || len(ips) == 0 {
-		return ""
+		return publicIPEchoIP()
 	}
 	for _, ip := range ips {
 		if !ip.IsPrivate() && !ip.IsLinkLocalUnicast() {
@@ -88,6 +119,49 @@ func machineIP() string {
 		}
 	}
 	return ips[0].String()
+}
+
+// publicIPEchoIP 问公网 IP 回显：成功记缓存（进程内一直有效）；
+// 失败只记 5 分钟，5 分钟后下一次 status 调用重新问。非 200、超时、
+// 响应不是合法 IP 都回 ""，不阻塞、不报错。
+func publicIPEchoIP() string {
+	machineIPEchoMu.Lock()
+	defer machineIPEchoMu.Unlock()
+	if machineIPEchoDone {
+		return machineIPEchoIP
+	}
+	if !machineIPEchoFailAt.IsZero() && machineIPNow().Sub(machineIPEchoFailAt) < machineIPEchoRetryAfter {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", publicIPEchoURL, nil)
+	if err != nil {
+		machineIPEchoFailAt = machineIPNow()
+		return ""
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		machineIPEchoFailAt = machineIPNow()
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		machineIPEchoFailAt = machineIPNow()
+		return ""
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 64))
+	if err != nil {
+		machineIPEchoFailAt = machineIPNow()
+		return ""
+	}
+	if ip := net.ParseIP(strings.TrimSpace(string(b))); ip != nil {
+		machineIPEchoIP = ip.String()
+		machineIPEchoDone = true
+		return machineIPEchoIP
+	}
+	machineIPEchoFailAt = machineIPNow()
+	return ""
 }
 
 func localIPs() ([]net.IP, error) {

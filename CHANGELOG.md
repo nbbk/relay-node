@@ -2,6 +2,11 @@
 
 面板与中转的版本更新记录（v1.2.2 起，按版本从旧到新）。
 
+### v1.4.30 更新
+
+- 顶栏本机 IP 显示：管理面板那台机上 `machineIP()` 一个 IPv4 都读不到（公网 IP 是 NAT 映射、本来就不在网卡上，连内网 IP 也没读到），status 回的 `machine_ip` 是空，顶栏只剩“—”。修法：本地枚举为空时问一次公网 IP 回显兜底（`https://api.ipify.org`，纯文本回 IP，3 秒超时），成功后进程内缓存；失败只记 5 分钟，5 分钟后下一次 status 调用重新问（不让一次外网抖动把顶栏钉死一整个进程生命周期），不新增后台任务与轮询、不每次 status 请求都发外网；回显非 200／超时／响应不是合法 IP 时仍回空，不阻塞、不报错。回显端点是包级变量 `publicIPEchoURL`（仿照 `acmeDirectoryURL` 写法），本地枚举是可替身的包级变量 `localIPsFunc`，失败时间窗是包级变量 `machineIPEchoRetryAfter`、时钟是可注入的 `machineIPNow`；本地能拿到 IP 的机器行为不变，本地枚举逻辑本身不动，前端不用改（`machine_ip` 非空即显示）。
+- 测试：新增 Go panel_1430_machine_ip_test.go（版本断言 TestVersion1430＋6 项：本地有 IP 时不问外网、本地为空＋回显成功返回回显 IP、本地枚举报错也走回显、回显失败回空〈非 200／脏数据／超时〉、成功缓存只问一次、失败 5 分钟内不重问、5 分钟后重问且能恢复）；写死版本号的 Go 断言与 jsdom 断言/mock 一并升到 1.4.30。另：test-1422.js 的 E 项期望 stale（1.4.23 写 test 时用户管理还在 #links 页，1.4.28 拆成独立顶级页 #users 后没同步改；点按钮后实测 page-users.active=true、hash=#users，app 行为正确），期望改成 #page-users.active（顶层与 .reg-206/ 冻结副本一起改）。
+
 ### v1.4.29 更新
 
 - 发布公告：设置页基础 tab 登录页公告卡片下新增“公告”卡片，管理员可新建/编辑/删除多条公告（标题 1–60 字、内容 1–2000 字、置顶）；存 config.json，备份/恢复跟走。新接口 `GET /api/v1/announcements`（公开免鉴权）与 `POST/PUT/DELETE /api/v1/announcements[/{id}]`（管理员鉴权）；`GET /api/v1/public-info` 回包新增 `announcements` 字段（与公开列表同一份，置顶在前、其余创建时间倒序；空列表返回 `[]`），客户端首页公告栏直接读它（经订阅网关 Worker 仍通）。登录页公告 login_notice/login_signature 原样不动。审计记“新建公告/编辑公告/删除公告”（detail 只记标题，不记正文）。
