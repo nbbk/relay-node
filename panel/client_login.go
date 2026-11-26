@@ -244,9 +244,18 @@ func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	justLocked := s.sessions.loginFailed(ip)
+	// v1.4.28：失败 detail 按真实原因记，别一律写“密码错误”——停用/过期
+	// 的 SubUser 用正确密码登录失败时，审计也要能分清。响应仍是统一 401，
+	// 不向调用方区分原因。
 	detail := "密码错误"
 	if adminOK {
 		detail = "二次验证未通过（客户端登录不支持验证码）"
+	} else if subUser != nil && subUser.PasswordHash != "" && verifyPassword(req.Password, subUser.PasswordHash) {
+		if subUser.Disabled {
+			detail = "账号已停用"
+		} else if subExpired(subUser.ExpiresAt, time.Now()) {
+			detail = "订阅已过期"
+		}
 	}
 	s.audit(req.Username, "客户端登录", "", "失败", detail)
 	if justLocked {

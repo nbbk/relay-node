@@ -35,6 +35,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -1544,6 +1545,62 @@ func (s *Server) subUserinfoHeader(localIndices map[int]bool, tokenExpiry string
 	return strings.Join(parts, "; ")
 }
 
+// subUserAuditName 审计用户列用人认的显示名：Name（面板显示名）优先，
+// 空时回落 Username（登录账号，未设时是 u-xxxx，不直观，只作兜底）。
+// 登录审计仍用 Username，别混用。
+func subUserAuditName(u *SubUser) string {
+	if u == nil {
+		return "订阅客户端"
+	}
+	if strings.TrimSpace(u.Name) != "" {
+		return u.Name
+	}
+	if strings.TrimSpace(u.Username) != "" {
+		return u.Username
+	}
+	return "订阅客户端"
+}
+
+// retiredSubAuditName 已退场令牌的审计用户名：合并订阅记它的 Name
+//（空时“未命名合并订阅”），通用订阅记“通用订阅”。
+func (s *Server) retiredSubAuditName(tok string) string {
+	if tok != "" && s.cfg.SubTokenHash != "" && verifySubToken(tok, s.cfg.SubTokenHash) {
+		return "通用订阅"
+	}
+	if ms, ok := s.findMergedSub(tok); ok {
+		if strings.TrimSpace(ms.Name) != "" {
+			return ms.Name
+		}
+		return "未命名合并订阅"
+	}
+	return "订阅客户端"
+}
+
+// checkSubTokenPairs 自检每个 SubUser 的 TokenHash 是否等于
+// SHA-256(decrypt(TokenEnc))：不一致说明卡片上显示的令牌与校验用的
+// 哈希不是一对（典型是备份恢复时哈希与密文分开混配），链接必然 404。
+// 只写服务端日志告警（log.Printf），不弹用户界面、不自动轮换——数据
+// 不一致在线上要靠轮换修复，代码修不了。TokenEnc 解不开的跳过（密钥
+// 丢了走现有 legacy 提示）。返回失配的用户 ID 列表（只记 ID，不记令牌）。
+func (s *Server) checkSubTokenPairs() []string {
+	var bad []string
+	for i := range s.cfg.SubUsers {
+		u := &s.cfg.SubUsers[i]
+		if u.TokenHash == "" || u.TokenEnc == "" {
+			continue
+		}
+		tok, err := s.decryptSubTokenNow(u.TokenEnc)
+		if err != nil {
+			continue
+		}
+		if !verifySubToken(tok, u.TokenHash) {
+			bad = append(bad, u.ID)
+			log.Printf("订阅令牌自检：订阅用户 %s（%s）的 TokenHash 与 TokenEnc 不匹配，卡片显示的链接会 404，请轮换后重新发链接", u.ID, u.Name)
+		}
+	}
+	return bad
+}
+
 // ---------- 公开订阅端点 ----------
 
 // findSubUser 按令牌找一个订阅用户（常数时间比较）。
@@ -1602,7 +1659,7 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if s.isRetiredSubToken(tok) {
 		s.subFailed(ip)
-		s.audit("订阅客户端", "拉取订阅", ip, "失败", "订阅已退场")
+		s.audit(s.retiredSubAuditName(tok), "拉取订阅", ip, "失败", "订阅已退场")
 		http.Error(w, retiredSubMsg, http.StatusGone)
 		return
 	}
@@ -1611,24 +1668,40 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 		// 让客户端分得清“令牌错了”还是“订阅到期了”），审计记“已过期”。
 		if exp, ok := s.subExpiryForToken(tok); ok && subExpired(exp, time.Now()) {
 			s.subFailed(ip)
-			s.audit("订阅客户端", "拉取订阅", ip, "失败", "订阅已过期")
+			name := "订阅客户端"
+			if u, ok := s.findSubUser(tok); ok {
+				name = subUserAuditName(u)
+			}
+			s.audit(name, "拉取订阅", ip, "失败", "订阅已过期")
 			http.Error(w, "订阅已过期", http.StatusGone)
 			return
 		}
 		s.subOK(ip)
 		// 成功拉取记一条轻量记录：IP + 时间 + 令牌哈希前 8 位（认得出是哪条，
-		// 又不把日志打爆）；明文令牌绝不进审计日志。
-		s.audit("订阅客户端", "拉取订阅", ip, "成功", "令牌哈希前 8 位 "+hashSubToken(tok)[:8])
+		// 又不把日志打爆）；明文令牌绝不进审计日志。用户列记该订阅用户的
+		// 显示名（v1.4.28），不用再写死“订阅客户端”。
+		name := "订阅客户端"
+		if u, ok := s.findSubUser(tok); ok {
+			name = subUserAuditName(u)
+		}
+		s.audit(name, "拉取订阅", ip, "成功", "令牌哈希前 8 位 "+hashSubToken(tok)[:8])
 		s.serveSubContent(w, r, tok)
 		return
 	}
 	if s.subLocked(ip) {
+		// 429 也记一条审计（v1.4.28）：先查一次令牌归属再记，查不到仍是
+		// “订阅客户端”；detail 只记原因，不记令牌。
+		name := "订阅客户端"
+		if u, ok := s.findSubUser(tok); ok {
+			name = subUserAuditName(u)
+		}
+		s.audit(name, "拉取订阅", ip, "失败", "请求太频繁")
 		w.Header().Set("Retry-After", "600")
 		http.Error(w, "请求太频繁，稍后再试", 429)
 		return
 	}
 	s.subFailed(ip)
-	s.audit("订阅客户端", "拉取订阅", ip, "失败", "令牌不对")
+	s.audit("订阅客户端", "拉取订阅", ip, "失败", "令牌不对（令牌哈希前 8 位 "+hashSubToken(tok)[:8]+"）")
 	http.NotFound(w, r)
 }
 

@@ -197,6 +197,7 @@ const PAGES = [
   { id: 'certs', title: '证书', icon: '🔒' },
   { id: 'service', title: '服务与日志', icon: '⚙️' },
   { id: 'settings', title: '设置', icon: '🔧' },
+  { id: 'users', title: '用户管理', icon: '👤' },
   { id: 'firewall', title: '端口管理', icon: '🧱' },
   { id: 'traffic', title: '流量', icon: '📊' },
   { id: 'central', title: '集中管理', icon: '🖥️' },
@@ -207,9 +208,9 @@ let statusCache = null;
 let settingsCache = null;
 let logsTimer = null;
 // 管理面板模式（v1.2.8）：true = 这台面板只做集中管理；本地页全部隐藏，
-// 只留集中管理与设置；由 /api/v1/me 下发，设置页可切换（切完整页刷新）。
+// 只留集中管理、用户管理、节点与设置；由 /api/v1/me 下发，设置页可切换（切完整页刷新）。
 let managerOnly = false;
-const MANAGER_PAGES = ['central', 'nodes', 'settings'];
+const MANAGER_PAGES = ['central', 'users', 'nodes', 'settings'];
 function visiblePages() {
   if (!managerOnly) return PAGES;
   // 管理面板模式：按 MANAGER_PAGES 的顺序排（集中管理在前，设置在后），
@@ -283,6 +284,7 @@ function loadPage(page) {
   else if (page === 'certs') return loadCerts();
   else if (page === 'service') return loadService();
   else if (page === 'settings') return loadSettingsPage();
+  else if (page === 'users') return loadUsersPage();
   else if (page === 'firewall') return loadFirewall();
   else if (page === 'traffic') return loadTrafficPage();
   else if (page === 'central') return loadCentral();
@@ -1943,7 +1945,7 @@ async function openInboundLinkModal(inb) {
     body.innerHTML = '<p>这个节点还没有用户：先去「订阅用户」里新建一个用户（新建时勾上这个节点），再回来复制链接。</p>' +
       '<div class="btn-row"><button class="btn" type="button" id="ib-link-goto-users">去订阅用户里建用户</button></div>';
     const go = body.querySelector('#ib-link-goto-users');
-    if (go) go.addEventListener('click', () => { closeModal(); goto('links'); });
+    if (go) go.addEventListener('click', () => { closeModal(); goto('users'); });
     return;
   }
   // 用户下拉框（真正 select，不是 datalist）：选项是能访问这个节点的
@@ -3574,6 +3576,47 @@ function initRemoteBackupTabs() {
     if (btn) btn.focus();
   });
 }
+// 订阅 tab 内二级选项卡（v1.4.28）：套餐档位 / 分组 / 端口与倍率，复用
+// 设置页选项卡模式（原生 button＋aria-selected＋方向键，localStorage
+// 记住上次，键与设置页分开）。
+const SUB_TABS = ['plans', 'groups', 'other'];
+const SUB_TAB_KEY = 'relay-panel-sub-tab';
+function subTabValid(id) { return SUB_TABS.indexOf(id) >= 0; }
+function showSubTab(id) {
+  if (!subTabValid(id)) id = 'plans';
+  SUB_TABS.forEach((t) => {
+    const btn = document.getElementById('sub-tab-' + t);
+    if (btn) btn.setAttribute('aria-selected', t === id ? 'true' : 'false');
+    setVisible(document.getElementById('sub-panel-' + t), t === id);
+  });
+  try { localStorage.setItem(SUB_TAB_KEY, id); } catch (e) { /* 隐私模式等存不了就每次回档位 */ }
+}
+function initSubTabs() {
+  let saved = null;
+  try { saved = localStorage.getItem(SUB_TAB_KEY); } catch (e) { /* 读不到就用默认 */ }
+  showSubTab(subTabValid(saved) ? saved : 'plans');
+  if (initSubTabs.bound) return;
+  initSubTabs.bound = true;
+  SUB_TABS.forEach((t) => {
+    on('#sub-tab-' + t, 'click', () => showSubTab(t));
+  });
+  const bar = document.querySelector('.sub-tabs');
+  if (bar) bar.addEventListener('keydown', (e) => {
+    const cur = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.subTab : null;
+    if (!cur || !subTabValid(cur)) return;
+    let idx = SUB_TABS.indexOf(cur);
+    if (e.key === 'ArrowRight') idx = (idx + 1) % SUB_TABS.length;
+    else if (e.key === 'ArrowLeft') idx = (idx - 1 + SUB_TABS.length) % SUB_TABS.length;
+    else if (e.key === 'Home') idx = 0;
+    else if (e.key === 'End') idx = SUB_TABS.length - 1;
+    else return;
+    e.preventDefault();
+    showSubTab(SUB_TABS[idx]);
+    const btn = document.getElementById('sub-tab-' + SUB_TABS[idx]);
+    if (btn) btn.focus();
+  });
+}
 // 添加落地表单选项卡（v1.3.41）：基本 / 证书 / 流量与限速，复用设置页选项卡模式
 //（原生 button＋aria-selected＋方向键，localStorage 记住上次，键与设置页分开）。
 // 提交按钮在选项卡之外、一直可见；切选项卡只是显隐，不影响表单取值与提交。
@@ -3693,6 +3736,13 @@ function initFirewallTabs() {
     if (btn) btn.focus();
   });
 }
+// 用户管理顶级页（v1.4.28）：订阅用户从设置→订阅搬出独立成页；列表、
+// 搜索、分页与新建/编辑/重置密码/复制/二维码/轮换都在原来的接线（弹窗、
+// 列表密）上，只换了容器位置。管理面板模式下也可见（MANAGER_PAGES 含 users）。
+async function loadUsersPage() {
+  loadSubUsers();
+}
+
 async function loadSettingsPage() {
   try {
     const st = await api('/api/v1/settings');
@@ -3858,7 +3908,7 @@ async function loadSettingsPage() {
 // 切换面板模式（v1.2.8）：只改 manager_only 开关，数据保留；切完刷新页面重建导航。
 async function switchPanelMode(toManager) {
   const ok = await confirmModal(toManager ? '切到管理面板' : '切回完整面板',
-    toManager ? '<p>切过去后本地落地、服务、端口管理全部隐藏，只留集中管理、合并订阅与设置；数据保留，切回来即恢复。确定吗？</p>' : '<p>切回来后本地落地、服务、端口管理全部恢复。确定吗？</p>',
+    toManager ? '<p>切过去后本地落地、服务、端口管理全部隐藏，只留集中管理、用户管理、节点与设置；数据保留，切回来即恢复。确定吗？</p>' : '<p>切回来后本地落地、服务、端口管理全部恢复。确定吗？</p>',
     toManager ? '切到管理面板' : '切回完整面板');
   if (!ok) return;
   try {
@@ -4156,6 +4206,7 @@ async function waitAndJumpHTTPS(enable) {
 function initSettings() {
   initSettingsTabs(); // v1.3.12：选项卡栏绑定 + 恢复上次选项卡
   initRemoteBackupTabs(); // v1.3.13：异地备份卡片内子选项卡绑定 + 恢复上次子选项卡
+  initSubTabs(); // v1.4.28：订阅 tab 内二级选项卡绑定 + 恢复上次子选项卡
   on('#mode-to-manager', 'click', () => switchPanelMode(true));
   on('#mode-to-full', 'click', () => switchPanelMode(false));
   // 面板名称（v1.3.4）：保存后刷新页面，登录页标题/品牌与订阅配置名跟着变。
@@ -6742,7 +6793,7 @@ function centralDetailEl() { return $('#central-detail-modal'); }
 // 内容（隐藏的大选项卡、隐藏的子选项卡也一样画），切选项卡只是显隐、不额外
 // 拉数据，所以切过去永远是最新数据；2 分钟轮询是后端 centralLoop，详情弹窗
 // 照常工作（读 centralRemotes 缓存）。
-const CENTRAL_TABS = ['list', 'add', 'sub'];
+const CENTRAL_TABS = ['list', 'add'];
 const CENTRAL_TAB_KEY = 'relay-panel-central-tab';
 const CENTRAL_SUB_TAB_KEY = 'relay-panel-central-sub-tab';
 function centralTabValid(id) { return CENTRAL_TABS.indexOf(id) >= 0; }

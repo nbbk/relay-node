@@ -117,6 +117,19 @@ func (s *Server) decryptSubTokenNow(enc string) (string, error) {
 	return decryptSubToken(key, enc)
 }
 
+// tokenPairMatches 哈希与密文是不是一对：解密密文后验哈希。任一为空、
+// 解不开、哈希对不上都返回 false（v1.4.28，备份恢复成对取用时校验混配）。
+func (s *Server) tokenPairMatches(hash, enc string) bool {
+	if hash == "" || enc == "" {
+		return false
+	}
+	tok, err := s.decryptSubTokenNow(enc)
+	if err != nil {
+		return false
+	}
+	return verifySubToken(tok, hash)
+}
+
 // ---------- /sub/ 限流（v1.3.7） ----------
 // 令牌本身是 sub_+64 位十六进制（256 位随机），扫是扫不出来的；这套是
 // 防机器 hammer 和留证据：同一 IP 10 次失败锁 10 分钟，返回 429。

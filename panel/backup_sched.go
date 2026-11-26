@@ -737,6 +737,19 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 	if ferr != nil {
 		return "", ferr
 	}
+	// v1.4.28：先恢复令牌密钥，再核对订阅令牌成对性——成对校验要解密
+	// 备份密文，跨机恢复必须用备份里的密钥解，不能用本机旧密钥。密钥
+	// 写盘在下面迁移信封段还会再做一次（同值，幂等），这里提前是为了
+	// 让 SubUsers/MergedSubs 恢复循环里的 tokenPairMatches 能解开。
+	if mig != nil && mig.SubTokenKey != "" {
+		if kb, err := base64.StdEncoding.DecodeString(strings.TrimSpace(mig.SubTokenKey)); err == nil && len(kb) == 32 {
+			if err := writeFileAtomic(filepath.Join(s.env.PanelHome, subTokenKeyFile), kb, 0o600); err == nil {
+				s.subKeyMu.Lock()
+				s.subKey = append([]byte(nil), kb...)
+				s.subKeyMu.Unlock()
+			}
+		}
+	}
 	_, _ = s.backupNow(o.preBackupLabel, "realm")
 	if err := s.writeRelayConfAtomic([]byte(p.RelayConf)); err != nil {
 		return "", &importFailure{500, "写入 relay.conf 失败：" + err.Error()}
@@ -864,15 +877,37 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 				ResetMode: bu.ResetMode, ResetDay: bu.ResetDay, NextResetAt: bu.NextResetAt, LastResetAt: bu.LastResetAt,
 				TrafficWarned80: bu.TrafficWarned80, TrafficWarned100: bu.TrafficWarned100, Disabled: bu.Disabled, DisabledReason: bu.DisabledReason,
 				NodeUUIDs: bu.NodeUUIDs, PlanID: bu.PlanID, Username: bu.Username, LinkMode: bu.LinkMode}
-			if h, ok := keepHash[bu.ID]; ok {
-				u.TokenHash = h
-			} else if mig != nil && bu.TokenHash != "" {
-				u.TokenHash = bu.TokenHash
+			// v1.4.28：哈希与密文按“对”取，绝不分开混配（本机哈希＋备份
+			// 密文拼出来的对校验不过，卡片链接 404）。本机对完整时优先
+			// 本机对（备份后轮换过的令牌不被旧备份顶掉）；本机只有单边时，
+			// 只接受解密校验通过的另一边（令牌没轮换过时本机哈希能对上
+			// 备份密文），校验不过就只留本机单边（哈希还在，旧令牌拉取
+			// 仍通；卡片显示走 legacy 提示，须轮换重发）；本机两边都
+			// 没有时才用备份对（须 mig 已解开），并计 tokenRestored。
+			localH, hasLocalH := keepHash[bu.ID]
+			localE, hasLocalE := keepEnc[bu.ID]
+			switch {
+			case hasLocalH && hasLocalE:
+				u.TokenHash, u.TokenEnc = localH, localE
+			case hasLocalH:
+				u.TokenHash = localH
+				if mig != nil && bu.TokenEnc != "" && s.tokenPairMatches(localH, bu.TokenEnc) {
+					u.TokenEnc = bu.TokenEnc
+				}
+			case hasLocalE:
+				u.TokenEnc = localE
+				if mig != nil && bu.TokenHash != "" && s.tokenPairMatches(bu.TokenHash, localE) {
+					u.TokenHash = bu.TokenHash
+				}
+			case mig != nil && bu.TokenHash != "" && bu.TokenEnc != "":
+				u.TokenHash, u.TokenEnc = bu.TokenHash, bu.TokenEnc
 				tokenRestored++
-			}
-			if e, ok := keepEnc[bu.ID]; ok {
-				u.TokenEnc = e
-			} else if mig != nil && bu.TokenEnc != "" {
+			case mig != nil && bu.TokenHash != "":
+				// 备份只有哈希没有密文：单留哈希（旧令牌拉取仍通，卡片
+				// 显示走 legacy 提示）；单边不存在混配问题。
+				u.TokenHash = bu.TokenHash
+			case mig != nil && bu.TokenEnc != "":
+				// 备份只有密文没有哈希：单留密文（与旧行为一致）。
 				u.TokenEnc = bu.TokenEnc
 			}
 			// 登录密码哈希（v1.4.27）：同机恢复优先本机现有哈希；跨机
@@ -909,15 +944,29 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 				ResetMode: bm.ResetMode, ResetDay: bm.ResetDay, NextResetAt: bm.NextResetAt, LastResetAt: bm.LastResetAt,
 				TrafficWarned80: bm.TrafficWarned80, TrafficWarned100: bm.TrafficWarned100, Disabled: bm.Disabled, DisabledReason: bm.DisabledReason,
 				NodeUUIDs: bm.NodeUUIDs}
-			if h, ok := keepHash[bm.ID]; ok {
-				m.TokenHash = h
-			} else if mig != nil && bm.TokenHash != "" {
-				m.TokenHash = bm.TokenHash
+			// v1.4.28：与 SubUser 同款按“对”取（见上），绝不把本机哈希与
+			// 备份密文分开混配；合并订阅已退场，这里只保记录本身不错配。
+			localH, hasLocalH := keepHash[bm.ID]
+			localE, hasLocalE := keepEnc[bm.ID]
+			switch {
+			case hasLocalH && hasLocalE:
+				m.TokenHash, m.TokenEnc = localH, localE
+			case hasLocalH:
+				m.TokenHash = localH
+				if mig != nil && bm.TokenEnc != "" && s.tokenPairMatches(localH, bm.TokenEnc) {
+					m.TokenEnc = bm.TokenEnc
+				}
+			case hasLocalE:
+				m.TokenEnc = localE
+				if mig != nil && bm.TokenHash != "" && s.tokenPairMatches(bm.TokenHash, localE) {
+					m.TokenHash = bm.TokenHash
+				}
+			case mig != nil && bm.TokenHash != "" && bm.TokenEnc != "":
+				m.TokenHash, m.TokenEnc = bm.TokenHash, bm.TokenEnc
 				tokenRestored++
-			}
-			if e, ok := keepEnc[bm.ID]; ok {
-				m.TokenEnc = e
-			} else if mig != nil && bm.TokenEnc != "" {
+			case mig != nil && bm.TokenHash != "":
+				m.TokenHash = bm.TokenHash
+			case mig != nil && bm.TokenEnc != "":
 				m.TokenEnc = bm.TokenEnc
 			}
 			if m.TokenHash == "" {
@@ -1199,6 +1248,9 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 			}
 		}
 	}
+	// v1.4.28：恢复/导入后自检令牌成对性，失配只写服务端日志（见
+	// checkSubTokenPairs），不拦恢复——数据不一致靠轮换修复。
+	s.checkSubTokenPairs()
 	s.audit(o.user, o.auditAction, "", "成功", o.auditDetail)
 	return allWarn, nil
 }

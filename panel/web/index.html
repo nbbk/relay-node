@@ -738,7 +738,12 @@
             <div class="card"><div class="list-toolbar"><input id="audit-search" class="list-search" type="search" placeholder="搜索审计日志：用户、操作、对象…" aria-label="搜索审计日志"></div><div id="audit-list"></div></div>
           </div>
           <div class="settings-panel hidden" role="tabpanel" id="settings-panel-subscription" aria-labelledby="settings-tab-subscription" hidden>
-            <div class="grid cols-2">
+            <div class="sub-tabs" role="tablist" aria-label="订阅设置">
+              <button type="button" class="sub-tab" role="tab" id="sub-tab-plans" aria-controls="sub-panel-plans" aria-selected="true" data-sub-tab="plans">套餐档位</button>
+              <button type="button" class="sub-tab" role="tab" id="sub-tab-groups" aria-controls="sub-panel-groups" aria-selected="false" data-sub-tab="groups">分组</button>
+              <button type="button" class="sub-tab" role="tab" id="sub-tab-other" aria-controls="sub-panel-other" aria-selected="false" data-sub-tab="other">端口与倍率</button>
+            </div>
+            <div class="sub-panel" role="tabpanel" id="sub-panel-plans" aria-labelledby="sub-tab-plans">
               <div class="card" id="card-sub-plans">
             <h2>套餐档位</h2>
             <p class="muted">档位决定一个订阅用户能拿多少流量、用多久、走哪些节点：建用户时选档位，流量、到期与分组按档位默认值填好，可再改。</p>
@@ -748,30 +753,9 @@
             <div class="list-toolbar"><input id="sub-plan-search" class="list-search" type="search" placeholder="搜索档位：名字、备注…" aria-label="搜索档位"></div>
             <div id="sub-plan-list" style="margin-top:12px">加载中…</div>
           </div>
-              <div class="card">
-            <h2>通用订阅</h2>
-            <p class="muted">通用订阅已退场，请使用订阅用户。</p>
-          </div>
-              <div class="card">
-            <h2>订阅用户（一人一条）</h2>
-            <p class="muted">每人一个独立令牌，封一条只影响一个人；登录后按档位拿节点、看流量与到期。名字用来认人（例如“张三的手机”），链接加密存在面板里，列表里每人都有“复制”按钮，随时能重新拿；撤销只影响那个人，其他人的链接照常。</p>
-            <div class="btn-row">
-              <button class="btn" id="sub-user-create" type="button">新建订阅用户</button>
-            </div>
-            <div id="sub-user-once" class="hidden" style="margin-top:10px">
-              <div class="warn-box">链接已加密存在面板里，随时能点“复制”重新拿；轮换后旧链接立即失效。</div>
-              <div class="kv"><span>订阅链接</span><b class="mono" id="sub-user-url-value" style="word-break:break-all"></b></div>
-              <div class="btn-row">
-                <button class="btn secondary sm" id="sub-user-copy" type="button">复制订阅链接</button>
-                <button class="btn secondary sm" id="sub-user-copy-clash" type="button">复制 Clash 链接</button>
-                <button class="btn secondary sm" id="sub-user-copy-plain" type="button">复制明文链接</button>
-                <button class="btn secondary sm" id="sub-user-qr" type="button">二维码</button>
-              </div>
-            </div>
-            <div class="list-toolbar"><input id="sub-user-search" class="list-search" type="search" placeholder="搜索订阅用户：名字、备注…" aria-label="搜索订阅用户"></div>
-            <div id="sub-user-list" style="margin-top:12px">加载中…</div>
-          </div>
-              <div class="card">
+                          </div>
+            <div class="sub-panel hidden" role="tabpanel" id="sub-panel-groups" aria-labelledby="sub-tab-groups" hidden>
+<div class="card">
             <h2>分组（权限组）</h2>
             <p class="muted">一组 = 一组落地 + 一组用户，组里的人用组里的节点。建一次组、加用户就行，不用每人重复勾落地；通用共享节点放一个组，美国/英国/法国等定制用户各放各的组。改组的落地，组里所有人的订阅下次更新立即同步，链接不变；删组后成员恢复自己原来勾的落地，链接也不变。</p>
             <p class="small muted">分组只决定用户能看到哪些落地，限流还是按人单独算（组里开了限流的人各走自己的独立转发端口，互不干扰）。</p>
@@ -781,7 +765,10 @@
             <div class="list-toolbar"><input id="sub-group-search" class="list-search" type="search" placeholder="搜索分组：名字、备注…" aria-label="搜索分组"></div>
             <div id="sub-group-list" style="margin-top:12px">加载中…</div>
           </div>
-              <div class="card">
+                          </div>
+            <div class="sub-panel hidden" role="tabpanel" id="sub-panel-other" aria-labelledby="sub-tab-other" hidden>
+              <div class="grid cols-2">
+<div class="card">
             <h2>每用户端口段</h2>
             <p class="muted">开了限流的订阅，每人每台中转机上占一个独立监听端口（从这个段里分配）。默认 30000–39999。</p>
             <div class="setting-row">
@@ -803,6 +790,7 @@
             </div>
             <p class="small muted">空着 = 1（不加倍）。只设一处就只算那一处；改完才按新倍率算，之前已记的用量不追溯。管理面板本机没有中转，这张卡不显示，中转倍率由各中转面板自己设。</p>
           </div>
+              </div>
             </div>
           </div>
           <div class="settings-panel hidden" role="tabpanel" id="settings-panel-domain" aria-labelledby="settings-tab-domain" hidden>
@@ -1105,7 +1093,6 @@
           <div class="central-tabs" role="tablist">
             <button type="button" class="central-tab" role="tab" id="central-tab-list" aria-controls="central-panel-list" aria-selected="false" data-central-tab="list">已登记的远程面板</button>
             <button type="button" class="central-tab" role="tab" id="central-tab-add" aria-controls="central-panel-add" aria-selected="false" data-central-tab="add">登记远程面板</button>
-            <button type="button" class="central-tab" role="tab" id="central-tab-sub" aria-controls="central-panel-sub" aria-selected="false" data-central-tab="sub">合并订阅</button>
           </div>
           <div class="central-panel" role="tabpanel" id="central-panel-list" aria-labelledby="central-tab-list">
             <h2>已登记的远程面板</h2>
@@ -1125,14 +1112,32 @@
               <div class="btn-row"><button class="btn" type="submit">登记远程面板</button></div>
             </form>
           </div>
-          <div class="central-panel hidden" role="tabpanel" id="central-panel-sub" aria-labelledby="central-tab-sub" hidden>
-            <h2>合并订阅</h2>
-            <p class="muted">合并订阅已退场，请使用订阅用户。</p>
-            <div class="list-toolbar"><input id="central-sub-search" class="list-search" type="search" placeholder="搜索合并订阅：名字、勾选…" aria-label="搜索合并订阅"></div>
-            <div id="central-sub-list" style="margin-top:12px"></div>
-          </div>
-        </div>
+                  </div>
       </section>
+
+      <!-- 用户管理（v1.4.28：订阅用户从设置→订阅搬出，独立顶级选项卡；管理面板模式下也可见） -->
+      <section class="page" id="page-users">
+        <div class="page-head"><h1>用户管理</h1></div>
+        <p class="muted">每人一个独立令牌，封一条只影响一个人；登录后按档位拿节点、看流量与到期。名字用来认人（例如“张三的手机”），链接加密存在面板里，列表里每人都有“复制”按钮，随时能重新拿；撤销只影响那个人，其他人的链接照常。</p>
+<div class="card">
+            <h2>订阅用户（一人一条）</h2>
+            <div class="btn-row">
+              <button class="btn" id="sub-user-create" type="button">新建订阅用户</button>
+            </div>
+            <div id="sub-user-once" class="hidden" style="margin-top:10px">
+              <div class="warn-box">链接已加密存在面板里，随时能点“复制”重新拿；轮换后旧链接立即失效。</div>
+              <div class="kv"><span>订阅链接</span><b class="mono" id="sub-user-url-value" style="word-break:break-all"></b></div>
+              <div class="btn-row">
+                <button class="btn secondary sm" id="sub-user-copy" type="button">复制订阅链接</button>
+                <button class="btn secondary sm" id="sub-user-copy-clash" type="button">复制 Clash 链接</button>
+                <button class="btn secondary sm" id="sub-user-copy-plain" type="button">复制明文链接</button>
+                <button class="btn secondary sm" id="sub-user-qr" type="button">二维码</button>
+              </div>
+            </div>
+            <div class="list-toolbar"><input id="sub-user-search" class="list-search" type="search" placeholder="搜索订阅用户：名字、备注…" aria-label="搜索订阅用户"></div>
+            <div id="sub-user-list" style="margin-top:12px">加载中…</div>
+          </div>
+                    </section>
     </main>
   </div>
 </div>

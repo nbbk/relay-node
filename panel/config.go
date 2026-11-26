@@ -914,6 +914,9 @@ func newServer(env Env) (*Server, error) {
 	if err := s.loadConfig(); err != nil {
 		return nil, err
 	}
+	// v1.4.28 启动自检：订阅用户 TokenHash 与 TokenEnc 失配时只写服务端
+	// 日志告警（checkSubTokenPairs），不拦启动、不自动轮换。
+	s.checkSubTokenPairs()
 	if err := s.loadState(); err != nil {
 		return nil, err
 	}

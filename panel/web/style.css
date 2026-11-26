@@ -363,24 +363,25 @@ html[data-theme="dark"] .tag.relay{background:#1e3a5f; color:#93c5fd; border-col
 /* v1.3.13：集中管理大选项卡/子选项卡与异地备份子选项卡复用同一套样式 */
 /* v1.3.41：添加落地表单、服务与日志页、端口管理页也用同一套选项卡样式 */
 .settings-shell, .central-shell, .add-shell, .service-shell, .fw-shell{padding:0}
-.settings-tabs, .central-tabs, .rb-tabs, .add-tabs, .service-tabs, .fw-tabs{
+.settings-tabs, .central-tabs, .rb-tabs, .add-tabs, .service-tabs, .fw-tabs, .sub-tabs{
   display:flex; gap:2px; padding:12px 12px 0; overflow-x:auto;
   border-bottom:1px solid var(--border);
   scrollbar-width:thin; -webkit-overflow-scrolling:touch;
 }
-.settings-tab, .central-tab, .rb-tab, .add-tab, .service-tab, .fw-tab{
+.settings-tab, .central-tab, .rb-tab, .add-tab, .service-tab, .fw-tab, .sub-tab{
   flex:0 0 auto; background:transparent; border:0; border-bottom:2px solid transparent;
   color:var(--muted); padding:10px 16px; font-size:15px; font-weight:600;
   border-radius:8px 8px 0 0; white-space:nowrap;
 }
-.settings-tab:hover, .central-tab:hover, .rb-tab:hover, .add-tab:hover, .service-tab:hover, .fw-tab:hover{background:var(--surface-muted); color:var(--text)}
-.settings-tab[aria-selected="true"], .central-tab[aria-selected="true"], .rb-tab[aria-selected="true"], .add-tab[aria-selected="true"], .service-tab[aria-selected="true"], .fw-tab[aria-selected="true"]{color:var(--accent); border-bottom-color:var(--accent)}
-.settings-tab:focus-visible, .central-tab:focus-visible, .rb-tab:focus-visible, .add-tab:focus-visible, .service-tab:focus-visible, .fw-tab:focus-visible{outline:2px solid var(--focus); outline-offset:2px}
+.settings-tab:hover, .central-tab:hover, .rb-tab:hover, .add-tab:hover, .service-tab:hover, .fw-tab:hover, .sub-tab:hover{background:var(--surface-muted); color:var(--text)}
+.settings-tab[aria-selected="true"], .central-tab[aria-selected="true"], .rb-tab[aria-selected="true"], .add-tab[aria-selected="true"], .service-tab[aria-selected="true"], .fw-tab[aria-selected="true"], .sub-tab[aria-selected="true"]{color:var(--accent); border-bottom-color:var(--accent)}
+.settings-tab:focus-visible, .central-tab:focus-visible, .rb-tab:focus-visible, .add-tab:focus-visible, .service-tab:focus-visible, .fw-tab:focus-visible, .sub-tab:focus-visible{outline:2px solid var(--focus); outline-offset:2px}
 .settings-panel, .central-panel, .add-panel, .service-panel, .fw-panel{padding:18px}
+.sub-panel{padding:18px 0 0}
 .rb-panel{padding-top:12px}
 @media (max-width:640px){
-  .settings-tabs, .central-tabs, .rb-tabs, .add-tabs, .service-tabs, .fw-tabs{padding:10px 8px 0}
-  .settings-tab, .central-tab, .rb-tab, .add-tab, .service-tab, .fw-tab{padding:10px 13px}
+  .settings-tabs, .central-tabs, .rb-tabs, .add-tabs, .service-tabs, .fw-tabs, .sub-tabs{padding:10px 8px 0}
+  .settings-tab, .central-tab, .rb-tab, .add-tab, .service-tab, .fw-tab, .sub-tab{padding:10px 13px}
   .settings-panel, .central-panel, .add-panel, .service-panel, .fw-panel{padding:14px}
 }
 

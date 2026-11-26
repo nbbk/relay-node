@@ -540,7 +540,7 @@ func TestInboundSNISync1402(t *testing.T) {
 // ---------- 6. 版本断言 ----------
 
 func TestVersion1402(t *testing.T) {
-	if Version != "1.4.27" {
-		t.Fatalf("VERSION 应是 1.4.27，实际 %q", Version)
+	if Version != "1.4.28" {
+		t.Fatalf("VERSION 应是 1.4.28，实际 %q", Version)
 	}
 }
