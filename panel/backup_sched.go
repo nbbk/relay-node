@@ -551,6 +551,13 @@ func (s *Server) exportData() map[string]any {
 		// 分组（v1.3.26）：随整机配置一起导出/导入（不含令牌与密码哈希，
 		// 与订阅用户同一口径）；手动导出与定时备份都带。
 		"sub_groups": s.cfg.SubGroups,
+		// 公告（v1.4.29）：随整机配置一起导出/导入（与 sub_groups 同款
+		// 顶级字段口径）；手动导出与定时备份都带。
+		"announcements": s.cfg.Announcements,
+		// 远程配置（v1.4.29）：已签名信封原文随整机配置一起导出/导入
+		// （与 announcements 同款顶级字段口径）；手动导出与定时备份
+		// 都带。信封是公开内容（客户端验签用），进备份文件无妨。
+		"client_config_json": s.cfg.ClientConfigJSON,
 		// v1.3.29：按人转发与端口段（恢复后按人段不再成孤儿）。
 		"user_forwards":   s.cfg.UserForwards,
 		"user_port_start": s.cfg.UserPortStart,
@@ -606,15 +613,21 @@ func (s *Server) exportData() map[string]any {
 // 迁移信封与版本号；passphrase 只在导入请求体里带（前端恢复时用户现输），
 // 绝不进备份文件。
 type importPayload struct {
-	Version             string             `json:"version"`
-	RelayConf           string             `json:"relay_conf"`
-	ConfigToml          string             `json:"config_toml"`
-	State               json.RawMessage    `json:"state"`
-	Traffic             json.RawMessage    `json:"traffic"`
-	SubUsers            []subUserBackup    `json:"sub_users"`
-	MergedSubs          []mergedSubBackup  `json:"merged_subs"`
-	Plans               []planBackup       `json:"plans"`
-	SubGroups           []SubGroup         `json:"sub_groups"`
+	Version       string            `json:"version"`
+	RelayConf     string            `json:"relay_conf"`
+	ConfigToml    string            `json:"config_toml"`
+	State         json.RawMessage   `json:"state"`
+	Traffic       json.RawMessage   `json:"traffic"`
+	SubUsers      []subUserBackup   `json:"sub_users"`
+	MergedSubs    []mergedSubBackup `json:"merged_subs"`
+	Plans         []planBackup      `json:"plans"`
+	SubGroups     []SubGroup        `json:"sub_groups"`
+	Announcements []Announcement    `json:"announcements"`
+	// ClientConfigJSON 远程配置信封原文（v1.4.29）：指针 = “文件里有
+	// 才恢复，没有不动”（空字符串也是合法值，表示“已撤下”，不能用
+	// 零值判断）；恢复时不校验内容（备份是本面板自己导出的，发布时
+	// 已校验过形状）。
+	ClientConfigJSON    *string            `json:"client_config_json"`
 	SubToken            *subTokenBackup    `json:"sub_token"`
 	UserForwards        []UserForward      `json:"user_forwards"`
 	UserPortStart       int                `json:"user_port_start"`
@@ -826,6 +839,19 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 	cfgChanged := false
 	if p.SubGroups != nil {
 		s.cfg.SubGroups = p.SubGroups
+		cfgChanged = true
+	}
+	// 公告（v1.4.29）：备份里有公告就整体恢复（老备份没有这一项时不动，
+	// 与 sub_groups 同款口径）；恢复时不校验内容（备份是本面板自己导出的）。
+	if p.Announcements != nil {
+		s.cfg.Announcements = p.Announcements
+		cfgChanged = true
+	}
+	// 远程配置（v1.4.29）：备份里有就整体恢复（老备份没有这一项时不动，
+	// 与 announcements 同款口径）；恢复时不校验内容（备份是本面板自己
+	// 导出的，发布时已校验过形状）。
+	if p.ClientConfigJSON != nil {
+		s.cfg.ClientConfigJSON = *p.ClientConfigJSON
 		cfgChanged = true
 	}
 	// 套餐档位（v1.4.27）：快照整体替换；档位关联的分组在备份里没有

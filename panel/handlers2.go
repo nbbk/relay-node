@@ -180,7 +180,7 @@ func (s *Server) handlePanelNameSet(w http.ResponseWriter, r *http.Request) {
 // 与 IP 白名单（见 ipWhitelistMiddleware 的例外）。公告空 = 没设置，登录
 // 页不显示；签名空 = 回落默认“{面板名} · 请登录”。
 func (s *Server) handlePublicInfo(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, okResp(map[string]any{"login_notice": s.cfg.LoginNotice, "login_signature": s.cfg.LoginSignature}))
+	writeJSON(w, 200, okResp(map[string]any{"login_notice": s.cfg.LoginNotice, "login_signature": s.cfg.LoginSignature, "announcements": s.sortedAnnouncements()}))
 }
 
 // validLoginNotice 校验公告文案：限 500 字；只允许多行纯文本，控制字符里

@@ -2427,6 +2427,33 @@ const IB_HELP = {
       '建议：一般不用改；显式选了就按这个订阅的来，覆盖节点上的模式；选“跟随节点”时按节点模式出，和以前一样。',
     ],
   },
+  // 公告字段（v1.4.29）：与登录页公告同款纯文本校验（标题 1–60 字、
+  // 内容 1–2000 字，控制字符只认换行/回车/制表）。
+  'announcement-title': {
+    title: '公告标题',
+    body: () => [
+      '填什么：公告的标题，客户端公告栏里显示在正文上面。',
+      '必填：1–60 字，不能为空。',
+      '建议：写清是什么事，如“维护通知”“节点扩容”，别只写“公告”。',
+    ],
+  },
+  'announcement-body': {
+    title: '公告内容',
+    body: () => [
+      '填什么：公告的正文，纯文本，可写多行（如维护时间、影响范围）。',
+      '必填：1–2000 字，不能为空；只认换行、回车、制表这三个控制字符，其余控制字符保存会被拒绝。',
+      '建议：第一行写最关键的信息，客户端列表里先看到的就是它；不解析 HTML，写链接也只是纯文本。',
+    ],
+  },
+  // 客户端远程配置（v1.4.29）：粘贴已签名的信封原文，面板只原样下发。
+  'client-config-text': {
+    title: '客户端远程配置',
+    body: () => [
+      '填什么：客户端仓根目录 client-config.json 里已签名的全文，从头到尾原样复制粘贴进来。',
+      '必填：保存时必须是合法的 JSON 对象（以 {"config_version": …} 开头），格式不对不发请求。',
+      '建议：只贴签好名的正式文件，别贴手改过的草稿；面板只原样下发、不改内容、不验签，签错了客户端那边会拒绝。未发布时客户端走 Worker/Raw 备用地址，撤下就是清空、回到未发布。',
+    ],
+  },
 };
 let ibHelpOpenKey = null;
 let ibHelpOpenBtn = null;
@@ -3903,7 +3930,7 @@ async function loadSettingsPage() {
       '<div class="kv"><span>状态</span><b>' + (st.update_available ? '<span class="badge yellow">有更新</span>' : '<span class="badge green">已是最新</span>') + '</b></div>' +
       '<div class="kv"><span>仓库</span><b><a href="https://github.com/nbbk/relay-node" target="_blank" rel="noopener">relay-node</a></b></div>';
   } catch (e) { toast('设置加载失败：' + e.message, 'err'); }
-  loadAudit(); loadSubUsers(); loadSubGroups(); loadSubPlans(); loadSchedBackups();
+  loadAudit(); loadSubUsers(); loadSubGroups(); loadSubPlans(); loadSchedBackups(); loadAnnouncements(); loadClientConfig(); // v1.4.29：公告卡片列表 + 客户端远程配置状态
 }
 // 切换面板模式（v1.2.8）：只改 manager_only 开关，数据保留；切完刷新页面重建导航。
 async function switchPanelMode(toManager) {
@@ -5406,6 +5433,161 @@ async function saveLoginSignature() {
     if (status) status.textContent = r.login_signature ? '已保存，登录页副标题会显示这句签名。' : '已清空，登录页副标题恢复默认。';
     toast('登录页签名已保存', 'ok');
   } catch (err) { toast('保存失败：' + err.message, 'err'); }
+}
+// ---------- 公告（v1.4.29，面板公告，多条，客户端首页公告栏显示） ----------
+// 列表 + 新建/编辑共用弹窗 + 删除二次确认，照抄套餐档位（loadSubPlans /
+// openSubPlanModal）的模式：openModal 弹窗、confirmModal 删除确认、
+// 成功关弹窗回列表、失败保留表单与报错（弹窗内 error-box + toast）。
+let announcementsCache = []; // 最近一次拉到的公告列表（按后端排序：置顶在前，其余创建时间倒序）
+function announcementPreview(body) {
+  const first = String(body || '').split(/\r?\n/)[0] || '';
+  return first.length > 60 ? first.slice(0, 60) + '…' : first;
+}
+function validateAnnouncement(title, body) {
+  const t = (title || '').trim();
+  const b = (body || '').trim();
+  if (!t) return '请先填公告标题';
+  if ([...t].length > 60) return '标题最多 60 字，现在 ' + [...t].length + ' 字';
+  if (!b) return '请先填公告内容';
+  if ([...b].length > 2000) return '内容最多 2000 字，现在 ' + [...b].length + ' 字';
+  // 纯文本校验与登录页公告同款：控制字符只认换行/回车/制表，其余拒绝（后端 400）。
+  if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(t) || /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(b)) return '标题或内容里有不支持的控制字符（只认换行、回车、制表）';
+  return '';
+}
+async function loadAnnouncements() {
+  const list = $('#announcement-list');
+  if (!list) return;
+  try {
+    const r = await api('/api/v1/announcements');
+    const arr = r.announcements || (Array.isArray(r) ? r : []);
+    announcementsCache = arr;
+    if (!announcementsCache.length) { list.innerHTML = '<p class="muted small">暂无公告</p>'; return; }
+    list.innerHTML = '<div class="table-wrap"><table><thead><tr><th>标题</th><th>创建时间</th><th>正文预览</th><th>操作</th></tr></thead><tbody>' +
+      announcementsCache.map((a) => '<tr><td>' + esc(a.title || '') + (a.pinned ? ' <span class="badge yellow">置顶</span>' : '') + '</td>' +
+        '<td>' + esc(fmtDate(a.created_at)) + '</td>' +
+        '<td><span class="small muted">' + esc(announcementPreview(a.body)) + '</span></td>' +
+        '<td><button class="btn secondary sm" type="button" data-announcement-edit="' + esc(a.id) + '">编辑</button> <button class="btn danger sm" type="button" data-announcement-delete="' + esc(a.id) + '">删除</button></td></tr>').join('') +
+      '</tbody></table></div>';
+    $$('[data-announcement-edit]', list).forEach((b) => b.addEventListener('click', () => {
+      const a = announcementsCache.find((x) => x.id === b.dataset.announcementEdit);
+      if (a) openAnnouncementModal(a);
+    }));
+    $$('[data-announcement-delete]', list).forEach((b) => b.addEventListener('click', async () => {
+      const a = announcementsCache.find((x) => x.id === b.dataset.announcementDelete);
+      const ok = await confirmModal('删除公告', '<p>删掉公告「' + esc(a ? a.title : '') + '」？删除后客户端不再显示这条公告，其他公告不受影响。确定吗？</p>', '删除', true);
+      if (!ok) return;
+      try { await api('/api/v1/announcements/' + encodeURIComponent(b.dataset.announcementDelete), { method: 'DELETE' }); toast('公告已删除', 'ok'); loadAnnouncements(); }
+      catch (e) { toast('删除失败：' + e.message, 'err'); }
+    }));
+  } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
+}
+// 新建/编辑公告弹窗：字段与新建一致（编辑弹窗字段与新建一致）。
+function openAnnouncementModal(a) {
+  const isEdit = !!a;
+  const p = a || {};
+  const m = openModal('<h2>' + esc(isEdit ? '编辑公告' : '新建公告') + '</h2>' +
+    '<p class="muted small">发到客户端首页公告栏：置顶的排在前面，其余按创建时间倒序。</p>' +
+    '<div class="form-grid">' +
+    '<div class="full"><label for="announcement-title">标题 <span class="hint">必填，1–60 字</span><button type="button" class="ib-help-btn" data-ib-help="announcement-title" aria-label="标题填写说明" aria-expanded="false">ⓘ</button></label><input id="announcement-title" type="text" value="' + esc(p.title || '') + '" placeholder="如 维护通知" maxlength="60"></div>' +
+    '<div class="full"><label for="announcement-body">内容 <span class="hint">必填，1–2000 字</span><button type="button" class="ib-help-btn" data-ib-help="announcement-body" aria-label="内容填写说明" aria-expanded="false">ⓘ</button></label><textarea id="announcement-body" rows="5" maxlength="2000" placeholder="多行纯文本，如维护时间、影响范围">' + esc(p.body || '') + '</textarea></div>' +
+    '<div class="full"><label><input id="announcement-pinned" type="checkbox"' + (p.pinned ? ' checked' : '') + '> 置顶（置顶的公告排在前面）</label></div>' +
+    '</div>' +
+    '<div class="error-box" data-ann-error hidden></div>' +
+    '<div class="btn-row" style="margin-top:12px"><button class="btn" type="button" data-ann-save>保存</button>' +
+    '<button class="btn secondary" type="button" data-ann-cancel>取消</button></div>', true);
+  if (!m) return;
+  const errBox = m.querySelector('[data-ann-error]');
+  const showErr = (msg) => { if (errBox) { errBox.textContent = msg; errBox.hidden = false; } toast(msg, 'err'); };
+  onIn(m, '[data-ann-cancel]', 'click', closeModal);
+  onIn(m, '[data-ann-save]', 'click', async () => {
+    const title = (m.querySelector('#announcement-title') || {}).value || '';
+    const body = (m.querySelector('#announcement-body') || {}).value || '';
+    const pinned = !!(m.querySelector('#announcement-pinned') || {}).checked;
+    const bad = validateAnnouncement(title, body);
+    if (bad) { showErr(bad); return; }
+    if (errBox) errBox.hidden = true;
+    try {
+      if (isEdit) await api('/api/v1/announcements/' + encodeURIComponent(a.id), { method: 'PUT', body: JSON.stringify({ title: title.trim(), body: body.trim(), pinned }) });
+      else await apiPost('/api/v1/announcements', { title: title.trim(), body: body.trim(), pinned });
+      closeModal();
+      toast(isEdit ? '公告已保存' : '公告已新建', 'ok');
+      loadAnnouncements();
+    } catch (err) { showErr('保存失败：' + err.message); }
+  });
+}
+function initAnnouncements() {
+  on('#announcement-create', 'click', () => openAnnouncementModal(null));
+}
+// ---------- 客户端远程配置（v1.4.29，GET /client-config.json） ----------
+// 管理员粘贴已签名的 client-config.json 全文，面板只原样存、原样下发，
+// 不改内容、不验签；未发布时 GET 回 404。照抄登录页公告（saveLoginNotice）
+// 的卡片模式：状态行 + 保存/撤下按钮，保存失败保留 textarea 与报错。
+function clientConfigVersionOf(text) {
+  try {
+    const o = JSON.parse(text);
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return { ok: false };
+    if (o.config_version == null) return { ok: true, version: null };
+    const n = Number(o.config_version);
+    return { ok: true, version: Number.isFinite(n) ? n : null };
+  } catch (e) { return { ok: false }; }
+}
+function setClientConfigStatus(text) {
+  const st = $('#client-config-status');
+  if (st) st.textContent = text;
+}
+async function loadClientConfig() {
+  const ta = $('#client-config-text');
+  if (!ta && !$('#client-config-status')) return;
+  try {
+    // 不走 api()：未发布的 404 是正常状态（不是报错），要按状态码区分。
+    const res = await fetch('/client-config.json');
+    if (res.status === 404) {
+      if (ta) ta.value = '';
+      setClientConfigStatus('未发布');
+      return;
+    }
+    if (!res.ok) { setClientConfigStatus('加载失败：HTTP ' + res.status); return; }
+    const text = await res.text();
+    if (ta) ta.value = text;
+    const parsed = clientConfigVersionOf(text);
+    if (!parsed.ok) { setClientConfigStatus('已发布（内容格式不对）'); return; }
+    setClientConfigStatus(parsed.version == null ? '已发布（config_version: 未标明）' : '已发布（config_version: ' + parsed.version + '）');
+  } catch (e) { setClientConfigStatus('加载失败：' + e.message); }
+}
+async function saveClientConfig() {
+  const ta = $('#client-config-text');
+  const err = $('#client-config-error');
+  const showErr = (msg) => { if (err) { err.textContent = msg; err.hidden = false; } toast(msg, 'err'); };
+  const raw = ta ? ta.value : '';
+  if (!raw.trim()) { showErr('请先粘贴已签名的 client-config.json 全文'); return; }
+  const parsed = clientConfigVersionOf(raw);
+  if (!parsed.ok) { showErr('内容格式不对：请粘贴完整的已签名 client-config.json 全文'); return; }
+  if (err) err.hidden = true;
+  try {
+    await apiPost('/api/v1/settings/client-config', { config: raw });
+    toast('客户端远程配置已发布', 'ok');
+    await loadClientConfig(); // 以 GET 回来的为准刷新状态行与版本号
+  } catch (e) { showErr('保存失败：' + e.message); }
+}
+async function clearClientConfig() {
+  const ok = await confirmModal('撤下客户端远程配置',
+    '<p>撤下后 GET /client-config.json 回 404，客户端从面板拉不到这份配置，改走 Worker/Raw 备用地址；面板里存的配置全文会清空，其他设置不受影响。确定吗？</p>',
+    '撤下', true);
+  if (!ok) return;
+  const ta = $('#client-config-text');
+  const err = $('#client-config-error');
+  const showErr = (msg) => { if (err) { err.textContent = msg; err.hidden = false; } toast(msg, 'err'); };
+  try {
+    await apiPost('/api/v1/settings/client-config', { config: '' });
+    if (ta) ta.value = '';
+    if (err) err.hidden = true;
+    toast('客户端远程配置已撤下', 'ok');
+    await loadClientConfig(); // 回到未发布（GET 应为 404）
+  } catch (e) { showErr('撤下失败：' + e.message); }
+}
+function initClientConfig() {
+  on('#client-config-save', 'click', () => saveClientConfig());
+  on('#client-config-clear', 'click', () => clearClientConfig());
 }
 // 保存订阅路径（v1.3.20）：改路径 = 旧订阅链接全部失效 + 面板重启 +
 // 重新登录 + 客户端重新导入，先弹确认框说清楚再调接口。
@@ -8101,6 +8283,8 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initSettings);
   safeInit(initSubGroups); // v1.3.26：分组卡片新建按钮 + 搜索框绑定
   safeInit(initSubPlans); // v1.4.27：套餐档位卡片新建按钮 + 搜索框绑定
+  safeInit(initAnnouncements); // v1.4.29：公告卡片新建按钮绑定
+  safeInit(initClientConfig); // v1.4.29：客户端远程配置保存／撤下按钮绑定
   safeInit(initMonitorSettings);
   safeInit(initLatencySettings);
   safeInit(initUpdatePoll);

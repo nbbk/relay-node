@@ -2,6 +2,12 @@
 
 面板与中转的版本更新记录（v1.2.2 起，按版本从旧到新）。
 
+### v1.4.29 更新
+
+- 发布公告：设置页基础 tab 登录页公告卡片下新增“公告”卡片，管理员可新建/编辑/删除多条公告（标题 1–60 字、内容 1–2000 字、置顶）；存 config.json，备份/恢复跟走。新接口 `GET /api/v1/announcements`（公开免鉴权）与 `POST/PUT/DELETE /api/v1/announcements[/{id}]`（管理员鉴权）；`GET /api/v1/public-info` 回包新增 `announcements` 字段（与公开列表同一份，置顶在前、其余创建时间倒序；空列表返回 `[]`），客户端首页公告栏直接读它（经订阅网关 Worker 仍通）。登录页公告 login_notice/login_signature 原样不动。审计记“新建公告/编辑公告/删除公告”（detail 只记标题，不记正文）。
+- 远程配置：新增公开 `GET /client-config.json`（客户端 0.1.3 拉取远程配置用，免鉴权、不走 IP 白名单；已发布时 200 原样返回管理员已签发的信封字节，未发布时 404）；管理端 `POST /api/v1/settings/client-config`（请求体 `{config: "<信封原文>"}`，空字符串即撤下），只做形状校验（合法 JSON 对象、含非空 signature 字符串、含 config_version 数字、含 panel 对象），面板不生成内容、不改内容、不验签（验签是客户端拿编译进的公钥做）；信封原文存 config.json 的 client_config_json 字段，备份导出/恢复跟走。审计记“发布远程配置/撤下远程配置”（detail 只记 config_version，绝不记信封内容）。
+- 测试：新增 Go panel_1429_announcement_test.go（7 项＋版本断言 TestVersion1429：公开空列表、创建/列表、校验 400、编辑/删除 404、置顶排序、备份导出恢复、落盘）与 jsdom test-1430-announcements.js（27 项）；写死版本号的 Go 断言与 jsdom 断言/mock 一并升到 1.4.29。
+
 ### v1.4.28 更新
 
 - 退场内容从界面上拿掉：设置→订阅里的通用订阅退场卡整个撤掉；集中管理页的合并订阅子选项卡整个撤掉（列表不再渲染）。后端 410 与 config/备份里的旧记录保留备查，合并订阅列表接口照常返回已有记录供核对。

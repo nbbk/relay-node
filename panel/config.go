@@ -180,6 +180,16 @@ type PanelConfig struct {
 	// 下方；空 = 回落到默认“{面板名} · 请登录”。只按纯文本展示，不解析
 	// HTML；限 60 字。旧 config.json 里没有这个字段时按空处理，不用迁移。
 	LoginSignature string `json:"login_signature,omitempty"`
+	// 公告（v1.4.29）：多条公告，见 announcements.go；公开拉取与
+	// public-info 回包共用同一份列表。旧 config.json 里没有这个字段时
+	// 按空处理（公开接口返回 []），不用迁移。
+	Announcements []Announcement `json:"announcements,omitempty"`
+	// 远程配置（v1.4.29）：管理员粘贴的已签名信封原文（字符串原样存，
+	// 见 client_config.go）。面板没有签名私钥、也不能现场签名，只原样
+	// served，不生成、不改内容、不验签（验签是客户端拿编译进的公钥做）。
+	// 空 = 还没发布，公开 GET /client-config.json 返回 404。旧
+	// config.json 里没有这个字段时按空处理，不用迁移。
+	ClientConfigJSON string `json:"client_config_json,omitempty"`
 	// 登录告警（v1.3.8，可选，默认关）：连续 5 次登录失败触发锁定时、
 	// 以及新 IP 第一次成功登录时，走 Telegram 发提醒。没配 Telegram 时
 	// 开关不可用（前端置灰并提示先配 Telegram）；旧配置没有这个字段时

@@ -463,6 +463,21 @@
             <div id="login-notice-status" class="small muted"></div>
           </div>
               <div class="card">
+            <h2>公告</h2>
+            <p class="muted">发布到客户端首页公告栏的多条公告：置顶的排在前面，其余按创建时间倒序。登录页公告是另一处，仍在上面那张卡片里改。</p>
+            <div class="btn-row"><button class="btn" id="announcement-create" type="button">新建公告</button></div>
+            <div id="announcement-list" class="small"></div>
+          </div>
+              <div class="card">
+            <h2>客户端远程配置</h2>
+            <p class="muted">发给客户端的远程配置：把客户端仓根目录 client-config.json 里已签名的全文粘贴进来，面板原样下发给客户端，不改内容、不验签。未发布时客户端走 Worker/Raw 备用地址。</p>
+            <label for="client-config-text">已签名配置全文 <span class="hint">必填：已签名的 client-config.json 全文</span><button type="button" class="ib-help-btn" data-ib-help="client-config-text" aria-label="客户端远程配置填写说明" aria-expanded="false">ⓘ</button></label>
+            <textarea id="client-config-text" rows="8" placeholder="粘贴已签名的 client-config.json 全文（以 {&quot;config_version&quot;: …} 开头）"></textarea>
+            <div class="btn-row"><button class="btn" id="client-config-save" type="button">保存并发布</button><button class="btn secondary" id="client-config-clear" type="button">撤下（清空）</button></div>
+            <div id="client-config-status" class="small muted">未发布</div>
+            <div id="client-config-error" class="error-box" hidden></div>
+          </div>
+              <div class="card">
             <h2>面板端口</h2>
             <p class="muted">改端口后面板会重启自身，请用新端口重新打开（原页面会断开）。</p>
             <form id="port-form">
