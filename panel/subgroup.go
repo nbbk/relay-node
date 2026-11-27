@@ -33,6 +33,9 @@ func (s *Server) findSubGroup(id string) *SubGroup {
 
 // groupMember 分组里的一名成员（列表接口用）：Kind 是 "user"（订阅用户）
 // 或 "merged"（合并订阅），Name 是显示名（合并订阅没填名时用勾选摘要）。
+// v1.4.34（方案 A）：独立合并订阅不进分组，"indmerged" 不是分组成员
+// kind——validateGroupMembers 只认 user/merged，传 indmerged 会 400；
+// 本文件各处 merged 分支保持只指旧实体，不并列新 kind。
 type groupMember struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id"`

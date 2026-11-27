@@ -397,7 +397,7 @@ func (s *Server) handleNodeInboundLink(w http.ResponseWriter, r *http.Request) {
 	}
 	userKey := strings.TrimSpace(r.URL.Query().Get("user_id"))
 	kind, userID, found := strings.Cut(userKey, ":")
-	if !found || (kind != "subuser" && kind != "merged") || strings.TrimSpace(userID) == "" {
+	if !found || (kind != "subuser" && kind != "merged" && kind != "indmerged") || strings.TrimSpace(userID) == "" {
 		writeJSON(w, 400, errResp("请先选一个用户"))
 		return
 	}
@@ -445,6 +445,13 @@ func (s *Server) handleNodeInboundLink(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		uuids, scope, targets, groupID, userName, disabled = m.NodeUUIDs, m.BackendScope, m.BackendTargets, m.GroupID, m.Name, m.Disabled
+	case "indmerged":
+		ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, userID)
+		if ims == nil {
+			writeJSON(w, 404, errResp("用户不存在"))
+			return
+		}
+		uuids, scope, targets, userName, disabled = ims.NodeUUIDs, ims.BackendScope, ims.BackendTargets, ims.Name, ims.Disabled
 	}
 	if disabled {
 		writeJSON(w, 400, errResp("该用户已停用"))

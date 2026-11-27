@@ -125,6 +125,11 @@ type PanelConfig struct {
 	// 选择变了就新起一条，不同选择绝不共用一个令牌；同一选择重新生成
 	// 会轮换（旧链接立即失效）。内容按勾选的落地集合实时生成。
 	MergedSubs []MergedSub `json:"merged_subs"`
+	// 独立合并订阅（v1.4.34，第 4 批，方案 A 彻底独立）：与 SubUser
+	// 用户订阅链接完全不关联、不混合。只是一份“勾选了哪些落地”的
+	// 订阅内容：不登录、不绑用户、不挂档位、不进分组。旧 MergedSubs
+	// 切片已被 isRetiredSubToken 划为退场，绝不能复用——新记录放这里。
+	IndependentMergedSubs []IndependentMergedSub `json:"independent_merged_subs,omitempty"`
 	// 订阅用户（v1.3.0，一人一条订阅链接）：每人一个独立令牌，只存哈希；
 	// 名字用来认人，令牌泄露/撤销只影响那个人，其他人照常。
 	// 旧的面板级通用订阅令牌（SubTokenHash）保留不动，向后兼容，
@@ -288,6 +293,44 @@ type MergedSub struct {
 	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
 	// BackendScope/BackendTargets（v1.4.4，切片 4，四级指派，见
 	// node_assign.go）：与 SubUser 同款字段（见 SubUser 上的注释）。
+	BackendScope   string   `json:"backend_scope,omitempty"`
+	BackendTargets []string `json:"backend_targets,omitempty"`
+}
+
+// IndependentMergedSub 一份独立合并订阅（v1.4.34，第 4 批）：字段照抄
+// 旧 MergedSub，但删掉登录与档位字段——没有 PlanID / Username /
+// PasswordHash / LinkMode，也没有 GroupID（方案 A：不进分组，节点范围
+// 就是自己的 Selection）。ID 前缀 ims- ＋ 6 位随机十六进制；令牌前缀
+// mrg_ ＋ 64 位十六进制（见 subtoken.go）；链接路径 /m/<token>（见
+// handlers.go）；转发/用量 key 用 indmerged:<id>（见 user_traffic.go）。
+// Selection 允许空集合——先建空订阅、稍后勾落地；空订阅拉取返回空内容，
+// 不 410、不报错。ExpiresAt 空 = 永久，到期后拉订阅回 410“订阅已过期”
+// （与退场 410 不同文案）。限流全套字段照搬旧合并订阅。
+type IndependentMergedSub struct {
+	ID        string         `json:"id"`
+	Name      string         `json:"name,omitempty"`
+	TokenHash string         `json:"token_hash"`
+	TokenEnc  string         `json:"token_enc,omitempty"`
+	CreatedAt string         `json:"created_at"`
+	Selection []SubSelection `json:"selection"`
+	Mode      string         `json:"mode,omitempty"`
+	ExpiresAt string         `json:"expires_at,omitempty"`
+	// 流量上限（v1.3.25，A 方案）：见 MergedSub 头注释。
+	TrafficLimitBytes int64  `json:"traffic_limit_bytes,omitempty"`
+	TrafficLimitMode  string `json:"traffic_limit_mode,omitempty"`
+	ResetMode         string `json:"reset_mode,omitempty"`
+	ResetDay          int    `json:"reset_day,omitempty"`
+	NextResetAt       string `json:"next_reset_at,omitempty"`
+	LastResetAt       string `json:"last_reset_at,omitempty"`
+	TrafficWarned80   bool   `json:"traffic_warned_80,omitempty"`
+	TrafficWarned100  bool   `json:"traffic_warned_100,omitempty"`
+	Disabled          bool   `json:"disabled,omitempty"`
+	DisabledReason    string `json:"disabled_reason,omitempty"`
+	// NodeUUIDs（v1.3.30，节点侧按人计量）：与 MergedSub 同款，见上。
+	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
+	// BackendScope/BackendTargets（v1.4.4，切片 4，四级指派，见
+	// node_assign.go）：与 SubUser 同款字段；没有分组，组级指派不可用
+	// （validateBackendAssignment 要求 groupID，独立订阅没有分组）。
 	BackendScope   string   `json:"backend_scope,omitempty"`
 	BackendTargets []string `json:"backend_targets,omitempty"`
 }

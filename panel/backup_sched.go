@@ -161,6 +161,8 @@ func (s *Server) buildScheduledBackupData(label string) map[string]any {
 	withTokens := s.migrationPassphraseSet()
 	out["sub_users"] = sanitizeSubUsers(s.cfg.SubUsers, withTokens)
 	out["merged_subs"] = sanitizeMergedSubs(s.cfg.MergedSubs, withTokens)
+	// 独立合并订阅（v1.4.34）：新切片分支，与旧合并订阅同款口径。
+	out["independent_merged_subs"] = sanitizeIndMergedSubs(s.cfg.IndependentMergedSubs, withTokens)
 	// 套餐档位（v1.4.27）：全量跟走（不含敏感字段，什么时候都进备份）。
 	out["plans"] = sanitizePlans(s.cfg.Plans)
 	return out
@@ -269,6 +271,33 @@ type mergedSubBackup struct {
 	TokenEnc  string            `json:"token_enc,omitempty"`
 }
 
+// indMergedSubBackup 备份文件里的独立合并订阅（v1.4.34）：与
+// mergedSubBackup 同款字段，但没有 GroupID（独立订阅不进分组）；
+// token_hash/token_enc 只在已设迁移口令时才进备份（与旧合并订阅同款开关）。
+type indMergedSubBackup struct {
+	ID                string            `json:"id"`
+	Name              string            `json:"name,omitempty"`
+	CreatedAt         string            `json:"created_at,omitempty"`
+	Selection         []SubSelection    `json:"selection"`
+	Mode              string            `json:"mode,omitempty"`
+	ExpiresAt         string            `json:"expires_at,omitempty"`
+	TrafficLimitBytes int64             `json:"traffic_limit_bytes,omitempty"`
+	TrafficLimitMode  string            `json:"traffic_limit_mode,omitempty"`
+	ResetMode         string            `json:"reset_mode,omitempty"`
+	ResetDay          int               `json:"reset_day,omitempty"`
+	NextResetAt       string            `json:"next_reset_at,omitempty"`
+	LastResetAt       string            `json:"last_reset_at,omitempty"`
+	TrafficWarned80   bool              `json:"traffic_warned_80,omitempty"`
+	TrafficWarned100  bool              `json:"traffic_warned_100,omitempty"`
+	Disabled          bool              `json:"disabled,omitempty"`
+	DisabledReason    string            `json:"disabled_reason,omitempty"`
+	NodeUUIDs         map[string]string `json:"node_uuids,omitempty"`
+	TokenHash         string            `json:"token_hash,omitempty"`
+	TokenEnc          string            `json:"token_enc,omitempty"`
+	BackendScope      string            `json:"backend_scope,omitempty"`
+	BackendTargets    []string          `json:"backend_targets,omitempty"`
+}
+
 // subTokenBackup 备份文件里的通用订阅令牌（v1.3.29）：只在已设迁移口令
 // 时才进备份；未设口令时这一整节都不写，恢复后通用订阅按本机原值不动。
 type subTokenBackup struct {
@@ -304,6 +333,22 @@ func sanitizeMergedSubs(subs []MergedSub, withTokens bool) []mergedSubBackup {
 			ResetMode: m.ResetMode, ResetDay: m.ResetDay, NextResetAt: m.NextResetAt, LastResetAt: m.LastResetAt,
 			TrafficWarned80: m.TrafficWarned80, TrafficWarned100: m.TrafficWarned100, Disabled: m.Disabled, DisabledReason: m.DisabledReason,
 			NodeUUIDs: m.NodeUUIDs}
+		if withTokens {
+			b.TokenHash, b.TokenEnc = m.TokenHash, m.TokenEnc
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+func sanitizeIndMergedSubs(subs []IndependentMergedSub, withTokens bool) []indMergedSubBackup {
+	out := make([]indMergedSubBackup, 0, len(subs))
+	for _, m := range subs {
+		b := indMergedSubBackup{ID: m.ID, Name: m.Name, CreatedAt: m.CreatedAt, Selection: m.Selection, Mode: m.Mode,
+			ExpiresAt: m.ExpiresAt, TrafficLimitBytes: m.TrafficLimitBytes, TrafficLimitMode: m.TrafficLimitMode,
+			ResetMode: m.ResetMode, ResetDay: m.ResetDay, NextResetAt: m.NextResetAt, LastResetAt: m.LastResetAt,
+			TrafficWarned80: m.TrafficWarned80, TrafficWarned100: m.TrafficWarned100, Disabled: m.Disabled, DisabledReason: m.DisabledReason,
+			NodeUUIDs: m.NodeUUIDs, BackendScope: m.BackendScope, BackendTargets: m.BackendTargets}
 		if withTokens {
 			b.TokenHash, b.TokenEnc = m.TokenHash, m.TokenEnc
 		}
@@ -613,16 +658,17 @@ func (s *Server) exportData() map[string]any {
 // 迁移信封与版本号；passphrase 只在导入请求体里带（前端恢复时用户现输），
 // 绝不进备份文件。
 type importPayload struct {
-	Version       string            `json:"version"`
-	RelayConf     string            `json:"relay_conf"`
-	ConfigToml    string            `json:"config_toml"`
-	State         json.RawMessage   `json:"state"`
-	Traffic       json.RawMessage   `json:"traffic"`
-	SubUsers      []subUserBackup   `json:"sub_users"`
-	MergedSubs    []mergedSubBackup `json:"merged_subs"`
-	Plans         []planBackup      `json:"plans"`
-	SubGroups     []SubGroup        `json:"sub_groups"`
-	Announcements []Announcement    `json:"announcements"`
+	Version       string               `json:"version"`
+	RelayConf     string               `json:"relay_conf"`
+	ConfigToml    string               `json:"config_toml"`
+	State         json.RawMessage      `json:"state"`
+	Traffic       json.RawMessage      `json:"traffic"`
+	SubUsers      []subUserBackup      `json:"sub_users"`
+	MergedSubs    []mergedSubBackup    `json:"merged_subs"`
+	IndMergedSubs []indMergedSubBackup `json:"independent_merged_subs"`
+	Plans         []planBackup         `json:"plans"`
+	SubGroups     []SubGroup           `json:"sub_groups"`
+	Announcements []Announcement       `json:"announcements"`
 	// ClientConfigJSON 远程配置信封原文（v1.4.29）：指针 = “文件里有
 	// 才恢复，没有不动”（空字符串也是合法值，表示“已撤下”，不能用
 	// 零值判断）；恢复时不校验内容（备份是本面板自己导出的，发布时
@@ -1003,6 +1049,57 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 		s.cfg.MergedSubs = subs
 		cfgChanged = true
 	}
+	if p.IndMergedSubs != nil {
+		keepHash := map[string]string{}
+		keepEnc := map[string]string{}
+		for _, m := range s.cfg.IndependentMergedSubs {
+			if m.TokenHash != "" {
+				keepHash[m.ID] = m.TokenHash
+			}
+			if m.TokenEnc != "" {
+				keepEnc[m.ID] = m.TokenEnc
+			}
+		}
+		subs := make([]IndependentMergedSub, 0, len(p.IndMergedSubs))
+		for _, bm := range p.IndMergedSubs {
+			m := IndependentMergedSub{ID: bm.ID, Name: bm.Name, CreatedAt: bm.CreatedAt, Selection: bm.Selection, Mode: bm.Mode,
+				ExpiresAt: bm.ExpiresAt, TrafficLimitBytes: bm.TrafficLimitBytes, TrafficLimitMode: bm.TrafficLimitMode,
+				ResetMode: bm.ResetMode, ResetDay: bm.ResetDay, NextResetAt: bm.NextResetAt, LastResetAt: bm.LastResetAt,
+				TrafficWarned80: bm.TrafficWarned80, TrafficWarned100: bm.TrafficWarned100, Disabled: bm.Disabled, DisabledReason: bm.DisabledReason,
+				NodeUUIDs: bm.NodeUUIDs, BackendScope: bm.BackendScope, BackendTargets: bm.BackendTargets}
+			// v1.4.28：与旧合并订阅同款按“对”取（见上），绝不把本机哈希与
+			// 备份密文分开混配；成对校验用同一密钥文件与机制。
+			localH, hasLocalH := keepHash[bm.ID]
+			localE, hasLocalE := keepEnc[bm.ID]
+			switch {
+			case hasLocalH && hasLocalE:
+				m.TokenHash, m.TokenEnc = localH, localE
+			case hasLocalH:
+				m.TokenHash = localH
+				if mig != nil && bm.TokenEnc != "" && s.tokenPairMatches(localH, bm.TokenEnc) {
+					m.TokenEnc = bm.TokenEnc
+				}
+			case hasLocalE:
+				m.TokenEnc = localE
+				if mig != nil && bm.TokenHash != "" && s.tokenPairMatches(bm.TokenHash, localE) {
+					m.TokenHash = bm.TokenHash
+				}
+			case mig != nil && bm.TokenHash != "" && bm.TokenEnc != "":
+				m.TokenHash, m.TokenEnc = bm.TokenHash, bm.TokenEnc
+				tokenRestored++
+			case mig != nil && bm.TokenHash != "":
+				m.TokenHash = bm.TokenHash
+			case mig != nil && bm.TokenEnc != "":
+				m.TokenEnc = bm.TokenEnc
+			}
+			if m.TokenHash == "" {
+				tokenEmpty++
+			}
+			subs = append(subs, m)
+		}
+		s.cfg.IndependentMergedSubs = subs
+		cfgChanged = true
+	}
 	if tokenRestored > 0 {
 		o.addNote(fmt.Sprintf("订阅令牌已随备份恢复 %d 条，旧链接继续可用", tokenRestored))
 	}
@@ -1236,7 +1333,7 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 	// 按人转发对齐（v1.3.29）：先清掉 config.toml 里恢复出来的无主按人段
 	// （applyUserForwards/reconcile 都删不掉它们），再按恢复后的订阅限流
 	// 重建合法段；没有限流订阅时只清孤儿、不新建。
-	if p.UserForwards != nil || p.SubUsers != nil || p.MergedSubs != nil {
+	if p.UserForwards != nil || p.SubUsers != nil || p.MergedSubs != nil || p.IndMergedSubs != nil {
 		if n := s.removeOrphanUserEndpoints(); n > 0 {
 			o.addNote(fmt.Sprintf("已清理 %d 个无主按人转发段", n))
 		}

@@ -85,23 +85,23 @@ type BackendNode struct {
 	LastTrafficAt int64 `json:"last_traffic_at,omitempty"`
 	// Health* 上次上报的健康（v1.4.4，随节点存）：HealthAt 是收到
 	// 时间；XrayRunning=false 且 HealthAt!=0 = Xray 未运行。
-	HealthXrayRunning   bool    `json:"health_xray_running,omitempty"`
-	HealthXrayRestarts  int64   `json:"health_xray_restarts,omitempty"`
+	HealthXrayRunning  bool  `json:"health_xray_running,omitempty"`
+	HealthXrayRestarts int64 `json:"health_xray_restarts,omitempty"`
 	// HealthSingbox* sing-box 健康（v1.4.7，切片 5）：SingboxRunning
 	// = false 且 HealthAt!=0 = sing-box 未运行（无 sing-box 入站时
 	// agent 本就不起 sing-box，此时 Running=false 但不是故障——
 	// 前端只在节点有 sing-box 入站时才显示该行）。
-	HealthSingboxRunning  bool  `json:"health_singbox_running,omitempty"`
-	HealthSingboxRestarts int64 `json:"health_singbox_restarts,omitempty"`
-	HealthLastError     string  `json:"health_last_error,omitempty"`
-	HealthCPUPercent    float64 `json:"health_cpu_percent,omitempty"`
-	HealthMemMB         float64 `json:"health_mem_mb,omitempty"`
-	HealthConfigVersion int64   `json:"health_config_version,omitempty"`
-	HealthAt            int64   `json:"health_at,omitempty"`
-	JoinTokenHash       string  `json:"join_token_hash,omitempty"`
-	JoinTokenExpires    int64   `json:"join_token_expires_at"`
-	Joined              bool    `json:"joined"`
-	CreatedAt           int64   `json:"created_at"`
+	HealthSingboxRunning  bool    `json:"health_singbox_running,omitempty"`
+	HealthSingboxRestarts int64   `json:"health_singbox_restarts,omitempty"`
+	HealthLastError       string  `json:"health_last_error,omitempty"`
+	HealthCPUPercent      float64 `json:"health_cpu_percent,omitempty"`
+	HealthMemMB           float64 `json:"health_mem_mb,omitempty"`
+	HealthConfigVersion   int64   `json:"health_config_version,omitempty"`
+	HealthAt              int64   `json:"health_at,omitempty"`
+	JoinTokenHash         string  `json:"join_token_hash,omitempty"`
+	JoinTokenExpires      int64   `json:"join_token_expires_at"`
+	Joined                bool    `json:"joined"`
+	CreatedAt             int64   `json:"created_at"`
 }
 
 // nodeHealth 健康：online／offline／never（§4.6 口径）。
@@ -683,6 +683,31 @@ func (s *Server) nodeBackendUsersForNode(node *BackendNode) ([]NodeConfigUser, b
 			Name: m.Name, Email: nodeUserEmail("merged", m.ID),
 			VLESSUUID: uuids[node.Address],
 			Inbounds:  backendAssignInbounds(m.BackendScope, m.BackendTargets, node),
+		})
+	}
+	for i := range s.cfg.IndependentMergedSubs {
+		ims := &s.cfg.IndependentMergedSubs[i]
+		if ims.Disabled {
+			continue
+		}
+		if !nodeHasUser(node, indMergedSubKey(ims.ID)) {
+			continue
+		}
+		// v1.4.4，四级指派：用户侧的第二道门（默认全部，不过滤；独立
+		// 合并订阅没有分组，组级指派不可用）。
+		if !s.backendAssignAllows(ims.BackendScope, ims.BackendTargets, "", node) {
+			continue
+		}
+		uuids, c := ensureNodeUUIDs(ims.NodeUUIDs, []string{node.Address})
+		if c {
+			ims.NodeUUIDs = uuids
+			changed = true
+		}
+		users = append(users, NodeConfigUser{
+			UserID: indMergedSubKey(ims.ID), Kind: "indmerged", ID: ims.ID,
+			Name: ims.Name, Email: nodeUserEmail("indmerged", ims.ID),
+			VLESSUUID: uuids[node.Address],
+			Inbounds:  backendAssignInbounds(ims.BackendScope, ims.BackendTargets, node),
 		})
 	}
 	return users, changed

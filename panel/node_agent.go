@@ -99,6 +99,9 @@ func nodeUserEmail(kind, id string) string {
 	if kind == "merged" {
 		return "u-merged-" + id + "@node"
 	}
+	if kind == "indmerged" {
+		return "u-indmerged-" + id + "@node"
+	}
 	return "u-sub-" + id + "@node"
 }
 
@@ -223,6 +226,11 @@ func (s *Server) backfillNodeUUIDs() bool {
 			changed = true
 		}
 	}
+	for i := range s.cfg.IndependentMergedSubs {
+		if s.ensureNodeUUIDsForIndMerged(&s.cfg.IndependentMergedSubs[i]) {
+			changed = true
+		}
+	}
 	return changed
 }
 
@@ -240,6 +248,22 @@ func nodeUserForSubUser(u *SubUser) nodeUser {
 		TrafficLimitBytes: u.TrafficLimitBytes, TrafficLimitMode: u.TrafficLimitMode,
 		ResetMode: u.ResetMode, ResetDay: u.ResetDay, NextResetAt: u.NextResetAt, LastResetAt: u.LastResetAt,
 		ExpiresAt: u.ExpiresAt, Disabled: u.Disabled, DisabledReason: u.DisabledReason, GroupID: u.GroupID,
+	}
+}
+
+// nodeUserForIndMerged 一条独立合并订阅的下发记录（同上；没有分组，
+// GroupID 留空）。
+func nodeUserForIndMerged(ims *IndependentMergedSub) nodeUser {
+	uuids := map[string]string{}
+	for a, v := range ims.NodeUUIDs {
+		uuids[a] = v
+	}
+	return nodeUser{
+		UserID: userSubKey("indmerged", ims.ID), Kind: "indmerged", ID: ims.ID, Name: ims.Name,
+		Email: nodeUserEmail("indmerged", ims.ID), NodeUUIDs: uuids,
+		TrafficLimitBytes: ims.TrafficLimitBytes, TrafficLimitMode: ims.TrafficLimitMode,
+		ResetMode: ims.ResetMode, ResetDay: ims.ResetDay, NextResetAt: ims.NextResetAt, LastResetAt: ims.LastResetAt,
+		ExpiresAt: ims.ExpiresAt, Disabled: ims.Disabled, DisabledReason: ims.DisabledReason,
 	}
 }
 
@@ -270,6 +294,11 @@ func (s *Server) nodeUsersPayload() ([]nodeUser, string) {
 	}
 	for i := range s.cfg.MergedSubs {
 		row := nodeUserForMerged(&s.cfg.MergedSubs[i])
+		byID[row.UserID] = len(users)
+		users = append(users, row)
+	}
+	for i := range s.cfg.IndependentMergedSubs {
+		row := nodeUserForIndMerged(&s.cfg.IndependentMergedSubs[i])
 		byID[row.UserID] = len(users)
 		users = append(users, row)
 	}
@@ -502,12 +531,14 @@ func (s *Server) handleNodePush(w http.ResponseWriter, r *http.Request) {
 			key = nodeAgentGenericUserID
 		default:
 			kind, id, found := strings.Cut(userID, ":")
-			if !found || (kind != "subuser" && kind != "merged") || id == "" {
+			if !found || (kind != "subuser" && kind != "merged" && kind != "indmerged") || id == "" {
 				why = "user_id 格式不对"
 			} else if kind == "subuser" && findSubUserByID(s.cfg.SubUsers, id) == nil && !s.hasCentralUser("subuser", id) {
 				why = "订阅用户不存在"
 			} else if kind == "merged" && findMergedSubByID(s.cfg.MergedSubs, id) == nil && !s.hasCentralUser("merged", id) {
 				why = "合并订阅不存在"
+			} else if kind == "indmerged" && findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id) == nil && !s.hasCentralUser("indmerged", id) {
+				why = "独立合并订阅不存在"
 			} else {
 				key = userID
 			}

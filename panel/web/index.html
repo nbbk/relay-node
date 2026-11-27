@@ -765,7 +765,7 @@
             <p class="muted">套餐档位已移到顶级「订阅」页（第 ① 栏），和分组、订阅用户同页管理。</p>
             <div class="btn-row"><button class="btn" type="button" data-sub-goto="subscription">去订阅页</button></div>
           </div>
-                          </div>
+                  </div>
 <div class="sub-panel hidden" role="tabpanel" id="sub-panel-groups" aria-labelledby="sub-tab-groups" hidden>
 <div class="card">
             <h2>分组（权限组）</h2>
@@ -1060,6 +1060,7 @@
           <div class="central-tabs" role="tablist">
             <button type="button" class="central-tab" role="tab" id="central-tab-list" aria-controls="central-panel-list" aria-selected="false" data-central-tab="list">已登记的远程面板</button>
             <button type="button" class="central-tab" role="tab" id="central-tab-add" aria-controls="central-panel-add" aria-selected="false" data-central-tab="add">登记远程面板</button>
+            <button type="button" class="central-tab" role="tab" id="central-tab-indmerged" aria-controls="central-panel-indmerged" aria-selected="false" data-central-tab="indmerged">独立合并订阅</button>
           </div>
           <div class="central-panel" role="tabpanel" id="central-panel-list" aria-labelledby="central-tab-list">
             <h2>已登记的远程面板</h2>
@@ -1078,6 +1079,16 @@
               </div>
               <div class="btn-row"><button class="btn" type="submit">登记远程面板</button></div>
             </form>
+          </div>
+          <div class="central-panel hidden" role="tabpanel" id="central-panel-indmerged" aria-labelledby="central-tab-indmerged" hidden>
+            <h2>独立合并订阅 <span class="badge">独立合并订阅</span></h2>
+            <p class="muted">一份“勾选了哪些落地”的订阅，不登录、不绑用户、不挂档位、不进分组：先建一条（名字选填、可以先不勾落地），再勾落地；链接是 <span class="mono">/m/…</span>，与订阅用户的 <span class="mono">/sub/…</span> 完全分开。旧的合并订阅已退场，旧链接已失效、不能恢复，旧记录只在下面只读展示、逐条删除。</p>
+            <div class="btn-row"><button class="btn" type="button" id="indmerged-create">新建独立合并订阅</button></div>
+            <div style="margin-top:12px"><input id="indmerged-search" type="search" placeholder="搜索：名字 / 勾选摘要 / ID" style="width:280px"></div>
+            <div id="indmerged-list" style="margin-top:12px"></div>
+            <h3 style="margin-top:24px">已退场的旧合并订阅（只读）</h3>
+            <p class="muted small">旧记录保留只读核对，旧链接已失效；不需要的逐条删除。</p>
+            <div id="central-sub-list"></div>
           </div>
                   </div>
       </section>

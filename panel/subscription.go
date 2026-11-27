@@ -1562,7 +1562,7 @@ func subUserAuditName(u *SubUser) string {
 }
 
 // retiredSubAuditName 已退场令牌的审计用户名：合并订阅记它的 Name
-//（空时“未命名合并订阅”），通用订阅记“通用订阅”。
+// （空时“未命名合并订阅”），通用订阅记“通用订阅”。
 func (s *Server) retiredSubAuditName(tok string) string {
 	if tok != "" && s.cfg.SubTokenHash != "" && verifySubToken(tok, s.cfg.SubTokenHash) {
 		return "通用订阅"
@@ -1596,6 +1596,20 @@ func (s *Server) checkSubTokenPairs() []string {
 		if !verifySubToken(tok, u.TokenHash) {
 			bad = append(bad, u.ID)
 			log.Printf("订阅令牌自检：订阅用户 %s（%s）的 TokenHash 与 TokenEnc 不匹配，卡片显示的链接会 404，请轮换后重新发链接", u.ID, u.Name)
+		}
+	}
+	for i := range s.cfg.IndependentMergedSubs {
+		ims := &s.cfg.IndependentMergedSubs[i]
+		if ims.TokenHash == "" || ims.TokenEnc == "" {
+			continue
+		}
+		tok, err := s.decryptSubTokenNow(ims.TokenEnc)
+		if err != nil {
+			continue
+		}
+		if !verifySubToken(tok, ims.TokenHash) {
+			bad = append(bad, ims.ID)
+			log.Printf("订阅令牌自检：独立合并订阅 %s（%s）的 TokenHash 与 TokenEnc 不匹配，卡片显示的链接会 404，请轮换后重新发链接", ims.ID, ims.Name)
 		}
 	}
 	return bad
@@ -1654,6 +1668,9 @@ func (s *Server) isRetiredSubToken(tok string) bool {
 // 再返回 404。
 // v1.4.27：通用订阅与合并订阅已退场，命中这两类令牌直接 410（旧链接
 // 失效）；SubUser 令牌走正常流程；无效令牌仍 404。
+// v1.4.34：分发顺序是退场检查（旧切片）→ 新实体（独立合并订阅）
+// → SubUser → 404；顺序错了，新令牌会被旧逻辑吞掉或 404。
+// serveSubContent 里同款顺序（见该函数）。
 func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 	tok := r.PathValue("token")
 	ip := clientIP(r)
@@ -1669,7 +1686,9 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 		if exp, ok := s.subExpiryForToken(tok); ok && subExpired(exp, time.Now()) {
 			s.subFailed(ip)
 			name := "订阅客户端"
-			if u, ok := s.findSubUser(tok); ok {
+			if ims, ok := s.findIndependentMergedSub(tok); ok {
+				name = s.indMergedAuditName(ims)
+			} else if u, ok := s.findSubUser(tok); ok {
 				name = subUserAuditName(u)
 			}
 			s.audit(name, "拉取订阅", ip, "失败", "订阅已过期")
@@ -1681,7 +1700,9 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 		// 又不把日志打爆）；明文令牌绝不进审计日志。用户列记该订阅用户的
 		// 显示名（v1.4.28），不用再写死“订阅客户端”。
 		name := "订阅客户端"
-		if u, ok := s.findSubUser(tok); ok {
+		if ims, ok := s.findIndependentMergedSub(tok); ok {
+			name = s.indMergedAuditName(ims)
+		} else if u, ok := s.findSubUser(tok); ok {
 			name = subUserAuditName(u)
 		}
 		s.audit(name, "拉取订阅", ip, "成功", "令牌哈希前 8 位 "+hashSubToken(tok)[:8])
@@ -1692,7 +1713,9 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 		// 429 也记一条审计（v1.4.28）：先查一次令牌归属再记，查不到仍是
 		// “订阅客户端”；detail 只记原因，不记令牌。
 		name := "订阅客户端"
-		if u, ok := s.findSubUser(tok); ok {
+		if ims, ok := s.findIndependentMergedSub(tok); ok {
+			name = s.indMergedAuditName(ims)
+		} else if u, ok := s.findSubUser(tok); ok {
 			name = subUserAuditName(u)
 		}
 		s.audit(name, "拉取订阅", ip, "失败", "请求太频繁")
@@ -1716,6 +1739,9 @@ func (s *Server) subExpiryForToken(tok string) (string, bool) {
 	}
 	if ms, ok := s.findMergedSub(tok); ok {
 		return ms.ExpiresAt, true
+	}
+	if ims, ok := s.findIndependentMergedSub(tok); ok {
+		return ims.ExpiresAt, true
 	}
 	return "", false
 }
@@ -1753,6 +1779,15 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 		// 再提供内容）。
 		http.Error(w, retiredSubMsg, http.StatusGone)
 		return
+	} else if ims, ok := s.findIndependentMergedSub(tok); ok {
+		// 独立合并订阅（v1.4.34）：不进分组，生效勾选就是自己的
+		// Selection；空集合 = 还没勾落地，collect 出空链接（不 410）。
+		backendKind, backendID = "indmerged", ims.ID
+		contentMode = ims.Mode
+		if ims.TrafficLimitBytes > 0 {
+			userKey, userLimit, userLimitMode = indMergedSubKey(ims.ID), ims.TrafficLimitBytes, ims.TrafficLimitMode
+		}
+		links, localIndices = s.collectMergedSubLinksForSelection(ims.Selection, userKey)
 	} else if u, ok := s.findSubUser(tok); ok {
 		// 一人一条（v1.3.0）：没勾选 = 单面板全量订阅，有勾选 = 合并订阅
 		// 分组（v1.3.26）：进了组的用组的落地集合，自己的勾选保留在记录里
@@ -1967,6 +2002,33 @@ const legacySubLinkMsg = "这条是旧链接（1.3.7 之前生成的），面板
 
 func (s *Server) handleSubLink(w http.ResponseWriter, r *http.Request) {
 	kind := r.URL.Query().Get("kind")
+	if kind == "indmerged" {
+		id := strings.TrimSpace(r.URL.Query().Get("id"))
+		if id == "" {
+			writeJSON(w, 400, errResp("没有这条独立合并订阅"))
+			return
+		}
+		ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id)
+		if ims == nil {
+			writeJSON(w, 404, errResp("没有这条独立合并订阅"))
+			return
+		}
+		if strings.TrimSpace(ims.TokenEnc) == "" {
+			writeJSON(w, 200, okResp(map[string]any{"legacy": true, "message": legacySubLinkMsg}))
+			return
+		}
+		tok, err := s.decryptSubTokenNow(ims.TokenEnc)
+		if err != nil {
+			writeJSON(w, 200, okResp(map[string]any{"legacy": true, "message": legacySubLinkMsg}))
+			return
+		}
+		mode := ims.Mode
+		if mode == "" {
+			mode = "both"
+		}
+		writeJSON(w, 200, okResp(map[string]any{"url": s.indMergedURL(r, tok), "legacy": false, "id": ims.ID, "name": ims.Name, "mode": mode, "expires_at": ims.ExpiresAt}))
+		return
+	}
 	if kind != "user" {
 		// 通用订阅与合并订阅已退场（见文件顶部退场注释）；非法 kind 400。
 		if kind == "generic" || kind == "merged" {
@@ -3047,7 +3109,8 @@ func renderWorkerCode(origin, publicDomain, subPath string) string {
 export default {
   async fetch(request) {
     const url = new URL(request.url);
-    if (!url.pathname.startsWith("/` + subPath + `/")) {
+    // v1.4.34：独立合并订阅走 /m/<token>（与 /sub/ 并列），Worker 同样反代。
+    if (!url.pathname.startsWith("/` + subPath + `/") && !url.pathname.startsWith("/m/")) {
       return new Response("Not Found", { status: 404 });
     }
     const target = new URL(ORIGIN + url.pathname + url.search);
@@ -3116,7 +3179,7 @@ func (s *Server) handleSubQR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := strings.TrimSpace(req.URL)
-	if u == "" || len(u) > 2048 || !strings.Contains(u, "/"+s.subPath()+"/sub_") {
+	if u == "" || len(u) > 2048 || (!strings.Contains(u, "/"+s.subPath()+"/sub_") && !strings.Contains(u, "/m/mrg_")) {
 		writeJSON(w, 400, errResp("只支持本面板的订阅链接"))
 		return
 	}
@@ -3162,6 +3225,13 @@ func (s *Server) validateMergedSelection(sel []SubSelection) ([]SubSelection, st
 	if len(sel) == 0 {
 		return nil, "", fmt.Errorf("请先勾选至少一个落地")
 	}
+	return s.validateMergedSelectionEntries(sel, key)
+}
+
+// validateMergedSelectionEntries 逐项校验一份非空勾选集合（面板存在、
+// 落地编号存在、远程面板版本）：validateMergedSelection 与独立合并订阅
+// 的 validateIndMergedSelection 共用，后者允许空集合（先建空订阅）。
+func (s *Server) validateMergedSelectionEntries(sel []SubSelection, key string) ([]SubSelection, string, error) {
 	// 本地 relay.conf 读不到时本地落地集合就是空（管理面板模式本机没有
 	// 中转，本来就没有本地落地；只勾远程落地时不应被挡住）。勾了“本面板”
 	// 的落地时，下面按“本面板没有编号 N 的落地”拒绝，文案仍然准确。
@@ -3522,9 +3592,16 @@ func (s *Server) fetchRemoteSubLinks(rem RemotePanel, indices []int, forUser str
 // forUser 不为空时远程链接带 for_user 参数（v1.3.25，按人转发改写端口）。
 // 返回链接与其中本面板落地的编号集合（给 subscription-userinfo 用）。
 func (s *Server) collectMergedSubLinks(ms *MergedSub, forUser string) ([]subLink, map[int]bool) {
+	return s.collectMergedSubLinksForSelection(ms.Selection, forUser)
+}
+
+// collectMergedSubLinksForSelection 按一份勾选集合取全部节点链接
+// （与 collectMergedSubLinks 同一套拼装；独立合并订阅只要能提供一份
+// Selection，拼装逻辑与旧合并订阅完全相同，见设计文档 §5.3）。
+func (s *Server) collectMergedSubLinksForSelection(sel []SubSelection, forUser string) ([]subLink, map[int]bool) {
 	localIndices := map[int]bool{}
 	remoteIndices := map[string][]int{}
-	for _, e := range ms.Selection {
+	for _, e := range sel {
 		if e.Panel == "local" {
 			localIndices[e.Landing] = true
 		} else {

@@ -733,6 +733,13 @@ func (s *Server) reconcileAllUserForwards() {
 		}
 		_ = s.reconcileUserForwards("merged", ms.ID, ms.Name, ms.Selection, ms.TrafficLimitBytes, ms.TrafficLimitMode, ms.ResetMode, ms.ResetDay, ms.NextResetAt)
 	}
+	for i := range s.cfg.IndependentMergedSubs {
+		ims := &s.cfg.IndependentMergedSubs[i]
+		if ims.TrafficLimitBytes <= 0 {
+			continue
+		}
+		_ = s.reconcileUserForwards("indmerged", ims.ID, ims.Name, ims.Selection, ims.TrafficLimitBytes, ims.TrafficLimitMode, ims.ResetMode, ims.ResetDay, ims.NextResetAt)
+	}
 }
 
 // ---------- config.toml 里的用户 endpoints ----------
@@ -1097,6 +1104,25 @@ func (s *Server) rollUserPeriods(now time.Time) bool {
 			changed = true
 		}
 	}
+	for i := range s.cfg.IndependentMergedSubs {
+		ims := &s.cfg.IndependentMergedSubs[i]
+		if ims.TrafficLimitBytes <= 0 {
+			continue
+		}
+		if roll(ims.TrafficLimitMode, ims.ResetMode, ims.ResetDay, &ims.NextResetAt, &ims.Disabled, &ims.DisabledReason) {
+			key := indMergedSubKey(ims.ID)
+			rolled[key] = true
+			rec := s.userTraffic.get(key)
+			s.userTraffic.mu.Lock()
+			rec.UpPeriod, rec.DownPeriod = 0, 0
+			rec.PeriodID++
+			s.userTraffic.saveLocked()
+			s.userTraffic.mu.Unlock()
+			ims.TrafficWarned80, ims.TrafficWarned100 = false, false
+			ims.LastResetAt = now.Format(time.RFC3339)
+			changed = true
+		}
+	}
 	// 远程面板上的转发（本面板没有对应的订阅记录，配额是管理面板下
 	// 发来的）：按转发自己的 NextResetAt 翻周期。没有这一步，远程
 	// 面板上被停用的转发在新周期开始后永远恢复不了（管理面板离线
@@ -1112,6 +1138,9 @@ func (s *Server) rollUserPeriods(now time.Time) bool {
 			continue
 		}
 		if f.SubKind == "merged" && findMergedSubByID(s.cfg.MergedSubs, f.SubID) != nil {
+			continue
+		}
+		if f.SubKind == "indmerged" && findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, f.SubID) != nil {
 			continue
 		}
 		remoteKeys[f.Key] = true
@@ -1160,6 +1189,9 @@ func (s *Server) rollUserPeriods(now time.Time) bool {
 			if ms := findMergedSubByID(s.cfg.MergedSubs, f.SubID); ms != nil && f.SubKind == "merged" {
 				f.NextResetAt = ms.NextResetAt
 			}
+			if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, f.SubID); ims != nil && f.SubKind == "indmerged" {
+				f.NextResetAt = ims.NextResetAt
+			}
 			if rolled[f.Key] && f.Disabled {
 				f.Disabled = false
 			}
@@ -1207,6 +1239,10 @@ func (s *Server) userLimitForKey(key string) (limit int64, mode, resetMode strin
 	} else if kind == "merged" {
 		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil && ms.TrafficLimitBytes > 0 {
 			return ms.TrafficLimitBytes, ms.TrafficLimitMode, ms.ResetMode, ms.ResetDay, ms.NextResetAt, ms.Name, true
+		}
+	} else if kind == "indmerged" {
+		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil && ims.TrafficLimitBytes > 0 {
+			return ims.TrafficLimitBytes, ims.TrafficLimitMode, ims.ResetMode, ims.ResetDay, ims.NextResetAt, ims.Name, true
 		}
 	}
 	// 远程面板：只有转发记录，用它上面的配额。
@@ -1278,6 +1314,10 @@ func (s *Server) userWarned80(key string) bool {
 		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
 			return ms.TrafficWarned80
 		}
+	} else if kind == "indmerged" {
+		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+			return ims.TrafficWarned80
+		}
 	}
 	return false
 }
@@ -1294,6 +1334,10 @@ func (s *Server) userWarned100(key string) bool {
 	} else if kind == "merged" {
 		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
 			return ms.TrafficWarned100
+		}
+	} else if kind == "indmerged" {
+		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+			return ims.TrafficWarned100
 		}
 	}
 	return false
@@ -1313,6 +1357,11 @@ func (s *Server) setUserWarned80(key string, v bool) {
 	} else if kind == "merged" {
 		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
 			ms.TrafficWarned80 = v
+			changed = true
+		}
+	} else if kind == "indmerged" {
+		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+			ims.TrafficWarned80 = v
 			changed = true
 		}
 	}
@@ -1335,6 +1384,11 @@ func (s *Server) setUserWarned100(key string, v bool) {
 	} else if kind == "merged" {
 		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
 			ms.TrafficWarned100 = v
+			changed = true
+		}
+	} else if kind == "indmerged" {
+		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+			ims.TrafficWarned100 = v
 			changed = true
 		}
 	}
@@ -1403,6 +1457,12 @@ func (s *Server) applyDisableUserForwardsLocked(key, reason string) (bool, error
 			ms.DisabledReason = reason
 			changed = true
 		}
+	} else if kind == "indmerged" {
+		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil && !ims.Disabled {
+			ims.Disabled = true
+			ims.DisabledReason = reason
+			changed = true
+		}
 	}
 	for i := range s.cfg.UserForwards {
 		if s.cfg.UserForwards[i].Key == key && !s.cfg.UserForwards[i].Disabled {
@@ -1434,6 +1494,10 @@ func (s *Server) userDisabledReason(key string) string {
 	} else if kind == "merged" {
 		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
 			return ms.DisabledReason
+		}
+	} else if kind == "indmerged" {
+		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+			return ims.DisabledReason
 		}
 	}
 	return ""
@@ -1571,6 +1635,15 @@ func (s *Server) clearUserDisabled(key string) {
 			ms.DisabledReason = ""
 			ms.TrafficWarned100 = false
 		}
+	} else if kind == "indmerged" {
+		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+			if ims.Disabled {
+				wasDisabled = true
+			}
+			ims.Disabled = false
+			ims.DisabledReason = ""
+			ims.TrafficWarned100 = false
+		}
 	}
 	for i := range s.cfg.UserForwards {
 		if s.cfg.UserForwards[i].Key == key {
@@ -1599,6 +1672,10 @@ func (s *Server) maybeResumeUser(key string, limitBytes int64, limitMode string)
 	} else if kind == "merged" {
 		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
 			disabled = ms.Disabled && ms.DisabledReason == "traffic"
+		}
+	} else if kind == "indmerged" {
+		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+			disabled = ims.Disabled && ims.DisabledReason == "traffic"
 		}
 	}
 	if !disabled {
@@ -1639,6 +1716,13 @@ func (s *Server) resumeUserForwardsLocked(key string) error {
 			ms.Disabled = false
 			ms.DisabledReason = ""
 			ms.TrafficWarned100 = false
+			changed = true
+		}
+	} else if kind == "indmerged" {
+		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil && ims.Disabled {
+			ims.Disabled = false
+			ims.DisabledReason = ""
+			ims.TrafficWarned100 = false
 			changed = true
 		}
 	}

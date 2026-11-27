@@ -74,7 +74,7 @@ func (s *Server) handleCentralUserForwards(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	kind, id, found := strings.Cut(req.Key, ":")
-	if !found || (kind != "subuser" && kind != "merged") || id == "" {
+	if !found || (kind != "subuser" && kind != "merged" && kind != "indmerged") || id == "" {
 		writeJSON(w, 400, errResp("订阅标识不对"))
 		return
 	}
@@ -199,7 +199,7 @@ func (s *Server) handleCentralUsers(w http.ResponseWriter, r *http.Request) {
 	seen := map[string]bool{}
 	for _, u := range req.Users {
 		kind, id, found := strings.Cut(strings.TrimSpace(u.UserID), ":")
-		if !found || (kind != "subuser" && kind != "merged") || id == "" || u.Kind != kind || u.ID != id {
+		if !found || (kind != "subuser" && kind != "merged" && kind != "indmerged") || id == "" || u.Kind != kind || u.ID != id {
 			skipped++
 			continue
 		}
@@ -322,6 +322,12 @@ func (s *Server) centralUsersForLanding(landingAddr string) []nodeUser {
 			add(nodeUserForMerged(m), m.NodeUUIDs[landingAddr])
 		}
 	}
+	for i := range s.cfg.IndependentMergedSubs {
+		ims := &s.cfg.IndependentMergedSubs[i]
+		if s.selectionHasLanding(s.effectiveSelectionForIndMerged(ims), landingAddr) {
+			add(nodeUserForIndMerged(ims), ims.NodeUUIDs[landingAddr])
+		}
+	}
 	if out == nil {
 		out = []nodeUser{}
 	}
@@ -436,7 +442,7 @@ func (s *Server) healCentralUsers() {
 func (s *Server) handleCentralUserTraffic(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(r.URL.Query().Get("key"))
 	kind, id, found := strings.Cut(key, ":")
-	if !found || (kind != "subuser" && kind != "merged") || id == "" {
+	if !found || (kind != "subuser" && kind != "merged" && kind != "indmerged") || id == "" {
 		writeJSON(w, 400, errResp("订阅标识不对"))
 		return
 	}
@@ -459,6 +465,8 @@ func (s *Server) handleCentralUserTraffic(w http.ResponseWriter, r *http.Request
 			disabled = true
 		}
 	} else if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil && ms.Disabled {
+		disabled = true
+	} else if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil && ims.Disabled {
 		disabled = true
 	}
 	writeJSON(w, 200, okResp(map[string]any{
@@ -485,7 +493,7 @@ func (s *Server) handleCentralUserForwardDisable(w http.ResponseWriter, r *http.
 		return
 	}
 	kind, id, found := strings.Cut(req.Key, ":")
-	if !found || (kind != "subuser" && kind != "merged") || id == "" {
+	if !found || (kind != "subuser" && kind != "merged" && kind != "indmerged") || id == "" {
 		writeJSON(w, 400, errResp("订阅标识不对"))
 		return
 	}
@@ -512,7 +520,7 @@ func (s *Server) handleCentralUserForwardResume(w http.ResponseWriter, r *http.R
 		return
 	}
 	kind, id, found := strings.Cut(req.Key, ":")
-	if !found || (kind != "subuser" && kind != "merged") || id == "" {
+	if !found || (kind != "subuser" && kind != "merged" && kind != "indmerged") || id == "" {
 		writeJSON(w, 400, errResp("订阅标识不对"))
 		return
 	}
@@ -812,7 +820,8 @@ func (s *Server) changeUserForwardPort(key, panelID, landingAddr string, newPort
 }
 
 // handleSubUserForwards 管理端：一条订阅的按人转发列表（更换端口入口
-// 用）。只读内存配置，不读文件。kind 是 "subuser" 或 "merged"。
+// 用）。只读内存配置，不读文件。kind 是 "subuser"、"merged"（旧实体，
+// 已退场，走 410）或 "indmerged"（独立合并订阅）。
 func (s *Server) handleSubUserForwards(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// v1.4.27：合并订阅已退场，merged 的转发列表接口一并 410
@@ -831,6 +840,8 @@ func (s *Server) handleSubUserForwards(kind string) http.HandlerFunc {
 			}
 		} else if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
 			found, subName = true, ms.Name
+		} else if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+			found, subName = true, ims.Name
 		}
 		if !found {
 			writeJSON(w, 404, errResp("没有这条订阅"))
@@ -862,7 +873,8 @@ func (s *Server) handleSubUserForwards(kind string) http.HandlerFunc {
 // handleSubChangePort 管理端：给一条订阅换一个中转端口（v1.3.34）。
 // 请求体 {panel_id, landing_addr, new_port}，new_port 为 0 = 自动分配。
 // 换完订阅链接里的中转端口跟着变（下次取订阅即新端口），用量记录按
-// 订阅 key 走不清零，旧端口释放回池子。kind 是 "subuser" 或 "merged"。
+// 订阅 key 走不清零，旧端口释放回池子。kind 是 "subuser"、"merged"
+// （旧实体，已退场，走 410）或 "indmerged"（独立合并订阅）。
 func (s *Server) handleSubChangePort(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// v1.4.27：合并订阅已退场，merged 的换端口接口一并 410
@@ -890,6 +902,8 @@ func (s *Server) handleSubChangePort(kind string) http.HandlerFunc {
 			}
 		} else if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
 			found, subName = true, ms.Name
+		} else if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+			found, subName = true, ims.Name
 		}
 		if !found {
 			writeJSON(w, 404, errResp("没有这条订阅"))
@@ -1297,6 +1311,12 @@ func (s *Server) centralUserTargets() []centralUserTarget {
 		ms := &s.cfg.MergedSubs[i]
 		if ms.TrafficLimitBytes > 0 && hasRemote(ms.Selection) {
 			out = append(out, centralUserTarget{key: userSubKey("merged", ms.ID), kind: "merged", id: ms.ID, name: ms.Name, mode: ms.TrafficLimitMode, limit: ms.TrafficLimitBytes, sel: ms.Selection})
+		}
+	}
+	for i := range s.cfg.IndependentMergedSubs {
+		ims := &s.cfg.IndependentMergedSubs[i]
+		if ims.TrafficLimitBytes > 0 && hasRemote(ims.Selection) {
+			out = append(out, centralUserTarget{key: indMergedSubKey(ims.ID), kind: "indmerged", id: ims.ID, name: ims.Name, mode: ims.TrafficLimitMode, limit: ims.TrafficLimitBytes, sel: ims.Selection})
 		}
 	}
 	return out

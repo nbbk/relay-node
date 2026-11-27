@@ -53,6 +53,9 @@ func (s *Server) routes() http.Handler {
 	// 路径段走 s.subPath()（v1.3.20 可自定义，默认 sub）；改路径要重启面板
 	// （路由在启动时注册），旧路径不再有路由。
 	mux.HandleFunc("GET /"+s.subPath()+"/{token}", s.handleSub)
+	// 独立合并订阅（v1.4.34）：公开端点 GET /m/{token}，与 /sub/ 并列；
+	// 路径段固定是 /m/，不走可自定义的 subPath。
+	mux.HandleFunc("GET /m/{token}", s.handleIndMergedSub)
 	mux.HandleFunc("GET /api/v1/settings/subscription", s.requireAuth(s.handleSubTokenGet))
 	mux.HandleFunc("POST /api/v1/settings/subscription/generate", s.requireAuth(s.handleSubTokenGenerate))
 	mux.HandleFunc("POST /api/v1/settings/subscription/expiry", s.requireAuth(s.handleSubTokenSetExpiry))
@@ -62,6 +65,17 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/sub-path", s.requireAuth(s.handleSubPathSet))
 	mux.HandleFunc("POST /api/v1/subscription/qr", s.requireAuth(s.handleSubQR))
 	mux.HandleFunc("GET /api/v1/subscriptions/link", s.requireAuth(s.handleSubLink))
+	// 独立合并订阅（v1.4.34）：新路由组，与旧 /subscriptions/merged 并存。
+	mux.HandleFunc("GET /api/v1/subscriptions/independent-merged", s.requireAuth(s.handleIndMergedSubsList))
+	mux.HandleFunc("POST /api/v1/subscriptions/independent-merged", s.requireAuth(s.handleIndMergedSubsCreate))
+	mux.HandleFunc("GET /api/v1/subscriptions/independent-merged/link", s.requireAuth(s.handleIndMergedSubLink))
+	mux.HandleFunc("GET /api/v1/subscriptions/independent-merged/{id}/forwards", s.requireAuth(s.handleSubUserForwards("indmerged")))
+	mux.HandleFunc("POST /api/v1/subscriptions/independent-merged/{id}/change-port", s.requireAuth(s.handleSubChangePort("indmerged")))
+	mux.HandleFunc("POST /api/v1/subscriptions/independent-merged/{id}/rotate", s.requireAuth(s.handleIndMergedSubsRotate))
+	mux.HandleFunc("POST /api/v1/subscriptions/independent-merged/{id}/resume", s.requireAuth(s.handleIndMergedSubsResume))
+	mux.HandleFunc("POST /api/v1/subscriptions/independent-merged/{id}/disable", s.requireAuth(s.handleIndMergedSubsDisable))
+	mux.HandleFunc("PUT /api/v1/subscriptions/independent-merged/{id}", s.requireAuth(s.handleIndMergedSubsUpdate))
+	mux.HandleFunc("DELETE /api/v1/subscriptions/independent-merged/{id}", s.requireAuth(s.handleIndMergedSubsDelete))
 	mux.HandleFunc("GET /api/v1/subscriptions/merged", s.requireAuth(s.handleMergedSubsList))
 	mux.HandleFunc("POST /api/v1/subscriptions/merged", s.requireAuth(s.handleMergedSubsCreate))
 	mux.HandleFunc("GET /api/v1/subscriptions/merged/{id}/forwards", s.requireAuth(s.handleSubUserForwards("merged")))
@@ -315,7 +329,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 // 同理（公开拉取，免鉴权）。
 func (s *Server) ipWhitelistMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/"+s.subPath()+"/") || r.URL.Path == "/logo" || r.URL.Path == "/api/v1/public-info" || r.URL.Path == "/api/v1/announcements" || r.URL.Path == "/client-config.json" {
+		if strings.HasPrefix(r.URL.Path, "/"+s.subPath()+"/") || strings.HasPrefix(r.URL.Path, "/m/") || r.URL.Path == "/logo" || r.URL.Path == "/api/v1/public-info" || r.URL.Path == "/api/v1/announcements" || r.URL.Path == "/client-config.json" {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -519,6 +519,22 @@ func (s *Server) backendSubLinksForUser(kind, id string) []subLink {
 		if !found {
 			return nil
 		}
+	case "indmerged":
+		found := false
+		for i := range s.cfg.IndependentMergedSubs {
+			if s.cfg.IndependentMergedSubs[i].ID == id {
+				ims := &s.cfg.IndependentMergedSubs[i]
+				if ims.Disabled {
+					return nil
+				}
+				uuids, scope, targets = ims.NodeUUIDs, ims.BackendScope, ims.BackendTargets
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil
+		}
 	default:
 		return nil
 	}
@@ -584,7 +600,7 @@ func (s *Server) backendSubLinksForUser(kind, id string) []subLink {
 // 取后端订阅链接（被管端订阅接口的 for_user 参数就是这个格式）。
 func (s *Server) backendSubLinksForUserKey(key string) []subLink {
 	kind, id, ok := strings.Cut(key, ":")
-	if !ok || (kind != "subuser" && kind != "merged") || id == "" {
+	if !ok || (kind != "subuser" && kind != "merged" && kind != "indmerged") || id == "" {
 		return nil
 	}
 	return s.backendSubLinksForUser(kind, id)

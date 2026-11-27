@@ -302,6 +302,10 @@ func (s *Server) handleBackendAssignmentGet(w http.ResponseWriter, r *http.Reque
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
 			scope, targets, groupID = u.BackendScope, u.BackendTargets, u.GroupID
 		}
+	} else if kind == "indmerged" {
+		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+			scope, targets = ims.BackendScope, ims.BackendTargets
+		}
 	} else {
 		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
 			scope, targets, groupID = ms.BackendScope, ms.BackendTargets, ms.GroupID
@@ -339,7 +343,8 @@ func (s *Server) handleBackendAssignmentGet(w http.ResponseWriter, r *http.Reque
 // UserIDs 有变动的节点都 bump ConfigVersion，agent 60 秒内拉到
 // 新列表。调用方负责 saveConfig 落盘（用户记录的改动）；节点侧
 // 这里自己 saveLocked。返回指派到的节点 id（排序后）。
-// kind 是 "subuser"/"merged"，groupID 是用户自己的 GroupID。
+// kind 是 "subuser"/"merged"/"indmerged"，groupID 是用户自己的 GroupID
+// （独立合并订阅没有分组，groupID 传 ""，组级指派会直接 400）。
 func (s *Server) applyBackendAssignment(kind, id, scope string, targets []string, groupID string) ([]int64, error) {
 	scope, targets, err := s.validateBackendAssignment(scope, targets, groupID)
 	if err != nil {
@@ -358,6 +363,12 @@ func (s *Server) applyBackendAssignment(kind, id, scope string, targets []string
 		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
 			oldScope, oldTargets = ms.BackendScope, ms.BackendTargets
 			ms.BackendScope, ms.BackendTargets = scope, targets
+			recOK = true
+		}
+	} else if kind == "indmerged" {
+		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+			oldScope, oldTargets = ims.BackendScope, ims.BackendTargets
+			ims.BackendScope, ims.BackendTargets = scope, targets
 			recOK = true
 		}
 	}
@@ -441,6 +452,8 @@ func (s *Server) handleBackendAssignmentUpdate(w http.ResponseWriter, r *http.Re
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
 			groupID = u.GroupID
 		}
+	} else if kind == "indmerged" {
+		// 独立合并订阅没有分组，groupID 留空。
 	} else {
 		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
 			groupID = ms.GroupID
@@ -461,6 +474,10 @@ func (s *Server) handleBackendAssignmentUpdate(w http.ResponseWriter, r *http.Re
 	if kind == "subuser" {
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
 			respScope, respTargets = u.BackendScope, u.BackendTargets
+		}
+	} else if kind == "indmerged" {
+		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+			respScope, respTargets = ims.BackendScope, ims.BackendTargets
 		}
 	} else {
 		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {

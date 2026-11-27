@@ -60,7 +60,7 @@ func (s *Server) bumpBackendNodesForUserLocked(key string) {
 // 与 NodeUUIDs 表（调用方改完要自己 saveConfig 落盘）。
 func (s *Server) findBackendUser(key string) (kind, id, name string, disabled bool, uuids map[string]string, ok bool) {
 	kind, id, found := strings.Cut(strings.TrimSpace(key), ":")
-	if !found || (kind != "subuser" && kind != "merged") || id == "" {
+	if !found || (kind != "subuser" && kind != "merged" && kind != "indmerged") || id == "" {
 		return "", "", "", false, nil, false
 	}
 	if kind == "subuser" {
@@ -71,6 +71,9 @@ func (s *Server) findBackendUser(key string) (kind, id, name string, disabled bo
 	}
 	if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
 		return kind, id, ms.Name, ms.Disabled, ms.NodeUUIDs, true
+	}
+	if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+		return kind, id, ims.Name, ims.Disabled, ims.NodeUUIDs, true
 	}
 	return "", "", "", false, nil, false
 }
@@ -88,7 +91,7 @@ func (s *Server) parseRotateUserKey(raw string) (key string, ok bool) {
 		}
 		return "", false
 	}
-	for _, kind := range []string{"subuser", "merged"} {
+	for _, kind := range []string{"subuser", "merged", "indmerged"} {
 		k := userSubKey(kind, raw)
 		if _, _, _, _, _, found := s.findBackendUser(k); found {
 			return k, true

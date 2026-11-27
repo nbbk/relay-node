@@ -393,16 +393,20 @@ func (s *Server) handleNodeBackendTraffic(w http.ResponseWriter, r *http.Request
 func (s *Server) parseBackendTrafficUserKey(userKey string) (key, why string) {
 	userKey = strings.TrimSpace(userKey)
 	kind, id, found := strings.Cut(userKey, ":")
-	if !found || (kind != "subuser" && kind != "merged") || id == "" {
+	if !found || (kind != "subuser" && kind != "merged" && kind != "indmerged") || id == "" {
 		return "", "user_key 格式不对"
 	}
 	if kind == "subuser" {
 		if findSubUserByID(s.cfg.SubUsers, id) == nil && !s.hasCentralUser("subuser", id) {
 			return "", "订阅用户不存在"
 		}
-	} else {
+	} else if kind == "merged" {
 		if findMergedSubByID(s.cfg.MergedSubs, id) == nil && !s.hasCentralUser("merged", id) {
 			return "", "合并订阅不存在"
+		}
+	} else if kind == "indmerged" {
+		if findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id) == nil && !s.hasCentralUser("indmerged", id) {
+			return "", "独立合并订阅不存在"
 		}
 	}
 	return userKey, ""
@@ -466,6 +470,32 @@ func (s *Server) nodeBackendTrafficBlock(node *BackendNode) map[string]any {
 		downTotal += down
 		rows = append(rows, map[string]any{
 			"user_id": key, "username": m.Name,
+			"up_period": upP, "down_period": downP,
+			"up_total": up, "down_total": down,
+		})
+	}
+	for i := range s.cfg.IndependentMergedSubs {
+		ims := &s.cfg.IndependentMergedSubs[i]
+		if ims.Disabled {
+			continue
+		}
+		key := indMergedSubKey(ims.ID)
+		if !nodeHasUser(node, key) {
+			continue
+		}
+		if !s.backendAssignAllows(ims.BackendScope, ims.BackendTargets, "", node) {
+			continue
+		}
+		up, down, upP, downP, ok := s.userTraffic.totals(key)
+		if !ok {
+			continue
+		}
+		upPeriod += upP
+		downPeriod += downP
+		upTotal += up
+		downTotal += down
+		rows = append(rows, map[string]any{
+			"user_id": key, "username": ims.Name,
 			"up_period": upP, "down_period": downP,
 			"up_total": up, "down_total": down,
 		})
@@ -562,5 +592,9 @@ func (s *Server) enforceBackendNodeTrafficLimits() {
 	for i := range s.cfg.MergedSubs {
 		m := &s.cfg.MergedSubs[i]
 		check(userSubKey("merged", m.ID), m.Name, m.TrafficLimitBytes, m.TrafficLimitMode)
+	}
+	for i := range s.cfg.IndependentMergedSubs {
+		ims := &s.cfg.IndependentMergedSubs[i]
+		check(indMergedSubKey(ims.ID), ims.Name, ims.TrafficLimitBytes, ims.TrafficLimitMode)
 	}
 }

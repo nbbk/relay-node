@@ -160,10 +160,38 @@ func validSubTokenFormat(tok string) bool {
 	return true
 }
 
+// 独立合并订阅令牌前缀（v1.4.34，第 4 批）：mrg_ + 64 位十六进制，
+// 总长仍 68 字符；与 sub_ 前缀一眼分清，令牌本身就能认出种类。
+const indMergedTokenPrefix = "mrg_"
+
+// generateIndMergedToken 生成一条独立合并订阅令牌。
+func generateIndMergedToken() string {
+	return indMergedTokenPrefix + randomTokenHex(32)
+}
+
+// validIndependentMergedTokenFormat 独立合并订阅令牌格式：
+// mrg_ + 64 位小写十六进制。
+func validIndependentMergedTokenFormat(tok string) bool {
+	if len(tok) != 68 || !strings.HasPrefix(tok, indMergedTokenPrefix) {
+		return false
+	}
+	for _, c := range tok[4:] {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// validAnySubTokenFormat 任一种订阅令牌格式（sub_ 或 mrg_）。
+func validAnySubTokenFormat(tok string) bool {
+	return validSubTokenFormat(tok) || validIndependentMergedTokenFormat(tok)
+}
+
 // subTokenValid 令牌是否有效（格式 + 三处存储任一命中）：限流前先验，
 // 对的令牌永远放行，不受锁影响。
 func (s *Server) subTokenValid(tok string) bool {
-	if !validSubTokenFormat(tok) {
+	if !validAnySubTokenFormat(tok) {
 		return false
 	}
 	if s.cfg.SubTokenHash != "" && verifySubToken(tok, s.cfg.SubTokenHash) {
@@ -173,6 +201,9 @@ func (s *Server) subTokenValid(tok string) bool {
 		return true
 	}
 	if _, ok := s.findMergedSub(tok); ok {
+		return true
+	}
+	if _, ok := s.findIndependentMergedSub(tok); ok {
 		return true
 	}
 	return false
