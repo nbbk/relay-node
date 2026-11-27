@@ -869,6 +869,15 @@ async function submitAdd(payload, shareChoice) {
       linksHtml(r.links, r.qr));
     toast('落地添加成功', 'ok');
     loadOverview();
+    // v1.4.31（P0-7）：成功后清空添加表单，免得关掉结果弹窗后还留在添加页、
+    // 表单里还是刚填的全套值、再点一次就重复建一个。reset 回到 HTML 默认值，
+    // 再触发三个联动 select 的 change 把条件显示区（sing-box／自定义端口／
+    // 任意门地址／自定义天数）同步回隐藏态。
+    const addForm = $('#add-form');
+    if (addForm) {
+      addForm.reset();
+      ['#add-preset', '#add-mode', '#add-duration'].forEach((s) => { const el = $(s); if (el) el.dispatchEvent(new Event('change')); });
+    }
   } catch (e) {
     const msg = String(e.message || '');
     // 后端也可能把 need_choice 放在错误体里
@@ -2030,6 +2039,7 @@ function openInboundEditModal(inb) {
     '<div><label for="nodes-ib-edit-multiplier">流量倍率 <span class="hint">默认 1，0.1–100</span></label><input id="nodes-ib-edit-multiplier" type="number" min="0.1" max="100" step="0.1" value="' + esc(String(inb.multiplier == null ? 1 : inb.multiplier)) + '"></div>' +
     '<div><label for="nodes-ib-edit-enabled">启用 <span class="hint">关掉后节点 60 秒内下线该入站</span></label><select id="nodes-ib-edit-enabled"><option value="true"' + (inb.enabled ? ' selected' : '') + '>启用</option><option value="false"' + (!inb.enabled ? ' selected' : '') + '>停用</option></select></div>' +
     '</div>' +
+    '<div class="error-box hidden" id="nodes-ib-edit-error" hidden></div>' +
     '<div class="btn-row"><button class="btn" type="submit">保存修改</button><button class="btn secondary" type="button" id="nodes-ib-edit-cancel">取消</button></div>' +
     '</form>');
   if (!m) return;
@@ -2064,21 +2074,29 @@ function openInboundEditModal(inb) {
   wirePresetSelect('nodes-ib-edit-reality-fingerprint', 'nodes-ib-edit-reality-fingerprint-custom', m);
   onIn(m, '#nodes-ib-edit-protocol', 'change', syncEdit);
   onIn(m, '#nodes-ib-edit-cancel', 'click', closeModal);
+  // v1.4.31（P0-1）：保存失败弹窗保持打开，错误写进编辑弹窗内的错误区
+  // （与添加入站弹窗同一做法）；以前是先 showInboundsError 再 closeModal，
+  // 但那个错误区在已被顶掉的模板弹窗里，错误直接丢了、表单也丢了。
+  const showEditInboundErr = (msg) => {
+    const eb = $('#nodes-ib-edit-error', m);
+    if (eb) { eb.textContent = msg; eb.classList.remove('hidden'); eb.hidden = false; }
+    toast(msg, 'err');
+  };
   onIn(m, '#nodes-inbound-edit-form', 'submit', async (e) => {
     e.preventDefault();
     if (!currentInboundsNodeId || !currentEditInboundId) return;
     const tag = $('#nodes-ib-edit-tag', m).value.trim();
     const port = parseInt($('#nodes-ib-edit-port', m).value, 10);
-    if (!tag) { toast('入站 tag/名称不能为空', 'err'); return; }
-    if (!port || port < 1 || port > 65535) { toast('端口要在 1–65535 之间', 'err'); return; }
+    if (!tag) { showEditInboundErr('入站 tag/名称不能为空'); return; }
+    if (!port || port < 1 || port > 65535) { showEditInboundErr('端口要在 1–65535 之间'); return; }
     const p = IB_PROTOCOLS[$('#nodes-ib-edit-protocol', m).value];
     const sni = presetSelectValue($('#nodes-ib-edit-sni', m), $('#nodes-ib-edit-sni-custom', m));
     // v1.4.12：TLS 入站＋域名没有可用证书就拦住（原来就是这套协议＋域名
     // 的老入站只改其它字段不拦，免得无证书的老入站连端口都改不了）。
     const block = certGateBlocks($('#nodes-ib-edit-protocol', m).value, sni, ibCompositeValue(inb), inb.domain || inb.sni || '');
-    if (block) { toast(block, 'err'); return; }
+    if (block) { showEditInboundErr(block); return; }
     // v1.4.13：入站域名不能是泛域名（与添加表单同一道关，见 wireNodeIbAddModal）。
-    if (sni.slice(0, 2) === '*.') { toast('入站域名不能是泛域名：把 * 改成具体子域名再提交（如 hy2ceshi.example.com）', 'err'); return; }
+    if (sni.slice(0, 2) === '*.') { showEditInboundErr('入站域名不能是泛域名：把 * 改成具体子域名再提交（如 hy2ceshi.example.com）'); return; }
     const body = { inbound_tag: tag, protocol: p.protocol, transport: p.transport, security: p.security, port, listen: $('#nodes-ib-edit-listen', m).value.trim(), sni, enabled: $('#nodes-ib-edit-enabled', m).value === 'true' };
     const mult = parseFloat($('#nodes-ib-edit-multiplier', m).value);
     if (mult) body.multiplier = mult;
@@ -2103,7 +2121,7 @@ function openInboundEditModal(inb) {
       toast('已保存，节点 60 秒内应用', 'ok');
       closeModal();
       loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
-    } catch (err2) { showInboundsError(err2.message); closeModal(); }
+    } catch (err2) { showEditInboundErr('保存失败：' + err2.message); }
   });
 }
 function randomPassword1401(n) {
@@ -2125,11 +2143,18 @@ function randomSS2022Key(n) {
   for (let i = 0; i < buf.length; i++) s += String.fromCharCode(buf[i]);
   return btoa(s);
 }
-// ---------- 字段帮助（v1.4.11 入站表单，v1.4.13 起与证书卡片共用） ----------
+// ---------- 字段帮助（v1.4.11 入站表单，v1.4.13 起与证书卡片共用，
+// v1.4.18 补中转路由、v1.4.27 补档位与订阅用户、v1.4.29 补公告与
+// 客户端远程配置） ----------
 // 每个字段 label 旁的 ⓘ 按钮点开一个共享提示框（#ib-help-pop）：
-// 入站表单 10 个字段＋证书卡片 2 个字段（cert-domain／cert-provider）
-// 共用同一套机制（ibHelpWire 是 document 级委托，点任意 [data-ib-help]
+// 入站表单字段＋证书卡片（cert-domain／cert-provider）＋中转路由
+// （route-*）＋档位（plan-*）＋订阅用户（user-*）＋公告
+// （announcement-*）＋客户端远程配置（client-config-text）共用同一套
+// 机制（ibHelpWire 是 document 级委托，点任意 [data-ib-help]
 // 都弹提示框；Esc／×／点别处关、一次只开一个都现成，不用另起一套）。
+// 点 ⓘ 打开、再点关、点别处关、Esc 关、一次只开一个。
+// 全站 data-ib-help 指向的键都必须在这里有条目（jsdom test-1432 静态
+// 断言）；ibHelpShow 查不到条目时直接不打开弹窗。
 // 点 ⓘ 打开、再点关、点别处关、Esc 关、一次只开一个。
 // 内容以实现为准：端口／SNI／密码等口径见 node_inbounds.go 的
 // validateInbound 与新建默认值（1.4.10 切片 6）；SS2022 密钥长度是
@@ -2399,8 +2424,8 @@ const IB_HELP = {
     title: '登录账号',
     body: () => [
       '填什么：这个人在客户端登录用的账号。',
-      '选填：新建时空着自动生成；编辑时空着保持不变。',
-      '建议：给人一眼认得出的账号，如手机号或名字拼音；账号改了要告诉用户用新账号登录。',
+      '选填：新建时空着自动生成（格式 u-＋12 位随机十六进制，如 u-a1b2c3d4e5f6）；编辑时空着保持不变。',
+      '建议：给人一眼认得出的账号，如手机号或名字拼音；账号改了要告诉用户用新账号登录。生成后在新建成功区显示，事后在用户列表名字列小字里看。',
     ],
   },
   'user-password': {
@@ -2511,6 +2536,9 @@ function ibHelpPlace(btn) {
   pop.style.top = top + 'px';
 }
 function ibHelpShow(key, btn) {
+  // v1.4.31（P0-3）：查不到条目直接不打开弹窗（以前仍会去掉 hidden，
+  // 第一次是空白框，之后显示上一次看过的旧内容）。
+  if (!IB_HELP[key]) { ibHelpHide(); return; }
   ibHelpRender(key);
   ibHelpPlace(btn);
   ibHelpOpenKey = key;
@@ -2927,18 +2955,19 @@ async function renewLanding(index) {
   const m = openModal('<h2>续期</h2><p>续期只延长时限；如果是因为流量用完被停用，请另外「续量」。</p>' +
     '<label>快捷天数</label><select id="renew-days"><option value="30">30 天</option><option value="90" selected>90 天</option><option value="180">180 天</option><option value="365">365 天</option></select>' +
     '<label>自定义天数 <span class="hint">填了就用自定义（1–3650 天），不填用上面的快捷天数</span></label><input id="renew-days-custom" type="number" min="1" max="3650" placeholder="如 45">' +
+    '<div class="error-box hidden" id="renew-err" hidden></div>' +
     '<div class="btn-row"><button class="btn" id="renew-ok" type="button">确认续期</button><button class="btn secondary" id="renew-cancel" type="button">取消</button></div>');
+  const showErr = (msg) => { const eb = $('#renew-err', m); if (eb) { eb.textContent = msg; eb.classList.remove('hidden'); eb.hidden = false; } toast(msg, 'err'); };
   onIn(m, '#renew-cancel', 'click', closeModal);
   onIn(m, '#renew-ok', 'click', async () => {
     const custom = $('#renew-days-custom', m).value.trim();
     let days;
     if (custom !== '') {
       days = Number(custom);
-      if (!days || days < 1 || days > 3650) { toast('自定义天数请填 1–3650', 'err'); return; }
+      if (!days || days < 1 || days > 3650) { showErr('自定义天数请填 1–3650'); return; }
     } else days = Number($('#renew-days', m).value);
-    closeModal();
-    try { await apiPost('/api/v1/landings/' + index + '/renew', { days }); toast('续期成功，已延长 ' + days + ' 天', 'ok'); refreshCurrentPage(); }
-    catch (e) { toast('续期失败：' + e.message, 'err'); }
+    try { await apiPost('/api/v1/landings/' + index + '/renew', { days }); closeModal(); toast('续期成功，已延长 ' + days + ' 天', 'ok'); refreshCurrentPage(); }
+    catch (e) { showErr('续期失败：' + e.message); }
   });
 }
 // 编辑落地：表单预填当前值，校验规则与添加落地一致；保存前二次确认
@@ -3093,34 +3122,36 @@ async function pasteOrigLink(index) {
     '<p class="muted">把落地机上生成的节点链接粘贴进来，面板会算出中转 + 直连链接，卡片上直接显示，历史记录里也会记一笔。原始链接只存在面板自己的状态文件里，不会进日志与审计。</p>' +
     '<label>原始节点链接 <span class="hint">vless:// / trojan:// / ss:// / vmess:// / anytls:// 开头</span></label><input id="paste-orig-link" placeholder="vless://…">' +
     '<label>节点名称 <span class="hint">选填；直连备注“&lt;名称&gt;-直连”、中转备注“&lt;名称&gt;-中转”，空着用原链接备注名</span></label><input id="paste-link-name" placeholder="如 香港-01" maxlength="64">' +
+    '<div class="error-box hidden" id="paste-err" hidden></div>' +
     '<div class="btn-row"><button class="btn" id="paste-ok" type="button">生成中转链接</button><button class="btn secondary" id="paste-cancel" type="button">取消</button></div>');
+  const showPasteErr = (msg) => { const eb = $('#paste-err', m); if (eb) { eb.textContent = msg; eb.classList.remove('hidden'); eb.hidden = false; } toast(msg, 'err'); };
   onIn(m, '#paste-cancel', 'click', closeModal);
   onIn(m, '#paste-ok', 'click', async () => {
     const origLink = $('#paste-orig-link', m).value.trim();
     const linkName = $('#paste-link-name', m).value.trim();
-    if (!origLink || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic|anytls):\/\//.test(origLink)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
-    if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return; }
-    closeModal();
+    if (!origLink || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic|anytls):\/\//.test(origLink)) { showPasteErr('请粘贴正确的节点链接（vless:// 等开头）'); return; }
+    if (linkName && linkName.length > 64) { showPasteErr('节点名称不能超过 64 字'); return; }
     try {
       const r = await apiPost('/api/v1/landings/' + index + '/orig-link', { orig_link: origLink, link_name: linkName || undefined });
       openModal('<h2>✅ 中转链接已生成</h2>' + linksHtml(r.links, r.qr) +
         '<div class="btn-row"><button class="btn" id="paste-done" type="button">完成</button></div>');
       on('#paste-done', 'click', () => { closeModal(); refreshCurrentPage(); });
-    } catch (e) { toast('生成失败：' + e.message, 'err'); }
+    } catch (e) { showPasteErr('生成失败：' + e.message); }
   });
 }
 
 async function addTraffic(index) {
   const m = openModal('<h2>续量</h2><p>给流量上限增加额度。续完仍有余额且之前因流量停用的，会自动恢复转发。</p>' +
     '<label>增加多少 GB</label><input id="addtraffic-gb" type="number" min="1" step="1" value="50">' +
+    '<div class="error-box hidden" id="at-err" hidden></div>' +
     '<div class="btn-row"><button class="btn" id="at-ok" type="button">确认续量</button><button class="btn secondary" id="at-cancel" type="button">取消</button></div>');
+  const showErr = (msg) => { const eb = $('#at-err', m); if (eb) { eb.textContent = msg; eb.classList.remove('hidden'); eb.hidden = false; } toast(msg, 'err'); };
   onIn(m, '#at-cancel', 'click', closeModal);
   onIn(m, '#at-ok', 'click', async () => {
     const gb = Number($('#addtraffic-gb', m).value);
-    if (!gb || gb < 1) { toast('请填大于 0 的 GB 数', 'err'); return; }
-    closeModal();
-    try { await apiPost('/api/v1/landings/' + index + '/add-traffic', { bytes: Math.round(gb * 1073741824) }); toast('续量成功，已增加 ' + gb + ' GB', 'ok'); refreshCurrentPage(); }
-    catch (e) { toast('续量失败：' + e.message, 'err'); }
+    if (!gb || gb < 1) { showErr('请填大于 0 的 GB 数'); return; }
+    try { await apiPost('/api/v1/landings/' + index + '/add-traffic', { bytes: Math.round(gb * 1073741824) }); closeModal(); toast('续量成功，已增加 ' + gb + ' GB', 'ok'); refreshCurrentPage(); }
+    catch (e) { showErr('续量失败：' + e.message); }
   });
 }
 async function trafficSettings(index) {
@@ -3130,20 +3161,22 @@ async function trafficSettings(index) {
     '<label>流量上限（GB，0 = 不限）</label><input id="ts-gb" type="number" min="0" step="1" value="' + Math.round((t.limit_bytes || 0) / 1073741824) + '">' +
     '<label>算法</label><select id="ts-mode"><option value="total"' + (t.limit_mode !== 'monthly' ? ' selected' : '') + '>总量</option><option value="monthly"' + (t.limit_mode === 'monthly' ? ' selected' : '') + '>按月</option></select>' +
     '<label>限速（Mbps，0 = 不限速）</label><input id="ts-speed" type="number" min="0" step="1" value="' + (l ? (l.speed_limit_mbps || 0) : 0) + '">' +
+    '<div class="error-box hidden" id="ts-err" hidden></div>' +
     '<div class="btn-row"><button class="btn" id="ts-ok" type="button">保存</button><button class="btn secondary" id="ts-cancel" type="button">取消</button></div>');
+  const showErr = (msg) => { const eb = $('#ts-err', m); if (eb) { eb.textContent = msg; eb.classList.remove('hidden'); eb.hidden = false; } toast(msg, 'err'); };
   onIn(m, '#ts-cancel', 'click', closeModal);
   onIn(m, '#ts-ok', 'click', async () => {
     const gb = Number($('#ts-gb', m).value) || 0;
-    if (gb < 0) { toast('流量上限不能为负', 'err'); return; }
-    closeModal();
+    if (gb < 0) { showErr('流量上限不能为负'); return; }
     try {
       await apiPost('/api/v1/landings/' + index + '/traffic', {
         limit_bytes: Math.round(gb * 1073741824),
         limit_mode: gb > 0 ? $('#ts-mode', m).value : 'total',
         speed_limit_mbps: Number($('#ts-speed', m).value) || 0,
       });
+      closeModal();
       toast('流量限制已保存', 'ok'); refreshCurrentPage();
-    } catch (e) { toast('保存失败：' + e.message, 'err'); }
+    } catch (e) { showErr('保存失败：' + e.message); }
   });
 }
 async function deleteSubnode(index, domain) {
@@ -3362,6 +3395,10 @@ function initTwin() {
         ((r.qr && Object.keys(r.qr).length) ? '' : '<p class="muted">二维码生成失败，仅显示链接。</p>') +
         linksHtml(links, r.qr));
       toast('twin 生成成功', 'ok');
+      // v1.4.31（P0-7）：成功后清空链接输入框（落地 IP／SNI／名称留着，
+      // 下一条 twin 还能接着用，不用重填）。
+      const twinLink = $('#twin-link');
+      if (twinLink) twinLink.value = '';
     } catch (err) { toast('生成失败：' + err.message, 'err'); }
   });
 }
@@ -3482,13 +3519,20 @@ async function loadPortsTable(page) {
 function initService() {
   $$('[data-service]').forEach((b) => b.addEventListener('click', async () => {
     const act = b.dataset.service;
+    if (act === 'restart') {
+      // v1.4.31（P0-8）：重启加二次确认，文案照抄编辑落地的口径（重启 realm、
+      // 正在用的节点瞬断几秒、转发配置本身不受影响）。
+      const ok = await confirmModal('重启 realm', '<p>确定重启 realm 吗？重启后正在用的节点会瞬断几秒，转发配置本身不受影响。</p>', '重启 realm');
+      if (!ok) return;
+    }
     if (act === 'stop') {
       const ok = await confirmModal('停止 realm', '<p>停止后所有中转都会断开，节点不可用。确定停止吗？</p>', '停止', true);
       if (!ok) return;
     }
     try {
       await apiPost('/api/v1/service/' + act, {});
-      toast('已执行：' + act, 'ok'); loadService();
+      // v1.4.31（P0-8）：toast 改中文动作名，不用英文动作名（以前是“已执行：restart”）。
+      toast(act === 'start' ? '已启动 realm' : act === 'restart' ? '已重启 realm' : act === 'stop' ? '已停止 realm' : '操作成功', 'ok'); loadService();
     } catch (e) { toast('操作失败：' + e.message, 'err'); }
   }));
   on('#logs-refresh', 'click', loadLogs);
@@ -5926,6 +5970,10 @@ async function loadSubUsers() {
 async function rotateSubUser(id) {
   const r = await apiPost('/api/v1/subscriptions/users/' + encodeURIComponent(id) + '/rotate', {});
   $('#sub-user-url-value').textContent = r.url || '';
+  // v1.4.31：轮换只换链接，不显示账号——把新建成功时留下的账号区藏起来，
+  // 免得显示成上一个新建用户的账号。
+  const accBox = $('#sub-user-account');
+  if (accBox) { accBox.classList.add('hidden'); accBox.hidden = true; }
   const box = $('#sub-user-once');
   if (box) { box.classList.remove('hidden'); box.hidden = false; }
   toast('已轮换，旧链接已失效', 'ok'); loadSubUsers();
@@ -6162,7 +6210,7 @@ async function openSubUserModal() {
     '<div><label for="new-user-note">备注 <span class="hint">选填</span></label><input id="new-user-note" type="text" placeholder="选填，例如：备用机"></div>' +
     '<div><label for="new-user-plan">套餐档位 <span class="hint">必填，默认“默认”</span><button type="button" class="ib-help-btn" data-ib-help="user-plan" aria-label="套餐档位填写说明" aria-expanded="false">ⓘ</button></label><select id="new-user-plan" data-uf-plan>' + planSelectOptions(defaultPlanId()) + '</select><div class="small muted" data-uf-plan-hint></div></div>' +
     '<div><label for="new-user-group">所属分组 <span class="hint">选填</span></label><select id="new-user-group" data-uf-group><option value="">不分组</option>' + (subGroupsCache || []).map((g) => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select><div class="small muted">进了组，订阅按组的落地出内容；自己的勾选保留着，出组后恢复。</div></div>' +
-    '<div><label for="new-user-username">登录账号 <span class="hint">选填，空着自动生成</span><button type="button" class="ib-help-btn" data-ib-help="user-username" aria-label="登录账号填写说明" aria-expanded="false">ⓘ</button></label><input id="new-user-username" type="text" placeholder="留空自动生成" maxlength="64"></div>' +
+    '<div><label for="new-user-username">登录账号 <span class="hint">选填，空着自动生成（格式 u-＋12 位随机字符）；生成后在下面成功区显示，事后在用户列表名字列小字里看</span><button type="button" class="ib-help-btn" data-ib-help="user-username" aria-label="登录账号填写说明" aria-expanded="false">ⓘ</button></label><input id="new-user-username" type="text" placeholder="留空自动生成" maxlength="64"></div>' +
     '<div><label for="new-user-password">登录密码 <span class="hint">必填，最少 6 位</span><button type="button" class="ib-help-btn" data-ib-help="user-password" aria-label="登录密码填写说明" aria-expanded="false">ⓘ</button></label><input id="new-user-password" type="password" placeholder="最少 6 位" maxlength="64"></div>' +
     '<div><label for="new-user-link-mode">链接模式 <span class="hint">选填，默认“跟随节点”</span><button type="button" class="ib-help-btn" data-ib-help="user-link-mode" aria-label="链接模式填写说明" aria-expanded="false">ⓘ</button></label><select id="new-user-link-mode" data-uf-link-mode>' + subLinkModeOptions('') + '</select><div class="small muted">显式选了就按这个订阅的来，覆盖节点上的模式；选“跟随节点”时按节点模式出，和以前一样。</div></div>' +
     '</div>' +
@@ -6174,9 +6222,14 @@ async function openSubUserModal() {
     '<p class="small muted">开了限流才给这个人建独立转发（独立端口 → 同一落地），不开限流的继续走共享端口；超量时 80% 发 Telegram 提醒、100% 自动停用，续量或等下个周期恢复。统计是上行 + 下行合计、按 L3 字节计（含包头，比客户端显示的多几个百分点），分钟级采样、超一点正常，配额留点余量。</p>' +
     '<div style="margin-top:12px"><label class="small">后端指派：<select data-uf-backend-scope style="width:220px"><option value="group" selected>跟档位分组走</option><option value="all">全部——所有后端节点，全部入站</option><option value="node">指定节点——保存后去“发到节点”里勾</option><option value="inbound">指定入站——保存后去“发到节点”里勾</option></select> <button type="button" class="ib-help-btn" data-ib-help="user-backend" aria-label="后端指派填写说明" aria-expanded="false">ⓘ</button></label>' +
     '<span class="small muted">与“发到节点”弹窗的四级口径一致。</span></div>' +
+    '<div class="error-box" data-user-error hidden></div>' +
     '<div class="btn-row" style="margin-top:12px"><button class="btn" type="button" data-uf-save>新建</button>' +
     '<button class="btn secondary" type="button" data-uf-cancel>取消</button></div>', true);
   if (!m) return;
+  // v1.4.31（P0-10）：照抄公告弹窗的 error-box ＋ toast 双通道；校验失败与
+  // 接口失败都写进 error-box，弹窗保持打开、表单保留；成功时清空。
+  const userErrBox = m.querySelector('[data-user-error]');
+  const showUserErr = (msg) => { if (userErrBox) { userErrBox.textContent = msg; userErrBox.hidden = false; } toast(msg, 'err'); };
   wireTrafficLimitUI(m);
   syncSubModeSelect(m.querySelector('select[name="sub-new-mode"]'), 'both');
   onIn(m, '[data-uf-permanent]', 'change', () => {
@@ -6187,11 +6240,11 @@ async function openSubUserModal() {
   onIn(m, '[data-uf-cancel]', 'click', closeModal);
   onIn(m, '[data-uf-save]', 'click', async () => {
     const name = ((m.querySelector('#new-user-name') || {}).value || '').trim();
-    if (!name) { toast('请先填名字（用来认人）', 'err'); return; }
+    if (!name) { showUserErr('请先填名字（用来认人）'); return; }
     const password = ((m.querySelector('#new-user-password') || {}).value || '');
-    if (!password || password.length < 6) { toast('登录密码必填，最少 6 位', 'err'); return; }
+    if (!password || password.length < 6) { showUserErr('登录密码必填，最少 6 位'); return; }
     const planId = (m.querySelector('[data-uf-plan]') || {}).value || '';
-    if (!planId) { toast('请先选套餐档位（没有档位时先去上面建一条“默认”档位）', 'err'); return; }
+    if (!planId) { showUserErr('请先选套餐档位（没有档位时先去上面建一条“默认”档位）'); return; }
     const permEl = m.querySelector('[data-uf-permanent]');
     const dateEl = m.querySelector('[data-uf-expiry]');
     const expiresAt = (permEl && permEl.checked) ? '' : (dateEl ? dateEl.value : '');
@@ -6199,17 +6252,24 @@ async function openSubUserModal() {
     const username = ((m.querySelector('#new-user-username') || {}).value || '').trim();
     const body = { name, note: ((m.querySelector('#new-user-note') || {}).value || '').trim(), plan_id: planId, password, mode: subModeOf('sub-new-mode'), expires_at: expiresAt, timezone: browserTimeZone(), traffic_limit_mb: tl.limit_mb, traffic_limit_mode: tl.limit_mode, reset_mode: tl.reset_mode, reset_day: tl.reset_day, group_id: ((m.querySelector('[data-uf-group]') || {}).value || ''), backend_scope: ((m.querySelector('[data-uf-backend-scope]') || {}).value || 'group'), link_mode: ((m.querySelector('[data-uf-link-mode]') || {}).value || '') };
     if (username) body.username = username;
+    if (userErrBox) userErrBox.hidden = true;
     try {
       const r = await apiPost('/api/v1/subscriptions/users', body);
       closeModal();
       const urlEl = $('#sub-user-url-value');
       if (urlEl) urlEl.textContent = r.url || '';
+      // v1.4.31（P0-9）：成功区同时显示生成的登录账号（后端回包带 username，
+      // 空着建时就是自动生成的那个），密码是刚填的。
+      const accEl = $('#sub-user-username-value');
+      if (accEl) accEl.textContent = r.username || username || '';
+      const accBox = $('#sub-user-account');
+      if (accBox) { accBox.classList.remove('hidden'); accBox.hidden = false; }
       const box = $('#sub-user-once');
       if (box) { box.classList.remove('hidden'); box.hidden = false; }
       if (r.warning) toast(r.warning, 'err');
       else toast('订阅用户已新建，链接显示在下面，随时能复制', 'ok');
       loadSubUsers();
-    } catch (err) { toast('新建失败：' + err.message, 'err'); }
+    } catch (err) { showUserErr('新建失败：' + err.message); }
   });
 }
 // 重置一个订阅用户的登录密码（v1.4.27）：弹窗只填新密码；重置后该用户
@@ -6319,9 +6379,13 @@ function openSubPlanModal(plan) {
     '<div><label for="plan-mode">内容模式 <span class="hint">必填</span><button type="button" class="ib-help-btn" data-ib-help="plan-content" aria-label="内容模式填写说明" aria-expanded="false">ⓘ</button></label><select id="plan-mode"><option value="both">全部</option><option value="relay">仅中转</option><option value="direct">仅直连</option></select></div>' +
     '<div class="full"><label for="plan-note">备注 <span class="hint">选填</span><button type="button" class="ib-help-btn" data-ib-help="plan-note" aria-label="备注填写说明" aria-expanded="false">ⓘ</button></label><input id="plan-note" type="text" value="' + esc(p.note || '') + '" placeholder="选填，如价格、适用人群"></div>' +
     '</div>' +
+    '<div class="error-box" data-plan-error hidden></div>' +
     '<div class="btn-row" style="margin-top:12px"><button class="btn" type="button" data-plan-save>保存</button>' +
     '<button class="btn secondary" type="button" data-plan-cancel>取消</button></div>', true);
   if (!m) return;
+  // v1.4.31（P0-10）：照抄公告弹窗的 error-box ＋ toast 双通道。
+  const planErrBox = m.querySelector('[data-plan-error]');
+  const showPlanErr = (msg) => { if (planErrBox) { planErrBox.textContent = msg; planErrBox.hidden = false; } toast(msg, 'err'); };
   const setSel = (id, v) => { const el = m.querySelector('#' + id); if (el) el.value = v; };
   setSel('plan-group', p.group_id || '');
   setSel('plan-traffic-mode', p.traffic_limit_mode || 'total');
@@ -6341,11 +6405,11 @@ function openSubPlanModal(plan) {
   onIn(m, '[data-plan-cancel]', 'click', closeModal);
   onIn(m, '[data-plan-save]', 'click', async () => {
     const name = ((m.querySelector('#plan-name') || {}).value || '').trim();
-    if (!name) { toast('请先填档位名字', 'err'); return; }
+    if (!name) { showPlanErr('请先填档位名字'); return; }
     const trafficMb = Number((m.querySelector('#plan-traffic-mb') || {}).value) || 0;
-    if (trafficMb < 0) { toast('流量上限不能小于 0', 'err'); return; }
+    if (trafficMb < 0) { showPlanErr('流量上限不能小于 0'); return; }
     const expiresDays = Number((m.querySelector('#plan-expires') || {}).value) || 0;
-    if (expiresDays < 0) { toast('到期天数不能小于 0', 'err'); return; }
+    if (expiresDays < 0) { showPlanErr('到期天数不能小于 0'); return; }
     const body = {
       name,
       group_id: (m.querySelector('#plan-group') || {}).value || '',
@@ -6357,13 +6421,14 @@ function openSubPlanModal(plan) {
       mode: subModeValid((m.querySelector('#plan-mode') || {}).value || 'both'),
       note: ((m.querySelector('#plan-note') || {}).value || '').trim(),
     };
+    if (planErrBox) planErrBox.hidden = true;
     try {
       if (isEdit) await api('/api/v1/subscriptions/plans/' + encodeURIComponent(plan.id), { method: 'PUT', body: JSON.stringify(body) });
       else await apiPost('/api/v1/subscriptions/plans', body);
       closeModal();
       toast(isEdit ? '档位已保存' : '档位已新建', 'ok');
       loadSubPlans();
-    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+    } catch (err) { showPlanErr('保存失败：' + err.message); }
   });
 }
 function initSubPlans() {
@@ -6411,7 +6476,7 @@ async function loadSubGroups() {
   } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
 }
 // 新建/编辑分组弹窗：名字 + 落地勾选树（复用编辑弹窗那棵树，本机与远程
-// 分层）+ 成员多选（订阅用户与合并订阅分两组列出）。
+// 分层）+ 成员多选（只列订阅用户，v1.4.31 起不再列合并订阅）。
 async function openSubGroupModal(group) {
   const isEdit = !!group;
   const m = openModal('<h2>' + esc(isEdit ? '编辑分组' : '新建分组') + '</h2>' +
@@ -6424,9 +6489,13 @@ async function openSubGroupModal(group) {
     '<p class="muted small">成员一人只能进一个组：勾了这里的人，会自动从原来那个组里出来。</p>' +
     '<div data-group-backend-nodes style="margin-top:12px">加载中…</div>' +
     '<p class="muted small">后端节点（v1.4.4，组级指派用）：组级指派的成员上这里勾的后端节点；不勾 = 组级指派下成员上不了任何后端节点。</p>' +
+    '<div class="error-box" data-group-error hidden></div>' +
     '<div class="btn-row" style="margin-top:12px"><button class="btn" type="button" data-group-save>保存</button>' +
     '<button class="btn secondary" type="button" data-group-cancel>取消</button></div>', true);
   if (!m) return;
+  // v1.4.31（P0-10）：照抄公告弹窗的 error-box ＋ toast 双通道。
+  const groupErrBox = m.querySelector('[data-group-error]');
+  const showGroupErr = (msg) => { if (groupErrBox) { groupErrBox.textContent = msg; groupErrBox.hidden = false; } toast(msg, 'err'); };
   const checked = {};
   (group ? group.selection || [] : []).forEach((e) => { checked[subTreeKey(e.panel, e.landing)] = true; });
   const treeBox = m.querySelector('[data-group-tree]');
@@ -6436,26 +6505,23 @@ async function openSubGroupModal(group) {
   } catch (e) {
     if (treeBox) treeBox.innerHTML = '<div class="error-box">勾选树加载失败：' + esc(e.message) + '</div>';
   }
-  // 成员多选：订阅用户与合并订阅分两组列出，当前成员预选；已在别的组里
-  // 的人会标注出来，勾过来即换组。
+  // 成员多选：只列订阅用户（v1.4.31，P0-4：合并订阅已退场，不再列出；
+  // 已在组里的合并订阅成员保存时原样保留，不会被踢出）。当前成员预选；
+  // 已在别的组里的人会标注出来，勾过来即换组。
   const memBox = m.querySelector('[data-group-members]');
-  let members = { users: [], merged: [] };
+  let members = { users: [] };
   try {
-    const [ru, rm] = await Promise.all([api('/api/v1/subscriptions/users'), api('/api/v1/subscriptions/merged')]);
+    const ru = await api('/api/v1/subscriptions/users');
     members.users = ru.users || [];
-    members.merged = rm.subs || [];
   } catch (e) {
     if (memBox) memBox.innerHTML = '<div class="error-box">成员列表加载失败：' + esc(e.message) + '</div>';
   }
   const renderMembers = () => {
     if (!memBox) return;
     const curUserIds = new Set((group ? group.members || [] : []).filter((x) => x.kind === 'user').map((x) => x.id));
-    const curMergedIds = new Set((group ? group.members || [] : []).filter((x) => x.kind === 'merged').map((x) => x.id));
     let h = '<p class="small"><b>成员</b></p>';
     h += '<p class="small" style="margin-top:8px"><b>订阅用户</b></p>';
     h += members.users.length ? members.users.map((u) => '<label class="checkbox-row"><input type="checkbox" data-group-member-user="' + esc(u.id) + '"' + (curUserIds.has(u.id) ? ' checked' : '') + '><span>' + esc(u.name || '') + (u.group_id && u.group_id !== (group ? group.id : '') ? ' <span class="muted small">（在分组「' + esc(u.group_name || '') + '」里）</span>' : '') + '</span></label>').join('') : '<p class="muted small">还没有订阅用户。</p>';
-    h += '<p class="small" style="margin-top:8px"><b>合并订阅</b></p>';
-    h += members.merged.length ? members.merged.map((s) => '<label class="checkbox-row"><input type="checkbox" data-group-member-merged="' + esc(s.id) + '"' + (curMergedIds.has(s.id) ? ' checked' : '') + '><span>' + esc(s.name || '未命名合并订阅') + (s.group_id && s.group_id !== (group ? group.id : '') ? ' <span class="muted small">（在分组「' + esc(s.group_name || '') + '」里）</span>' : '') + '</span></label>').join('') : '<p class="muted small">还没有合并订阅。</p>';
     memBox.innerHTML = h;
   };
   renderMembers();
@@ -6474,12 +6540,15 @@ async function openSubGroupModal(group) {
   onIn(m, '[data-group-cancel]', 'click', closeModal);
   onIn(m, '[data-group-save]', 'click', async () => {
     const name = ((m.querySelector('[data-group-name]') || {}).value || '').trim();
-    if (!name) { toast('请先填分组名字', 'err'); return; }
+    if (!name) { showGroupErr('请先填分组名字'); return; }
     const selection = subEditTreeSelection(checked);
-    if (!selection.length) { toast('至少勾一个落地', 'err'); return; }
+    if (!selection.length) { showGroupErr('至少勾一个落地'); return; }
     const members = $$('[data-group-member-user]', m).filter((cb) => cb.checked).map((cb) => ({ kind: 'user', id: cb.dataset.groupMemberUser }))
-      .concat($$('[data-group-member-merged]', m).filter((cb) => cb.checked).map((cb) => ({ kind: 'merged', id: cb.dataset.groupMemberMerged })));
+      // v1.4.31（P0-4）：合并订阅成员不在弹窗里列出，但已在组里的原样保留
+      // 进保存体，免得编辑一次分组就把它们悄悄踢出组。
+      .concat((group ? group.members || [] : []).filter((x) => x.kind === 'merged').map((x) => ({ kind: 'merged', id: x.id })));
     const backend_node_ids = $$('[data-group-backend-node]', m).filter((cb) => cb.checked).map((cb) => Number(cb.dataset.groupBackendNode));
+    if (groupErrBox) groupErrBox.hidden = true;
     try {
       const body = { name, note: ((m.querySelector('[data-group-note]') || {}).value || '').trim(), selection, members, backend_node_ids };
       if (isEdit) await api('/api/v1/subscriptions/groups/' + encodeURIComponent(group.id), { method: 'PUT', body: JSON.stringify(body) });
@@ -6487,7 +6556,7 @@ async function openSubGroupModal(group) {
       closeModal();
       toast(isEdit ? '分组已保存，成员订阅下次更新即同步' : '分组已新建', 'ok');
       loadSubGroups(); loadSubUsers(); loadMergedSubsList();
-    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+    } catch (err) { showGroupErr('保存失败：' + err.message); }
   });
 }
 function initSubGroups() {
@@ -6599,9 +6668,13 @@ async function openSubEditModal(opts) {
     '<p class="muted small">到期时间到了，这条订阅就打不开；改到期时间不换令牌，链接不变。勾永久 = 永不过期；填日期 = 当天 23:59:59 到期。</p>' +
     trafficLimitHTML(opts) +
     ((opts.traffic_limit_mb || 0) > 0 ? '<div style="margin-top:12px"><h3 class="small">中转端口（按人转发）</h3><div data-edit-forwards class="small muted">加载中…</div><p class="muted small">端口被封或想换个端口时，在这里按落地逐条换：换完订阅链接里的中转端口跟着变，客户端要重新导入一次订阅；换的瞬间正在用的连接会断一下。换端口立即生效，不用点下面的保存。</p></div>' : '') +
+    '<div class="error-box" data-edit-error hidden></div>' +
     '<div class="btn-row" style="margin-top:12px"><button class="btn" type="button" data-edit-save>保存</button>' +
     '<button class="btn secondary" type="button" data-edit-cancel>取消</button></div>', true);
   if (!m) return;
+  // v1.4.31（P0-10）：照抄公告弹窗的 error-box ＋ toast 双通道。
+  const editErrBox = m.querySelector('[data-edit-error]');
+  const showEditErr = (msg) => { if (editErrBox) { editErrBox.textContent = msg; editErrBox.hidden = false; } toast(msg, 'err'); };
   wireTrafficLimitUI(m);
   // 更换中转端口（v1.3.34）：开了限流的订阅才有按人转发，逐条显示当前端口。
   if ((opts.traffic_limit_mb || 0) > 0) loadEditForwards(m, opts);
@@ -6653,17 +6726,18 @@ async function openSubEditModal(opts) {
   onIn(m, '[data-edit-save]', 'click', async () => {
     const name = ((m.querySelector('[data-edit-name]') || {}).value || '').trim();
     const selection = subEditTreeSelection(checked);
-    if (isMerged && !selection.length) { toast('合并订阅至少要勾一个落地', 'err'); return; }
-    if (!isMerged && !name) { toast('请先填名字（用来认人）', 'err'); return; }
+    if (isMerged && !selection.length) { showEditErr('合并订阅至少要勾一个落地'); return; }
+    if (!isMerged && !name) { showEditErr('请先填名字（用来认人）'); return; }
     // v1.4.27：编辑时填了密码 = 重设，最少 6 位；留空 = 不改。
     const password = isMerged ? '' : ((m.querySelector('[data-uf-password]') || {}).value || '');
-    if (password && password.length < 6) { toast('登录密码最少 6 位，留空 = 不改', 'err'); return; }
+    if (password && password.length < 6) { showEditErr('登录密码最少 6 位，留空 = 不改'); return; }
     const mode = subModeOf('sub-edit-mode');
     // 到期时间：勾永久 = 空串（永不过期）；不勾 = 日期框的值。
     const permEl = m.querySelector('[data-edit-permanent]');
     const expEl = m.querySelector('[data-edit-expiry]');
     const expiresAt = (permEl && permEl.checked) ? '' : (expEl ? expEl.value : '');
     const groupId = (m.querySelector('[data-edit-group]') || {}).value || '';
+    if (editErrBox) editErrBox.hidden = true;
     try {
       const url = isMerged
         ? '/api/v1/subscriptions/merged/' + encodeURIComponent(opts.id)
@@ -6686,7 +6760,7 @@ async function openSubEditModal(opts) {
       if (r && r.warning) toast(r.warning, 'err');
       else toast('已保存，订阅链接不变，下次更新即按新勾选同步', 'ok');
       if (isMerged) loadMergedSubsList(); else loadSubUsers();
-    } catch (err) { toast('保存失败：' + err.message, 'err'); }
+    } catch (err) { showEditErr('保存失败：' + err.message); }
   });
 }
 // 更换中转端口（v1.3.34）：编辑弹窗里按落地逐条显示一条订阅的按人转发，
@@ -6966,9 +7040,10 @@ function centralExpirySummary(landings) {
 // centralDetailEl 集中管理详情弹窗里的落地容器（详情弹窗打开时才有）。
 function centralDetailEl() { return $('#central-detail-modal'); }
 
-// 集中管理页选项卡（v1.3.13）：三个大选项卡，顺序是已登记的远程面板（默认）、
-// 登记远程面板、合并订阅。已登记的远程面板选项卡内部再按每个面板分子选项卡
-// （一个远程面板一个子选项卡）。三层都复用设置页选项卡模式（原生 button＋
+// 集中管理页选项卡（v1.3.13）：两个大选项卡，顺序是已登记的远程面板（默认）、
+// 登记远程面板。合并订阅已退场（v1.4.27），不在这里设选项卡；已生成的旧
+// 记录只在列表区只读展示。已登记的远程面板选项卡内部再按每个面板分子选项卡
+// （一个远程面板一个子选项卡）。两层都复用设置页选项卡模式（原生 button＋
 // aria-selected＋方向键，localStorage 记住上次；大选项卡、子选项卡、设置页
 // 各用各的键）。
 // 数据更新方式：loadCentral() 每次重拉 /api/v1/central/remotes 接口重绘全部
@@ -7349,8 +7424,7 @@ function renderCentralSubTree() {
     } else {
       p.landings.forEach((l) => {
         const key = subTreeKey(p.id, l.index);
-        h += '<div style="display:flex;align-items:center;gap:8px;margin:4px 0 0 28px"><label class="checkbox-row" style="margin:0;flex:1"><input type="checkbox" data-sub-landing="' + esc(key) + '"' + (centralSubChecked[key] ? ' checked' : '') + '><span>' + esc(l.title) + ' <span class="small">#' + esc(l.index) + '</span></span></label>' +
-          '<button class="btn secondary sm" type="button" data-sub-copy-landing="' + esc(key) + '">复制订阅</button></div>';
+        h += '<div style="margin:4px 0 0 28px"><label class="checkbox-row" style="margin:0"><input type="checkbox" data-sub-landing="' + esc(key) + '"' + (centralSubChecked[key] ? ' checked' : '') + '><span>' + esc(l.title) + ' <span class="small">#' + esc(l.index) + '</span></span></label></div>';
       });
     }
     h += '</div>';
@@ -7381,14 +7455,6 @@ function renderCentralSubTree() {
     if (cb.checked) centralSubChecked[cb.dataset.subLanding] = true;
     else delete centralSubChecked[cb.dataset.subLanding];
     refreshCentralSubTreeStates();
-  }));
-  $$('[data-sub-copy-landing]', tree).forEach((b) => b.addEventListener('click', () => {
-    const key = b.dataset.subCopyLanding;
-    const idx = key.lastIndexOf(':');
-    const pid = key.slice(0, idx), li = Number(key.slice(idx + 1));
-    const panel = (centralSubTree || []).find((p) => p.id === pid);
-    const l = panel ? panel.landings.find((x) => x.index === li) : null;
-    askSubModeForSelection([{ panel: pid, landing: li }], (l ? l.title : '落地') + ' 的订阅');
   }));
   refreshCentralSubTreeStates();
 }
@@ -7487,7 +7553,7 @@ function centralLandingBodyHtml(l) {
     '<button class="btn secondary sm" type="button" data-central-addtraffic="' + esc(l.index) + '">续量</button>' +
     '<button class="btn secondary sm" type="button" data-central-origlink="' + esc(l.index) + '">补链接</button>' +
     '<button class="btn secondary sm" type="button" data-central-certs="' + esc(l.index) + '">证书</button>' +
-    '<button class="btn secondary sm" type="button" data-central-sub-landing="' + esc(l.index) + '">订阅</button>' +
+    '<button class="btn secondary sm" type="button" data-central-new-user="' + esc(l.index) + '">新建订阅用户</button>' +
     '<button class="btn danger sm" type="button" data-central-del-landing="' + esc(l.index) + '">删除该落地</button></div>';
 }
 async function loadCentralLandings(id, page) {
@@ -7561,8 +7627,12 @@ function showCentralLandingDetail(remoteId, index) {
     const parts = String(b.dataset.centralDelsub).split('|');
     centralDeleteSubnode(remoteId, Number(parts[0]), parts[1]);
   }));
-  $$('[data-central-sub-landing]', m).forEach((b) => b.addEventListener('click', () => {
-    askSubModeForSelection([{ panel: remoteId, landing: Number(b.dataset.centralSubLanding) }], centralLandingTitle(l) + ' 的订阅');
+  // v1.4.31（P0-4）：旧“订阅”按钮已撤（点进去只是退场提示）：改成直接跳
+  // 新建订阅用户（用户管理页＋新建弹窗），不再走合并订阅。
+  $$('[data-central-new-user]', m).forEach((b) => b.addEventListener('click', () => {
+    closeModal();
+    goto('users');
+    openSubUserModal();
   }));
   $$('[data-central-del-landing]', m).forEach((b) => b.addEventListener('click', () => centralDeleteLanding(remoteId, Number(b.dataset.centralDelLanding))));
   centralLoadLandingLinks(remoteId, index, m);
@@ -7651,6 +7721,7 @@ function centralAddLanding(id) {
     '<label>流量倍率 <span class="hint">实际流量 × 倍率计入订阅用量，默认 1；贵的线路调高</span></label><input id="central-add-traffic-multiplier" type="number" min="0.1" max="100" step="0.1" placeholder="1">' +
     '<label>限速（Mbps）<span class="hint">0 = 不限速</span></label><input id="central-add-speed" type="number" min="0" step="1" placeholder="0">' +
     '<div class="checkbox-row"><input type="checkbox" id="central-add-want-udp"><label for="central-add-want-udp" style="margin:0;font-weight:400">同时转发 UDP（HY2 / TUIC 需要）</label></div>' +
+    '<div class="error-box hidden" id="central-add-err" hidden></div>' +
     '<div class="btn-row"><button class="btn" id="central-add-ok" type="button">提交并添加落地</button><button class="btn secondary" id="central-add-cancel" type="button">取消</button></div>');
   onIn(m, '#central-add-cancel', 'click', closeModal);
   onIn(m, '#central-add-preset', 'change', () => {
@@ -7671,11 +7742,16 @@ function centralAddLanding(id) {
   onIn(m, '#central-add-ok', 'click', async () => {
     const payload = buildCentralAddPayload(m);
     if (!payload) return;
-    closeModal();
-    toast('正在远程加落地，请稍等…');
+    // v1.4.31（P0-2）：发请求前不关弹窗，成功才关、失败把错误留在弹窗内
+    // error-box、表单保留；提交中禁用按钮防重复提交。
+    const btn = $('#central-add-ok', m);
+    const showErr = (msg) => { const eb = $('#central-add-err', m); if (eb) { eb.textContent = msg; eb.classList.remove('hidden'); eb.hidden = false; } toast(msg, 'err'); };
+    const setBusy = (on) => { if (btn) { btn.disabled = on; btn.textContent = on ? '正在远程加落地，请稍等…' : '提交并添加落地'; } };
+    setBusy(true);
     try {
       const d = await centralSubmitAdd(id, payload, null);
       if (d.ok === false) {
+        setBusy(false);
         if (d.need_choice) {
           await showShareChoice(d, payload, async (choice) => {
             try {
@@ -7687,11 +7763,12 @@ function centralAddLanding(id) {
           });
           return;
         }
-        toast(centralOpError(d), 'err'); return;
+        showErr(centralOpError(d)); return;
       }
+      closeModal();
       toast('远程加落地成功', 'ok');
       showCentralAddResult(d);
-    } catch (err) { toast('远程加落地失败：' + err.message, 'err'); }
+    } catch (err) { setBusy(false); showErr('远程加落地失败：' + err.message); }
   });
 }
 // 集中管理加落地：字段与本地 buildAddPayload 一致（名称/原始链接/节点名称/
@@ -7960,22 +8037,24 @@ async function centralRenewLanding(remoteId, index) {
   const m = openModal('<h2>远程续期</h2><p>续期只延长时限；如果是因为流量用完被停用，请另外「续量」。</p>' +
     '<label>快捷天数</label><select id="central-renew-days"><option value="30">30 天</option><option value="90" selected>90 天</option><option value="180">180 天</option><option value="365">365 天</option></select>' +
     '<label>自定义天数 <span class="hint">填了就用自定义（1–3650 天），不填用上面的快捷天数</span></label><input id="central-renew-days-custom" type="number" min="1" max="3650" placeholder="如 45">' +
+    '<div class="error-box hidden" id="central-renew-err" hidden></div>' +
     '<div class="btn-row"><button class="btn" id="central-renew-ok" type="button">确认续期</button><button class="btn secondary" id="central-renew-cancel" type="button">取消</button></div>');
+  const showCentralRenewErr = (msg) => { const eb = $('#central-renew-err', m); if (eb) { eb.textContent = msg; eb.classList.remove('hidden'); eb.hidden = false; } toast(msg, 'err'); };
   onIn(m, '#central-renew-cancel', 'click', closeModal);
   onIn(m, '#central-renew-ok', 'click', async () => {
     const custom = $('#central-renew-days-custom', m).value.trim();
     let days;
     if (custom !== '') {
       days = Number(custom);
-      if (!days || days < 1 || days > 3650) { toast('自定义天数请填 1–3650', 'err'); return; }
+      if (!days || days < 1 || days > 3650) { showCentralRenewErr('自定义天数请填 1–3650'); return; }
     } else days = Number($('#central-renew-days', m).value);
-    closeModal();
     try {
       const d = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/landings/' + index + '/renew', { days });
-      if (d.ok === false) { toast(centralOpError(d), 'err'); return; }
+      if (d.ok === false) { showCentralRenewErr(centralOpError(d)); return; }
+      closeModal();
       toast('远程续期成功，已延长 ' + days + ' 天', 'ok');
       if (centralDetailId === remoteId) loadCentralLandings(remoteId);
-    } catch (e) { toast('续期失败：' + e.message, 'err'); }
+    } catch (e) { showCentralRenewErr('续期失败：' + e.message); }
   });
 }
 async function centralTrafficSettings(remoteId, index, l) {
@@ -7984,39 +8063,43 @@ async function centralTrafficSettings(remoteId, index, l) {
     '<label>流量上限（GB，0 = 不限）</label><input id="central-ts-gb" type="number" min="0" step="1" value="' + Math.round((t.limit_bytes || 0) / 1073741824) + '">' +
     '<label>算法</label><select id="central-ts-mode"><option value="total"' + (t.limit_mode !== 'monthly' ? ' selected' : '') + '>总量</option><option value="monthly"' + (t.limit_mode === 'monthly' ? ' selected' : '') + '>按月</option></select>' +
     '<label>限速（Mbps，0 = 不限速）</label><input id="central-ts-speed" type="number" min="0" step="1" value="' + (l ? (l.speed_limit_mbps || 0) : 0) + '">' +
+    '<div class="error-box hidden" id="central-ts-err" hidden></div>' +
     '<div class="btn-row"><button class="btn" id="central-ts-ok" type="button">保存</button><button class="btn secondary" id="central-ts-cancel" type="button">取消</button></div>');
+  const showCentralTsErr = (msg) => { const eb = $('#central-ts-err', m); if (eb) { eb.textContent = msg; eb.classList.remove('hidden'); eb.hidden = false; } toast(msg, 'err'); };
   onIn(m, '#central-ts-cancel', 'click', closeModal);
   onIn(m, '#central-ts-ok', 'click', async () => {
     const gb = Number($('#central-ts-gb', m).value) || 0;
-    if (gb < 0) { toast('流量上限不能为负', 'err'); return; }
-    closeModal();
+    if (gb < 0) { showCentralTsErr('流量上限不能为负'); return; }
     try {
       const d = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/landings/' + index + '/traffic', {
         limit_bytes: Math.round(gb * 1073741824),
         limit_mode: gb > 0 ? $('#central-ts-mode', m).value : 'total',
         speed_limit_mbps: Number($('#central-ts-speed', m).value) || 0,
       });
-      if (d.ok === false) { toast(centralOpError(d), 'err'); return; }
+      if (d.ok === false) { showCentralTsErr(centralOpError(d)); return; }
+      closeModal();
       toast('远程流量限制已保存', 'ok');
       if (centralDetailId === remoteId) loadCentralLandings(remoteId);
-    } catch (e) { toast('保存失败：' + e.message, 'err'); }
+    } catch (e) { showCentralTsErr('保存失败：' + e.message); }
   });
 }
 async function centralAddTraffic(remoteId, index) {
   const m = openModal('<h2>远程续量</h2><p>给流量上限增加额度。续完仍有余额且之前因流量停用的，会自动恢复转发。</p>' +
     '<label>增加多少 GB</label><input id="central-addtraffic-gb" type="number" min="1" step="1" value="50">' +
+    '<div class="error-box hidden" id="central-at-err" hidden></div>' +
     '<div class="btn-row"><button class="btn" id="central-at-ok" type="button">确认续量</button><button class="btn secondary" id="central-at-cancel" type="button">取消</button></div>');
+  const showCentralAtErr = (msg) => { const eb = $('#central-at-err', m); if (eb) { eb.textContent = msg; eb.classList.remove('hidden'); eb.hidden = false; } toast(msg, 'err'); };
   onIn(m, '#central-at-cancel', 'click', closeModal);
   onIn(m, '#central-at-ok', 'click', async () => {
     const gb = Number($('#central-addtraffic-gb', m).value);
-    if (!gb || gb < 1) { toast('请填大于 0 的 GB 数', 'err'); return; }
-    closeModal();
+    if (!gb || gb < 1) { showCentralAtErr('请填大于 0 的 GB 数'); return; }
     try {
       const d = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/landings/' + index + '/add-traffic', { bytes: Math.round(gb * 1073741824) });
-      if (d.ok === false) { toast(centralOpError(d), 'err'); return; }
+      if (d.ok === false) { showCentralAtErr(centralOpError(d)); return; }
+      closeModal();
       toast('远程续量成功，已增加 ' + gb + ' GB', 'ok');
       if (centralDetailId === remoteId) loadCentralLandings(remoteId);
-    } catch (e) { toast('续量失败：' + e.message, 'err'); }
+    } catch (e) { showCentralAtErr('续量失败：' + e.message); }
   });
 }
 async function centralDeleteSubnode(remoteId, index, domain) {
@@ -8034,21 +8117,22 @@ async function centralPasteOrigLink(remoteId, index, l) {
     '<p class="muted">把落地机上生成的节点链接粘贴进来，远程面板会算出中转 + 直连链接，卡片上直接显示，历史记录里也会记一笔。原始链接只存在远程面板自己的状态文件里，不会进日志与审计。</p>' +
     '<label>原始节点链接 <span class="hint">vless:// / trojan:// / ss:// / vmess:// / anytls:// 开头</span></label><input id="central-paste-orig-link" placeholder="vless://…">' +
     '<label>节点名称 <span class="hint">选填；直连备注“&lt;名称&gt;-直连”、中转备注“&lt;名称&gt;-中转”，空着用原链接备注名</span></label><input id="central-paste-link-name" placeholder="如 香港-01" maxlength="64">' +
+    '<div class="error-box hidden" id="central-paste-err" hidden></div>' +
     '<div class="btn-row"><button class="btn" id="central-paste-ok" type="button">生成中转链接</button><button class="btn secondary" id="central-paste-cancel" type="button">取消</button></div>');
+  const showCentralPasteErr = (msg) => { const eb = $('#central-paste-err', m); if (eb) { eb.textContent = msg; eb.classList.remove('hidden'); eb.hidden = false; } toast(msg, 'err'); };
   onIn(m, '#central-paste-cancel', 'click', closeModal);
   onIn(m, '#central-paste-ok', 'click', async () => {
     const origLink = $('#central-paste-orig-link', m).value.trim();
     const linkName = $('#central-paste-link-name', m).value.trim();
-    if (!origLink || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic|anytls):\/\//.test(origLink)) { toast('请粘贴正确的节点链接（vless:// 等开头）', 'err'); return; }
-    if (linkName && linkName.length > 64) { toast('节点名称不能超过 64 字', 'err'); return; }
-    closeModal();
+    if (!origLink || !/^(vless|trojan|ss|vmess|hysteria2|hy2|tuic|anytls):\/\//.test(origLink)) { showCentralPasteErr('请粘贴正确的节点链接（vless:// 等开头）'); return; }
+    if (linkName && linkName.length > 64) { showCentralPasteErr('节点名称不能超过 64 字'); return; }
     try {
       const r = await apiPostRaw('/api/v1/central/remotes/' + encodeURIComponent(remoteId) + '/landings/' + index + '/orig-link', { orig_link: origLink, link_name: linkName || undefined });
-      if (r.ok === false) { toast(centralOpError(r), 'err'); return; }
+      if (r.ok === false) { showCentralPasteErr(centralOpError(r)); return; }
       openModal('<h2>✅ 中转链接已生成</h2>' + linksHtml(r.links, r.qr) +
         '<div class="btn-row"><button class="btn" id="central-paste-done" type="button">完成</button></div>');
       on('#central-paste-done', 'click', () => { closeModal(); if (centralDetailId === remoteId) loadCentralLandings(remoteId); });
-    } catch (e) { toast('生成失败：' + e.message, 'err'); }
+    } catch (e) { showCentralPasteErr('生成失败：' + e.message); }
   });
 }
 // 远程证书：弹窗列出该远程面板全部落地的证书剩余天数与续签方式；

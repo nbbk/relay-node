@@ -389,6 +389,7 @@
             <button class="btn secondary" data-service="restart" type="button">重启</button>
             <button class="btn danger" data-service="stop" type="button">停止</button>
           </div>
+          <p class="small">启动：realm 没在跑时点这里启动中转；重启：正在用的节点瞬断几秒，转发配置本身不受影响。</p>
           <p class="small">分流组件（nginx / HAProxy）随 SHARE80 / SHARE443 一起启停。面板挂了、关了都不影响 realm 转发。</p>
         </div>
         <div class="service-panel hidden" role="tabpanel" id="service-panel-logs" aria-labelledby="service-tab-logs" hidden>
@@ -422,7 +423,7 @@
             <div class="grid cols-2">
               <div class="card" id="card-mode">
             <h2>面板模式</h2>
-            <p class="muted">完整面板：中转 + 面板都在这台机器上，能管本机落地，也能登记别的面板。管理面板：这台机器不装中转，只用来集中管理别的面板（任意机器都能跑）；切过去后本地落地、服务、端口管理全部隐藏，只留集中管理、合并订阅与设置，数据保留，切回来即恢复。</p>
+            <p class="muted">完整面板：中转 + 面板都在这台机器上，能管本机落地，也能登记别的面板。管理面板：这台机器不装中转，只用来集中管理别的面板（任意机器都能跑）；切过去后本地落地、服务、端口管理全部隐藏，只留集中管理、用户管理、节点与设置，数据保留，切回来即恢复。</p>
             <div class="small" id="mode-status">当前：完整面板</div>
             <div class="btn-row">
               <button class="btn" id="mode-to-manager" type="button">切到管理面板</button>
@@ -819,7 +820,7 @@
               <button class="btn secondary" id="sub-public-domain-save" type="button">保存</button>
             </div>
             <p class="small muted">选填，留空就用面板自己的地址（IP:端口）。部署完 Cloudflare Worker、想让订阅走 Worker 域名时再填 Worker 的域名。</p>
-            <details class="small muted"><summary>对外域名详细说明</summary>填了之后，面板里所有订阅链接（通用链接、每人链接、合并订阅、二维码）都改成 https://这个域名/<span id="sub-path-example">sub</span>/…，不再显示面板自己的地址；留空保存就恢复成面板自己的地址。只填域名（可带端口），不用写 https://，不用写路径。Worker 代码里的源站地址不受影响，仍是面板真实地址。</details>
+            <details class="small muted"><summary>对外域名详细说明</summary>填了之后，面板里所有订阅链接（每人链接、二维码）都改成 https://这个域名/<span id="sub-path-example">sub</span>/…，不再显示面板自己的地址；留空保存就恢复成面板自己的地址。只填域名（可带端口），不用写 https://，不用写路径。Worker 代码里的源站地址不受影响，仍是面板真实地址。</details>
           </div>
               <div class="card">
             <h2>订阅路径</h2>
@@ -1142,6 +1143,10 @@
             <div id="sub-user-once" class="hidden" style="margin-top:10px">
               <div class="warn-box">链接已加密存在面板里，随时能点“复制”重新拿；轮换后旧链接立即失效。</div>
               <div class="kv"><span>订阅链接</span><b class="mono" id="sub-user-url-value" style="word-break:break-all"></b></div>
+              <div id="sub-user-account" hidden>
+                <div class="kv"><span>登录账号</span><b class="mono" id="sub-user-username-value"></b></div>
+                <p class="small muted">登录账号是上面这个，密码是你刚填的；以后在用户列表名字列小字里也能看到账号。</p>
+              </div>
               <div class="btn-row">
                 <button class="btn secondary sm" id="sub-user-copy" type="button">复制订阅链接</button>
                 <button class="btn secondary sm" id="sub-user-copy-clash" type="button">复制 Clash 链接</button>

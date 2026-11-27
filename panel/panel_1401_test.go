@@ -562,7 +562,7 @@ func TestInboundListen1401(t *testing.T) {
 // ---------- 9. 版本断言 ----------
 
 func TestVersion1401(t *testing.T) {
-	if Version != "1.4.30" {
-		t.Fatalf("VERSION 应是 1.4.30，实际 %q", Version)
+	if Version != "1.4.31" {
+		t.Fatalf("VERSION 应是 1.4.31，实际 %q", Version)
 	}
 }

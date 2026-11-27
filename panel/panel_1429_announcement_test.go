@@ -298,7 +298,7 @@ func TestAnnouncementsConfigPersistence(t *testing.T) {
 
 // TestVersion1429 VERSION 文件是 1.4.29。
 func TestVersion1429(t *testing.T) {
-	if Version != "1.4.30" {
-		t.Fatalf("VERSION 应是 1.4.30，实际 %q", Version)
+	if Version != "1.4.31" {
+		t.Fatalf("VERSION 应是 1.4.31，实际 %q", Version)
 	}
 }

@@ -2,6 +2,21 @@
 
 面板与中转的版本更新记录（v1.2.2 起，按版本从旧到新）。
 
+### v1.4.31 更新
+
+- 面板 UI/UX 重设计第 1 批：P0 修复止血（设计文档 `~/workspace/025-invest/panel-ui-redesign.md` §6 第 1 批；只改前端，后端不动）。
+- P0-1 编辑入站失败保留：`openInboundEditModal` 提交失败时弹窗保持打开，错误写进编辑弹窗内的错误区（`#nodes-ib-edit-error`，error-box ＋ toast 双通道），表单原样保留；成功才关弹窗回列表。以前是先 `showInboundsError` 再 `closeModal()`，但那个错误区在已被顶掉的模板弹窗里，错误被静默丢弃、表单全丢。
+- P0-2 九个“先关弹窗、再发请求”的弹窗改成“成功才关、失败留弹窗内”：本地续期／续量／流量限制／补粘贴原始链接（`renewLanding`／`addTraffic`／`trafficSettings`／`pasteOrigLink`）与远程加落地／续期／流量限制／续量／补链接（`centralAddLanding`／`centralRenewLanding`／`centralTrafficSettings`／`centralAddTraffic`／`centralPasteOrigLink`），各加弹窗内 error-box，校验失败与接口失败都写进去，表单保留。远程加落地提交中禁用按钮防重复提交（文案“正在远程加落地，请稍等…”）。
+- P0-3 ⓘ 帮助：核实全站 34 处 `data-ib-help` 指向的键在 `IB_HELP` 里都有条目（设计文档写的是“只有 5 个条目、26 处失效”，那是旧版情况；1.4.18／1.4.27／1.4.29 已陆续补齐 route-*／plan-*／user-*／announcement-*／client-config-text，本版不用再补条目）；`ibHelpShow` 查不到条目时直接不打开弹窗（以前第一次是空白框，之后显示上一次看过的旧内容）；`IB_HELP` 上方过时注释同步修正（不再只写“入站 10 字段＋证书 2 字段”）。`index.html` 里“见 app.js IB_HELP 的 route-* 条目”的注释核实无误（6 个 route-* 条目都在），未动。
+- P0-4 合并订阅退场残留清理（只清入口与文案，死代码函数本身留到第 6 批）：远程落地详情“订阅”按钮改成“新建订阅用户”，点后跳用户管理页并打开新建弹窗；集中管理勾选树每落地“复制订阅”按钮删掉；分组弹窗成员列表去掉“合并订阅”分组（已在组里的合并订阅成员保存时原样保留，不会被踢出组；也不再拉取合并订阅列表）；订阅对外域名说明改成只讲每人链接（通用链接与合并订阅都已退场）。
+- P0-7 添加落地成功后清空添加表单（reset 回 HTML 默认值，三个联动 select 触发 change 同步回条件显示区），免得关掉结果弹窗后还留在添加页、再点一次就重复建一个；twin 生成成功后清空链接输入框（落地 IP／SNI／名称留着，下一条接着用）。
+- P0-8 服务页重启加二次确认，文案照抄编辑落地的口径（重启 realm、正在用的节点瞬断几秒、转发配置本身不受影响）；启动按钮旁加一句用途说明（“realm 没在跑时点这里启动中转”）；成功 toast 改中文（“已重启 realm”，不再是“已执行：restart”；启动／停止同样改中文）。
+- P0-9 新建用户成功区同时显示生成的登录账号（后端回包带 `username`，空着建时就是自动生成的那个），并写清“登录账号是上面这个，密码是你刚填的”；账号 hint 与 `IB_HELP` 的 `user-username` 条目补自动生成的格式（u-＋12 位随机十六进制）与事后查看位置（用户列表名字列小字）。轮换链接时把账号区藏起来，免得显示成上一个新建用户的账号。
+- P0-10 新建／编辑用户、档位、分组四个弹窗加 error-box（照抄公告弹窗 error-box ＋ toast 双通道）：`openSubUserModal`／`openSubEditModal`／`openSubPlanModal`／`openSubGroupModal` 的校验失败与接口失败都写进弹窗内 `[data-*-error]`，成功时清空，弹窗保持打开。
+- P2-10 过时注释与文案清理（只改注释与文案，不动功能）：`showCentralTab` 上方注释“三个大选项卡”改成两个（合并订阅已退场）；`handlers2.go:272` 与 `index.html` 管理面板模式文案“只留集中管理、合并订阅与设置”改成“只留集中管理、用户管理、节点与设置”（与 `MANAGER_PAGES` 一致）。
+- 测试：新增 Go panel_1431_p0_test.go（版本断言 TestVersion1431＋静态断言：退场按钮与文案已清、九弹窗与四弹窗的 error-box 都在、ⓘ 查不到不打开、服务页中文 toast、成功区账号行）与 jsdom test-1432-p0-batch1.js（28 项：IB_HELP 全覆盖、查不到不打开、续期／续量／补链接失败保留、添加成功清空表单、twin 清空链接、服务重启确认与中文 toast、新建用户成功显示账号、分组弹窗无合并订阅、集中管理无订阅／复制订阅按钮、管理面板模式文案）；写死版本号的 Go 断言与 jsdom 断言/mock/tag 一并升到 1.4.31（含 `.reg-206/` 冻结副本）。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；升级顺序先香港 plus 再管理面板。前端只改，无需改任何设置。
+
 ### v1.4.30 更新
 
 - 顶栏本机 IP 显示：管理面板那台机上 `machineIP()` 一个 IPv4 都读不到（公网 IP 是 NAT 映射、本来就不在网卡上，连内网 IP 也没读到），status 回的 `machine_ip` 是空，顶栏只剩“—”。修法：本地枚举为空时问一次公网 IP 回显兜底（`https://api.ipify.org`，纯文本回 IP，3 秒超时），成功后进程内缓存；失败只记 5 分钟，5 分钟后下一次 status 调用重新问（不让一次外网抖动把顶栏钉死一整个进程生命周期），不新增后台任务与轮询、不每次 status 请求都发外网；回显非 200／超时／响应不是合法 IP 时仍回空，不阻塞、不报错。回显端点是包级变量 `publicIPEchoURL`（仿照 `acmeDirectoryURL` 写法），本地枚举是可替身的包级变量 `localIPsFunc`，失败时间窗是包级变量 `machineIPEchoRetryAfter`、时钟是可注入的 `machineIPNow`；本地能拿到 IP 的机器行为不变，本地枚举逻辑本身不动，前端不用改（`machine_ip` 非空即显示）。
