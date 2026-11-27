@@ -14,14 +14,14 @@ import (
 // SubUser 表序号与 ID 复制按钮。交互行为由 jsdom test-1433-batch3.js 覆盖。
 
 func TestVersion1433(t *testing.T) {
-	if Version != "1.4.35" {
+	if Version != "1.4.36" {
 		t.Fatalf("Version 应为 1.4.33，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.35" {
+	if strings.TrimSpace(string(vb)) != "1.4.36" {
 		t.Fatalf("VERSION 文件应为 1.4.33，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }
@@ -72,10 +72,20 @@ func TestBatch3Workspace1433(t *testing.T) {
 	if strings.Count(html, `id="sub-public-domain"`) != 1 || strings.Count(html, `id="sub-path"`) != 1 || strings.Count(html, `id="gateway-domain-now"`) != 1 {
 		t.Fatalf("订阅对外配置三项在 HTML 里不是恰好一份")
 	}
-	// 设置页订阅二级选项卡本身还在（留第 6 批撤），“端口与倍率”也在。
-	for _, id := range []string{"sub-tab-plans", "sub-tab-groups", "sub-tab-other", "sub-panel-other"} {
-		if !strings.Contains(html, `id="`+id+`"`) {
-			t.Fatalf("设置页订阅二级选项卡被动了：缺 %s", id)
+	// 设置页订阅二级选项卡已撤（第 6 批）：“端口与倍率”改名“限流端口与倍率”
+	// 并移到系统面板里；档位／分组指针卡随订阅面板一起撤掉。
+	for _, id := range []string{"sub-tab-plans", "sub-tab-groups", "sub-tab-other", "sub-panel-other", "settings-panel-subscription", "settings-tab-subscription"} {
+		if strings.Contains(html, `id="`+id+`"`) {
+			t.Fatalf("设置页订阅二级选项卡应已撤掉：还留着 %s", id)
+		}
+	}
+	sysPanel := html[strings.Index(html, `id="settings-panel-system"`):]
+	if !strings.Contains(sysPanel, `id="card-rate-limit-ports"`) || !strings.Contains(sysPanel, "限流端口与倍率") {
+		t.Fatalf("系统面板里应有改名后的“限流端口与倍率”卡")
+	}
+	for _, id := range []string{"user-port-start", "user-port-end", "user-port-save", "relay-multiplier", "relay-multiplier-save"} {
+		if !strings.Contains(sysPanel, `id="`+id+`"`) {
+			t.Fatalf("限流端口与倍率卡里缺 %s", id)
 		}
 	}
 	// 模式说明文案同步改成订阅。

@@ -35,7 +35,7 @@ import (
 )
 
 func TestVersion1413(t *testing.T) {
-	if Version != "1.4.35" {
+	if Version != "1.4.36" {
 		t.Fatalf("VERSION 应是 1.4.33，实际 %q", Version)
 	}
 }

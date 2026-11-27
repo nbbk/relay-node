@@ -24,14 +24,15 @@ func settingsIndexHTML1322(t *testing.T) string {
 // TestSettingsDomainPanelOutsideTablist1322 域名面板布局根因回归：
 // 1.3.21 里 settings-panel-domain 嵌在 .settings-tabs（flex + overflow-x:auto）
 // 里面，激活时把选项卡栏撑宽、出现横向滚动、卡片偏右。本版要求它与其它面板
-// 一样是 tablist 外的兄弟节点（按选项卡顺序排在订阅面板之后、提醒面板之前）。
+// 一样是 tablist 外的兄弟节点（按选项卡顺序排在审计面板之后、提醒面板之前；
+// 第 6 批撤了订阅面板）。
 func TestSettingsDomainPanelOutsideTablist1322(t *testing.T) {
 	html := settingsIndexHTML1322(t)
 	tablistOpen := strings.Index(html, `<div class="settings-tabs"`)
 	if tablistOpen < 0 {
 		t.Fatal("找不到 .settings-tabs")
 	}
-	// tablist 里只有 8 个 button 子节点：从 tablist 开头到它第一个 </div> 之间
+	// tablist 里只有 7 个 button 子节点：从 tablist 开头到它第一个 </div> 之间
 	// 不应出现任何 <div（面板 div 嵌进去是本 bug 的根因）。
 	tablistClose := strings.Index(html[tablistOpen:], "</div>")
 	if tablistClose < 0 {
@@ -43,22 +44,22 @@ func TestSettingsDomainPanelOutsideTablist1322(t *testing.T) {
 	if strings.Contains(tabInner, "<div") {
 		t.Fatalf("tablist 里不应再有 <div>（域名面板又嵌进去了）：%q", tabInner[:200])
 	}
-	if n := strings.Count(tabInner, `class="settings-tab"`); n != 8 {
-		t.Fatalf("设置页应有 8 个选项卡按钮，实际 %d", n)
+	if n := strings.Count(tabInner, `class="settings-tab"`); n != 7 {
+		t.Fatalf("设置页应有 7 个选项卡按钮，实际 %d", n)
 	}
-	// 域名面板在 tablist 关闭之后，且按顺序在订阅面板之后、提醒面板之前。
+	// 域名面板在 tablist 关闭之后，且按顺序在审计面板之后、提醒面板之前。
 	domainIdx := strings.Index(html, `id="settings-panel-domain"`)
 	if domainIdx < tablistOpen+tablistClose {
 		t.Fatal("域名面板仍在 tablist 里面")
 	}
-	subIdx := strings.Index(html, `id="settings-panel-subscription"`)
+	auditIdx := strings.Index(html, `id="settings-panel-audit"`)
 	alertsIdx := strings.Index(html, `id="settings-panel-alerts"`)
-	if !(subIdx < domainIdx && domainIdx < alertsIdx) {
-		t.Fatalf("域名面板顺序应为订阅 < 域名 < 提醒，实际 sub=%d domain=%d alerts=%d", subIdx, domainIdx, alertsIdx)
+	if !(auditIdx < domainIdx && domainIdx < alertsIdx) {
+		t.Fatalf("域名面板顺序应为审计 < 域名 < 提醒，实际 audit=%d domain=%d alerts=%d", auditIdx, domainIdx, alertsIdx)
 	}
 }
 
-// TestSettingsSystemTab1322 系统选项卡：8 个选项卡里最后一个是系统；
+// TestSettingsSystemTab1322 系统选项卡：7 个选项卡里最后一个是系统；
 // 检查更新与导出/导入两张卡在系统面板里；基础面板不再有检查更新；
 // 备份面板只留备份与远程备份两张卡（备份在上、远程备份在下）。
 func TestSettingsSystemTab1322(t *testing.T) {

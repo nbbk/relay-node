@@ -2,6 +2,16 @@
 
 面板与中转的版本更新记录（v1.2.2 起，按版本从旧到新）。
 
+### v1.4.36 更新
+
+- 面板 UI/UX 重设计第 6 批：设置页整理＋死代码清理，六批重设计至此全部完成（设计文档 `~/workspace/025-invest/panel-ui-redesign.md` §6 第 6 批、§4.5 设置页、§3.8 其他通用规则、P2-7／P2-10）。
+- 设置页订阅二级撤掉：订阅工作区已在第 3 批独立成顶级页“订阅”，设置页订阅选项卡与二级选项卡（套餐档位／分组／端口与倍率）全部撤掉；“端口与倍率”改名“限流端口与倍率”移到系统页（每用户端口段与中转倍率同卡，元素 id 不变；中转倍率半节在管理面板模式下仍隐藏）。设置页一级选项卡从 8 个减到 7 个；备份卡片内三级选项卡保留。
+- 管理面板模式下设置页只留与集中管理相关的选项卡：藏掉“域名与反代”（只剩一张指向订阅页的指针卡，订阅页本身就在管理面板导航里）；基础／安全／审计／提醒／备份／系统 6 个选项卡保留（面板模式切换、远程管理令牌等管理必需入口都在其中）；本机专属卡片（任意门地址、延迟探测、中转倍率）仍按卡片隐藏。
+- 保存后只刷新受影响的部分（P2-7）：新增 `reloadSettingsForm()`，保存后只重填设置表单、不再重拉审计／用户／分组／档位／备份／公告／远程配置 7 个列表；任意门地址、端口段、中转倍率、订阅对外域名保存后只更新本地状态行，连设置接口都不重拉；选项卡与列表滚动位置、搜索词不再被重绘打断。
+- 死代码清理（P2-10，逐项核实引用后删）：`openMergedSubModal` 改名 `openSubLinkModal`（仍被独立合并订阅 3 处调用，只删了旧合并订阅专属的轮换／撤销接线）、`rotateMergedSub`、`openUserOpsMenu` 与 `openSubEditModal` 里的 merged 分支、通用订阅回填（设置页 `sub-status`／到期回填块）、`subTokenGenerate`、`loadGenericSubLink`、`saveSubExpiry`、`loadCentralSubTree` 生成树一家（`renderCentralSubTree`／`refreshCentralSubTreeStates`／`centralSubTree`／`centralSubChecked`／`subTreeCheckedCount`；`subTreeKey`／`fetchSubTreePanels` 仍被编辑弹窗用，保留）。保留：集中管理页旧合并订阅只读列表（每行“已退场”徽章）与 `showMergedRetiredNotice`、`GET /api/v1/subscriptions/merged` 列表与 DELETE 接口、`isRetiredSubToken` 退场判定，旧链接仍 410。
+- 测试：新增 Go panel_1436_batch6_test.go（版本断言 TestVersion1436＋前端静态断言＋旧记录保留断言）与 jsdom test-1436-batch6.js（设置页 7 个选项卡与订阅二级已撤、限流端口与倍率在系统页、管理面板模式藏域名选项卡、保存后不重拉 7 个列表、死代码全仓无引用、旧记录只读列表与退场提示仍在）；旧 jsdom test-1433-batch3.js／test-1429-users-subtabs.js／test-1321～1324／test-142 按新行为更新断言（订阅二级已撤、键盘方向键审计→域名）；写死版本号的 Go 断言与 jsdom 断言／mock／tag 一并升到 1.4.36（含 `.reg-206/` 冻结副本）。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；升级顺序先香港 plus 再管理面板。
+
 ### v1.4.35 更新
 
 - 面板 UI/UX 重设计第 5 批：导航与密度统一（设计文档 `~/workspace/025-invest/panel-ui-redesign.md` §6 第 5 批、§4.1 导航与总览、§4.2、§4.6、§3.3 列表密度与检索统一）。
