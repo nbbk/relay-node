@@ -197,7 +197,7 @@ const PAGES = [
   { id: 'certs', title: '证书', icon: '🔒' },
   { id: 'service', title: '服务与日志', icon: '⚙️' },
   { id: 'settings', title: '设置', icon: '🔧' },
-  { id: 'users', title: '用户管理', icon: '👤' },
+  { id: 'subscription', title: '订阅', icon: '👤' },
   { id: 'firewall', title: '端口管理', icon: '🧱' },
   { id: 'traffic', title: '流量', icon: '📊' },
   { id: 'central', title: '集中管理', icon: '🖥️' },
@@ -208,9 +208,9 @@ let statusCache = null;
 let settingsCache = null;
 let logsTimer = null;
 // 管理面板模式（v1.2.8）：true = 这台面板只做集中管理；本地页全部隐藏，
-// 只留集中管理、用户管理、节点与设置；由 /api/v1/me 下发，设置页可切换（切完整页刷新）。
+// 只留集中管理、订阅、节点与设置；由 /api/v1/me 下发，设置页可切换（切完整页刷新）。
 let managerOnly = false;
-const MANAGER_PAGES = ['central', 'users', 'nodes', 'settings'];
+const MANAGER_PAGES = ['central', 'subscription', 'nodes', 'settings'];
 function visiblePages() {
   if (!managerOnly) return PAGES;
   // 管理面板模式：按 MANAGER_PAGES 的顺序排（集中管理在前，设置在后），
@@ -262,6 +262,7 @@ function initDrawer() {
   window.addEventListener('resize', () => { if (window.innerWidth > 640) closeDrawer(); });
 }
 function goto(page) {
+  if (page === 'users') page = 'subscription'; // v1.4.33：旧 #users 书签/入口统一跳订阅工作区
   closeDrawer(); // 手机上选了页面就收起抽屉；桌面端是空操作
   // 管理面板模式下本地页不存在：直接跳到集中管理
   if (managerOnly && !MANAGER_PAGES.includes(page)) page = 'central';
@@ -284,7 +285,7 @@ function loadPage(page) {
   else if (page === 'certs') return loadCerts();
   else if (page === 'service') return loadService();
   else if (page === 'settings') return loadSettingsPage();
-  else if (page === 'users') return loadUsersPage();
+  else if (page === 'subscription' || page === 'users') return loadSubscriptionPage();
   else if (page === 'firewall') return loadFirewall();
   else if (page === 'traffic') return loadTrafficPage();
   else if (page === 'central') return loadCentral();
@@ -1954,7 +1955,7 @@ async function openInboundLinkModal(inb) {
     body.innerHTML = '<p>这个节点还没有用户：先去「订阅用户」里新建一个用户（新建时勾上这个节点），再回来复制链接。</p>' +
       '<div class="btn-row"><button class="btn" type="button" id="ib-link-goto-users">去订阅用户里建用户</button></div>';
     const go = body.querySelector('#ib-link-goto-users');
-    if (go) go.addEventListener('click', () => { closeModal(); goto('users'); });
+    if (go) go.addEventListener('click', () => { closeModal(); goto('subscription'); });
     return;
   }
   // 用户下拉框（真正 select，不是 datalist）：选项是能访问这个节点的
@@ -2367,9 +2368,9 @@ const IB_HELP = {
   'plan-traffic': {
     title: '流量上限',
     body: () => [
-      '填什么：这个档位一个用户能用多少流量，单位 MB。',
+      '填什么：这个档位一个用户能用多少流量，单位 GB。',
       '必填：填 0 = 不限流。',
-      '建议：按套餐填，如 100GB 填 102400；建用户时按这个值填好，可再改。',
+      '建议：按套餐填，如 100GB 填 100；建用户时按这个值填好，可再改。',
     ],
   },
   'plan-traffic-mode': {
@@ -2397,7 +2398,7 @@ const IB_HELP = {
     ],
   },
   'plan-content': {
-    title: '内容模式',
+    title: '订阅出哪些节点',
     body: () => [
       '填什么：这个档位的订阅里要哪些节点：全部、中转、直连。',
       '必填，默认全部。',
@@ -2445,7 +2446,7 @@ const IB_HELP = {
     ],
   },
   'user-link-mode': {
-    title: '链接模式',
+    title: '链接走直连还是中转',
     body: () => [
       '填什么：这个人的订阅出几条链接：跟随节点、仅 A 直连、仅 B 中转、A 和 B 都出。',
       '选填，默认“跟随节点”。',
@@ -3807,11 +3808,30 @@ function initFirewallTabs() {
     if (btn) btn.focus();
   });
 }
-// 用户管理顶级页（v1.4.28）：订阅用户从设置→订阅搬出独立成页；列表、
-// 搜索、分页与新建/编辑/重置密码/复制/二维码/轮换都在原来的接线（弹窗、
-// 列表密）上，只换了容器位置。管理面板模式下也可见（MANAGER_PAGES 含 users）。
-async function loadUsersPage() {
+// 订阅工作区顶级页（v1.4.33）：档位／分组／订阅用户三栏同页（①套餐档位
+// ②分组 ③订阅用户）＋订阅设置区；三套列表的渲染函数（loadSubPlans／
+// loadSubGroups／loadSubUsers）与弹窗复用，只换了容器位置。管理面板模式
+// 下也可见（MANAGER_PAGES 含 subscription）。
+async function loadSubscriptionPage() {
+  loadSubPlans();
+  loadSubGroups();
   loadSubUsers();
+  // 订阅设置区（订阅对外域名／路径／网关）的值随设置接口回填：设置页
+  // 没打开过时这里先拉一次，免得订阅页上三个框一直是空的。
+  try {
+    if (!settingsCache) settingsCache = await api('/api/v1/settings');
+    fillSubPublicFields((settingsCache || {}).subscription || {});
+  } catch (e) { /* 拉不到就留空，保存时仍能写 */ }
+}
+// 订阅设置区回填（v1.4.33）：订阅对外域名／订阅路径／网关当前值。
+// loadSettingsPage 与 loadSubscriptionPage 共用：两页共用同一套输入框
+// （只在订阅页有一份，设置页对应位置是指针卡）。
+function fillSubPublicFields(sub) {
+  sub = sub || {};
+  const d = $('#sub-public-domain'); if (d) d.value = sub.public_domain || '';
+  const p = $('#sub-path'); if (p) p.value = sub.sub_path || 'sub';
+  const ex = $('#sub-path-example'); if (ex) ex.textContent = sub.sub_path || 'sub';
+  const gdn = $('#gateway-domain-now'); if (gdn) gdn.textContent = sub.public_domain || '未配置';
 }
 
 async function loadSettingsPage() {
@@ -3917,14 +3937,10 @@ async function loadSettingsPage() {
       // 通用订阅的三选一下拉按存下来的模式预选（没生成过时按上次选择）。
       if (sub.has_token && sub.mode) syncSubModeSelect($('#sub-token-mode'), sub.mode);
     }
-    const subDomain = $('#sub-public-domain');
-    if (subDomain) subDomain.value = sub.public_domain || '';
+    fillSubPublicFields(sub);
     // 订阅文件名称（v1.3.22）：存过就回填；留空就是回落面板名。
     const sfn = $('#sub-file-name');
     if (sfn) sfn.value = sub.file_name || '';
-    // 订阅网关卡片：当前订阅对外域名（v1.3.50）。
-    const gdn = $('#gateway-domain-now');
-    if (gdn) gdn.textContent = sub.public_domain || '未配置';
     // 自动定时备份（v1.3.6）：设置接口下发的排程填进表单。
     const bk = st.backup || {};
     const bke = $('#bk-enabled'); if (bke) bke.checked = bk.enabled !== false;
@@ -3962,11 +3978,6 @@ async function loadSettingsPage() {
     if (subExpPerm) subExpPerm.checked = !sub.expires_at;
     const subExpStatus = $('#sub-expiry-status');
     if (subExpStatus) subExpStatus.textContent = sub.expires_at ? '当前：' + fmtExpiry(sub.expires_at) : '当前：永久';
-    // 订阅路径（v1.3.20）：回填当前路径段（空 = 默认 sub）。
-    const subPathEl = $('#sub-path');
-    if (subPathEl) subPathEl.value = sub.sub_path || 'sub';
-    const subPathEx = $('#sub-path-example');
-    if (subPathEx) subPathEx.textContent = sub.sub_path || 'sub';
     // 面板 Logo（v1.3.20）：登录页、侧边栏与设置页预览按有没有 Logo 显示。
     refreshLogoViews(!!(st.logo && st.logo.has_logo));
     $('#update-box').innerHTML = '<div class="kv"><span>当前版本</span><b>' + esc(st.version || '—') + '</b></div>' +
@@ -3979,7 +3990,7 @@ async function loadSettingsPage() {
 // 切换面板模式（v1.2.8）：只改 manager_only 开关，数据保留；切完刷新页面重建导航。
 async function switchPanelMode(toManager) {
   const ok = await confirmModal(toManager ? '切到管理面板' : '切回完整面板',
-    toManager ? '<p>切过去后本地落地、服务、端口管理全部隐藏，只留集中管理、用户管理、节点与设置；数据保留，切回来即恢复。确定吗？</p>' : '<p>切回来后本地落地、服务、端口管理全部恢复。确定吗？</p>',
+    toManager ? '<p>切过去后本地落地、服务、端口管理全部隐藏，只留集中管理、订阅、节点与设置；数据保留，切回来即恢复。确定吗？</p>' : '<p>切回来后本地落地、服务、端口管理全部恢复。确定吗？</p>',
     toManager ? '切到管理面板' : '切回完整面板');
   if (!ok) return;
   try {
@@ -5018,6 +5029,7 @@ async function loadTrafficPage() {
       $('#limit-bytes-gb').value = Math.round((l.traffic.limit_bytes || 0) / 1073741824);
       $('#limit-mode').value = l.traffic.limit_mode || 'total';
       $('#limit-speed').value = l.speed_limit_mbps || 0;
+      syncTrafficLimitForm();
     }
     loadTrafficData();
   } catch (e) {
@@ -5115,7 +5127,16 @@ function drawChart(series, label) {
   ctx.fillStyle = text; ctx.fillText('上行', padL + 100, 14);
   ctx.fillStyle = text; ctx.textAlign = 'right'; ctx.fillText(label, W - padR, 14);
 }
+// 流量页限流表单（v1.4.33，P1-4）：GB=0 时禁用算法下拉并显示“不限流时
+// 不用填算法”；保存时按下拉的真实值发，不悄悄把用户选的“按月”改成总量。
+function syncTrafficLimitForm() {
+  const gbEl = $('#limit-bytes-gb'), modeEl = $('#limit-mode'), noteEl = $('#traffic-limit-note');
+  const unlimited = !gbEl || Number(gbEl.value) === 0;
+  if (modeEl) modeEl.disabled = unlimited;
+  if (noteEl) noteEl.hidden = !unlimited;
+}
 function initTraffic() {
+  on('#limit-bytes-gb', 'input', syncTrafficLimitForm);
   $$('[data-range]').forEach((b) => b.addEventListener('click', () => {
     trafficRange = b.dataset.range;
     $$('[data-range]').forEach((x) => x.classList.toggle('active', x === b));
@@ -5129,7 +5150,7 @@ function initTraffic() {
     try {
       await apiPost('/api/v1/landings/' + trafficLanding + '/traffic', {
         limit_bytes: Math.round(gb * 1073741824),
-        limit_mode: gb > 0 ? $('#limit-mode').value : 'total',
+        limit_mode: $('#limit-mode').value,
         speed_limit_mbps: Number($('#limit-speed').value) || 0,
       });
       toast('流量限制已保存', 'ok'); loadTrafficData();
@@ -5184,9 +5205,9 @@ async function centralTokenGenerate(rotated) {
     loadSettingsPage();
   } catch (err) { toast('生成失败：' + err.message, 'err'); }
 }
-// ---------- 订阅内容三选一（v1.3.17，下拉版 v1.3.21） ----------
+// ---------- “订阅出哪些节点”三选一（v1.3.17，下拉版 v1.3.21） ----------
 // 模式存在令牌记录上（通用订阅、每人链接、合并订阅各一条），/sub/ 服务时按
-// 令牌过滤链接；与 ?mode=split|global 的分流模式无关（那个只改 Clash 规则
+// 令牌过滤链接；与 ?mode=split|global 的分流方式无关（那个只改 Clash 规则
 // 的 MATCH 走向，不改链接集合）。
 // v1.3.21：三选一从 radio-card 改成 <select> 下拉；每个表单各记各的上次
 // 选择（key 不同），改一边不再同步另一边；编辑弹窗不记键，只按记录预选。
@@ -5197,15 +5218,15 @@ function savedSubMode(key) {
   try { return subModeValid(localStorage.getItem(key) || 'both'); } catch (e) { return 'both'; }
 }
 // 一组三选一下拉的 HTML（name 是 select 的名字；key 是这个表单专用的
-// localStorage 键，空串 = 不记上次选择；单落地小窗与编辑弹窗里动态生成，
-// 静态表单直接写在 index.html 里，结构与这里一致）。
+// localStorage 键，空串 = 不记上次选择；新建／编辑订阅用户弹窗里动态生成）。
+// v1.4.33（P1-1）：“订阅内容”改叫“订阅出哪些节点”，与档位弹窗统一叫法。
 function subModeSelectHTML(name, key) {
-  return '<label class="small">订阅内容：<select name="' + esc(name) + '"' + (key ? ' data-sub-mode-select data-sub-mode-key="' + esc(key) + '"' : '') + '>' +
+  return '<label class="small">订阅出哪些节点：<select name="' + esc(name) + '"' + (key ? ' data-sub-mode-select data-sub-mode-key="' + esc(key) + '"' : '') + '>' +
     '<option value="both">全部</option>' +
     '<option value="relay">仅中转</option>' +
     '<option value="direct">仅直连</option>' +
     '</select></label>' +
-    '<span class="small muted">全部：中转和直连的节点都进订阅；仅中转：只要走中转机的节点；仅直连：只要直连落地机的节点。</span>';
+    '<span class="small muted">全部：中转和直连的节点都进订阅；仅中转：只要走中转机的节点；仅直连：只要直连落地机的节点。只决定哪些节点进订阅；出直连链接还是中转链接，由“链接走直连还是中转”那一项决定。</span>';
 }
 function subModeOf(name) {
   const s = document.querySelector('select[name="' + name + '"]');
@@ -5362,7 +5383,7 @@ function subLinkWithMode(url, format) {
 let openQrKind = null; // 当前打开的设置页二维码弹窗：'generic' | 'user' | null
 async function showSubQrModal(kind) {
   openQrKind = kind;
-  const m = openModal('<h2>订阅链接二维码</h2><p class="muted small">扫码后导入的是 Clash 订阅链接，直接进 Clash 系客户端；默认不带模式参数，选了全局才带 ?mode=global；换模式后二维码跟着重新生成。</p>' +
+  const m = openModal('<h2>订阅链接二维码</h2><p class="muted small">扫码后导入的是 Clash 订阅链接，直接进 Clash 系客户端；默认不带分流方式参数，选了全局才带 ?mode=global；换分流方式后二维码跟着重新生成。</p>' +
     '<div class="qr-wrap"><figure data-qr-modal-figure><img data-qr-modal-img alt="订阅链接二维码"><figcaption>订阅链接二维码</figcaption>' +
     '<div class="btn-row"><button class="btn secondary sm" type="button" data-copy-img>复制图片</button>' +
     '<button class="btn secondary sm" type="button" data-download-img="订阅链接-二维码.png">下载图片</button></div></figure></div>');
@@ -5706,16 +5727,24 @@ let subUserPage = 1, subUserSearch = '';
 // 限流表单共用：data-tl-gb（上限 GB，0=不限流）、data-tl-mode（total|monthly）、
 // data-tl-reset（monthly|anniversary|custom）、data-tl-day（custom 时 1–31）。
 // scope 是包含这组字段的容器（卡片、行或弹窗）。
+// v1.4.33（P1-4）：GB 填 0（不限流）时整组算法／重置／几号置灰并附一句
+// “不限流时不用填”；读值仍按原样发（不悄悄改算法），后端按 GB=0 不限流算。
 function wireTrafficLimitUI(scope) {
   if (!scope || !scope.querySelector) return;
+  const gb = scope.querySelector('[data-tl-gb]');
   const mode = scope.querySelector('[data-tl-mode]');
   const reset = scope.querySelector('[data-tl-reset]');
   const day = scope.querySelector('[data-tl-day]');
+  const note = scope.querySelector('[data-tl-note]');
   const sync = () => {
     const monthly = mode && mode.value === 'monthly';
-    if (reset) reset.disabled = !monthly;
-    if (day) day.disabled = !(monthly && reset && reset.value === 'custom');
+    const unlimited = gb && Number(gb.value) === 0;
+    if (mode) mode.disabled = !!unlimited;
+    if (reset) reset.disabled = !!unlimited || !monthly;
+    if (day) day.disabled = !!unlimited || !(monthly && reset && reset.value === 'custom');
+    if (note) note.hidden = !unlimited;
   };
+  if (gb) gb.addEventListener('input', sync);
   if (mode) mode.addEventListener('change', sync);
   if (reset) reset.addEventListener('change', sync);
   sync();
@@ -5740,6 +5769,7 @@ function trafficLimitHTML(u) {
     '<label class="small">算法：<select data-tl-mode style="width:130px"><option value="total"' + (mode !== 'monthly' ? ' selected' : '') + '>累计（整个生命周期）</option><option value="monthly"' + (mode === 'monthly' ? ' selected' : '') + '>按月（每月重置）</option></select></label>' +
     '<label class="small">重置：<select data-tl-reset style="width:130px"><option value="monthly"' + (reset !== 'anniversary' && reset !== 'custom' ? ' selected' : '') + '>每月 1 号</option><option value="anniversary"' + (reset === 'anniversary' ? ' selected' : '') + '>跟随生成日</option><option value="custom"' + (reset === 'custom' ? ' selected' : '') + '>自定义每月几号</option></select></label>' +
     '<label class="small">几号：<input data-tl-day type="number" min="1" max="31" value="' + day + '" style="width:60px"></label></div>' +
+    '<p class="small muted" data-tl-note hidden>不限流时不用填算法、重置与几号。</p>' +
     '<p class="muted small">开了限流才给这条订阅建独立转发（独立端口 → 同一落地），不开限流的继续走共享端口；超量时 80% 发 Telegram 提醒、100% 自动停用。统计是上行 + 下行合计、按 L3 字节计，分钟级采样。</p>';
 }
 // 重置模式写成人话。
@@ -5937,14 +5967,18 @@ async function loadSubUsers() {
     const r = await api('/api/v1/subscriptions/users');
     const users = r.users || [];
     if (!users.length) { list.innerHTML = '<p class="muted small">还没有订阅用户：点“新建订阅用户”，选档位、填登录密码，每人一条独立链接。</p>'; return; }
-    const filtered = users.filter((u) => matchSubText(subUserSearch, [u.name, u.note, u.summary, u.kind, u.plan_name, u.username]));
+    const filtered = users.filter((u) => matchSubText(subUserSearch, [u.name, u.note, u.summary, u.kind, u.plan_name, u.username, u.group_name]));
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的订阅用户，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, subUserPage);
     subUserPage = pg.cur;
-    // v1.4.27：XBoard 式用户表——一行一个用户，列：ID、名字、档位、
-    // 权限组、已用／总流量、到期、注册时间、状态、链接模式、操作。
-    list.innerHTML = '<h3>订阅用户</h3><div class="table-wrap"><table><thead><tr><th>ID</th><th>名字</th><th>档位</th><th>权限组</th><th>已用／总流量</th><th>到期</th><th>注册时间</th><th>状态</th><th>链接模式</th><th>操作</th></tr></thead><tbody>' +
-      pg.slice.map((u) => '<tr><td class="mono">' + esc(String(u.id)) + '</td>' +
+    // v1.4.27：XBoard 式用户表——一行一个用户，列：序号、ID、名字、档位、
+    // 权限组、已用／总流量、到期、注册时间、状态、链接走直连还是中转、操作。
+    // v1.4.33：序号列按当前列表显示顺序排（跟着分页走，第 2 页从 21 开始），
+    // 只用来看和指认，绝不能当编号用，接口里认人的还是 su- 编号；ID 列旁加
+    // 一键复制按钮，点一下复制完整 ID（窄屏上 ID 即使截断显示，复制的也是
+    // data 属性里的完整值），成功弹 toast“已复制”（走 copyText）。
+    list.innerHTML = '<h3>订阅用户</h3><div class="table-wrap"><table><thead><tr><th>序号</th><th>ID</th><th>名字</th><th>档位</th><th>权限组</th><th>已用／总流量</th><th>到期</th><th>注册时间</th><th>状态</th><th>链接走直连还是中转</th><th>操作</th></tr></thead><tbody>' +
+      pg.slice.map((u, i) => '<tr><td>' + ((pg.cur - 1) * PAGE_SIZE + i + 1) + '</td><td class="mono" title="' + esc(String(u.id)) + '">' + esc(String(u.id)) + ' <button class="btn secondary sm" type="button" data-sub-user-copy-id="' + esc(String(u.id)) + '" title="复制完整 ID">复制</button></td>' +
         '<td>' + esc(u.name || '') + (u.username ? '<br><span class="small muted">' + esc(u.username) + '</span>' : '') + (u.note ? '<br><span class="small muted">（' + esc(u.note) + '）</span>' : '') + '</td>' +
         '<td>' + esc(u.plan_name || '—') + '</td>' +
         '<td>' + esc(u.group_name || '—') + '</td>' +
@@ -5958,6 +5992,7 @@ async function loadSubUsers() {
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'subuser') +
       '<p class="muted small">编辑只改档位、勾选与内容，链接不变；撤销只影响那个人，其他人的链接照常；轮换后旧链接立即失效。</p>';
     if (pg.totalPages > 1) wirePager(list, 'subuser', pg.cur, pg.totalPages, (p) => { subUserPage = p; loadSubUsers(); });
+    $$('[data-sub-user-copy-id]', list).forEach((b) => b.addEventListener('click', () => copyText(b.dataset.subUserCopyId, b)));
     $$('[data-sub-user-menu]', list).forEach((b) => b.addEventListener('click', () => {
       const u = users.find((x) => x.id === b.dataset.subUserMenu);
       if (!u) return;
@@ -6216,7 +6251,7 @@ function dateInputOfDaysFromNow(days) {
   const dd = String(d.getDate()).padStart(2, '0');
   return d.getFullYear() + '-' + mm + '-' + dd;
 }
-// 新建订阅用户走独立弹窗：名字、档位、登录账号/密码、订阅内容、到期、
+// 新建订阅用户走独立弹窗：名字、档位、登录账号/密码、订阅出哪些节点、到期、
 // 限流、分组、后端指派；其余原有字段与校验不动。成功关弹窗回列表，
 // 新链接显示在卡片下方的链接区；失败保留表单与报错。
 async function openSubUserModal() {
@@ -6231,7 +6266,7 @@ async function openSubUserModal() {
     '<div><label for="new-user-group">所属分组 <span class="hint">选填</span></label><select id="new-user-group" data-uf-group><option value="">不分组</option>' + (subGroupsCache || []).map((g) => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select><div class="small muted" data-uf-group-hint></div><div class="small muted">进了组，订阅按组的落地出内容；自己的勾选保留着，出组后恢复。</div></div>' +
     '<div><label for="new-user-username">登录账号 <span class="hint">选填，空着自动生成（格式 u-＋12 位随机字符）；生成后在下面成功区显示，事后在用户列表名字列小字里看</span><button type="button" class="ib-help-btn" data-ib-help="user-username" aria-label="登录账号填写说明" aria-expanded="false">ⓘ</button></label><input id="new-user-username" type="text" placeholder="留空自动生成" maxlength="64"></div>' +
     '<div><label for="new-user-password">登录密码 <span class="hint">选填，不填＝不能登录（以后在编辑里设密码）；填了最少 6 位</span><button type="button" class="ib-help-btn" data-ib-help="user-password" aria-label="登录密码填写说明" aria-expanded="false">ⓘ</button></label><input id="new-user-password" type="password" placeholder="留空 = 不能登录" maxlength="64"></div>' +
-    '<div><label for="new-user-link-mode">链接模式 <span class="hint">选填，默认“跟随节点”</span><button type="button" class="ib-help-btn" data-ib-help="user-link-mode" aria-label="链接模式填写说明" aria-expanded="false">ⓘ</button></label><select id="new-user-link-mode" data-uf-link-mode>' + subLinkModeOptions('') + '</select><div class="small muted">显式选了就按这个订阅的来，覆盖节点上的模式；选“跟随节点”时按节点模式出，和以前一样。</div></div>' +
+    '<div><label for="new-user-link-mode">链接走直连还是中转 <span class="hint">选填，默认“跟随节点”</span><button type="button" class="ib-help-btn" data-ib-help="user-link-mode" aria-label="链接走直连还是中转填写说明" aria-expanded="false">ⓘ</button></label><select id="new-user-link-mode" data-uf-link-mode>' + subLinkModeOptions('') + '</select><div class="small muted">订阅级设置优先于节点级：显式选了就按这个订阅的来，覆盖节点上的模式；选“跟随节点”时按节点模式出，和以前一样。</div></div>' +
     '</div>' +
     '<div style="margin-top:12px">' + subModeSelectHTML('sub-new-mode', '') + '</div>' +
     '<div class="form-row"><label class="small">到期时间：<input type="date" data-uf-expiry disabled></label>' +
@@ -6320,7 +6355,7 @@ async function openSubResetPasswordModal(u) {
   });
 }
 // ---------- 套餐档位（v1.4.27，订阅体系统一方案 B） ----------
-// 一档 = 一套默认值（流量上限、算法、重置、到期天数、内容模式、关联分组），
+// 一档 = 一套默认值（流量上限、算法、重置、到期天数、订阅出哪些节点、关联分组），
 // 建用户时选档位按默认值填好，可再改。永远至少有一条“默认”档位。
 let subPlansCache = []; // 最近一次拉到的档位列表（下拉与弹窗共用）
 let subPlanSearch = ''; // 档位列表搜索词
@@ -6362,7 +6397,7 @@ async function loadSubPlans() {
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的档位，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, subPlanPage);
     subPlanPage = pg.cur;
-    list.innerHTML = '<div class="table-wrap"><table><thead><tr><th>名字</th><th>关联分组</th><th>流量上限</th><th>到期天数</th><th>内容模式</th><th>用户数</th><th>操作</th></tr></thead><tbody>' +
+    list.innerHTML = '<div class="table-wrap"><table><thead><tr><th>名字</th><th>关联分组</th><th>流量上限</th><th>到期天数</th><th>订阅出哪些节点</th><th>用户数</th><th>操作</th></tr></thead><tbody>' +
       pg.slice.map((p) => '<tr><td>' + esc(p.name || '') + (p.note ? '<br><span class="small muted">' + esc(p.note) + '</span>' : '') + '</td>' +
         '<td>' + esc(p.group_name || '不关联') + '</td>' +
         '<td>' + esc(planTrafficText(p) + '（' + planResetText(p) + '）') + '</td>' +
@@ -6387,6 +6422,20 @@ async function loadSubPlans() {
     }));
   } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
 }
+// MB 转 GB 显示（v1.4.33，P1-3）：历史 MB 值按 /1024 显示；整除显示整数，
+// 否则保留两位小数（如 1536 MB → 1.5 GB）。
+function mbToGbDisplay(mb) {
+  const v = (mb || 0) / 1024;
+  return String(Number.isInteger(v) ? v : Math.round(v * 100) / 100);
+}
+// 档位到期示例日期（v1.4.33，P1-3）：自建用户起 N 天，按浏览器本地日期算。
+function planExpiryExample(days) {
+  if (!days || days <= 0) return '永久，不过期';
+  const d = new Date(Date.now() + days * 86400000);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return '约 ' + d.getFullYear() + '-' + mm + '-' + dd + ' 到期（自建用户起 ' + days + ' 天）';
+}
 // 新建/编辑档位弹窗：字段与新建一致（编辑弹窗字段与新建一致）。
 function openSubPlanModal(plan) {
   const isEdit = !!plan;
@@ -6396,12 +6445,13 @@ function openSubPlanModal(plan) {
     '<div class="form-grid">' +
     '<div><label for="plan-name">名字 <span class="hint">必填</span><button type="button" class="ib-help-btn" data-ib-help="plan-name" aria-label="名字填写说明" aria-expanded="false">ⓘ</button></label><input id="plan-name" type="text" value="' + esc(p.name || '') + '" placeholder="如 默认、V1" maxlength="64"></div>' +
     '<div><label for="plan-group">关联分组 <span class="hint">选填</span><button type="button" class="ib-help-btn" data-ib-help="plan-group" aria-label="关联分组填写说明" aria-expanded="false">ⓘ</button></label><select id="plan-group"><option value="">不关联</option>' + (subGroupsCache || []).map((g) => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select></div>' +
-    '<div><label for="plan-traffic-mb">流量上限（MB） <span class="hint">必填，0 = 不限流</span><button type="button" class="ib-help-btn" data-ib-help="plan-traffic" aria-label="流量上限填写说明" aria-expanded="false">ⓘ</button></label><input id="plan-traffic-mb" type="number" min="0" step="1" value="' + esc(String(p.traffic_limit_mb == null ? 0 : p.traffic_limit_mb)) + '"></div>' +
+    '<div><label for="plan-traffic-gb">流量上限（GB） <span class="hint">必填，0 = 不限流</span><button type="button" class="ib-help-btn" data-ib-help="plan-traffic" aria-label="流量上限填写说明" aria-expanded="false">ⓘ</button></label><input id="plan-traffic-gb" type="number" min="0" step="0.01" value="' + esc(mbToGbDisplay(p.traffic_limit_mb)) + '"></div>' +
+    '<p class="small muted" data-plan-tl-note hidden>不限流时不用填算法、重置与几号。</p>' +
     '<div><label for="plan-traffic-mode">算法 <span class="hint">必填</span><button type="button" class="ib-help-btn" data-ib-help="plan-traffic-mode" aria-label="算法填写说明" aria-expanded="false">ⓘ</button></label><select id="plan-traffic-mode"><option value="total">累计（整个生命周期）</option><option value="monthly">按月（每月重置）</option></select></div>' +
     '<div><label for="plan-reset">重置 <span class="hint">按月时有效</span><button type="button" class="ib-help-btn" data-ib-help="plan-reset" aria-label="重置填写说明" aria-expanded="false">ⓘ</button></label><select id="plan-reset"><option value="monthly">每月 1 号</option><option value="anniversary">跟随生成日</option><option value="custom">自定义每月几号</option></select></div>' +
     '<div><label for="plan-reset-day">几号 <span class="hint">自定义时填 1–31</span></label><input id="plan-reset-day" type="number" min="1" max="31" value="' + esc(String(p.reset_day || 1)) + '"></div>' +
-    '<div><label for="plan-expires">到期天数 <span class="hint">必填，0 = 永久</span><button type="button" class="ib-help-btn" data-ib-help="plan-expires" aria-label="到期天数填写说明" aria-expanded="false">ⓘ</button></label><input id="plan-expires" type="number" min="0" step="1" value="' + esc(String(p.expires_days == null ? 0 : p.expires_days)) + '"></div>' +
-    '<div><label for="plan-mode">内容模式 <span class="hint">必填</span><button type="button" class="ib-help-btn" data-ib-help="plan-content" aria-label="内容模式填写说明" aria-expanded="false">ⓘ</button></label><select id="plan-mode"><option value="both">全部</option><option value="relay">仅中转</option><option value="direct">仅直连</option></select></div>' +
+    '<div><label for="plan-expires">到期天数 <span class="hint">必填，0 = 永久</span><button type="button" class="ib-help-btn" data-ib-help="plan-expires" aria-label="到期天数填写说明" aria-expanded="false">ⓘ</button></label><input id="plan-expires" type="number" min="0" step="1" value="' + esc(String(p.expires_days == null ? 0 : p.expires_days)) + '"><div class="small muted" data-plan-expires-example></div></div>' +
+    '<div><label for="plan-mode">订阅出哪些节点 <span class="hint">必填</span><button type="button" class="ib-help-btn" data-ib-help="plan-content" aria-label="订阅出哪些节点填写说明" aria-expanded="false">ⓘ</button></label><select id="plan-mode"><option value="both">全部</option><option value="relay">仅中转</option><option value="direct">仅直连</option></select></div>' +
     '<div class="full"><label for="plan-note">备注 <span class="hint">选填</span><button type="button" class="ib-help-btn" data-ib-help="plan-note" aria-label="备注填写说明" aria-expanded="false">ⓘ</button></label><input id="plan-note" type="text" value="' + esc(p.note || '') + '" placeholder="选填，如价格、适用人群"></div>' +
     '</div>' +
     '<div class="error-box" data-plan-error hidden></div>' +
@@ -6417,22 +6467,38 @@ function openSubPlanModal(plan) {
   setSel('plan-reset', p.reset_mode || 'monthly');
   setSel('plan-mode', subModeValid(p.mode || 'both'));
   // 联动：算法不是按月时重置与几号置灰；重置不是自定义时几号置灰。
+  // v1.4.33（P1-4）：GB 填 0（不限流）时算法／重置／几号整组置灰并显示
+  // “不限流时不用填”；保存时各字段仍按原值发，不悄悄改算法。
   const syncPlanTl = () => {
+    const gbEl = m.querySelector('#plan-traffic-gb');
     const mode = m.querySelector('#plan-traffic-mode');
     const reset = m.querySelector('#plan-reset');
     const day = m.querySelector('#plan-reset-day');
+    const note = m.querySelector('[data-plan-tl-note]');
     const monthly = mode && mode.value === 'monthly';
-    if (reset) reset.disabled = !monthly;
-    if (day) day.disabled = !(monthly && reset && reset.value === 'custom');
+    const unlimited = gbEl && Number(gbEl.value) === 0;
+    if (mode) mode.disabled = !!unlimited;
+    if (reset) reset.disabled = !!unlimited || !monthly;
+    if (day) day.disabled = !!unlimited || !(monthly && reset && reset.value === 'custom');
+    if (note) note.hidden = !unlimited;
   };
-  ['#plan-traffic-mode', '#plan-reset'].forEach((s) => { const el = m.querySelector(s); if (el) el.addEventListener('change', syncPlanTl); });
+  ['#plan-traffic-gb', '#plan-traffic-mode', '#plan-reset'].forEach((s) => { const el = m.querySelector(s); if (el) el.addEventListener(s === '#plan-traffic-gb' ? 'input' : 'change', syncPlanTl); });
   syncPlanTl();
+  // v1.4.33（P1-3）：到期天数下方即时算出示例日期（本地时区）。
+  const syncPlanExpiresExample = () => {
+    const ex = m.querySelector('[data-plan-expires-example]');
+    if (ex) ex.textContent = planExpiryExample(Number((m.querySelector('#plan-expires') || {}).value) || 0);
+  };
+  const expInput = m.querySelector('#plan-expires');
+  if (expInput) expInput.addEventListener('input', syncPlanExpiresExample);
+  syncPlanExpiresExample();
   onIn(m, '[data-plan-cancel]', 'click', closeModal);
   onIn(m, '[data-plan-save]', 'click', async () => {
     const name = ((m.querySelector('#plan-name') || {}).value || '').trim();
     if (!name) { showPlanErr('请先填档位名字'); return; }
-    const trafficMb = Number((m.querySelector('#plan-traffic-mb') || {}).value) || 0;
-    if (trafficMb < 0) { showPlanErr('流量上限不能小于 0'); return; }
+    const trafficGb = Number((m.querySelector('#plan-traffic-gb') || {}).value) || 0;
+    if (trafficGb < 0) { showPlanErr('流量上限不能小于 0'); return; }
+    const trafficMb = Math.round(trafficGb * 1024);
     const expiresDays = Number((m.querySelector('#plan-expires') || {}).value) || 0;
     if (expiresDays < 0) { showPlanErr('到期天数不能小于 0'); return; }
     const body = {
@@ -6456,6 +6522,15 @@ function openSubPlanModal(plan) {
     } catch (err) { showPlanErr('保存失败：' + err.message); }
   });
 }
+// 订阅工作区三栏互跳 + 设置页指针卡跳订阅页（v1.4.33）：栏内按钮滚到对应
+// 卡片，不用换顶级导航；设置页里的指针卡点一下直接 goto('subscription')。
+function initSubscriptionJumps() {
+  $$('[data-sub-jump]').forEach((b) => b.addEventListener('click', () => {
+    const el = document.getElementById(b.dataset.subJump || '');
+    if (el && el.scrollIntoView) el.scrollIntoView();
+  }));
+  $$('[data-sub-goto]').forEach((b) => b.addEventListener('click', () => goto(b.dataset.subGoto || 'subscription')));
+}
 function initSubPlans() {
   on('#sub-plan-create', 'click', () => openSubPlanModal(null));
   wireListSearch('#sub-plan-search', (q) => { subPlanSearch = q; subPlanPage = 1; loadSubPlans(); });
@@ -6478,7 +6553,7 @@ async function loadSubGroups() {
   try {
     const r = await api('/api/v1/subscriptions/groups');
     subGroupsCache = r.groups || [];
-    const filtered = subGroupsCache.filter((g) => matchSubText(subGroupSearch, [g.name, g.note, g.summary]));
+    const filtered = subGroupsCache.filter((g) => matchSubText(subGroupSearch, [g.name, g.note, g.summary].concat((g.members || []).map((mm) => mm.name))));
     if (!subGroupsCache.length) { list.innerHTML = '<p class="muted small">还没有分组：点“新建分组”，先填名字建个空组，建好后再配落地、成员与后端节点。</p>'; return; }
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的分组，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, subGroupPage);
@@ -6871,7 +6946,7 @@ function subEditTreeSelection(checked) {
   });
   return sel;
 }
-// 编辑订阅用户 / 合并订阅：改勾选集合与内容模式，不换令牌、不换链接——
+// 编辑订阅用户 / 合并订阅：改勾选集合与订阅出哪些节点，不换令牌、不换链接——
 // 保存后旧链接继续能用，下次取订阅即按新勾选出内容。
 // opts: {kind:'user'|'merged', id, name, note, selection, mode, group_id}
 // 分组（v1.3.26）：选了组后勾选树变只读、显示组的落地（写明“由分组决定”）；
@@ -6897,8 +6972,8 @@ async function openSubEditModal(opts) {
       '<label class="small">登录密码：<input type="password" data-uf-password style="width:180px" placeholder="留空 = 不改"> <button type="button" class="ib-help-btn" data-ib-help="user-password" aria-label="登录密码填写说明" aria-expanded="false">ⓘ</button></label></div>' +
       '<div style="margin-top:8px"><label class="small">后端指派：<select data-uf-backend-scope style="width:220px"><option value="group"' + (bs === 'group' ? ' selected' : '') + '>跟档位分组走</option><option value="all"' + (bs === 'all' ? ' selected' : '') + '>全部——所有后端节点，全部入站</option><option value="node"' + (bs === 'node' ? ' selected' : '') + '>指定节点——保存后去“发到节点”里勾</option><option value="inbound"' + (bs === 'inbound' ? ' selected' : '') + '>指定入站——保存后去“发到节点”里勾</option></select> <button type="button" class="ib-help-btn" data-ib-help="user-backend" aria-label="后端指派填写说明" aria-expanded="false">ⓘ</button></label>' +
       '<span class="small muted">与“发到节点”弹窗的四级口径一致；选“指定节点/入站”时，保存后去“发到节点”里勾选具体节点/入站。</span></div>' +
-      '<div style="margin-top:8px"><label class="small">链接模式：<select data-uf-link-mode style="width:180px">' + subLinkModeOptions(opts.link_mode) + '</select> <button type="button" class="ib-help-btn" data-ib-help="user-link-mode" aria-label="链接模式填写说明" aria-expanded="false">ⓘ</button></label>' +
-      '<span class="small muted">显式选了就按这个订阅的来，覆盖节点上的模式；选“跟随节点”时按节点模式出，和以前一样；选回“跟随节点”会把订阅级设置清掉。</span></div>') +
+      '<div style="margin-top:8px"><label class="small">链接走直连还是中转：<select data-uf-link-mode style="width:180px">' + subLinkModeOptions(opts.link_mode) + '</select> <button type="button" class="ib-help-btn" data-ib-help="user-link-mode" aria-label="链接走直连还是中转填写说明" aria-expanded="false">ⓘ</button></label>' +
+      '<span class="small muted">订阅级设置优先于节点级：显式选了就按这个订阅的来，覆盖节点上的模式；选“跟随节点”时按节点模式出，和以前一样；选回“跟随节点”会把订阅级设置清掉。</span></div>') +
     '<div data-edit-tree style="margin-top:12px">加载中…</div>' +
     '<p class="muted small hidden" data-edit-group-note hidden></p>' +
     '<p class="muted small">' + esc(isMerged ? '合并订阅至少要勾一个落地。' : '全部不勾 = 全部落地（单面板全量订阅）。') + '</p>' +
@@ -7132,9 +7207,9 @@ function openMergedSubModal(url, opts) {
     (opts.rotated ? '<div class="warn-box" data-merged-warn>这份选择之前生成过，已轮换：旧链接立即失效，请用下面这条新链接。</div>' : '<div class="warn-box" data-merged-warn>链接已加密存在面板里，关掉弹窗后在合并订阅列表里点“复制”随时能拿。</div>') +
     (opts.name ? '<div class="kv"><span>归属到人</span><b>' + esc(opts.name) + '</b></div>' : '') +
     '<div class="kv"><span>订阅链接</span><b class="mono" style="word-break:break-all" data-merged-url>' + esc(curUrl) + '</b></div>' +
-    (opts.mode ? '<div class="kv"><span>订阅内容</span><b>' + esc(subModeLabel(opts.mode)) + '</b></div>' : '') +
+    (opts.mode ? '<div class="kv"><span>订阅出哪些节点</span><b>' + esc(subModeLabel(opts.mode)) + '</b></div>' : '') +
     (opts.expires_at !== undefined ? '<div class="kv"><span>到期时间</span><b>' + esc(fmtExpiry(opts.expires_at)) + '</b></div>' : '') +
-    '<p class="muted small">模式（可选）：<select data-sub-mode><option value="" selected>默认（不带参数，服务端按分流出）</option><option value="split">分流（TikTok/社交/流媒体走节点，其他直连）</option><option value="global">全局（全部走代理）</option></select>　客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表）；也可以手动加后缀：?format=clash / base64 / plain，?mode=split / global。默认复制的链接不带模式参数；只有规则模式下想全走代理、又保留分类分流时，才选全局。</p>' +
+    '<p class="muted small">分流方式（可选）：<select data-sub-mode><option value="" selected>默认（不带参数，服务端按分流出）</option><option value="split">分流（TikTok/社交/流媒体走节点，其他直连）</option><option value="global">全局（全部走代理）</option></select>　客户端按 UA 自动识别格式（Clash 系拿 YAML，其他拿 base64 列表）；也可以手动加后缀：?format=clash / base64 / plain，?mode=split / global。默认复制的链接不带模式参数；只有规则模式下想全走代理、又保留分类分流时，才选全局。</p>' +
     '<div class="btn-row"><button class="btn sm" type="button" data-sub-copy-url>复制订阅链接</button>' +
     '<button class="btn secondary sm" type="button" data-sub-copy-clash>复制 Clash 链接</button>' +
     '<button class="btn secondary sm" type="button" data-sub-copy-plain>复制明文链接</button>' +
@@ -7871,7 +7946,7 @@ function showCentralLandingDetail(remoteId, index) {
   // 新建订阅用户（用户管理页＋新建弹窗），不再走合并订阅。
   $$('[data-central-new-user]', m).forEach((b) => b.addEventListener('click', () => {
     closeModal();
-    goto('users');
+    goto('subscription');
     openSubUserModal();
   }));
   $$('[data-central-del-landing]', m).forEach((b) => b.addEventListener('click', () => centralDeleteLanding(remoteId, Number(b.dataset.centralDelLanding))));
@@ -8602,10 +8677,11 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initServiceTabs); // v1.3.41：服务与日志页选项卡绑定 + 恢复上次选项卡
   safeInit(initFirewallTabs); // v1.3.41：端口管理页选项卡绑定 + 恢复上次选项卡
   safeInit(initTwin);
-  safeInit(initSubMode); // v1.3.17：订阅内容三选一绑定 + 恢复上次选择
+  safeInit(initSubMode); // v1.3.17：“订阅出哪些节点”三选一绑定 + 恢复上次选择
   safeInit(initService);
   safeInit(initSettings);
   safeInit(initSubGroups); // v1.3.26：分组卡片新建按钮 + 搜索框绑定
+  safeInit(initSubscriptionJumps); // v1.4.33：订阅工作区三栏互跳 + 设置页指针卡跳订阅页
   safeInit(initSubPlans); // v1.4.27：套餐档位卡片新建按钮 + 搜索框绑定
   safeInit(initAnnouncements); // v1.4.29：公告卡片新建按钮绑定
   safeInit(initClientConfig); // v1.4.29：客户端远程配置保存／撤下按钮绑定

@@ -269,7 +269,7 @@ func (s *Server) handleLoginSignatureSet(w http.ResponseWriter, r *http.Request)
 
 // handleManagerOnly 在完整面板与管理面板模式之间切换：只改 config.json 的
 // manager_only 开关，本地落地/服务数据全部保留，切回来即恢复；
-// 切到管理面板后前端隐藏本地区，只显示集中管理、用户管理、节点与设置。
+// 切到管理面板后前端隐藏本地区，只显示集中管理、订阅、节点与设置。
 func (s *Server) handleManagerOnly(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ManagerOnly bool `json:"manager_only"`

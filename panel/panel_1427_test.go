@@ -19,8 +19,8 @@ import (
 // TestVersion1427 版本断言与 VERSION 一致（订阅体系统一 B＋订阅级
 // LinkMode，v1.4.27）。
 func TestVersion1427(t *testing.T) {
-	if Version != "1.4.32" {
-		t.Fatalf("Version 应为 1.4.32，实际 %q", Version)
+	if Version != "1.4.33" {
+		t.Fatalf("Version 应为 1.4.33，实际 %q", Version)
 	}
 }
 

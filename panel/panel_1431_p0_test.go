@@ -16,15 +16,15 @@ import (
 // test-1432-p0-batch1.js 覆盖。
 
 func TestVersion1431(t *testing.T) {
-	if Version != "1.4.32" {
-		t.Fatalf("Version 应为 1.4.32，实际 %q", Version)
+	if Version != "1.4.33" {
+		t.Fatalf("Version 应为 1.4.33，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.32" {
-		t.Fatalf("VERSION 文件应为 1.4.32，实际 %q", strings.TrimSpace(string(vb)))
+	if strings.TrimSpace(string(vb)) != "1.4.33" {
+		t.Fatalf("VERSION 文件应为 1.4.33，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }
 
@@ -55,19 +55,20 @@ func TestP0RetiredEntriesRemoved1431(t *testing.T) {
 			t.Fatalf("退场残留还在：%q", gone)
 		}
 	}
-	// P0-4：落地详情按钮改成“新建订阅用户”，点后跳用户管理页。
+	// P0-4：落地详情按钮改成“新建订阅用户”，点后跳订阅页。
 	if !strings.Contains(js, "data-central-new-user") {
 		t.Fatalf("落地详情里没有 data-central-new-user（新建订阅用户）按钮")
 	}
 	// P2-10：管理面板模式文案与 MANAGER_PAGES 一致。
-	if !strings.Contains(html, "只留集中管理、用户管理、节点与设置") {
-		t.Fatalf("index.html 管理面板模式文案没改成用户管理／节点")
+	// v1.4.33（第 3 批）：文案里的“用户管理”改成“订阅”。
+	if !strings.Contains(html, "只留集中管理、订阅、节点与设置") {
+		t.Fatalf("index.html 管理面板模式文案没改成订阅／节点")
 	}
 	h2, err := os.ReadFile("handlers2.go")
 	if err != nil {
 		t.Fatalf("读 handlers2.go 失败：%v", err)
 	}
-	if !strings.Contains(string(h2), "只显示集中管理、用户管理、节点与设置") {
+	if !strings.Contains(string(h2), "只显示集中管理、订阅、节点与设置") {
 		t.Fatalf("handlers2.go 管理面板模式注释没改")
 	}
 	if strings.Contains(string(h2), "只显示集中管理、合并订阅与设置") {

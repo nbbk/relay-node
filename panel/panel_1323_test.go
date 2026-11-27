@@ -18,8 +18,8 @@ var vlessPair1323 = []subLink{
 
 // TestVersion1348 VERSION 文件是 1.4.12。
 func TestVersion1348(t *testing.T) {
-	if Version != "1.4.32" {
-		t.Fatalf("VERSION 应是 1.4.32，实际 %q", Version)
+	if Version != "1.4.33" {
+		t.Fatalf("VERSION 应是 1.4.33，实际 %q", Version)
 	}
 }
 
