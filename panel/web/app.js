@@ -194,7 +194,7 @@ const PAGES = [
   { id: 'manage', title: '落地管理', icon: '🗂️' },
   { id: 'nodes', title: '节点', icon: '🖧' },
   { id: 'links', title: '节点链接', icon: '🔗' },
-  { id: 'certs', title: '证书', icon: '🔒' },
+  { id: 'certs', title: '落地证书', icon: '🔒' },
   { id: 'service', title: '服务与日志', icon: '⚙️' },
   { id: 'settings', title: '设置', icon: '🔧' },
   { id: 'subscription', title: '订阅', icon: '👤' },
@@ -633,7 +633,7 @@ function landingDetailHtml(l, relayAddr) {
     '<button class="btn secondary sm" type="button" data-trafficset="' + l.index + '">流量限制</button>' +
     '<button class="btn sm" type="button" data-edit="' + l.index + '">编辑</button>' +
     '<button class="btn secondary sm" type="button" data-goto="links">查看链接</button>' +
-    '<button class="btn secondary sm" type="button" data-goto="certs">证书</button>' +
+    '<button class="btn secondary sm" type="button" data-goto="certs">落地证书</button>' +
     '<button class="btn danger sm" type="button" data-del="' + l.index + '">删除（进回收站）</button></div>';
   return h;
 }
@@ -693,15 +693,15 @@ function renderLandingCards(page) {
   const wrap = $('#landing-cards');
   $('#overview-empty').classList.toggle('hidden', landingsCache.length > 0);
   if (!landingsCache.length) { wrap.innerHTML = ''; return; }
-  // v1.3.20：落地列表搜索（名称/地址/证书域名，分页前先过滤）。
+  // v1.4.35（P1-10）：总览只留最近 6 个落地（搜索后仍只取前 6 个匹配项），
+  // 完整列表只在落地管理页；下面常驻“查看全部 → 落地管理”链接。
   const filtered = landingsCache.filter((l) => matchSubText(landingSearch, [displayNameOf(l), l.landing, l.domain, l.cert_domain]));
   if (!filtered.length) { wrap.innerHTML = '<div class="empty">没有匹配的落地，换个关键词试试。</div>'; return; }
-  const pg = paginateCards(filtered, overviewPage);
-  overviewPage = pg.cur;
   const relayAddr = (statusCache && statusCache.relay_addr) || '';
-  wrap.innerHTML = pg.slice.map((l) => landingMiniCard(l, relayAddr)).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'ovcards');
+  const shown = filtered.slice(0, 6);
+  wrap.innerHTML = shown.map((l) => landingMiniCard(l, relayAddr)).join('') +
+    '<div class="btn-row"><button class="btn secondary" type="button" data-goto="manage">查看全部（' + filtered.length + ' 个）→ 落地管理</button></div>';
   wireMiniCards(wrap);
-  if (pg.totalPages > 1) wirePager(wrap, 'ovcards', pg.cur, pg.totalPages, (p) => renderLandingCards(p));
 }
 
 /* ---------- 一键体检 + 一键修复 ---------- */
@@ -750,7 +750,7 @@ function viewIssue(issue) {
 }
 async function fixIssue(issue) {
   if (!issue) return;
-  if (issue.fix === 'manual_renew') { toast('该问题需要手动续签，请到「证书」页按六步引导操作'); goto('certs'); return; }
+  if (issue.fix === 'manual_renew') { toast('该问题需要手动续签，请到「落地证书」页按六步引导操作'); goto('certs'); return; }
   if (issue.fix === 'choose_share') {
     const ok = await confirmModal('端口冲突', '<p>该问题需要选择分流方式。请到「添加落地」重新提交，提交时端口冲突会弹出方式选择。</p>', '去添加落地');
     if (ok) goto('add');
@@ -924,6 +924,7 @@ async function showShareChoice(resp, payload, submitFn) {
 
 /* ---------- 落地管理 ---------- */
 let managePage = 1;
+let manageSearch = ''; // v1.4.35（P1-10）：落地管理页搜索词，与总览同一套字段
 async function loadManage(page) {
   if (page) managePage = page;
   const wrap = $('#manage-list');
@@ -933,19 +934,27 @@ async function loadManage(page) {
     landingsCache = s.landings || [];
     if (!landingsCache.length) { wrap.innerHTML = '<div class="empty">还没有落地节点。</div>'; }
     else {
+      // v1.4.35（P1-10）：落地管理页补上与总览相同的搜索框（名称/地址/证书域名），
+      // 完整列表只放这里；与总览同一套 landingMiniCard＋paginateCards。
+      const filtered = landingsCache.filter((l) => matchSubText(manageSearch, [displayNameOf(l), l.landing, l.domain, l.cert_domain]));
+      if (!filtered.length) { wrap.innerHTML = '<div class="empty">没有匹配的落地，换个关键词试试。</div>'; }
+      else {
       // 与总览同一套紧凑小卡片：点卡片弹完整卡片（子节点删除等操作都在弹窗里）
-      const pg = paginateCards(landingsCache, managePage);
+      const pg = paginateCards(filtered, managePage);
       managePage = pg.cur;
       const relayAddr = s.relay_addr || '';
       wrap.innerHTML = '<div class="landing-grid">' + pg.slice.map((l) => landingMiniCard(l, relayAddr)).join('') + '</div>' +
-        pagerHtml(pg.total, pg.cur, pg.totalPages, 'mgcards');
+        pagerHtml(pg.total, pg.cur, pg.totalPages, 'mgcards', { suppressSize: true });
       wireMiniCards(wrap);
       if (pg.totalPages > 1) wirePager(wrap, 'mgcards', pg.cur, pg.totalPages, (p) => loadManage(p));
+      }
     }
   } catch (e) {
     wrap.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
   }
   loadRecycle();
+  // v1.4.35（P1-10）：落地管理页搜索框只绑一次（wireListSearch 有 dataset.wired 守卫）。
+  wireListSearch('#manage-search', (q) => { manageSearch = q; managePage = 1; loadManage(); });
 }
 let recyclePage = 1;
 async function loadRecycle(page) {
@@ -963,7 +972,7 @@ async function loadRecycle(page) {
       '<div class="btn-row"><button class="btn sm" type="button" data-restore="' + esc(it.id || it.recycle_id || '') + '">恢复</button>' +
       '<button class="btn danger sm" type="button" data-purge="' + esc(it.id || it.recycle_id || '') + '">彻底删除</button></div></div>').join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'recycle');
     $$('[data-restore]', wrap).forEach((b) => b.addEventListener('click', async () => {
-      try { await apiPost('/api/v1/recycle/' + encodeURIComponent(b.dataset.restore) + '/restore', {}); toast('已恢复', 'ok'); loadManage(); }
+      try { await apiPost('/api/v1/recycle/' + encodeURIComponent(b.dataset.restore) + '/restore', {}); toast('已恢复，去「落地管理」查看', 'ok'); loadManage(); }
       catch (e) { toast('恢复失败：' + e.message, 'err'); }
     }));
     $$('[data-purge]', wrap).forEach((b) => b.addEventListener('click', async () => {
@@ -972,7 +981,7 @@ async function loadRecycle(page) {
       try { await api('/api/v1/recycle/' + encodeURIComponent(b.dataset.purge), { method: 'DELETE' }); toast('已彻底删除', 'ok'); loadManage(); }
       catch (e) { toast('删除失败：' + e.message, 'err'); }
     }));
-    if (pg.totalPages > 1) wirePager(wrap, 'recycle', pg.cur, pg.totalPages, (p) => loadRecycle(p));
+    if (pg.totalPages > 1 || pg.total > 10) wirePager(wrap, 'recycle', pg.cur, pg.totalPages, (p) => loadRecycle(p));
   } catch (e) {
     wrap.innerHTML = '<div class="empty">回收站不可用：' + esc(e.message) + '</div>';
   }
@@ -1015,7 +1024,7 @@ function nodeListHealthHtml(n) {
 let nodesCache = []; // v1.4.12：节点列表全量缓存（搜索／分页都在前端做，不新加后端接口）
 let nodesPage = 1;
 let nodesSearch = '';
-let nodesPageSize = 10; // v1.4.12：每页条数，10／20／50，默认 10
+let nodesPageSize = 10; // v1.4.12：每页条数，10／20／50／100，默认 10
 // v1.4.14：列表视图切换（卡片↔列表）：节点与证书各记一个选择，
 // localStorage 键与设置页／twin 模式同款 relay-panel-* 前缀；
 // 读不到／值不对／隐私模式存不了都回默认卡片视图。
@@ -1110,7 +1119,7 @@ function renderNodesList() {
   if (!filtered.length) { wrap.innerHTML = '<div class="empty">没有匹配的节点，换个关键词试试。</div>'; return; }
   const pg = paginateSize(filtered, nodesPage, nodesPageSize);
   nodesPage = pg.cur;
-  wrap.innerHTML = pg.slice.map((n) => nodesView === 'list' ? nodeListRow(n) : nodeMiniCard(n)).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'nodes');
+  wrap.innerHTML = pg.slice.map((n) => nodesView === 'list' ? nodeListRow(n) : nodeMiniCard(n)).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'nodes', { suppressSize: true });
   if (pg.totalPages > 1) wirePager(wrap, 'nodes', pg.cur, pg.totalPages, (p) => { nodesPage = p; renderNodesList(); });
   wireNodeCardButtons(wrap);
 }
@@ -1288,6 +1297,8 @@ async function deleteNode(id, name) {
 // #nodes-relay-error 里，不用重填。保存后重启 realm，已建立的中转
 // 连接会断开须重连——确认框与 toast 里都写明。
 let relayRoutesCache = [];
+let relayRoutesSearch = ''; // v1.4.35（P1-8）：中转路由列表搜索词
+let relayRoutesPage = 1; // v1.4.35（P1-8）：中转路由列表当前页
 let relayRoutesLocal = true;
 let relayRemotesCache = null; // C 方案：已登记的远程面板（中转机候选），null=未拉过
 let relayPanelId = null; // 当前选中的中转机（远程面板 id），null=本机中转或未选
@@ -1381,7 +1392,13 @@ function renderRelayRoutes() {
     else note.textContent = '';
   }
   if (!relayRoutesCache.length) { wrap.innerHTML = '<div class="empty">还没有中转路由。点“添加路由”，中转机收到流量就按这里转到目标节点。</div>'; return; }
-  wrap.innerHTML = relayRoutesCache.map((rt) => {
+  // v1.4.35（P1-8）：中转路由列表加搜索（监听地址／目标／协议），条数多了再加分页
+  // （每页条数走全站统一的 pagerHtml 选择，存在 localStorage 里）。
+  const filteredRoutes = relayRoutesCache.filter((rt) => matchSubText(relayRoutesSearch, [rt.listen_addr, relayRouteTargetLabel(rt), rt.proto, rt.transport]));
+  if (!filteredRoutes.length) { wrap.innerHTML = '<div class="empty">没有匹配的中转路由，换个关键词试试。</div>'; return; }
+  const pgRoutes = paginateSize(filteredRoutes, relayRoutesPage, storedPageSize());
+  relayRoutesPage = pgRoutes.cur;
+  wrap.innerHTML = pgRoutes.slice.map((rt) => {
     const key = esc(String(rt.relay_id == null ? 0 : rt.relay_id)) + '|' + esc(String(rt.listen_addr || ''));
     return '<div class="list-row" data-relay-row="' + key + '">' +
       '<span class="cell"><b>' + esc(String(rt.listen_addr || '')) + '</b></span>' +
@@ -1390,7 +1407,7 @@ function renderRelayRoutes() {
       '<span class="cell">' + (rt.enabled ? '启用' : '停用') + '</span>' +
       '<span class="btn-row"><button class="btn secondary sm" type="button" data-relay-edit="' + key + '">编辑</button>' +
       '<button class="btn danger sm" type="button" data-relay-del="' + key + '">删除</button></span></div>';
-  }).join('');
+  }).join('') + pagerHtml(pgRoutes.total, pgRoutes.cur, pgRoutes.totalPages, 'relayroutes');
   $$('[data-relay-edit]', wrap).forEach((b) => b.addEventListener('click', () => {
     const parts = String(b.dataset.relayEdit || '').split('|');
     const rt = relayRoutesCache.find((x) => String(x.relay_id == null ? 0 : x.relay_id) === parts[0] && String(x.listen_addr || '') === parts[1]);
@@ -1400,6 +1417,7 @@ function renderRelayRoutes() {
     const parts = String(b.dataset.relayDel || '').split('|');
     deleteRelayRoute(Number(parts[0] || 0), parts[1] || '');
   }));
+  if (pgRoutes.totalPages > 1 || pgRoutes.total > 10) wirePager(wrap, 'relayroutes', pgRoutes.cur, pgRoutes.totalPages, (p) => { relayRoutesPage = p; renderRelayRoutes(); });
 }
 function openRelayRouteModal(route) {
   const tpl = document.getElementById('nodes-relay-route-template');
@@ -1501,6 +1519,9 @@ let currentInboundsNodeId = null;
 let currentInboundsNodeName = '';
 let currentInboundsNodeAddress = '';
 let currentEditInboundId = null;
+let inboundsSearch = ''; // v1.4.35（P1-8）：入站列表搜索词
+let inboundsPage = 1; // v1.4.35（P1-8）：入站列表当前页
+let currentInboundsCache = []; // v1.4.35（P1-8）：入站列表全量缓存（搜索／分页在前端做）
 
 const IB_PROTOCOLS = {
   'vless-reality': { protocol: 'vless', transport: 'reality', security: 'reality' },
@@ -1803,6 +1824,8 @@ async function loadNodeInbounds(nodeId, nodeName, nodeAddress) {
   // 弹窗还没开就先开（点“入站模板”走这里）；已经开着只刷新列表，
   // 不重建弹窗（表单里填了一半的值不丢）。
   if (!document.querySelector('#nodes-inbounds-list')) {
+    // v1.4.35（P1-8）：新开入站模板弹窗时搜索与页码回到初始态。
+    inboundsSearch = ''; inboundsPage = 1;
     if (!openNodeInboundsModal()) return;
   } else {
     const t = document.querySelector('#nodes-inbounds-title');
@@ -1827,8 +1850,13 @@ function renderNodeInbounds(inbounds) {
     if (inb.transport === 'quic' && !udp443) udp443 = inb;
   });
   $('#nodes-443-owner').textContent = 'TCP 443：' + (tcp443 ? tcp443.inbound_tag + ' 占用' : '空闲') + '；UDP 443：' + (udp443 ? udp443.inbound_tag + ' 占用' : '空闲') + '。TCP 443 与 UDP 443 各只能一个入站占，冲突时保存会报错并写明是哪两个入站。';
-  if (!inbounds.length) { wrap.innerHTML = '<div class="empty">还没有入站。点“一键生成默认三件套”，或点“手动添加入站”。</div>'; return; }
-  wrap.innerHTML = inbounds.map((inb) => {
+  currentInboundsCache = inbounds.slice();
+  // v1.4.35（P1-8）：入站列表加搜索（名称／协议／端口／SNI），条数多了再加分页。
+  const filteredInbounds = currentInboundsCache.filter((inb) => matchSubText(inboundsSearch, [inb.inbound_tag, ibProtocolLabel(inb), String(inb.port), inb.sni, inb.domain]));
+  if (!filteredInbounds.length) { wrap.innerHTML = inbounds.length ? '<div class="empty">没有匹配的入站，换个关键词试试。</div>' : '<div class="empty">还没有入站。点“一键生成默认三件套”，或点“手动添加入站”。</div>'; wireInboundsSearch(); return; }
+  const pgInbounds = paginateSize(filteredInbounds, inboundsPage, storedPageSize());
+  inboundsPage = pgInbounds.cur;
+  wrap.innerHTML = pgInbounds.slice.map((inb) => {
     const isReality = inb.transport === 'reality' || inb.transport === 'xhttp';
     // 证书列（v1.4.12，切片 7）：REALITY 行显示“无证书”；TLS 入站
     // （HY2／TUIC／AnyTLS／Trojan／VLESS＋TLS）有证书显示域名与剩余
@@ -1868,7 +1896,7 @@ function renderNodeInbounds(inbounds) {
       '<button class="btn secondary sm" type="button" data-ib-link="' + esc(String(inb.inbound_id)) + '"' + (inb.linkable === false ? ' disabled title="' + esc(inb.link_reason || '该入站不支持单条链接') + '"' : '') + '>复制链接</button>' +
       '<button class="btn secondary sm" type="button" data-ib-qr="' + esc(String(inb.inbound_id)) + '"' + (inb.linkable === false ? ' disabled title="' + esc(inb.link_reason || '该入站不支持单条链接') + '"' : '') + '>二维码</button>' +
       '<button class="btn danger sm" type="button" data-ib-del="' + esc(String(inb.inbound_id)) + '" data-ib-tag="' + esc(inb.inbound_tag || '') + '">删除</button></div></div>';
-  }).join('');
+  }).join('') + pagerHtml(pgInbounds.total, pgInbounds.cur, pgInbounds.totalPages, 'inbounds');
   $$('[data-ib-toggle]', wrap).forEach((b) => b.addEventListener('click', async () => {
     try {
       await api('/api/v1/nodes/' + encodeURIComponent(currentInboundsNodeId) + '/inbounds/' + encodeURIComponent(b.dataset.ibToggle), { method: 'PUT', body: JSON.stringify({ enabled: b.dataset.ibEnabled !== '1' }) });
@@ -1917,6 +1945,14 @@ function renderNodeInbounds(inbounds) {
     const inb = inbounds.find((x) => String(x.inbound_id) === String(b.dataset.ibQr));
     if (inb) openInboundLinkModal(inb);
   }));
+  if (pgInbounds.totalPages > 1 || pgInbounds.total > 10) wirePager(wrap, 'inbounds', pgInbounds.cur, pgInbounds.totalPages, (p) => { inboundsPage = p; renderNodeInbounds(currentInboundsCache); });
+  wireInboundsSearch();
+}
+// 入站列表搜索框绑定（v1.4.35，P1-8）：搜索框在入站模板弹窗的 template 里，
+// 每次打开弹窗都是新克隆的元素，wireListSearch 的 dataset.wired 守卫按
+// 元素算，不会跨弹窗叠加。
+function wireInboundsSearch() {
+  wireListSearch('#nodes-inbounds-search', (q) => { inboundsSearch = q; inboundsPage = 1; renderNodeInbounds(currentInboundsCache); });
 }
 // 单条入站链接＋二维码（v1.4.22，v1.4.23 补全到八种协议）：入站卡片上的「复制链接」「二维码」
 // 共用这一个弹窗。先选用户（UUID 制协议：链接里嵌这个用户的 UUID；换用户链接就
@@ -2608,11 +2644,12 @@ function initNodes() {
   // （v1.4.13）：wireNodeIbAddModal 在每次打开时现场绑（协议联动／提交）；
   // 入站编辑走弹窗（v1.4.2，切片 3）：openInboundEditModal 里绑提交与取消。
   // v1.4.12：节点列表搜索（节点名／地址，前端本地过滤）与每页条数
-  // （10／20／50，默认 10）：切了立即生效、回到第 1 页重渲染。
+  // （10／20／50／100，默认 10）：切了立即生效、回到第 1 页重渲染。
   wireListSearch('#nodes-search', (q) => { nodesSearch = q; nodesPage = 1; renderNodesList(); });
+  wireListSearch('#nodes-relay-search', (q) => { relayRoutesSearch = q; relayRoutesPage = 1; renderRelayRoutes(); });
   on('#nodes-page-size', 'change', () => {
     const v = Number(($('#nodes-page-size') || {}).value) || 10;
-    nodesPageSize = [10, 20, 50].indexOf(v) !== -1 ? v : 10;
+    nodesPageSize = [10, 20, 50, 100].indexOf(v) !== -1 ? v : 10;
     nodesPage = 1; renderNodesList();
   });
   // v1.4.14：节点列表视图切换（卡片↔列表），点一下换视图、记 localStorage、
@@ -2625,6 +2662,10 @@ function initNodes() {
   // v1.4.18：中转路由（添加／重新下发），按钮在节点页中转路由卡片里。
   on('#nodes-relay-add', 'click', () => openRelayRouteModal(null));
   on('#nodes-relay-reapply', 'click', async () => {
+    // v1.4.35（P2-12）：重新下发加二次确认，文案照 relayApplyToast 的口径写
+    // （重下发、realm 重启、已建立连接断开须重连）。
+    const ok = await confirmModal('重新下发中转配置', '<p>确定重新下发中转配置吗？重下发并重启 realm，已建立的中转连接会断开，须重连。</p>', '重新下发');
+    if (!ok) return;
     try {
       const r = await apiPost('/api/v1/relay-routes/apply', relayPanelId ? { relay_panel_id: relayPanelId } : {});
       relayApplyToast(r, '已重新下发');
@@ -2644,6 +2685,8 @@ let nodeCertProvidersCache = [];
 // 沿用它，免得点视图切换就把“继续验证”那块藏起来；loadNodeCerts 每次
 // 都带 r，值照常刷新）。
 let nodeCertManualPending = null;
+let nodeCertsSearch = ''; // v1.4.35（P1-8）：节点证书列表搜索词
+let nodeCertsPage = 1; // v1.4.35（P1-8）：节点证书列表当前页
 function nodeCertValid(c) {
   if (!c || !c.expires_at) return false;
   const t = new Date(c.expires_at).getTime();
@@ -2809,9 +2852,12 @@ function renderNodeCerts(r) {
       box.classList.remove('hidden'); box.hidden = false;
     } else { box.classList.add('hidden'); box.hidden = true; }
   }
-  const certs = nodeCertsCache;
-  if (!certs.length) { wrap.innerHTML = '<div class="empty">还没有节点证书。上面填域名、选服务商，签发后 HY2／TUIC／AnyTLS／Trojan／VLESS＋TLS 入站才能用。</div>'; return; }
-  wrap.innerHTML = certs.map((c) => certsView === 'list' ? certListRow(c) : certMiniCard(c)).join('');
+  // v1.4.35（P1-8）：节点证书列表加搜索（域名／服务商）＋分页（每页条数走全站统一选择）。
+  const certs = nodeCertsCache.filter((c) => matchSubText(nodeCertsSearch, [c.domain, c.provider_name, c.provider]));
+  if (!certs.length) { wrap.innerHTML = nodeCertsCache.length ? '<div class="empty">没有匹配的节点证书，换个关键词试试。</div>' : '<div class="empty">还没有节点证书。上面填域名、选服务商，签发后 HY2／TUIC／AnyTLS／Trojan／VLESS＋TLS 入站才能用。</div>'; return; }
+  const pgCerts = paginateSize(certs, nodeCertsPage, storedPageSize());
+  nodeCertsPage = pgCerts.cur;
+  wrap.innerHTML = pgCerts.slice.map((c) => certsView === 'list' ? certListRow(c) : certMiniCard(c)).join('') + pagerHtml(pgCerts.total, pgCerts.cur, pgCerts.totalPages, 'nodecerts');
   // v1.4.13：每行一个“复制”按钮，点一下复制该行证书的域名（粘到三件套
   // 的 HY2 域名框或添加／编辑表单的 SNI 框里用；样式与同行的续签／删除
   // 按钮一致，btn secondary sm）。走现成的 copyText，成功自带 toast。
@@ -2833,6 +2879,7 @@ function renderNodeCerts(r) {
       toast('已删除', 'ok'); loadNodeCerts(); if (currentInboundsNodeId) loadNodeInbounds(currentInboundsNodeId, currentInboundsNodeName);
     } catch (e) { showNodeCertError(e.message); }
   }));
+  if (pgCerts.totalPages > 1 || pgCerts.total > 10) wirePager(wrap, 'nodecerts', pgCerts.cur, pgCerts.totalPages, (p) => { nodeCertsPage = p; renderNodeCerts(); });
 }
 function showNodeCertError(msg) {
   const box = $('#node-cert-error');
@@ -2892,6 +2939,7 @@ function initNodeCerts() {
     renderNodeCerts();
   });
   syncViewToggle('#node-certs-view-toggle', certsView);
+  wireListSearch('#node-certs-search', (q) => { nodeCertsSearch = q; nodeCertsPage = 1; renderNodeCerts(); });
   on('#node-cert-issue-form', 'submit', async (e) => {
     e.preventDefault();
     showNodeCertError('');
@@ -3225,9 +3273,50 @@ async function addNodeWizard(index) {
   });
 }
 
+// 节点链接页选项卡（v1.4.35，P1-13）：历史记录／生成 twin 两个选项卡，复用
+// 服务与日志页选项卡模式（原生 button＋aria-selected＋方向键，localStorage 记住上次）。
+const LINKS_TABS = ['history', 'twin'];
+const LINKS_TAB_KEY = 'relay-panel-links-tab';
+function linksTabValid(id) { return LINKS_TABS.indexOf(id) >= 0; }
+function showLinksTab(id) {
+  if (!linksTabValid(id)) id = 'history';
+  LINKS_TABS.forEach((t) => {
+    const btn = document.getElementById('links-tab-' + t);
+    if (btn) btn.setAttribute('aria-selected', t === id ? 'true' : 'false');
+    setVisible(document.getElementById('links-panel-' + t), t === id);
+  });
+  try { localStorage.setItem(LINKS_TAB_KEY, id); } catch (e) { /* 隐私模式等存不了就每次回历史记录 */ }
+}
+function initLinksTabs() {
+  let saved = null;
+  try { saved = localStorage.getItem(LINKS_TAB_KEY); } catch (e) { /* 读不到就用默认 */ }
+  showLinksTab(linksTabValid(saved) ? saved : 'history');
+  if (initLinksTabs.bound) return;
+  initLinksTabs.bound = true;
+  LINKS_TABS.forEach((t) => {
+    on('#links-tab-' + t, 'click', () => showLinksTab(t));
+  });
+  const bar = document.querySelector('.links-tabs');
+  if (bar) bar.addEventListener('keydown', (e) => {
+    const cur = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.linksTab : null;
+    if (!cur || !linksTabValid(cur)) return;
+    let idx = LINKS_TABS.indexOf(cur);
+    if (e.key === 'ArrowRight') idx = (idx + 1) % LINKS_TABS.length;
+    else if (e.key === 'ArrowLeft') idx = (idx - 1 + LINKS_TABS.length) % LINKS_TABS.length;
+    else if (e.key === 'Home') idx = 0;
+    else if (e.key === 'End') idx = LINKS_TABS.length - 1;
+    else return;
+    e.preventDefault();
+    showLinksTab(LINKS_TABS[idx]);
+    const btn = document.getElementById('links-tab-' + LINKS_TABS[idx]);
+    if (btn) btn.focus();
+  });
+}
 /* ---------- 节点链接 ---------- */
 let linksPage = 1;
 let linksGroupsCache = []; // 本页接口返回的全部历史分组（按文件顺序）
+let linksSearch = ''; // v1.4.35（P1-8）：链接历史搜索词
 // 勾选的分组：存全局序号（0 起，按文件顺序），翻页也不丢
 let linksSelected = new Set();
 function groupTagsHtml(g) {
@@ -3277,6 +3366,7 @@ function renderLinksToolbar() {
 async function loadLinks(page) {
   if (page) linksPage = page;
   const wrap = $('#links-history');
+  wireListSearch('#links-search', (q) => { linksSearch = q; linksPage = 1; loadLinks(); });
   try {
     const r = await api('/api/v1/links');
     const groups = r.groups || [];
@@ -3286,21 +3376,22 @@ async function loadLinks(page) {
       const bar = $('#links-toolbar'); if (bar) bar.innerHTML = '';
       return;
     }
-    const pg = paginate(groups, linksPage);
+    // v1.4.35（P1-8）：历史记录改紧凑行＋搜索（名字／落地／编号）；ord 是在全部
+    // groups 里的全局序号，搜索过滤后仍按原序号取组（导出／删除按原序号调接口）。
+    const indexed = groups.map((g, i) => ({ g, ord: i })).filter(({ g }) => matchSubText(linksSearch, [g.name, g.landing, String(g.landing_index)]));
+    if (!indexed.length) { wrap.innerHTML = '<div class="empty">没有匹配的历史记录，换个关键词试试。</div>'; renderLinksToolbar(); return; }
+    const pg = paginate(indexed, linksPage);
     linksPage = pg.cur;
-    const start = (pg.cur - 1) * PAGE_SIZE;
-    wrap.innerHTML = pg.slice.map((g, i) => {
-      const ord = start + i;
+    wrap.innerHTML = pg.slice.map(({ g, ord }) => {
       const checked = linksSelected.has(ord) ? ' checked' : '';
-      return '<div class="card" style="margin-bottom:16px">' +
-        '<div class="group-head" data-group-head="' + ord + '">' +
+      return '<div class="list-row" data-group-head="' + ord + '">' +
         '<input type="checkbox" data-group-check="' + ord + '"' + checked + ' aria-label="选中该组历史记录">' +
-        '<span class="group-title">' + esc(g.name || g.landing || '') + ' <span class="small">#' + esc(g.landing_index) + ' · ' + esc(g.landing || '') + '</span></span>' +
+        '<span class="cell cell-name">' + esc(g.name || g.landing || '') + ' <span class="small">#' + esc(g.landing_index) + ' · ' + esc(g.landing || '') + '</span></span>' +
         groupTagsHtml(g) +
         (g.mode === 'door' ? ' <span class="badge blue">任意门模式</span>' : '') +
-        '<button class="btn secondary sm" type="button" data-group-export="' + ord + '">导出</button>' +
+        '<span class="btn-row"><button class="btn secondary sm" type="button" data-group-export="' + ord + '">导出</button>' +
         '<button class="btn danger sm" type="button" data-group-del="' + ord + '">删除</button>' +
-        '<button class="btn secondary sm" type="button" data-group-toggle="' + ord + '">查看</button></div></div>';
+        '<button class="btn secondary sm" type="button" data-group-toggle="' + ord + '">查看</button></span></div>';
     }).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'links');
     renderLinksToolbar();
     // 全选框状态：本页全勾才勾上
@@ -3346,7 +3437,7 @@ async function loadLinks(page) {
         loadLinks();
       } catch (err) { toast('删除失败：' + err.message, 'err'); }
     }));
-    if (pg.totalPages > 1) wirePager(wrap, 'links', pg.cur, pg.totalPages, (p) => loadLinks(p));
+    if (pg.totalPages > 1 || pg.total > 10) wirePager(wrap, 'links', pg.cur, pg.totalPages, (p) => loadLinks(p));
   } catch (e) {
     wrap.innerHTML = '<div class="card"><div class="error-box">加载失败：' + esc(e.message) + '</div></div>';
   }
@@ -3406,9 +3497,11 @@ function initTwin() {
 
 /* ---------- 证书 ---------- */
 let certsPage = 1;
+let certsSearch = ''; // v1.4.35（P1-8）：落地证书列表搜索词
 async function loadCerts(page) {
   if (page) certsPage = page;
   const wrap = $('#cert-list');
+  wireListSearch('#cert-search', (q) => { certsSearch = q; certsPage = 1; loadCerts(); });
   try {
     const r = await api('/api/v1/certs');
     const certs = r.certs || [];
@@ -3417,25 +3510,28 @@ async function loadCerts(page) {
     if (tgHint) tgHint.innerHTML = r.telegram_configured === false ? '<div class="warn-box">证书到期提醒需要配置 Telegram：到设置页 → Telegram 填好 Bot Token 与 Chat ID，否则证书快到期时只在面板里标红，不会发消息提醒。</div>' : '';
     if (!certs.length) { wrap.innerHTML = '<div class="empty">暂无证书信息。</div>'; }
     else {
-      const pg = paginate(certs, certsPage);
+      // v1.4.35（P1-8）：落地证书列表改紧凑行＋搜索（域名／落地／续签方式）。
+      const filtered = certs.filter((c) => matchSubText(certsSearch, [c.domain, c.landing, c.renew_mode]));
+      if (!filtered.length) { wrap.innerHTML = '<div class="empty">没有匹配的证书，换个关键词试试。</div>'; }
+      else {
+      const pg = paginate(filtered, certsPage);
       certsPage = pg.cur;
       wrap.innerHTML = pg.slice.map((c) => {
         const days = c.days_left;
-        const pct = days == null ? 0 : Math.max(0, Math.min(100, Math.round(days / 90 * 100)));
-        const cls = days != null && days < 7 ? 'bad' : days != null && days < 30 ? 'warn' : '';
         // 续签方式本身已含“自动/手动”，后缀只在没写明时补一个“（自动）”；
         // 以前这里无条件补，自动的会叠成“自动（走 80）（自动）”，明文的会错写成“（自动）”。
         const rm = c.renew_mode || '';
         const renewSuffix = c.need_manual ? '（需手动续签，见下方六步引导）' : (rm.indexOf('自动') === 0 || rm.indexOf('无证书') === 0 ? '' : '（自动）');
-        return '<div class="card" style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">' +
-          '<h2>' + esc(c.domain || '') + '</h2>' + certBadge(days) + '</div>' +
-          '<div class="kv"><span>落地</span><b>' + esc(c.landing || '') + '</b></div>' +
-          '<div class="kv"><span>到期日</span><b>' + esc(c.expiry || '—') + '</b></div>' +
-          '<div class="kv"><span>续签方式</span><b>' + esc(rm) + renewSuffix + '</b></div>' +
-          '<div class="bar-row"><span>剩余天数进度（按 90 天有效期）</span><span>' + (days == null ? '未知' : days + ' 天') + '</span></div>' +
-          '<div class="bar"><i class="' + cls + '" style="width:' + pct + '%"></i></div></div>';
+        // v1.4.35（P2-11）：去掉按 90 天有效期算的进度条（长期证书永远满格），
+        // 只留天数徽章（certBadge）。
+        return '<div class="list-row"><span class="cell cell-name">' + esc(c.domain || '') + '</span>' +
+          '<span class="cell">' + certBadge(days) + '</span>' +
+          '<span class="cell"><span class="muted">落地：</span>' + esc(c.landing || '') + '</span>' +
+          '<span class="cell"><span class="muted">到期：</span>' + esc(c.expiry || '—') + '</span>' +
+          '<span class="cell cell-wrap"><span class="muted">续签：</span>' + esc(rm) + renewSuffix + '</span></div>';
       }).join('') + pagerHtml(pg.total, pg.cur, pg.totalPages, 'certs');
-      if (pg.totalPages > 1) wirePager(wrap, 'certs', pg.cur, pg.totalPages, (p) => loadCerts(p));
+      if (pg.totalPages > 1 || pg.total > 10) wirePager(wrap, 'certs', pg.cur, pg.totalPages, (p) => loadCerts(p));
+      }
     }
     // 续签引导的落地选择
     const sel = $('#renew-landing');
@@ -3514,7 +3610,7 @@ async function loadPortsTable(page) {
       pg.slice.map((p) => '<tr><td>' + esc(p.proto) + '</td><td>' + esc(p.port) + '</td><td>' + esc(p.process || '—') + '</td></tr>').join('') + '</tbody></table></div>';
     html += pagerHtml(pg.total, pg.cur, pg.totalPages, 'ports');
     wrap.innerHTML = html;
-    if (pg.totalPages > 1) wirePager(wrap, 'ports', pg.cur, pg.totalPages, (p) => loadPortsTable(p));
+    if (pg.totalPages > 1 || pg.total > 10) wirePager(wrap, 'ports', pg.cur, pg.totalPages, (p) => loadPortsTable(p));
   } catch (e) { wrap.innerHTML = '<div class="error-box">端口表加载失败：' + esc(e.message) + '</div>'; }
 }
 function initService() {
@@ -4775,7 +4871,7 @@ async function loadSchedBackups() {
       '<span><button class="btn secondary sm" type="button" data-restore-sbk="' + esc(b.id) + '" data-mig-enc="' + (b.has_migration_enc ? '1' : '') + '">恢复</button> ' +
       '<button class="btn secondary sm" type="button" data-del-sbk="' + esc(b.id) + '">删除</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'schedbackup');
-    if (pg.totalPages > 1) wirePager(wrap, 'schedbackup', pg.cur, pg.totalPages, (p) => { schedBackupPage = p; loadSchedBackups(); });
+    if (pg.totalPages > 1 || pg.total > 10) wirePager(wrap, 'schedbackup', pg.cur, pg.totalPages, (p) => { schedBackupPage = p; loadSchedBackups(); });
     $$('[data-restore-sbk]', wrap).forEach((btn) => btn.addEventListener('click', async () => {
       // v1.3.29：含迁移信封的备份恢复前先弹口令框；口令错整单失败、当前配置不动。
       const hasMig = btn.dataset.migEnc === '1';
@@ -4822,6 +4918,7 @@ function renderRemoteBackupCard(rb) {
 }
 // loadRemoteList 远程备份列表：每行恢复（弹口令框）与下载（原样下 .enc）。
 // v1.3.13：每行标出来源（R2/七牛云），和本机备份列表区分开。
+let remoteListPage = { r2: 1, qiniu: 1 }; // v1.4.35（P1-8）：远程备份列表各源当前页
 async function loadRemoteList(kind) {
   const wrap = $(kind === 'r2' ? '#rb-r2-list' : '#rb-qn-list');
   if (!wrap) return;
@@ -4830,10 +4927,13 @@ async function loadRemoteList(kind) {
     const r = await api('/api/v1/remote-backup/list/' + kind);
     const list = r.objects || [];
     if (!list.length) { wrap.innerHTML = '<div class="empty">远程没有备份。</div>'; return; }
-    wrap.innerHTML = list.map((o) =>
+    // v1.4.35（P1-8）：远程备份列表超过 20 条时分页（每页条数走全站统一选择）。
+    const pgRemote = paginateSize(list, remoteListPage[kind] || 1, storedPageSize());
+    remoteListPage[kind] = pgRemote.cur;
+    wrap.innerHTML = pgRemote.slice.map((o) =>
       '<div class="kv"><span><span class="tag">' + srcTag + '</span> ' + esc(o.key) + '<br><span class="small">' + (o.last_modified ? esc(fmtDate(o.last_modified)) + ' · ' : '') + (o.size != null ? (o.size / 1024).toFixed(1) + ' KB' : '') + '</span></span>' +
       '<span><button class="btn secondary sm" type="button" data-rb-restore="' + esc(o.key) + '" data-rb-dest="' + kind + '">恢复</button> ' +
-      '<button class="btn secondary sm" type="button" data-rb-download="' + esc(o.key) + '" data-rb-dest="' + kind + '">下载</button></span></div>').join('');
+      '<button class="btn secondary sm" type="button" data-rb-download="' + esc(o.key) + '" data-rb-dest="' + kind + '">下载</button></span></div>').join('') + pagerHtml(pgRemote.total, pgRemote.cur, pgRemote.totalPages, kind === 'r2' ? 'rbr2' : 'rbqn');
     $$('[data-rb-restore]', wrap).forEach((btn) => btn.addEventListener('click', async () => {
       const pass = await promptRemotePassphrase();
       if (pass == null) return;
@@ -4853,6 +4953,7 @@ async function loadRemoteList(kind) {
         toast('已下载 ' + btn.dataset.rbDownload, 'ok');
       } catch (e) { toast(e.message, 'err'); }
     }));
+    if (pgRemote.totalPages > 1 || pgRemote.total > 10) wirePager(wrap, kind === 'r2' ? 'rbr2' : 'rbqn', pgRemote.cur, pgRemote.totalPages, (p) => { remoteListPage[kind] = p; loadRemoteList(kind); });
   } catch (e) { wrap.innerHTML = '<div class="empty">远程列表不可用：' + esc(e.message) + '</div>'; }
 }
 // promptRemotePassphrase 恢复远程备份时弹口令框：确认返回口令，取消返回 null。
@@ -4876,6 +4977,17 @@ function promptMigrationPassphrase() {
 }
 /* ---------- 通用前端分页（审计/端口表/各列表共用） ---------- */
 const PAGE_SIZE = 20;
+// 每页条数选择（v1.4.35，P1-8）：10/20/50/100，全站列表共用一个 localStorage 键记住；
+// paginate() 默认就用这个值，节点列表与落地卡片各有自己的条数（不走它）。
+const PAGE_SIZE_KEY = 'relay-panel-page-size';
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
+function storedPageSize() {
+  try { const v = Number(localStorage.getItem(PAGE_SIZE_KEY)); return PAGE_SIZE_OPTIONS.indexOf(v) !== -1 ? v : 20; } catch (e) { return 20; }
+}
+function savePageSize(v) {
+  if (PAGE_SIZE_OPTIONS.indexOf(v) === -1) return;
+  try { localStorage.setItem(PAGE_SIZE_KEY, String(v)); } catch (e) { /* 存不了就每次回 20 */ }
+}
 // 跳页输入钳制：非数字返回 null（调用方给轻提示），小于 1 取 1，大于总页数取总页数
 function clampPage(v, totalPages) {
   const p = parseInt(v, 10);
@@ -4885,28 +4997,34 @@ function clampPage(v, totalPages) {
   return p;
 }
 // 对前端列表切页：返回当前页切片 + 总数/总页数/钳制后的当前页（总页数变少、当前页越界时自动落到最后一页）
-function paginate(list, page) {
+function paginate(list, page, size) {
   const total = list.length;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const per = Math.max(1, Number(size) || storedPageSize());
+  const totalPages = Math.max(1, Math.ceil(total / per));
   const cur = Math.min(Math.max(page || 1, 1), totalPages);
-  return { slice: list.slice((cur - 1) * PAGE_SIZE, cur * PAGE_SIZE), total, totalPages, cur };
+  return { slice: list.slice((cur - 1) * per, cur * per), total, totalPages, cur, per };
 }
 // 分页条 HTML：总页数 ≤1 时返回空串（不显示）。ns 是命名空间（audit/ports/overview…），
 // 区分同一页里多个分页条的 data-<ns>-page 与 <ns>-jump。
-function pagerHtml(total, cur, totalPages, ns) {
-  if (totalPages <= 1) return '';
+function pagerHtml(total, cur, totalPages, ns, opts) {
+  const showSize = !(opts && opts.suppressSize);
+  const size = (opts && opts.size) || storedPageSize();
+  if (totalPages <= 1 && !(showSize && total > 10)) return '';
   // 最多显示 5 个页码，当前页前后各留 2 个
   let start = Math.max(1, Math.min(cur - 2, totalPages - 4)), end = Math.min(totalPages, start + 4);
   if (end - start < 4) start = Math.max(1, end - 4);
   let nums = '';
   for (let p = start; p <= end; p++) nums += '<button class="btn sm' + (p === cur ? ' active' : '') + '" type="button" data-' + ns + '-page="' + p + '"' + (p === cur ? ' disabled' : '') + '>' + p + '</button>';
-  return '<div class="pager"><span class="pager-info">共 ' + total + ' 条，第 ' + cur + ' / ' + totalPages + ' 页</span>' +
+  // v1.4.35（P1-8）：每页条数选择（10/20/50/100），存在 localStorage 里；节点列表与
+  // 落地卡片各有自己的条数控制，调 pagerHtml 时传 { suppressSize: true } 不重复画。
+  const sizeHtml = showSize ? '<label class="pager-size">每页 <select id="' + ns + '-size" data-' + ns + '-size aria-label="每页条数">' + PAGE_SIZE_OPTIONS.map((v) => '<option value="' + v + '"' + (v === size ? ' selected' : '') + '>' + v + '</option>').join('') + '</select> 条</label>' : '';
+  return '<div class="pager"><span class="pager-info">共 ' + total + ' 条，第 ' + cur + ' / ' + totalPages + ' 页</span>' + sizeHtml +
     '<button class="btn sm" type="button" data-' + ns + '-page="prev"' + (cur <= 1 ? ' disabled' : '') + '>上一页</button>' + nums +
     '<button class="btn sm" type="button" data-' + ns + '-page="next"' + (cur >= totalPages ? ' disabled' : '') + '>下一页</button>' +
     '<span class="pager-jump">跳至 <input id="' + ns + '-jump" class="pager-input" type="number" min="1" max="' + totalPages + '" value="' + cur + '" aria-label="页码"> 页 <button class="btn sm" type="button" id="' + ns + '-jump-btn">跳转</button></span></div>';
 }
 // 绑定分页条事件：onPage(页码) 由调用方接（通常是重新渲染该列表）。只在 totalPages > 1 时调用。
-function wirePager(wrap, ns, cur, totalPages, onPage) {
+function wirePager(wrap, ns, cur, totalPages, onPage, onSize) {
   $$('[data-' + ns + '-page]', wrap).forEach((b) => b.addEventListener('click', () => {
     const v = b.dataset[ns + 'Page'];
     onPage(v === 'prev' ? cur - 1 : v === 'next' ? cur + 1 : Number(v));
@@ -4920,16 +5038,25 @@ function wirePager(wrap, ns, cur, totalPages, onPage) {
   };
   onIn(wrap, '#' + ns + '-jump-btn', 'click', doJump);
   onIn(wrap, '#' + ns + '-jump', 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doJump(); } });
+  // v1.4.35（P1-8）：每页条数选择——没给 onSize 的列表用默认行为（记住条数、回第 1 页重渲染，
+  // 重渲染时 paginate() 会读到新条数）；审计等服务端分页的列表自己传 onSize。
+  const sizeSel = wrap.querySelector('[data-' + ns + '-size]');
+  if (sizeSel) sizeSel.addEventListener('change', () => {
+    const v = Number(sizeSel.value);
+    if (onSize) { onSize(v); return; }
+    savePageSize(v);
+    onPage(1);
+  });
 }
 let auditPage = 1;
-const AUDIT_PAGE_SIZE = 10; // v1.3.13：审计日志每页 10 条
+let auditPageSize = storedPageSize(); // v1.4.35（P1-8）：审计统一成 20 条（与其它列表同一档）；条数选择改了就记到全站 localStorage
 let auditSearch = ''; // v1.3.20：审计日志搜索关键词（服务端按 q 过滤）
 async function loadAudit(page) {
   if (page) auditPage = page;
   const wrap = $('#audit-list');
   try {
     const q = auditSearch || '';
-    const r = await api('/api/v1/audit?page=' + auditPage + '&page_size=' + AUDIT_PAGE_SIZE + (q ? '&q=' + encodeURIComponent(q) : ''));
+    const r = await api('/api/v1/audit?page=' + auditPage + '&page_size=' + auditPageSize + (q ? '&q=' + encodeURIComponent(q) : ''));
     const entries = r.entries || [];
     const total = r.total || 0, totalPages = r.total_pages || 0, cur = r.page || auditPage;
     if (!total) { wrap.innerHTML = '<div class="empty">暂无审计记录。</div>'; return; }
@@ -4937,7 +5064,7 @@ async function loadAudit(page) {
       entries.map((en) => '<tr><td>' + esc(fmtDate(en.ts)) + '</td><td>' + esc(en.user || '') + '</td><td>' + esc(en.action || '') + '</td><td>' + esc(en.target || '') + '</td><td>' + esc(en.result || '') + (en.detail ? '<br><span class="small">' + esc(en.detail) + '</span>' : '') + '</td></tr>').join('') + '</tbody></table></div>';
     html += pagerHtml(total, cur, totalPages, 'audit');
     wrap.innerHTML = html;
-    if (totalPages > 1) wirePager(wrap, 'audit', cur, totalPages, (p) => loadAudit(p));
+    if (totalPages > 1 || total > 10) wirePager(wrap, 'audit', cur, totalPages, (p) => loadAudit(p), (v) => { auditPageSize = v; savePageSize(v); auditPage = 1; loadAudit(); });
   } catch (e) { wrap.innerHTML = '<div class="empty">审计日志不可用：' + esc(e.message) + '</div>'; }
 }
 
@@ -4969,13 +5096,15 @@ async function loadFirewall(page) {
         try { await apiPost('/api/v1/firewall', { action: 'close', port: Number(b.dataset.closeFw), proto: b.dataset.proto }); toast('端口已关闭', 'ok'); loadFirewall(); }
         catch (e) { toast('关闭失败：' + e.message, 'err'); }
       }));
-      if (pg.totalPages > 1) wirePager(rules, 'firewall', pg.cur, pg.totalPages, (p) => loadFirewall(p));
+      if (pg.totalPages > 1 || pg.total > 10) wirePager(rules, 'firewall', pg.cur, pg.totalPages, (p) => loadFirewall(p));
     }
   } catch (e) {
     st.innerHTML = '<div class="error-box">端口管理加载失败：' + esc(e.message) + '</div>';
   }
 }
 function initFirewall() {
+  // v1.4.35（§3.8／§4.6）：端口管理页与服务页“端口占用”互指——点这里跳服务页并打开端口占用选项卡。
+  on('#fw-goto-ports', 'click', () => { goto('service'); showServiceTab('ports'); });
   on('#fw-one-form', 'submit', async (e) => {
     e.preventDefault();
     const port = Number($('#fw-port').value);
@@ -5008,6 +5137,7 @@ function initFirewall() {
 /* ---------- 流量（纯 Canvas 折线图） ---------- */
 let trafficRange = 'day';
 let trafficLanding = null;
+let trafficChartState = null; // v1.4.35（P2-9）：最近一次画出的折线图点列与几何（悬停取点用）
 async function loadTrafficPage() {
   try {
     const s = await api('/api/v1/status');
@@ -5019,9 +5149,24 @@ async function loadTrafficPage() {
       drawChart([], '暂无数据');
       return;
     }
-    sel.innerHTML = landingsCache.map((l) => '<option value="' + l.index + '">' + esc(displayNameOf(l)) + '</option>').join('');
+    // v1.4.35（P1-8）：落地多（>10 个）时选择器上方出现搜索框，按名称／地址过滤选项；
+    // 当前选中的落地即使被过滤掉也保留在选项里，不丢选择。
+    const searchWrap = $('#traffic-landing-search-wrap');
+    const showSearch = landingsCache.length > 10;
+    if (searchWrap) { searchWrap.classList.toggle('hidden', !showSearch); searchWrap.hidden = !showSearch; }
+    const renderLandingOptions = (q) => {
+      const filtered = landingsCache.filter((l) => matchSubText(q, [displayNameOf(l), l.landing]));
+      let opts = filtered;
+      if (trafficLanding && !filtered.some((l) => l.index === trafficLanding)) {
+        const cur = landingsCache.find((l) => l.index === trafficLanding);
+        if (cur) opts = [cur].concat(filtered);
+      }
+      sel.innerHTML = opts.map((l) => '<option value="' + l.index + '">' + esc(displayNameOf(l)) + '</option>').join('');
+      sel.value = String(trafficLanding);
+    };
     if (!trafficLanding || !landingsCache.some((l) => l.index === trafficLanding)) trafficLanding = landingsCache[0].index;
-    sel.value = String(trafficLanding);
+    renderLandingOptions('');
+    wireListSearch('#traffic-landing-search', (q) => renderLandingOptions(q));
     sel.onchange = () => { trafficLanding = Number(sel.value); loadTrafficData(); };
     // 填充限制表单默认值
     const l = landingsCache.find((x) => x.index === trafficLanding);
@@ -5053,8 +5198,10 @@ async function loadTrafficData() {
     drawChart(series, trafficRange === 'day' ? '最近 24 小时（按小时）' : trafficRange === 'month' ? '最近 30 天（按天）' : '累计');
     box.innerHTML = trafficSummaryHtml(r.summary || {}, trafficLanding);
   } catch (e) {
+    // v1.4.35（P2-9，第 3 批遗留）：catch 里不再调 drawChart——jsdom 没 canvas 时
+    // 第一次抛错、catch 里第二次抛错会变成未处理 rejection；失败时只留错误提示，
+    // 图上保留上一次的数据。
     box.innerHTML = '<div class="error-box">流量加载失败：' + esc(e.message) + '</div>';
-    drawChart([], '加载失败');
   }
 }
 function trafficSummaryHtml(sum, landingIndex) {
@@ -5088,6 +5235,8 @@ function drawChart(series, label) {
   if (!series.length) {
     ctx.fillStyle = text; ctx.textAlign = 'center';
     ctx.fillText(label + '：暂无数据', W / 2, H / 2);
+    trafficChartState = null;
+    hideTrafficChartTip();
     return;
   }
   const pts = series.map((p) => ({ ts: p.ts, up: Number(p.up) || 0, down: Number(p.down) || 0 }));
@@ -5101,12 +5250,14 @@ function drawChart(series, label) {
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
     ctx.fillText(fmtBytes(maxV * i / 4), padL - 8, y + 4);
   }
-  // X 轴标签（首 / 中 / 末）
+  // X 轴标签（v1.4.35，P2-9：至少标 5 个时间点——首／1/4／中／3/4／末）。
   ctx.textAlign = 'center';
   const fmtTs = (ts) => { const d = new Date(ts); return isNaN(d) ? String(ts) : (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':00'; };
-  ctx.fillText(fmtTs(pts[0].ts), padL, H - 8);
-  ctx.fillText(fmtTs(pts[Math.floor(pts.length / 2)].ts), padL + iw / 2, H - 8);
-  ctx.fillText(fmtTs(pts[pts.length - 1].ts), W - padR, H - 8);
+  for (let ti = 0; ti < 5; ti++) {
+    const idx = Math.round((pts.length - 1) * ti / 4);
+    const x = padL + (pts.length === 1 ? iw / 2 : iw * idx / (pts.length - 1));
+    ctx.fillText(fmtTs(pts[idx].ts), Math.max(padL, Math.min(W - padR, x)), H - 8);
+  }
   const line = (key, color) => {
     ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
     pts.forEach((p, i) => {
@@ -5126,6 +5277,41 @@ function drawChart(series, label) {
   ctx.fillStyle = '#16a34a'; ctx.fillRect(padL + 80, 8, 14, 4);
   ctx.fillStyle = text; ctx.fillText('上行', padL + 100, 14);
   ctx.fillStyle = text; ctx.textAlign = 'right'; ctx.fillText(label, W - padR, 14);
+  trafficChartState = { pts, padL, padR, padT, padB, W, H };
+}
+// 流量图悬停数值（v1.4.35，P2-9）：鼠标移到折线图上时，HTML 悬浮条显示最近
+// 那个点的时间与上下行数值（Canvas 本身画不出可断言的 DOM，悬浮条用 div 做，
+// jsdom 也能测；位置跟鼠标走，离开图就藏起来）。
+function hideTrafficChartTip() {
+  const tip = $('#traffic-chart-tip');
+  if (tip) { tip.classList.add('hidden'); tip.hidden = true; }
+}
+function trafficChartPointAt(e) {
+  const cv = $('#traffic-chart');
+  const st = trafficChartState;
+  if (!cv || !st || !st.pts.length) return -1;
+  const rect = cv.getBoundingClientRect ? cv.getBoundingClientRect() : null;
+  const scaleX = rect && rect.width ? st.W / rect.width : 1;
+  const cx = (e.clientX != null && rect) ? e.clientX - rect.left : (e.offsetX || 0);
+  const x = cx * scaleX;
+  const iw = st.W - st.padL - st.padR;
+  if (x < st.padL || x > st.W - st.padR || iw <= 0) return -1;
+  return Math.max(0, Math.min(st.pts.length - 1, Math.round((x - st.padL) / iw * (st.pts.length - 1))));
+}
+function onTrafficChartHover(e) {
+  const tip = $('#traffic-chart-tip');
+  const idx = trafficChartPointAt(e);
+  if (!tip || idx < 0) { hideTrafficChartTip(); return; }
+  const p = trafficChartState.pts[idx];
+  const d = new Date(p.ts);
+  const when = isNaN(d) ? String(p.ts) : d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  tip.textContent = when + '　上行 ' + fmtBytes(p.up) + '　下行 ' + fmtBytes(p.down);
+  const cv = $('#traffic-chart');
+  const rect = cv && cv.getBoundingClientRect ? cv.getBoundingClientRect() : null;
+  const cx = (e.clientX != null && rect) ? e.clientX - rect.left : (e.offsetX || 0);
+  tip.style.left = Math.max(0, Math.min((rect ? rect.width : 900) - 220, cx + 12)) + 'px';
+  tip.style.top = '8px';
+  tip.classList.remove('hidden'); tip.hidden = false;
 }
 // 流量页限流表单（v1.4.33，P1-4）：GB=0 时禁用算法下拉并显示“不限流时
 // 不用填算法”；保存时按下拉的真实值发，不悄悄把用户选的“按月”改成总量。
@@ -5136,6 +5322,12 @@ function syncTrafficLimitForm() {
   if (noteEl) noteEl.hidden = !unlimited;
 }
 function initTraffic() {
+  // v1.4.35（P2-9）：流量图悬停数值（mousemove 取最近点，mouseleave 藏悬浮条）。
+  const chartCv = $('#traffic-chart');
+  if (chartCv) {
+    chartCv.addEventListener('mousemove', onTrafficChartHover);
+    chartCv.addEventListener('mouseleave', hideTrafficChartTip);
+  }
   on('#limit-bytes-gb', 'input', syncTrafficLimitForm);
   $$('[data-range]').forEach((b) => b.addEventListener('click', () => {
     trafficRange = b.dataset.range;
@@ -5977,8 +6169,8 @@ async function loadSubUsers() {
     // 只用来看和指认，绝不能当编号用，接口里认人的还是 su- 编号；ID 列旁加
     // 一键复制按钮，点一下复制完整 ID（窄屏上 ID 即使截断显示，复制的也是
     // data 属性里的完整值），成功弹 toast“已复制”（走 copyText）。
-    list.innerHTML = '<h3>订阅用户</h3><div class="table-wrap"><table><thead><tr><th>序号</th><th>ID</th><th>名字</th><th>档位</th><th>权限组</th><th>已用／总流量</th><th>到期</th><th>注册时间</th><th>状态</th><th>链接走直连还是中转</th><th>操作</th></tr></thead><tbody>' +
-      pg.slice.map((u, i) => '<tr><td>' + ((pg.cur - 1) * PAGE_SIZE + i + 1) + '</td><td class="mono" title="' + esc(String(u.id)) + '">' + esc(String(u.id)) + ' <button class="btn secondary sm" type="button" data-sub-user-copy-id="' + esc(String(u.id)) + '" title="复制完整 ID">复制</button></td>' +
+    list.innerHTML = '<h3>订阅用户</h3><div class="table-wrap user-table-wrap"><table><thead><tr><th>序号</th><th>ID</th><th>名字</th><th>档位</th><th>权限组</th><th>已用／总流量</th><th>到期</th><th>注册时间</th><th>状态</th><th>链接走直连还是中转</th><th>操作</th></tr></thead><tbody>' +
+      pg.slice.map((u, i) => '<tr><td>' + ((pg.cur - 1) * pg.per + i + 1) + '</td><td class="mono" title="' + esc(String(u.id)) + '">' + esc(String(u.id)) + ' <button class="btn secondary sm" type="button" data-sub-user-copy-id="' + esc(String(u.id)) + '" title="复制完整 ID">复制</button></td>' +
         '<td>' + esc(u.name || '') + (u.username ? '<br><span class="small muted">' + esc(u.username) + '</span>' : '') + (u.note ? '<br><span class="small muted">（' + esc(u.note) + '）</span>' : '') + '</td>' +
         '<td>' + esc(u.plan_name || '—') + '</td>' +
         '<td>' + esc(u.group_name || '—') + '</td>' +
@@ -5991,7 +6183,7 @@ async function loadSubUsers() {
       '</tbody></table></div>' +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'subuser') +
       '<p class="muted small">编辑只改档位、勾选与内容，链接不变；撤销只影响那个人，其他人的链接照常；轮换后旧链接立即失效。</p>';
-    if (pg.totalPages > 1) wirePager(list, 'subuser', pg.cur, pg.totalPages, (p) => { subUserPage = p; loadSubUsers(); });
+    if (pg.totalPages > 1 || pg.total > 10) wirePager(list, 'subuser', pg.cur, pg.totalPages, (p) => { subUserPage = p; loadSubUsers(); });
     $$('[data-sub-user-copy-id]', list).forEach((b) => b.addEventListener('click', () => copyText(b.dataset.subUserCopyId, b)));
     $$('[data-sub-user-menu]', list).forEach((b) => b.addEventListener('click', () => {
       const u = users.find((x) => x.id === b.dataset.subUserMenu);
@@ -6407,7 +6599,7 @@ async function loadSubPlans() {
         '<td><button class="btn secondary sm" type="button" data-sub-plan-edit="' + esc(p.id) + '">编辑</button> <button class="btn danger sm" type="button" data-sub-plan-delete="' + esc(p.id) + '">删除</button></td></tr>').join('') +
       '</tbody></table></div>' + pagerHtml(pg.total, pg.cur, pg.totalPages, 'subplan') +
       '<p class="muted small">删档位不删用户：有用户在用时后端会拒绝删除，先把这些用户换到别的档位再删。</p>';
-    if (pg.totalPages > 1) wirePager(list, 'subplan', pg.cur, pg.totalPages, (p) => { subPlanPage = p; loadSubPlans(); });
+    if (pg.totalPages > 1 || pg.total > 10) wirePager(list, 'subplan', pg.cur, pg.totalPages, (p) => { subPlanPage = p; loadSubPlans(); });
     $$('[data-sub-plan-edit]', list).forEach((b) => b.addEventListener('click', () => {
       const p = subPlansCache.find((x) => x.id === b.dataset.subPlanEdit);
       if (p) openSubPlanModal(p);
@@ -6558,15 +6750,21 @@ async function loadSubGroups() {
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的分组，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, subGroupPage);
     subGroupPage = pg.cur;
-    list.innerHTML = '<h3>分组</h3>' + pg.slice.map((g) => '<div class="kv"><span>' + esc(g.name || '') + (g.note ? ' <span class="small muted">（' + esc(g.note) + '）</span>' : '') + '<br><span class="small muted">' + esc((g.selection || []).length ? (g.summary || '') : '空组 · 落地 0 个') + ' · ' + (g.members || []).length + ' 个成员 · 建于 ' + esc(fmtDate(g.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-group-members="' + esc(g.id) + '">成员</button> <button class="btn secondary sm" type="button" data-sub-group-edit="' + esc(g.id) + '">编辑</button> <button class="btn danger sm" type="button" data-sub-group-delete="' + esc(g.id) + '">删除</button></span></div>').join('') +
-      pagerHtml(pg.total, pg.cur, pg.totalPages, 'subgroup') +
+    // v1.4.35（P2-8）：分组列表改成与档位一致的表格（名字／落地数／成员数／后端节点数／操作），
+    // 落地数与成员数不再只藏在 summary 小字里。
+    list.innerHTML = '<h3>分组</h3><div class="table-wrap"><table><thead><tr><th>名字</th><th>落地数</th><th>成员数</th><th>后端节点数</th><th>操作</th></tr></thead><tbody>' +
+      pg.slice.map((g) => '<tr><td>' + esc(g.name || '') + (g.note ? '<br><span class="small muted">' + esc(g.note) + '</span>' : '') + '</td>' +
+        '<td>' + ((g.selection || []).length) + '</td>' +
+        '<td>' + ((g.members || []).length) + '</td>' +
+        '<td>' + ((g.backend_node_ids || []).length) + '</td>' +
+        '<td><button class="btn secondary sm" type="button" data-sub-group-members="' + esc(g.id) + '">成员</button> <button class="btn secondary sm" type="button" data-sub-group-edit="' + esc(g.id) + '">编辑</button> <button class="btn danger sm" type="button" data-sub-group-delete="' + esc(g.id) + '">删除</button></td></tr>').join('') +
+      '</tbody></table></div>' + pagerHtml(pg.total, pg.cur, pg.totalPages, 'subgroup') +
       '<p class="muted small">删组不删用户、不换令牌：成员恢复自己原来勾的落地，链接不变。空组里的成员按自己的勾选出订阅，不会断网。</p>';
-    if (pg.totalPages > 1) wirePager(list, 'subgroup', pg.cur, pg.totalPages, (p) => { subGroupPage = p; loadSubGroups(); });
+    if (pg.totalPages > 1 || pg.total > 10) wirePager(list, 'subgroup', pg.cur, pg.totalPages, (p) => { subGroupPage = p; loadSubGroups(); });
     $$('[data-sub-group-members]', list).forEach((b) => b.addEventListener('click', () => {
       const g = subGroupsCache.find((x) => x.id === b.dataset.subGroupMembers);
       if (g) openSubGroupDetailModal(g);
     }));
-    if (pg.totalPages > 1) wirePager(list, 'subgroup', pg.cur, pg.totalPages, (p) => { subGroupPage = p; loadSubGroups(); });
     $$('[data-sub-group-edit]', list).forEach((b) => b.addEventListener('click', () => {
       const g = subGroupsCache.find((x) => x.id === b.dataset.subGroupEdit);
       if (g) openSubGroupModal(g);
@@ -7821,7 +8019,7 @@ async function loadMergedSubsList() {
     list.innerHTML = '<h3>已生成的合并订阅 <span class="badge grey">已退场</span></h3>' + pg.slice.map((s) => '<div class="kv"><span><span class="badge grey">已退场</span> ' + (s.name ? esc(s.name) + ' — ' : '') + (s.group_name ? '<span class="badge">分组：' + esc(s.group_name) + '</span> ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span><br><span class="small">' + userTrafficText(s) + '</span></span><span><button class="btn secondary sm" type="button" disabled title="合并订阅已退场，链接不可用">操作</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'mergedsub') +
       '<p class="muted small">合并订阅已退场，请使用订阅用户；旧链接已失效。</p>';
-    if (pg.totalPages > 1) wirePager(list, 'mergedsub', pg.cur, pg.totalPages, (p) => { mergedSubPage = p; loadMergedSubsList(); });
+    if (pg.totalPages > 1 || pg.total > 10) wirePager(list, 'mergedsub', pg.cur, pg.totalPages, (p) => { mergedSubPage = p; loadMergedSubsList(); });
   } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
 }
 // ---------- 独立合并订阅（v1.4.34，第 4 批） ----------
@@ -7850,7 +8048,7 @@ async function loadIndMergedSubsList() {
     const pg = paginate(filtered, indMergedSubPage);
     indMergedSubPage = pg.cur;
     list.innerHTML = '<h3>独立合并订阅 <span class="badge">独立合并订阅</span></h3><div class="table-wrap"><table><thead><tr><th>序号</th><th>ID</th><th>名字</th><th>勾选摘要</th><th>订阅出哪些节点</th><th>到期</th><th>已用／总流量</th><th>状态</th><th>操作</th></tr></thead><tbody>' +
-      pg.slice.map((s, i) => '<tr data-indmerged-row="' + esc(s.id) + '"><td>' + ((pg.cur - 1) * PAGE_SIZE + i + 1) + '</td><td class="mono" title="' + esc(String(s.id)) + '">' + esc(String(s.id)) + ' <button class="btn secondary sm" type="button" data-indmerged-copy-id="' + esc(String(s.id)) + '" title="复制完整 ID">复制</button></td>' +
+      pg.slice.map((s, i) => '<tr data-indmerged-row="' + esc(s.id) + '"><td>' + ((pg.cur - 1) * pg.per + i + 1) + '</td><td class="mono" title="' + esc(String(s.id)) + '">' + esc(String(s.id)) + ' <button class="btn secondary sm" type="button" data-indmerged-copy-id="' + esc(String(s.id)) + '" title="复制完整 ID">复制</button></td>' +
         '<td>' + esc(s.name || '未命名') + '<br><span class="small muted">' + esc(String(s.id)) + '</span></td>' +
         '<td>' + (s.empty ? '<span class="muted">尚未勾选落地</span>' : esc(s.summary || '')) + '</td>' +
         '<td>' + esc(subModeLabel(s.mode)) + '</td>' +
@@ -7861,7 +8059,7 @@ async function loadIndMergedSubsList() {
       '</tbody></table></div>' +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'indmerged') +
       '<p class="muted small">点一行或“操作”弹出全部操作：查看链接、复制链接、轮换令牌、编辑成员/到期/限流、停用、删除。轮换后旧链接立即失效。</p>';
-    if (pg.totalPages > 1) wirePager(list, 'indmerged', pg.cur, pg.totalPages, (p) => { indMergedSubPage = p; loadIndMergedSubsList(); });
+    if (pg.totalPages > 1 || pg.total > 10) wirePager(list, 'indmerged', pg.cur, pg.totalPages, (p) => { indMergedSubPage = p; loadIndMergedSubsList(); });
     $$('[data-indmerged-copy-id]', list).forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); copyText(b.dataset.indmergedCopyId, b); }));
     $$('[data-indmerged-menu]', list).forEach((b) => b.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -8100,7 +8298,7 @@ async function loadCentralLandings(id, page) {
       h.addEventListener('click', open);
       h.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
     });
-    if (pg.totalPages > 1) wirePager(detail, 'central', pg.cur, pg.totalPages, (p) => loadCentralLandings(id, p));
+    if (pg.totalPages > 1 || pg.total > 10) wirePager(detail, 'central', pg.cur, pg.totalPages, (p) => loadCentralLandings(id, p));
   } catch (e) {
     detail.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>';
   }
@@ -8867,6 +9065,7 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initAddForm);
   safeInit(initAddTabs); // v1.3.41：添加落地表单选项卡绑定 + 恢复上次选项卡
   safeInit(initServiceTabs); // v1.3.41：服务与日志页选项卡绑定 + 恢复上次选项卡
+  safeInit(initLinksTabs); // v1.4.35：节点链接页选项卡绑定 + 恢复上次选项卡
   safeInit(initFirewallTabs); // v1.3.41：端口管理页选项卡绑定 + 恢复上次选项卡
   safeInit(initTwin);
   safeInit(initSubMode); // v1.3.17：“订阅出哪些节点”三选一绑定 + 恢复上次选择

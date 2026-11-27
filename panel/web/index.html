@@ -78,7 +78,7 @@
         <div class="grid cols-4" id="overview-stats"></div>
         <div id="machine-card" style="margin-top:16px"></div>
         <div id="update-banner" style="margin-top:16px"></div>
-        <h2 style="margin-top:20px">落地列表</h2>
+        <h2 style="margin-top:20px">最近落地</h2>
         <div class="list-toolbar"><input id="landing-search" class="list-search" type="search" placeholder="搜索落地：名称、地址、域名…" aria-label="搜索落地"></div>
         <div class="landing-grid" id="landing-cards"></div>
         <div id="overview-empty" class="empty hidden">中转还没装好，也没有落地节点。<br>去「添加落地」加第一个落地，中转会自动装好。<br><button class="btn" type="button" data-goto="add" style="margin-top:10px">＋ 添加第一个落地</button></div>
@@ -166,6 +166,7 @@
       <!-- 落地管理 -->
       <section class="page" id="page-manage">
         <div class="page-head"><h1>落地管理</h1><div class="actions"><button class="btn secondary" data-goto="add" type="button">＋ 添加落地</button></div></div>
+        <div class="list-toolbar"><input id="manage-search" class="list-search" type="search" placeholder="搜索落地：名称、地址、域名…" aria-label="搜索落地"></div>
         <div id="manage-list"></div>
         <h2 style="margin-top:24px">回收站 <span class="small">（删除后保留 7 天，可恢复）</span></h2>
         <div id="recycle-list"></div>
@@ -191,7 +192,7 @@
           </div>
         </div>
         <h2 style="margin-top:20px">节点列表</h2>
-        <div class="list-toolbar nodes-toolbar"><input id="nodes-search" class="list-search" type="search" placeholder="搜索节点：名称、地址…" aria-label="搜索节点"><label for="nodes-page-size">每页 <select id="nodes-page-size"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option></select> 条</label><button class="btn secondary sm" type="button" id="nodes-view-toggle" aria-pressed="false">列表视图</button></div>
+        <div class="list-toolbar nodes-toolbar"><input id="nodes-search" class="list-search" type="search" placeholder="搜索节点：名称、地址…" aria-label="搜索节点"><label for="nodes-page-size">每页 <select id="nodes-page-size"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option><option value="100">100</option></select> 条</label><button class="btn secondary sm" type="button" id="nodes-view-toggle" aria-pressed="false">列表视图</button></div>
         <div id="nodes-list" class="nodes-list nodes-grid"></div>
         <!-- 中转路由（v1.4.18，切片 8）：面板改路由，本机 realm 配置跟着变
              并重启生效；管理面板本机无中转，路由经代理下发到选中的中转
@@ -202,6 +203,7 @@
           <div class="btn-row"><button class="btn" type="button" id="nodes-relay-add">添加路由</button><button class="btn secondary" type="button" id="nodes-relay-reapply">重新下发</button></div>
           <div class="btn-row" id="nodes-relay-panel-row" hidden><label for="nodes-relay-panel">中转机</label><select id="nodes-relay-panel"></select></div>
           <div id="nodes-relay-note" class="muted small"></div>
+          <div class="list-toolbar"><input id="nodes-relay-search" class="list-search" type="search" placeholder="搜索路由：监听地址、目标、协议…" aria-label="搜索中转路由"></div>
           <div id="nodes-relay-routes"></div>
         </div>
         <!-- 添加／编辑中转路由（v1.4.18）：单独弹窗，表单与入站添加弹窗同款
@@ -236,6 +238,7 @@
           </div>
           <div class="btn-row"><button class="btn" type="button" id="nodes-trio-btn">一键生成默认三件套</button><button class="btn secondary" type="button" id="nodes-ib-add-open">手动添加入站</button></div>
           <div id="nodes-inbounds-error" class="error-box hidden" hidden></div>
+          <div class="list-toolbar"><input id="nodes-inbounds-search" class="list-search" type="search" placeholder="搜索入站：名称、协议、端口、SNI…" aria-label="搜索入站"></div>
           <div id="nodes-inbounds-list"></div>
         </template>
         <!-- 手动添加入站（v1.4.13）：从入站模板弹窗里拆出来的单独弹窗，
@@ -284,8 +287,9 @@
           </form>
         </template>
         <div class="card" id="node-certs-card">
-          <h2>节点证书</h2>
+          <h2>节点证书（轻量节点后端）</h2>
           <p class="muted">HY2、TUIC、AnyTLS、Trojan 与 VLESS＋TLS 入站用的真证书：面板签发后随配置下发到节点，节点 60 秒内换上；到期前 30 天自动续签。REALITY 入站不用证书。证书文件存在面板 certs/ 下（node-&lt;ref&gt;.crt／.key），元数据存在 nodes.json 里。</p>
+          <p class="muted">旧落地证书与续签引导在「落地证书」页。</p>
           <form id="node-cert-issue-form">
             <div class="form-grid">
               <div><label for="node-cert-domain">证书域名 <span class="hint">必填；单个子域名如 hy2ceshi.example.com，或泛域名如 *.example.com；须先 A 记录解析到节点</span><button type="button" class="ib-help-btn" data-ib-help="cert-domain" aria-label="证书域名填写说明" aria-expanded="false">ⓘ</button></label><input id="node-cert-domain" placeholder="example.com" required></div>
@@ -320,7 +324,7 @@
             <div class="kv"><span>TXT 记录值</span><b id="node-cert-manual-txt-value" style="word-break:break-all"></b></div>
             <div class="btn-row"><button class="btn" type="button" id="node-cert-manual-confirm">继续验证</button><button class="btn secondary" type="button" id="node-cert-manual-cancel">取消</button></div>
           </div>
-          <div class="list-toolbar"><button class="btn secondary sm" type="button" id="node-certs-view-toggle" aria-pressed="false">列表视图</button></div>
+          <div class="list-toolbar"><input id="node-certs-search" class="list-search" type="search" placeholder="搜索节点证书：域名、服务商…" aria-label="搜索节点证书"><button class="btn secondary sm" type="button" id="node-certs-view-toggle" aria-pressed="false">列表视图</button></div>
           <div id="node-certs-list" class="nodes-grid"></div>
         </div>
       </section>
@@ -328,40 +332,51 @@
       <!-- 节点链接 -->
       <section class="page" id="page-links">
         <div class="page-head"><h1>节点链接</h1></div>
-        <div class="card">
-          <h2>粘贴原链接，生成节点链接</h2>
-          <p class="muted">把落地机上生成的节点链接粘贴进来，面板按下面选的生成方式算出链接及二维码。</p>
-          <form id="twin-form">
-            <label for="twin-link">节点链接 <span class="hint">vless:// / trojan:// / ss:// / vmess:// 开头</span></label>
-            <input id="twin-link" placeholder="vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443?security=tls&amp;sni=example.com#示例" required>
-            <div class="form-grid">
-              <div><label for="twin-landing">落地 IP <span class="hint">必填</span></label><input id="twin-landing" placeholder="203.0.113.1" required></div>
-              <div><label for="twin-sni">SNI / 域名 <span class="hint">可空，自动推断</span></label><input id="twin-sni" placeholder="example.com"></div>
-              <div><label for="twin-name">节点名称 <span class="hint">选填；直连备注“&lt;名称&gt;-直连”、中转备注“&lt;名称&gt;-中转”，空着用原链接备注名</span></label><input id="twin-name" placeholder="如 香港-01" maxlength="64"></div>
-            </div>
-            <div class="setting-row">
-              <label class="small" for="twin-mode">生成方式：</label>
-              <select id="twin-mode" name="twin-mode" style="width:160px">
-                <option value="both" selected>全部</option>
-                <option value="relay">仅中转</option>
-                <option value="direct">仅直连</option>
-              </select>
-              <span class="small muted">全部：中转和直连各生成一条；仅中转：只生成走中转机的那条；仅直连：只生成直连落地机的那条。</span>
-            </div>
-            <div class="btn-row"><button class="btn" type="submit">生成 twin</button></div>
-          </form>
+        <div class="card links-shell">
+          <div class="links-tabs" role="tablist" aria-label="节点链接分类">
+            <button type="button" class="links-tab" role="tab" id="links-tab-history" aria-controls="links-panel-history" aria-selected="true" data-links-tab="history">历史记录</button>
+            <button type="button" class="links-tab" role="tab" id="links-tab-twin" aria-controls="links-panel-twin" aria-selected="false" data-links-tab="twin">生成 twin</button>
+          </div>
+          <div class="links-panel" role="tabpanel" id="links-panel-history" aria-labelledby="links-tab-history">
+            <h2>历史记录（nodes.txt）</h2>
+            <p class="muted">每组一行，点一行展开看链接与二维码。删除只删历史记录，不影响落地转发与节点本身；导出是纯文本文件，一行一条链接。</p>
+            <div class="list-toolbar"><input id="links-search" class="list-search" type="search" placeholder="搜索历史记录：名字、落地、编号…" aria-label="搜索历史记录"></div>
+            <div id="links-toolbar"></div>
+            <div id="links-history"></div>
+          </div>
+          <div class="links-panel hidden" role="tabpanel" id="links-panel-twin" aria-labelledby="links-tab-twin" hidden>
+            <h2>粘贴原链接，生成节点链接</h2>
+            <p class="muted">把落地机上生成的节点链接粘贴进来，面板按下面选的生成方式算出链接及二维码。</p>
+            <form id="twin-form">
+              <label for="twin-link">节点链接 <span class="hint">vless:// / trojan:// / ss:// / vmess:// 开头</span></label>
+              <input id="twin-link" placeholder="vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443?security=tls&amp;sni=example.com#示例" required>
+              <div class="form-grid">
+                <div><label for="twin-landing">落地 IP <span class="hint">必填</span></label><input id="twin-landing" placeholder="203.0.113.1" required></div>
+                <div><label for="twin-sni">SNI / 域名 <span class="hint">可空，自动推断</span></label><input id="twin-sni" placeholder="example.com"></div>
+                <div><label for="twin-name">节点名称 <span class="hint">选填；直连备注“&lt;名称&gt;-直连”、中转备注“&lt;名称&gt;-中转”，空着用原链接备注名</span></label><input id="twin-name" placeholder="如 香港-01" maxlength="64"></div>
+              </div>
+              <div class="setting-row">
+                <label class="small" for="twin-mode">生成方式：</label>
+                <select id="twin-mode" name="twin-mode" style="width:160px">
+                  <option value="both" selected>全部</option>
+                  <option value="relay">仅中转</option>
+                  <option value="direct">仅直连</option>
+                </select>
+                <span class="small muted">全部：中转和直连各生成一条；仅中转：只生成走中转机的那条；仅直连：只生成直连落地机的那条。</span>
+              </div>
+              <div class="btn-row"><button class="btn" type="submit">生成 twin</button></div>
+            </form>
+          </div>
         </div>
-        <h2 style="margin-top:20px">历史记录（nodes.txt）</h2>
-        <p class="muted">每组默认折叠成一行，点一行展开看链接与二维码。删除只删历史记录，不影响落地转发与节点本身；导出是纯文本文件，一行一条链接。</p>
-        <div id="links-toolbar"></div>
-        <div id="links-history"></div>
       </section>
 
       <!-- 证书 -->
       <section class="page" id="page-certs">
-        <div class="page-head"><h1>证书</h1></div>
+        <div class="page-head"><h1>落地证书</h1></div>
         <p class="muted">证书剩余天数：&lt; 30 天变黄，&lt; 7 天变红。请注意：节点到期（你设的时长）和证书到期（90 天有效期）是两回事。</p>
+        <p class="muted">轻量节点后端的证书在「节点」页下方「节点证书（轻量节点后端）」区；这里是旧落地（Docker＋Caddy）的证书与六步续签引导。</p>
         <div id="cert-tg-hint"></div>
+        <div class="list-toolbar"><input id="cert-search" class="list-search" type="search" placeholder="搜索证书：域名、落地、续签方式…" aria-label="搜索证书"></div>
         <div id="cert-list"></div>
         <div class="card" style="margin-top:16px">
           <h2>手动续签六步引导</h2>
@@ -400,6 +415,8 @@
         </div>
         <div class="service-panel hidden" role="tabpanel" id="service-panel-ports" aria-labelledby="service-tab-ports" hidden>
           <h2>端口占用表</h2>
+          <p class="muted">这是本机监听端口（哪个进程在占哪个端口）；要放行／关闭端口，去「端口管理」页管 ufw 规则。</p>
+          <div class="btn-row"><button class="btn secondary sm" type="button" data-goto="firewall">去端口管理 →</button></div>
           <div id="ports-table"></div>
         </div>
         </div>
@@ -971,6 +988,8 @@
       <section class="page" id="page-firewall">
         <div class="page-head"><h1>端口管理</h1></div>
         <div class="info-box">只管本机防火墙（ufw）。云厂商安全组（控制台里那层）面板管不了，还得去控制台开。</div>
+        <p class="muted">想看本机谁在占用端口（监听端口表），去「服务与日志 → 端口占用」。</p>
+        <div class="btn-row"><button class="btn secondary sm" type="button" id="fw-goto-ports">去服务与日志 → 端口占用</button></div>
         <div id="firewall-status"></div>
         <div class="card fw-shell" style="margin-top:16px">
           <div class="fw-tabs" role="tablist" aria-label="端口管理分类">
@@ -1021,6 +1040,7 @@
         <div class="card">
           <div class="form-grid">
             <div><label for="traffic-landing">选择落地</label><select id="traffic-landing"></select></div>
+            <div id="traffic-landing-search-wrap" hidden><label for="traffic-landing-search">搜索落地</label><input id="traffic-landing-search" type="search" placeholder="搜索落地：名称、地址…"></div>
             <div><label>时间范围</label>
               <div class="btn-row" style="margin-top:0" role="group" aria-label="时间范围">
                 <button class="btn secondary sm" data-range="day" type="button">按天（最近 24 小时）</button>
@@ -1030,7 +1050,7 @@
             </div>
           </div>
           <div id="traffic-unavailable" class="warn-box hidden"></div>
-          <canvas id="traffic-chart" width="900" height="280" style="width:100%;height:auto;margin-top:12px"></canvas>
+          <div id="traffic-chart-wrap" style="position:relative;margin-top:12px"><canvas id="traffic-chart" width="900" height="280" style="width:100%;height:auto"></canvas><div id="traffic-chart-tip" class="chart-tip hidden" hidden></div></div>
           <div id="traffic-summary" style="margin-top:12px"></div>
         </div>
         <div class="card" style="margin-top:16px">

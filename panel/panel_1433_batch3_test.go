@@ -14,14 +14,14 @@ import (
 // SubUser 表序号与 ID 复制按钮。交互行为由 jsdom test-1433-batch3.js 覆盖。
 
 func TestVersion1433(t *testing.T) {
-	if Version != "1.4.34" {
+	if Version != "1.4.35" {
 		t.Fatalf("Version 应为 1.4.33，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.34" {
+	if strings.TrimSpace(string(vb)) != "1.4.35" {
 		t.Fatalf("VERSION 文件应为 1.4.33，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }
@@ -156,7 +156,7 @@ func TestBatch3SearchAndTable1433(t *testing.T) {
 		t.Fatalf("分组搜索框 placeholder 没写清可搜字段")
 	}
 	// SubUser 表序号列（跟着分页走）与 ID 复制按钮。
-	if !strings.Contains(js, "<th>序号</th>") || !strings.Contains(js, "(pg.cur - 1) * PAGE_SIZE + i + 1") {
+	if !strings.Contains(js, "<th>序号</th>") || !strings.Contains(js, "(pg.cur - 1) * pg.per + i + 1") {
 		t.Fatalf("SubUser 表缺序号列或序号没跟着分页走")
 	}
 	if !strings.Contains(js, "data-sub-user-copy-id") {
