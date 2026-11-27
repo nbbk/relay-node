@@ -103,9 +103,15 @@ func TestSubGroupCreate1326(t *testing.T) {
 	if code, _ := callJSON1326(t, s.handleSubGroupsCreate, "POST", "/api/v1/subscriptions/groups", `{"name":"","selection":[{"panel":"local","landing":1}]}`, ""); code != 400 {
 		t.Fatalf("空名字应 400，实际 %d", code)
 	}
-	// 不勾落地 → 400
-	if code, _ := callJSON1326(t, s.handleSubGroupsCreate, "POST", "/api/v1/subscriptions/groups", `{"name":"美国组","selection":[]}`, ""); code != 400 {
-		t.Fatalf("不勾落地应 400，实际 %d", code)
+	// v1.4.32（先建后配）：不勾落地也能建空组 → 200，列表摘要是“空组”。
+	codeEmpty, respEmpty := callJSON1326(t, s.handleSubGroupsCreate, "POST", "/api/v1/subscriptions/groups", `{"name":"美国组","selection":[]}`, "")
+	if codeEmpty != 200 {
+		t.Fatalf("不勾落地建空组应 200，实际 %d：%v", codeEmpty, respEmpty)
+	}
+	emptyID, _ := respEmpty["id"].(string)
+	// 删掉这个空组，免得影响后面“列表里只有 1 个分组”的断言。
+	if code, _ := callJSON1326(t, s.handleSubGroupsDelete, "DELETE", "/api/v1/subscriptions/groups/"+emptyID, "", emptyID); code != 200 {
+		t.Fatalf("删空组应 200，实际 %d", code)
 	}
 	// 不存在的成员 → 400
 	if code, _ := callJSON1326(t, s.handleSubGroupsCreate, "POST", "/api/v1/subscriptions/groups", `{"name":"美国组","selection":[{"panel":"local","landing":1}],"members":[{"kind":"user","id":"su-nope"}]}`, ""); code != 400 {

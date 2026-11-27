@@ -89,6 +89,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/subscriptions/groups", s.requireAuth(s.handleSubGroupsCreate))
 	mux.HandleFunc("PUT /api/v1/subscriptions/groups/{id}", s.requireAuth(s.handleSubGroupsUpdate))
 	mux.HandleFunc("DELETE /api/v1/subscriptions/groups/{id}", s.requireAuth(s.handleSubGroupsDelete))
+	mux.HandleFunc("POST /api/v1/subscriptions/groups/{id}/members", s.requireAuth(s.handleSubGroupMembersAdd))
+	mux.HandleFunc("DELETE /api/v1/subscriptions/groups/{id}/members/{kind}/{memberID}", s.requireAuth(s.handleSubGroupMembersRemove))
 	mux.HandleFunc("GET /api/v1/subscriptions/worker", s.requireAuth(s.handleWorkerCode))
 	// 证书
 	mux.HandleFunc("GET /api/v1/certs", s.requireAuth(s.handleCerts))

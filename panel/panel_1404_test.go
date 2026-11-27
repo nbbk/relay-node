@@ -547,7 +547,7 @@ func TestBackendAssignmentInbounds1404(t *testing.T) {
 // ---------- 11. 版本断言 ----------
 
 func TestVersion1404(t *testing.T) {
-	if Version != "1.4.31" {
-		t.Fatalf("Version 应为 1.4.31，实际 %q", Version)
+	if Version != "1.4.32" {
+		t.Fatalf("Version 应为 1.4.32，实际 %q", Version)
 	}
 }

@@ -2416,8 +2416,8 @@ const IB_HELP = {
     title: '套餐档位',
     body: () => [
       '填什么：这个人用哪个档位，流量、到期与分组按档位的默认值填好。',
-      '必填，默认“默认”档位。',
-      '建议：选了档位后下面流量、到期、分组会自动按档位填好，还能再改；改档位不会改链接。',
+      '选填：不选＝用默认档位兜底（默认档位由面板保证存在）。',
+      '建议：选了档位后下面流量、到期、分组会自动按档位填好，还能再改；选档位切了分组时，分组旁边会有一行提示；改档位不会改链接。',
     ],
   },
   'user-username': {
@@ -2432,7 +2432,7 @@ const IB_HELP = {
     title: '登录密码',
     body: () => [
       '填什么：这个人在客户端登录用的密码。',
-      '新建时必填，最少 6 位；编辑时留空 = 不改，填了 = 重设。',
+      '新建时选填：不填＝这个账号还不能登录（以后在编辑里设密码）；填了最少 6 位。编辑时留空 = 不改，填了 = 重设。',
       '建议：发给用户后让他自己改；重置密码会吊销该用户已登录的客户端会话，须重新登录。',
     ],
   },
@@ -6159,10 +6159,29 @@ function wireUserPlanSelect(m, applyOnOpen) {
     const p = (subPlansCache || []).find((x) => x.id === sel.value);
     if (hint) hint.textContent = p ? planDefaultsLine(p) : '';
   };
+  // v1.4.32：选档位导致分组变化时，在分组下拉旁显示一行提示
+  // “已按档位'XXX'切到分组'YYY'，可再改”。手动改分组下拉时清掉提示
+  // （提示是上一次档位切换留下的，手动改过就过时了）。
+  const groupHint = () => m.querySelector('[data-uf-group-hint]');
+  const showGroupHint = (p, prevGroupId) => {
+    const gh = groupHint();
+    if (!gh) return;
+    const gsel = m.querySelector('[data-uf-group]') || m.querySelector('[data-edit-group]');
+    const cur = gsel ? gsel.value : '';
+    if (!p || cur === prevGroupId) { gh.textContent = ''; return; }
+    const g = (subGroupsCache || []).find((x) => x.id === cur);
+    gh.textContent = '已按档位“' + p.name + '”切到分组“' + (g ? g.name : '不分组') + '”，可再改。';
+  };
+  const gsel0 = m.querySelector('[data-uf-group]') || m.querySelector('[data-edit-group]');
+  if (gsel0) gsel0.addEventListener('change', () => { const gh = groupHint(); if (gh) gh.textContent = ''; });
   sel.addEventListener('change', () => {
     syncHint();
     const p = (subPlansCache || []).find((x) => x.id === sel.value);
-    if (p) applyPlanDefaults(m, p);
+    if (!p) { const gh = groupHint(); if (gh) gh.textContent = ''; return; }
+    const gsel = m.querySelector('[data-uf-group]') || m.querySelector('[data-edit-group]');
+    const prevGroupId = gsel ? gsel.value : '';
+    applyPlanDefaults(m, p);
+    showGroupHint(p, prevGroupId);
   });
   syncHint();
   if (applyOnOpen) {
@@ -6208,10 +6227,10 @@ async function openSubUserModal() {
     '<div class="form-grid">' +
     '<div><label for="new-user-name">名字 <span class="hint">必填，用来认人</span></label><input id="new-user-name" type="text" placeholder="例如：张三的手机" maxlength="64"></div>' +
     '<div><label for="new-user-note">备注 <span class="hint">选填</span></label><input id="new-user-note" type="text" placeholder="选填，例如：备用机"></div>' +
-    '<div><label for="new-user-plan">套餐档位 <span class="hint">必填，默认“默认”</span><button type="button" class="ib-help-btn" data-ib-help="user-plan" aria-label="套餐档位填写说明" aria-expanded="false">ⓘ</button></label><select id="new-user-plan" data-uf-plan>' + planSelectOptions(defaultPlanId()) + '</select><div class="small muted" data-uf-plan-hint></div></div>' +
-    '<div><label for="new-user-group">所属分组 <span class="hint">选填</span></label><select id="new-user-group" data-uf-group><option value="">不分组</option>' + (subGroupsCache || []).map((g) => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select><div class="small muted">进了组，订阅按组的落地出内容；自己的勾选保留着，出组后恢复。</div></div>' +
+    '<div><label for="new-user-plan">套餐档位 <span class="hint">选填，不选＝用默认档位兜底</span><button type="button" class="ib-help-btn" data-ib-help="user-plan" aria-label="套餐档位填写说明" aria-expanded="false">ⓘ</button></label><select id="new-user-plan" data-uf-plan><option value="">不选（用默认档位）</option>' + planSelectOptions('') + '</select><div class="small muted" data-uf-plan-hint></div></div>' +
+    '<div><label for="new-user-group">所属分组 <span class="hint">选填</span></label><select id="new-user-group" data-uf-group><option value="">不分组</option>' + (subGroupsCache || []).map((g) => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select><div class="small muted" data-uf-group-hint></div><div class="small muted">进了组，订阅按组的落地出内容；自己的勾选保留着，出组后恢复。</div></div>' +
     '<div><label for="new-user-username">登录账号 <span class="hint">选填，空着自动生成（格式 u-＋12 位随机字符）；生成后在下面成功区显示，事后在用户列表名字列小字里看</span><button type="button" class="ib-help-btn" data-ib-help="user-username" aria-label="登录账号填写说明" aria-expanded="false">ⓘ</button></label><input id="new-user-username" type="text" placeholder="留空自动生成" maxlength="64"></div>' +
-    '<div><label for="new-user-password">登录密码 <span class="hint">必填，最少 6 位</span><button type="button" class="ib-help-btn" data-ib-help="user-password" aria-label="登录密码填写说明" aria-expanded="false">ⓘ</button></label><input id="new-user-password" type="password" placeholder="最少 6 位" maxlength="64"></div>' +
+    '<div><label for="new-user-password">登录密码 <span class="hint">选填，不填＝不能登录（以后在编辑里设密码）；填了最少 6 位</span><button type="button" class="ib-help-btn" data-ib-help="user-password" aria-label="登录密码填写说明" aria-expanded="false">ⓘ</button></label><input id="new-user-password" type="password" placeholder="留空 = 不能登录" maxlength="64"></div>' +
     '<div><label for="new-user-link-mode">链接模式 <span class="hint">选填，默认“跟随节点”</span><button type="button" class="ib-help-btn" data-ib-help="user-link-mode" aria-label="链接模式填写说明" aria-expanded="false">ⓘ</button></label><select id="new-user-link-mode" data-uf-link-mode>' + subLinkModeOptions('') + '</select><div class="small muted">显式选了就按这个订阅的来，覆盖节点上的模式；选“跟随节点”时按节点模式出，和以前一样。</div></div>' +
     '</div>' +
     '<div style="margin-top:12px">' + subModeSelectHTML('sub-new-mode', '') + '</div>' +
@@ -6241,10 +6260,12 @@ async function openSubUserModal() {
   onIn(m, '[data-uf-save]', 'click', async () => {
     const name = ((m.querySelector('#new-user-name') || {}).value || '').trim();
     if (!name) { showUserErr('请先填名字（用来认人）'); return; }
+    // v1.4.32：新建用户只必填名字。密码选填（不填＝不能登录，建完明确
+    // 提示）；档位选填（不选＝默认档位兜底，后端 ensureDefaultPlan 已支持）。
+    // 密码填了仍须 ≥6 位。
     const password = ((m.querySelector('#new-user-password') || {}).value || '');
-    if (!password || password.length < 6) { showUserErr('登录密码必填，最少 6 位'); return; }
+    if (password && password.length < 6) { showUserErr('登录密码最少 6 位，留空 = 不能登录'); return; }
     const planId = (m.querySelector('[data-uf-plan]') || {}).value || '';
-    if (!planId) { showUserErr('请先选套餐档位（没有档位时先去上面建一条“默认”档位）'); return; }
     const permEl = m.querySelector('[data-uf-permanent]');
     const dateEl = m.querySelector('[data-uf-expiry]');
     const expiresAt = (permEl && permEl.checked) ? '' : (dateEl ? dateEl.value : '');
@@ -6262,12 +6283,16 @@ async function openSubUserModal() {
       // 空着建时就是自动生成的那个），密码是刚填的。
       const accEl = $('#sub-user-username-value');
       if (accEl) accEl.textContent = r.username || username || '';
+      // v1.4.32：没填密码时成功区明确提示不能登录（以前文案默认“密码是
+      // 你刚填的”，没填密码时是错的）；填了密码时保持原句。
+      const accNote = $('#sub-user-account-note');
+      if (accNote) accNote.textContent = password ? '登录账号是上面这个，密码是你刚填的；以后在用户列表名字列小字里也能看到账号。' : '没填登录密码，这个账号还不能登录；以后在用户列表点“编辑”设置密码。';
       const accBox = $('#sub-user-account');
       if (accBox) { accBox.classList.remove('hidden'); accBox.hidden = false; }
       const box = $('#sub-user-once');
       if (box) { box.classList.remove('hidden'); box.hidden = false; }
       if (r.warning) toast(r.warning, 'err');
-      else toast('订阅用户已新建，链接显示在下面，随时能复制', 'ok');
+      else toast(password ? '订阅用户已新建，链接显示在下面，随时能复制' : '订阅用户已新建，链接显示在下面；没填登录密码，这个账号还不能登录，以后在编辑用户里设置密码', 'ok');
       loadSubUsers();
     } catch (err) { showUserErr('新建失败：' + err.message); }
   });
@@ -6454,13 +6479,18 @@ async function loadSubGroups() {
     const r = await api('/api/v1/subscriptions/groups');
     subGroupsCache = r.groups || [];
     const filtered = subGroupsCache.filter((g) => matchSubText(subGroupSearch, [g.name, g.note, g.summary]));
-    if (!subGroupsCache.length) { list.innerHTML = '<p class="muted small">还没有分组：点“新建分组”，先勾落地、再勾成员，一次建好。</p>'; return; }
+    if (!subGroupsCache.length) { list.innerHTML = '<p class="muted small">还没有分组：点“新建分组”，先填名字建个空组，建好后再配落地、成员与后端节点。</p>'; return; }
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的分组，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, subGroupPage);
     subGroupPage = pg.cur;
-    list.innerHTML = '<h3>分组</h3>' + pg.slice.map((g) => '<div class="kv"><span>' + esc(g.name || '') + (g.note ? ' <span class="small muted">（' + esc(g.note) + '）</span>' : '') + '<br><span class="small muted">' + esc(g.summary || '') + ' · ' + (g.members || []).length + ' 个成员 · 建于 ' + esc(fmtDate(g.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-group-edit="' + esc(g.id) + '">编辑</button> <button class="btn danger sm" type="button" data-sub-group-delete="' + esc(g.id) + '">删除</button></span></div>').join('') +
+    list.innerHTML = '<h3>分组</h3>' + pg.slice.map((g) => '<div class="kv"><span>' + esc(g.name || '') + (g.note ? ' <span class="small muted">（' + esc(g.note) + '）</span>' : '') + '<br><span class="small muted">' + esc((g.selection || []).length ? (g.summary || '') : '空组 · 落地 0 个') + ' · ' + (g.members || []).length + ' 个成员 · 建于 ' + esc(fmtDate(g.created_at)) + '</span></span><span><button class="btn secondary sm" type="button" data-sub-group-members="' + esc(g.id) + '">成员</button> <button class="btn secondary sm" type="button" data-sub-group-edit="' + esc(g.id) + '">编辑</button> <button class="btn danger sm" type="button" data-sub-group-delete="' + esc(g.id) + '">删除</button></span></div>').join('') +
       pagerHtml(pg.total, pg.cur, pg.totalPages, 'subgroup') +
-      '<p class="muted small">删组不删用户、不换令牌：成员恢复自己原来勾的落地，链接不变。</p>';
+      '<p class="muted small">删组不删用户、不换令牌：成员恢复自己原来勾的落地，链接不变。空组里的成员按自己的勾选出订阅，不会断网。</p>';
+    if (pg.totalPages > 1) wirePager(list, 'subgroup', pg.cur, pg.totalPages, (p) => { subGroupPage = p; loadSubGroups(); });
+    $$('[data-sub-group-members]', list).forEach((b) => b.addEventListener('click', () => {
+      const g = subGroupsCache.find((x) => x.id === b.dataset.subGroupMembers);
+      if (g) openSubGroupDetailModal(g);
+    }));
     if (pg.totalPages > 1) wirePager(list, 'subgroup', pg.cur, pg.totalPages, (p) => { subGroupPage = p; loadSubGroups(); });
     $$('[data-sub-group-edit]', list).forEach((b) => b.addEventListener('click', () => {
       const g = subGroupsCache.find((x) => x.id === b.dataset.subGroupEdit);
@@ -6475,16 +6505,46 @@ async function loadSubGroups() {
     }));
   } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
 }
-// 新建/编辑分组弹窗：名字 + 落地勾选树（复用编辑弹窗那棵树，本机与远程
-// 分层）+ 成员多选（只列订阅用户，v1.4.31 起不再列合并订阅）。
+// 新建/编辑分组弹窗（v1.4.32，先建后配）：新建分两步——第 1 步只填
+// 名字（必填）＋备注（选填），点“建组”即建成空组，进入第 2 步组详情页
+// （openSubGroupDetailModal）配落地、成员与后端节点；编辑走原来的单
+// 弹窗，但落地集合允许清空（空组也能保存）。成员多选只列订阅用户
+// （v1.4.31 起不再列合并订阅）。
 async function openSubGroupModal(group) {
-  const isEdit = !!group;
-  const m = openModal('<h2>' + esc(isEdit ? '编辑分组' : '新建分组') + '</h2>' +
+  if (!group) {
+    const m1 = openModal('<h2>新建分组</h2>' +
+      '<p class="muted small">先建个空组：只填名字就能建，落地、成员与后端节点建好后再配，不用一次全勾完。</p>' +
+      '<label class="small">名字：<input type="text" data-group-name style="width:200px" placeholder="如 美国组"></label>' +
+      '<label class="small" style="margin-left:8px">备注：<input type="text" data-group-note style="width:160px" placeholder="选填"></label>' +
+      '<div class="error-box" data-group-error hidden></div>' +
+      '<div class="btn-row" style="margin-top:12px"><button class="btn" type="button" data-group-save>建组</button>' +
+      '<button class="btn secondary" type="button" data-group-cancel>取消</button></div>', true);
+    if (!m1) return;
+    const errBox1 = m1.querySelector('[data-group-error]');
+    const showErr1 = (msg) => { if (errBox1) { errBox1.textContent = msg; errBox1.hidden = false; } toast(msg, 'err'); };
+    onIn(m1, '[data-group-cancel]', 'click', closeModal);
+    onIn(m1, '[data-group-save]', 'click', async () => {
+      const name = ((m1.querySelector('[data-group-name]') || {}).value || '').trim();
+      if (!name) { showErr1('请先填分组名字'); return; }
+      const note = ((m1.querySelector('[data-group-note]') || {}).value || '').trim();
+      if (errBox1) errBox1.hidden = true;
+      try {
+        const r = await apiPost('/api/v1/subscriptions/groups', { name, note, selection: [], members: [], backend_node_ids: [] });
+        closeModal();
+        toast('分组已新建（空组），下面配落地、成员与后端节点', 'ok');
+        loadSubGroups(); loadSubUsers(); loadMergedSubsList();
+        openSubGroupDetailModal({ id: r.id, name, note, selection: [], members: [], backend_node_ids: [] });
+      } catch (err) { showErr1('新建失败：' + err.message); }
+    });
+    return;
+  }
+  const isEdit = true;
+  const m = openModal('<h2>编辑分组</h2>' +
     '<p class="muted small">一组 = 一组落地 + 一组用户，组里的人用组里的节点。改组的落地，组里所有人的订阅下次更新立即同步，链接不变。</p>' +
     '<label class="small">名字：<input type="text" data-group-name style="width:200px" value="' + esc(group ? group.name || '' : '') + '" placeholder="如 美国组"></label>' +
     '<label class="small" style="margin-left:8px">备注：<input type="text" data-group-note style="width:160px" value="' + esc(group ? group.note || '' : '') + '" placeholder="选填"></label>' +
     '<div data-group-tree style="margin-top:12px">加载中…</div>' +
-    '<p class="muted small">至少勾一个落地。</p>' +
+    '<p class="muted small">落地可以先不勾：空组也能保存；组里的人在空组里时按自己的勾选出订阅，不会断网。</p>' +
     '<div data-group-members style="margin-top:12px">加载中…</div>' +
     '<p class="muted small">成员一人只能进一个组：勾了这里的人，会自动从原来那个组里出来。</p>' +
     '<div data-group-backend-nodes style="margin-top:12px">加载中…</div>' +
@@ -6542,7 +6602,6 @@ async function openSubGroupModal(group) {
     const name = ((m.querySelector('[data-group-name]') || {}).value || '').trim();
     if (!name) { showGroupErr('请先填分组名字'); return; }
     const selection = subEditTreeSelection(checked);
-    if (!selection.length) { showGroupErr('至少勾一个落地'); return; }
     const members = $$('[data-group-member-user]', m).filter((cb) => cb.checked).map((cb) => ({ kind: 'user', id: cb.dataset.groupMemberUser }))
       // v1.4.31（P0-4）：合并订阅成员不在弹窗里列出，但已在组里的原样保留
       // 进保存体，免得编辑一次分组就把它们悄悄踢出组。
@@ -6558,6 +6617,184 @@ async function openSubGroupModal(group) {
       loadSubGroups(); loadSubUsers(); loadMergedSubsList();
     } catch (err) { showGroupErr('保存失败：' + err.message); }
   });
+}
+// 组详情页（v1.4.32，第 2 步）：新建空组后进入，或组行点“成员”进入。
+// 三个区各自保存，不用一次全量提交：落地（勾选树，复用订阅编辑弹窗
+// 同一套）与后端节点保存时走 PUT，但成员与另一区按当前值原样带上；
+// 成员加/减走增量接口（一次只动一个人，漏勾不会踢人）。勾已在别组的人
+// 时二次确认“这个人会从原组出来”。
+async function openSubGroupDetailModal(group) {
+  let cur = group;
+  const m = openModal('<h2>分组：' + esc(cur.name || '') + '</h2>' +
+    '<p class="muted small" data-detail-summary></p>' +
+    '<div data-detail-landings style="margin-top:12px">加载中…</div>' +
+    '<div data-detail-members style="margin-top:12px">加载中…</div>' +
+    '<div data-detail-backend style="margin-top:12px">加载中…</div>' +
+    '<div class="error-box" data-detail-error hidden></div>' +
+    '<div class="btn-row" style="margin-top:12px"><button class="btn secondary" type="button" data-detail-close>完成</button></div>', true);
+  if (!m) return;
+  const errBox = m.querySelector('[data-detail-error]');
+  const showErr = (msg) => { if (errBox) { errBox.textContent = msg; errBox.hidden = false; } toast(msg, 'err'); };
+  const clearErr = () => { if (errBox) errBox.hidden = true; };
+  let memberSearch = '';
+  let addSearch = '';
+  const memberPairs = () => (cur.members || []).map((x) => ({ kind: x.kind, id: x.id }));
+  const refreshGroup = async () => {
+    try {
+      const r = await api('/api/v1/subscriptions/groups');
+      const found = (r.groups || []).find((x) => x.id === cur.id);
+      if (found) cur = found;
+    } catch (e) { /* 拉不到就用手头的 cur 继续画 */ }
+    renderSummary();
+    await renderLandings();
+    await renderMembers();
+    await renderBackend();
+  };
+  const renderSummary = () => {
+    const el = m.querySelector('[data-detail-summary]');
+    if (!el) return;
+    const n = (cur.selection || []).length;
+    el.textContent = (cur.note ? cur.note + ' · ' : '') + (n ? (cur.summary || '') + ' · 落地 ' + n + ' 个' : '空组 · 落地 0 个（成员按自己的勾选出订阅，不会断网）') + ' · ' + (cur.members || []).length + ' 个成员';
+  };
+  const renderLandings = async () => {
+    const box = m.querySelector('[data-detail-landings]');
+    if (!box) return;
+    const checked = {};
+    (cur.selection || []).forEach((e) => { checked[subTreeKey(e.panel, e.landing)] = true; });
+    box.innerHTML = '<p class="small"><b>落地</b> <span class="muted">（勾了才按组的落地出内容；不勾就是空组）</span></p><div data-detail-tree>加载中…</div>' +
+      '<div class="btn-row" style="margin-top:8px"><button class="btn sm" type="button" data-detail-save-landings>保存落地</button></div>';
+    const treeBox = box.querySelector('[data-detail-tree]');
+    try {
+      const panels = await fetchSubTreePanels();
+      renderSubEditTree(treeBox, panels, checked);
+    } catch (e) {
+      if (treeBox) treeBox.innerHTML = '<div class="error-box">勾选树加载失败：' + esc(e.message) + '</div>';
+    }
+    box.querySelector('[data-detail-save-landings]').addEventListener('click', async () => {
+      clearErr();
+      const body = { name: cur.name, note: cur.note || '', selection: subEditTreeSelection(checked), members: memberPairs(), backend_node_ids: cur.backend_node_ids || [] };
+      try {
+        await api('/api/v1/subscriptions/groups/' + encodeURIComponent(cur.id), { method: 'PUT', body: JSON.stringify(body) });
+        toast('落地已保存，成员订阅下次更新即同步', 'ok');
+        loadSubGroups(); loadSubUsers();
+        await refreshGroup();
+      } catch (err) { showErr('保存落地失败：' + err.message); }
+    });
+  };
+  const renderMembers = async () => {
+    const box = m.querySelector('[data-detail-members]');
+    if (!box) return;
+    let users = [];
+    try {
+      const ru = await api('/api/v1/subscriptions/users');
+      users = ru.users || [];
+    } catch (e) {
+      box.innerHTML = '<div class="error-box">成员列表加载失败：' + esc(e.message) + '</div>';
+      return;
+    }
+    const curIds = new Set((cur.members || []).filter((x) => x.kind === 'user').map((x) => x.id));
+    box.innerHTML = '<p class="small"><b>成员</b> <span class="muted">（加/减一次只动一个人，不会因为漏勾把别人踢出组）</span></p>' +
+      '<p><label class="small">搜索当前成员：<input type="search" data-detail-member-search style="width:180px" value="' + esc(memberSearch) + '" placeholder="名字、备注、账号"></label></p>' +
+      '<div data-detail-member-list></div>' +
+      '<p style="margin-top:8px"><label class="small">添加成员：<input type="search" data-detail-add-search style="width:180px" value="' + esc(addSearch) + '" placeholder="搜名字、备注、账号"></label></p>' +
+      '<div data-detail-add-list></div>';
+    const renderMemberList = () => {
+      const listEl = box.querySelector('[data-detail-member-list]');
+      if (!listEl) return;
+      const q = memberSearch.trim();
+      const rows = (cur.members || []).filter((x) => x.kind === 'user').filter((mm) => {
+        if (!q) return true;
+        const u = users.find((x) => x.id === mm.id);
+        return u ? matchSubText(q, [u.name, u.note, u.username]) : matchSubText(q, [mm.name]);
+      });
+      listEl.innerHTML = rows.length ? rows.map((mm) => {
+        const u = users.find((x) => x.id === mm.id);
+        return '<div class="kv"><span>' + esc(u ? (u.name || '') : (mm.name || mm.id)) + (u && u.username ? ' <span class="small muted">' + esc(u.username) + '</span>' : '') + '</span><span><button class="btn danger sm" type="button" data-detail-remove="' + esc(mm.id) + '">移出</button></span></div>';
+      }).join('') : '<p class="muted small">还没有成员。</p>';
+      $$('[data-detail-remove]', listEl).forEach((b) => b.addEventListener('click', async () => {
+        clearErr();
+        try {
+          await api('/api/v1/subscriptions/groups/' + encodeURIComponent(cur.id) + '/members/user/' + encodeURIComponent(b.dataset.detailRemove), { method: 'DELETE' });
+          toast('已移出分组，这个人恢复自己原来的勾选', 'ok');
+          loadSubGroups(); loadSubUsers();
+          await refreshGroup();
+        } catch (err) { showErr('移出失败：' + err.message); }
+      }));
+    };
+    const renderAddList = () => {
+      const listEl = box.querySelector('[data-detail-add-list]');
+      if (!listEl) return;
+      const q = addSearch.trim();
+      const cands = users.filter((u) => !curIds.has(u.id) && (!q || matchSubText(q, [u.name, u.note, u.username])));
+      listEl.innerHTML = cands.length ? cands.map((u) => '<div class="kv"><span>' + esc(u.name || '') + (u.group_id && u.group_id !== cur.id ? ' <span class="muted small">（在分组「' + esc(u.group_name || '') + '」里）</span>' : '') + '</span><span><button class="btn secondary sm" type="button" data-detail-add="' + esc(u.id) + '">加入</button></span></div>').join('') : '<p class="muted small">没有可添加的订阅用户。</p>';
+      $$('[data-detail-add]', listEl).forEach((b) => b.addEventListener('click', async () => {
+        const u = users.find((x) => x.id === b.dataset.detailAdd);
+        if (!u) return;
+        // 勾已在别组的人须二次确认。不能用 confirmModal：它会顶掉当前
+        // 详情弹窗（openModal 替换 #modal-root），改用行内确认。
+        if (u.group_id && u.group_id !== cur.id) {
+          const row = b.closest('.kv');
+          if (row) {
+            row.innerHTML = '<span>「' + esc(u.name || '') + '」现在在分组「' + esc(u.group_name || '') + '」里，加进来会从原组出来，确定吗？</span><span><button class="btn sm" type="button" data-detail-add-confirm>确定加入</button> <button class="btn secondary sm" type="button" data-detail-add-cancel>取消</button></span>';
+            row.querySelector('[data-detail-add-cancel]').addEventListener('click', () => renderAddList());
+            row.querySelector('[data-detail-add-confirm]').addEventListener('click', async () => {
+              clearErr();
+              try {
+                await apiPost('/api/v1/subscriptions/groups/' + encodeURIComponent(cur.id) + '/members', { kind: 'user', id: u.id });
+                toast('已加入分组（从原组换过来）', 'ok');
+                loadSubGroups(); loadSubUsers();
+                await refreshGroup();
+              } catch (err) { showErr('加入失败：' + err.message); }
+            });
+          }
+          return;
+        }
+        clearErr();
+        try {
+          await apiPost('/api/v1/subscriptions/groups/' + encodeURIComponent(cur.id) + '/members', { kind: 'user', id: u.id });
+          toast('已加入分组', 'ok');
+          loadSubGroups(); loadSubUsers();
+          await refreshGroup();
+        } catch (err) { showErr('加入失败：' + err.message); }
+      }));
+    };
+    box.querySelector('[data-detail-member-search]').addEventListener('input', (e) => { memberSearch = e.target.value; renderMemberList(); });
+    box.querySelector('[data-detail-add-search]').addEventListener('input', (e) => { addSearch = e.target.value; renderAddList(); });
+    renderMemberList();
+    renderAddList();
+  };
+  const renderBackend = async () => {
+    const box = m.querySelector('[data-detail-backend]');
+    if (!box) return;
+    let nodes = [];
+    try {
+      const rn = await api('/api/v1/nodes');
+      nodes = rn.nodes || [];
+    } catch (e) {
+      box.innerHTML = '<div class="error-box">后端节点列表加载失败：' + esc(e.message) + '</div>';
+      return;
+    }
+    const curNodes = new Set(cur.backend_node_ids || []);
+    box.innerHTML = '<p class="small"><b>后端节点</b> <span class="muted">（组级指派用；不勾 = 组级指派下成员上不了任何后端节点）</span></p>' +
+      (nodes.length ? nodes.map((n) => '<label class="checkbox-row"><input type="checkbox" data-detail-backend-node="' + esc(String(n.id)) + '"' + (curNodes.has(n.id) ? ' checked' : '') + '><span>' + esc(n.name || '') + '（' + esc(n.address || '') + '）</span></label>').join('') : '<p class="muted small">还没有后端节点。</p>') +
+      '<div class="btn-row" style="margin-top:8px"><button class="btn sm" type="button" data-detail-save-backend>保存后端节点</button></div>';
+    box.querySelector('[data-detail-save-backend]').addEventListener('click', async () => {
+      clearErr();
+      const ids = $$('[data-detail-backend-node]', box).filter((cb) => cb.checked).map((cb) => Number(cb.dataset.detailBackendNode));
+      const body = { name: cur.name, note: cur.note || '', selection: cur.selection || [], members: memberPairs(), backend_node_ids: ids };
+      try {
+        await api('/api/v1/subscriptions/groups/' + encodeURIComponent(cur.id), { method: 'PUT', body: JSON.stringify(body) });
+        toast('后端节点已保存', 'ok');
+        loadSubGroups();
+        await refreshGroup();
+      } catch (err) { showErr('保存后端节点失败：' + err.message); }
+    });
+  };
+  onIn(m, '[data-detail-close]', 'click', () => { closeModal(); loadSubGroups(); loadSubUsers(); loadMergedSubsList(); });
+  renderSummary();
+  await renderLandings();
+  await renderMembers();
+  await renderBackend();
 }
 function initSubGroups() {
   on('#sub-group-create', 'click', () => openSubGroupModal(null));
@@ -6643,13 +6880,16 @@ async function openSubEditModal(opts) {
   const isMerged = opts.kind === 'merged';
   // v1.4.27：订阅用户编辑要选档位，档位下拉用缓存；缓存空时先拉一次。
   if (!isMerged && !subPlansCache.length) { try { await loadSubPlans(); } catch (e) { /* 档位拉不到时下拉留空，保存会报后端原因 */ } }
+  // v1.4.32：分组下拉同样用缓存（档位切分组时要按档位 group_id 预选，
+  // 缓存空时先拉一次；不拉时下拉里只有“不分组”，档位关联的分组选不上）。
+  if (!isMerged && !subGroupsCache.length) { try { await loadSubGroups(); } catch (e) { /* 分组拉不到时只留“不分组” */ } }
   const bs = opts.backend_scope || 'group';
   const m = openModal('<h2>' + esc(isMerged ? '编辑合并订阅' : '编辑订阅用户') + '</h2>' +
     '<p class="muted small">改勾选、改内容，链接不变：保存后旧订阅链接继续能用，下次更新订阅即按新勾选同步。</p>' +
     '<label class="small">' + esc(isMerged ? '归属到人（选填）：' : '名字：') + '<input type="text" data-edit-name style="width:200px" value="' + esc(opts.name || '') + '"></label>' +
     (isMerged ? '' : '<label class="small" style="margin-left:8px">备注：<input type="text" data-edit-note style="width:160px" value="' + esc(opts.note || '') + '" placeholder="选填"></label>') +
     '<div style="margin-top:12px"><label class="small">所属分组：<select data-edit-group style="width:160px"><option value="">不分组</option></select></label>' +
-    '<span class="muted small">进了组，订阅按组的落地出内容；自己的勾选保留着，出组后恢复。</span></div>' +
+    '<span class="muted small">进了组，订阅按组的落地出内容；自己的勾选保留着，出组后恢复。</span><span class="small muted" data-uf-group-hint></span></div>' +
     (isMerged ? '' :
       '<div style="margin-top:12px"><label class="small">套餐档位：<select data-uf-plan style="width:160px">' + planSelectOptions(opts.plan_id || defaultPlanId()) + '</select> <button type="button" class="ib-help-btn" data-ib-help="user-plan" aria-label="套餐档位填写说明" aria-expanded="false">ⓘ</button></label>' +
       '<span class="small muted" data-uf-plan-hint></span></div>' +

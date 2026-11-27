@@ -216,7 +216,12 @@ func (s *Server) handleSubGroupsList(w http.ResponseWriter, r *http.Request) {
 		if sel == nil {
 			sel = []SubSelection{}
 		}
-		items = append(items, item{ID: g.ID, Name: g.Name, Note: g.Note, CreatedAt: g.CreatedAt, Selection: sel, Summary: s.selectionSummary(sel), Members: s.groupMembers(g.ID), BackendNodeIDs: g.BackendNodeIDs})
+		// v1.4.32：空组在列表里标注“空组”，不要显示成空白摘要或异常。
+		summary := s.selectionSummary(sel)
+		if summary == "" {
+			summary = "空组"
+		}
+		items = append(items, item{ID: g.ID, Name: g.Name, Note: g.Note, CreatedAt: g.CreatedAt, Selection: sel, Summary: summary, Members: s.groupMembers(g.ID), BackendNodeIDs: g.BackendNodeIDs})
 	}
 	writeJSON(w, 200, okResp(map[string]any{"groups": items}))
 }
@@ -244,8 +249,21 @@ func (s *Server) validateBackendNodeIDs(ids []int64) ([]int64, error) {
 	return out, nil
 }
 
-// handleSubGroupsCreate 新建分组：名字必填，落地至少勾一个（空组没有意义），
-// 成员选填（不选就先建个空组，之后在成员的编辑里或分组编辑里加）。
+// validateGroupSelection 分组专用的落地集合校验（v1.4.32，先建后配）：
+// 允许空集合（先建空组、稍后在组详情里再勾落地）；非空时走
+// validateMergedSelection 的同一套校验（面板存在、落地编号存在，
+// 远程面板当场验版本）。注意不要直接放宽 validateMergedSelection：
+// 它还被订阅用户/合并订阅的创建共用，那两处仍要求非空时才校验、
+// 空集合走各自的默认值逻辑；分组这两处单独放宽。
+func (s *Server) validateGroupSelection(sel []SubSelection) ([]SubSelection, string, error) {
+	if len(sel) == 0 {
+		return []SubSelection{}, "", nil
+	}
+	return s.validateMergedSelection(sel)
+}
+
+// handleSubGroupsCreate 新建分组：名字必填，落地可以先不勾（空组，
+// 建好后在组详情里再勾落地、加成员、勾后端节点）；成员选填。
 func (s *Server) handleSubGroupsCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name           string         `json:"name"`
@@ -274,7 +292,7 @@ func (s *Server) handleSubGroupsCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errResp("备注太长，最多 200 个字"))
 		return
 	}
-	sel, _, err := s.validateMergedSelection(req.Selection)
+	sel, _, err := s.validateGroupSelection(req.Selection)
 	if err != nil {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
@@ -311,6 +329,8 @@ func (s *Server) handleSubGroupsCreate(w http.ResponseWriter, r *http.Request) {
 // handleSubGroupsUpdate 编辑分组：改名字/备注/落地集合/成员，全量替换。
 // 落地集合变了，组内所有成员的订阅下次更新立即同步（实时生成）；成员出组
 // 后恢复自己原来的勾选。开了限流的成员按新生效勾选重建转发。
+// v1.4.32：落地集合允许清空（空组），成员进组后仍按自己的勾选出订阅，
+// 不会断网（effectiveSelectionForSubUser 空组时回落自己的勾选）。
 func (s *Server) handleSubGroupsUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
@@ -340,7 +360,7 @@ func (s *Server) handleSubGroupsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errResp("备注太长，最多 200 个字"))
 		return
 	}
-	sel, _, err := s.validateMergedSelection(req.Selection)
+	sel, _, err := s.validateGroupSelection(req.Selection)
 	if err != nil {
 		writeJSON(w, 400, errResp(err.Error()))
 		return
@@ -455,6 +475,171 @@ func (s *Server) handleSubGroupsDelete(w http.ResponseWriter, r *http.Request) {
 		s.audit(s.currentUser(r), "删除分组", name+"（"+summary+"）", "部分成功", "成员已恢复自己勾选；"+warn)
 	} else {
 		s.audit(s.currentUser(r), "删除分组", name+"（"+summary+"）", "成功", "成员已恢复自己原来的勾选，链接不变")
+	}
+	writeJSON(w, 200, okResp(resp))
+}
+
+// ---------- 分组成员增量接口（v1.4.32，先建后配） ----------
+// 编辑分组原来是全量替换（先清掉该组全部成员的 GroupID 再写回新名单），
+// 漏勾一个人就等于把他踢出组。增量接口一次只动一个人：加人只改那个人
+// 的 GroupID，减人只清那个人的 GroupID，组里其他人一律不动。
+// 加已在别组的人时后端直接换组（前端负责二次确认，后端只做换组本身）。
+
+// groupMemberDisplayName 成员显示名（审计日志用）：订阅用户用名字，
+// 合并订阅没填名时用勾选摘要。
+func (s *Server) groupMemberDisplayName(kind, id string) string {
+	if kind == "user" {
+		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
+			return u.Name
+		}
+	}
+	if kind == "merged" {
+		if m := findMergedSubByID(s.cfg.MergedSubs, id); m != nil {
+			if m.Name != "" {
+				return m.Name
+			}
+			return s.selectionSummary(m.Selection)
+		}
+	}
+	return id
+}
+
+// setGroupMemberGroupID 只改一个成员的 GroupID（换组就是直接改这个字段）。
+// 成员不存在时返回 false。
+func (s *Server) setGroupMemberGroupID(kind, id, groupID string) bool {
+	if kind == "user" {
+		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
+			u.GroupID = groupID
+			return true
+		}
+		return false
+	}
+	if kind == "merged" {
+		if m := findMergedSubByID(s.cfg.MergedSubs, id); m != nil {
+			m.GroupID = groupID
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+// memberGroupID 读一个成员当前的 GroupID（不存在返回 ""，ok=false）。
+func (s *Server) memberGroupID(kind, id string) (string, bool) {
+	if kind == "user" {
+		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
+			return u.GroupID, true
+		}
+		return "", false
+	}
+	if kind == "merged" {
+		if m := findMergedSubByID(s.cfg.MergedSubs, id); m != nil {
+			return m.GroupID, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// handleSubGroupMembersAdd 往分组里加一个人：POST
+// /api/v1/subscriptions/groups/{id}/members，请求体 {kind, id}。
+// 已在别组的人直接换组；已在本组的人幂等返回 200。
+func (s *Server) handleSubGroupMembersAdd(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	g := s.findSubGroup(id)
+	if g == nil {
+		writeJSON(w, 404, errResp("没有这个分组"))
+		return
+	}
+	var req struct {
+		Kind string `json:"kind"`
+		ID   string `json:"id"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, 400, errResp("请求格式不对"))
+		return
+	}
+	members, err := s.validateGroupMembers([]groupMember{{Kind: req.Kind, ID: req.ID}})
+	if err != nil {
+		writeJSON(w, 400, errResp(err.Error()))
+		return
+	}
+	m := members[0]
+	oldGroup, _ := s.memberGroupID(m.Kind, m.ID)
+	if oldGroup == id {
+		writeJSON(w, 200, okResp(map[string]any{"group_id": id, "kind": m.Kind, "id": m.ID, "name": s.groupMemberDisplayName(m.Kind, m.ID), "already_member": true}))
+		return
+	}
+	if !s.setGroupMemberGroupID(m.Kind, m.ID, id) {
+		writeJSON(w, 404, errResp("没有这个成员"))
+		return
+	}
+	if err := s.saveConfig(); err != nil {
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	name := s.groupMemberDisplayName(m.Kind, m.ID)
+	resp := map[string]any{"group_id": id, "kind": m.Kind, "id": m.ID, "name": name}
+	if warn := s.reconcileGroupMembersForwards([]groupMember{m}); warn != "" {
+		resp["warning"] = warn
+		s.audit(s.currentUser(r), "分组加成员", g.Name+"："+name, "部分成功", warn)
+	} else {
+		detail := "成员已加入分组"
+		if oldGroup != "" {
+			detail = "成员已从分组「" + s.groupNameOf(oldGroup) + "」换到分组「" + g.Name + "」"
+		}
+		s.audit(s.currentUser(r), "分组加成员", g.Name+"："+name, "成功", detail)
+	}
+	writeJSON(w, 200, okResp(resp))
+}
+
+// handleSubGroupMembersRemove 把一个人移出分组：DELETE
+// /api/v1/subscriptions/groups/{id}/members/{kind}/{id}。
+// 只清那一个人的 GroupID，组里其他人不动；人不存在、或人不在这个组里
+// 都返回 404，不动任何数据。
+func (s *Server) handleSubGroupMembersRemove(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	kind := r.PathValue("kind")
+	memberID := r.PathValue("memberID")
+	g := s.findSubGroup(id)
+	if g == nil {
+		writeJSON(w, 404, errResp("没有这个分组"))
+		return
+	}
+	if kind != "user" && kind != "merged" {
+		writeJSON(w, 400, errResp("成员类型不对："+kind))
+		return
+	}
+	cur, ok := s.memberGroupID(kind, memberID)
+	if !ok {
+		if kind == "user" {
+			writeJSON(w, 404, errResp("没有这个订阅用户："+memberID))
+		} else {
+			writeJSON(w, 404, errResp("没有这条合并订阅："+memberID))
+		}
+		return
+	}
+	if cur != id {
+		writeJSON(w, 404, errResp("这个人不在这个分组里"))
+		return
+	}
+	name := s.groupMemberDisplayName(kind, memberID)
+	if !s.setGroupMemberGroupID(kind, memberID, "") {
+		writeJSON(w, 404, errResp("没有这个成员"))
+		return
+	}
+	if err := s.saveConfig(); err != nil {
+		writeJSON(w, 500, errResp("保存失败："+err.Error()))
+		return
+	}
+	resp := map[string]any{"group_id": id, "kind": kind, "id": memberID, "name": name}
+	if warn := s.reconcileGroupMembersForwards([]groupMember{{Kind: kind, ID: memberID}}); warn != "" {
+		resp["warning"] = warn
+		s.audit(s.currentUser(r), "分组减成员", g.Name+"："+name, "部分成功", warn)
+	} else {
+		s.audit(s.currentUser(r), "分组减成员", g.Name+"："+name, "成功", "成员已恢复自己原来的勾选，链接不变")
 	}
 	writeJSON(w, 200, okResp(resp))
 }

@@ -20,8 +20,8 @@ import (
 // 不阻塞、不报错；本地能拿到 IP 的机器行为不变。
 
 func TestVersion1430(t *testing.T) {
-	if Version != "1.4.31" {
-		t.Fatalf("Version 应为 1.4.31，实际 %q", Version)
+	if Version != "1.4.32" {
+		t.Fatalf("Version 应为 1.4.32，实际 %q", Version)
 	}
 }
 
