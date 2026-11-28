@@ -2,6 +2,16 @@
 
 面板与中转的版本更新记录（v1.2.2 起，按版本从旧到新）。
 
+### v1.4.37 更新
+
+- 新增玻璃拟物主题（与客户端 0.1.18 同一套共享设计 token，`~/workspace/031-invest/glass-theme-tokens.md`：浅蓝灰底 #E9EEF3、亮蓝强调 #2B7FFF、深蓝灰文字 #33475B、次要文字 #6B7C8D、磨砂白 rgba(255,255,255,0.65–0.75)＋blur(12–16px)、卡片圆角 20–24px、边框 rgba(255,255,255,0.6) 2–3px、阴影 0 8px 30px rgba(51,71,91,0.10)、深藏青 #0F2A4A 配金色 #EEC362；按观察数值自己实现，未复制任何第三方主题文件）。无保存值时默认玻璃（不再跟随系统），已保存浅色／深色的老用户继续尊重其选择；旧浅色／深色主题保留，随时可以切回来。
+- 玻璃主题样式（`style.css` 新增 `html[data-theme="glass"]` 变量块＋专属规则）：卡片／弹窗／导航／列表行／表格外壳用半透明＋`backdrop-filter: blur(14px)` 磨砂，卡片边框 2px 半透明白、圆角 22px；顶部导航平时与背景融为一体（透明、无边框），滚动后变磨砂白悬浮条置顶（JS 监听 scroll 加 `.scrolled` 类，只在玻璃主题下生效）；输入框／下拉／表格在玻璃主题下保持可读（输入框用 rgba(255,255,255,0.75) 底＋深灰边框，表格粘性首／末列用不透明的白）；深藏青＋金色只用在两处刻意的对比位置——登录卡品牌块（深藏青底＋金色字）与总览第一张主统计卡（realm 状态，深藏青底＋白字＋金色标签），其余一律磨砂白＋亮蓝。
+- 主题切换三档循环：顶栏 `#theme-btn` 玻璃→浅色→深色→玻璃循环，按钮文案与 title 同步更新（玻璃时显示“🥛 玻璃”）；设置页基础选项卡新增“界面主题”卡片，用 radio-card 三选一（玻璃／浅色／深色，附一句话说明），选中立即生效并写 localStorage 持久化（与 theme-btn 同一键 `relay-panel-theme`）；`index.html` 默认改成 `data-theme="glass"`，首屏直接是玻璃；meta theme-color 与 manifest theme_color 同步改成 #2B7FFF。
+- 自适应按 token：玻璃主题下内容区 max-width 改 1200px，区块留白取 60–80px 一档（内容区上下 padding 70px、标题到卡片 28px、网格间距 20px）；窄屏 <720px 已有汉堡抽屉与单列收拢，玻璃主题下只收上下留白、卡片不溢出；宽屏 ≥1024px 横向菜单＋多列网格＋边栏保持。页面结构不动，只换主题层。
+- 修正：v1.4.36 一节“测试”一行的描述不准——只有 test-1433-batch3.js 与 test-1429-users-subtabs.js 按新行为更新了断言，test-1321～1324／test-142 本批没动（它们钉在旧 kit 上，旧断言对旧 kit 正确），已改准。
+- 测试：新增 Go panel_1437_glass_test.go（版本断言 TestVersion1437＋前端静态断言）与 jsdom test-1437-glass.js（默认玻璃、三档切换与持久化、顶栏滚动后变磨砂悬浮条、玻璃卡片样式、窄屏汉堡抽屉不断、旧主题可切回）；写死版本号的 Go 断言与 jsdom 断言／mock／tag 一并升到 1.4.37（含 `.reg-206/` 冻结副本）。
+- 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；升级顺序先香港 plus 再管理面板。
+
 ### v1.4.36 更新
 
 - 面板 UI/UX 重设计第 6 批：设置页整理＋死代码清理，六批重设计至此全部完成（设计文档 `~/workspace/025-invest/panel-ui-redesign.md` §6 第 6 批、§4.5 设置页、§3.8 其他通用规则、P2-7／P2-10）。
@@ -9,7 +19,7 @@
 - 管理面板模式下设置页只留与集中管理相关的选项卡：藏掉“域名与反代”（只剩一张指向订阅页的指针卡，订阅页本身就在管理面板导航里）；基础／安全／审计／提醒／备份／系统 6 个选项卡保留（面板模式切换、远程管理令牌等管理必需入口都在其中）；本机专属卡片（任意门地址、延迟探测、中转倍率）仍按卡片隐藏。
 - 保存后只刷新受影响的部分（P2-7）：新增 `reloadSettingsForm()`，保存后只重填设置表单、不再重拉审计／用户／分组／档位／备份／公告／远程配置 7 个列表；任意门地址、端口段、中转倍率、订阅对外域名保存后只更新本地状态行，连设置接口都不重拉；选项卡与列表滚动位置、搜索词不再被重绘打断。
 - 死代码清理（P2-10，逐项核实引用后删）：`openMergedSubModal` 改名 `openSubLinkModal`（仍被独立合并订阅 3 处调用，只删了旧合并订阅专属的轮换／撤销接线）、`rotateMergedSub`、`openUserOpsMenu` 与 `openSubEditModal` 里的 merged 分支、通用订阅回填（设置页 `sub-status`／到期回填块）、`subTokenGenerate`、`loadGenericSubLink`、`saveSubExpiry`、`loadCentralSubTree` 生成树一家（`renderCentralSubTree`／`refreshCentralSubTreeStates`／`centralSubTree`／`centralSubChecked`／`subTreeCheckedCount`；`subTreeKey`／`fetchSubTreePanels` 仍被编辑弹窗用，保留）。保留：集中管理页旧合并订阅只读列表（每行“已退场”徽章）与 `showMergedRetiredNotice`、`GET /api/v1/subscriptions/merged` 列表与 DELETE 接口、`isRetiredSubToken` 退场判定，旧链接仍 410。
-- 测试：新增 Go panel_1436_batch6_test.go（版本断言 TestVersion1436＋前端静态断言＋旧记录保留断言）与 jsdom test-1436-batch6.js（设置页 7 个选项卡与订阅二级已撤、限流端口与倍率在系统页、管理面板模式藏域名选项卡、保存后不重拉 7 个列表、死代码全仓无引用、旧记录只读列表与退场提示仍在）；旧 jsdom test-1433-batch3.js／test-1429-users-subtabs.js／test-1321～1324／test-142 按新行为更新断言（订阅二级已撤、键盘方向键审计→域名）；写死版本号的 Go 断言与 jsdom 断言／mock／tag 一并升到 1.4.36（含 `.reg-206/` 冻结副本）。
+- 测试：新增 Go panel_1436_batch6_test.go（版本断言 TestVersion1436＋前端静态断言＋旧记录保留断言）与 jsdom test-1436-batch6.js（设置页 7 个选项卡与订阅二级已撤、限流端口与倍率在系统页、管理面板模式藏域名选项卡、保存后不重拉 7 个列表、死代码全仓无引用、旧记录只读列表与退场提示仍在）；旧 jsdom test-1433-batch3.js／test-1429-users-subtabs.js 按新行为更新断言（订阅二级已撤、键盘方向键审计→域名）；test-1321～1324／test-142 本批没动（它们钉在旧 kit 上，旧断言对旧 kit 正确）；写死版本号的 Go 断言与 jsdom 断言／mock／tag 一并升到 1.4.36（含 `.reg-206/` 冻结副本）。
 - 升级注意：重跑 panel-install.sh 即可（面板内点击更新也要保证能用）；升级顺序先香港 plus 再管理面板。
 
 ### v1.4.35 更新

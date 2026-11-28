@@ -166,25 +166,54 @@ function confirmModal(title, bodyHtml, okLabel, danger) {
 }
 
 /* ---------- 主题 ---------- */
+// v1.4.37：玻璃拟物主题加入，三档循环 玻璃→浅色→深色→玻璃；无保存值时默认
+// 玻璃（不再跟随系统），已保存浅色／深色的老用户继续尊重其选择；与设置页
+// “界面主题”卡片共用同一个 localStorage 键 relay-panel-theme。
+const THEMES = ['glass', 'light', 'dark'];
+const THEME_LABELS = { glass: '🥛 玻璃', light: '☀️ 浅色', dark: '🌙 深色' };
+const THEME_TITLES = {
+  glass: '当前：玻璃主题，点击切换到浅色',
+  light: '当前：浅色主题，点击切换到深色',
+  dark: '当前：深色主题，点击切换到玻璃',
+};
 function applyTheme(mode) {
   const root = document.documentElement;
-  if (mode === 'auto') {
-    root.dataset.theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  } else root.dataset.theme = mode;
+  root.dataset.theme = THEMES.includes(mode) ? mode : 'glass';
   const btn = $('#theme-btn');
-  if (btn) btn.textContent = root.dataset.theme === 'dark' ? '☀️ 浅色' : '🌙 深色';
+  if (btn) { btn.textContent = THEME_LABELS[root.dataset.theme]; btn.title = THEME_TITLES[root.dataset.theme]; }
+  syncThemeRadios(root.dataset.theme);
+  updateTopbarScrolled();
 }
 function initTheme() {
   const saved = localStorage.getItem('relay-panel-theme');
-  applyTheme(saved || 'auto');
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    if (!localStorage.getItem('relay-panel-theme')) applyTheme('auto');
-  });
+  applyTheme(saved || 'glass');
   on('#theme-btn', 'click', () => {
-    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    const cur = document.documentElement.dataset.theme;
+    const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
     localStorage.setItem('relay-panel-theme', next);
     applyTheme(next);
   });
+  // 设置页“界面主题”卡片：三选一 radio，选中立即生效并持久化（与 theme-btn 同一键）。
+  $$('input[name="ui-theme"]').forEach((r) => {
+    r.addEventListener('change', () => {
+      if (!r.checked) return;
+      localStorage.setItem('relay-panel-theme', r.value);
+      applyTheme(r.value);
+    });
+  });
+  window.addEventListener('scroll', updateTopbarScrolled, { passive: true });
+  updateTopbarScrolled();
+}
+// v1.4.37：玻璃主题下顶栏滚动后变磨砂白悬浮条（.scrolled 只在玻璃主题下生效）。
+function updateTopbarScrolled() {
+  const bar = document.querySelector('.topbar');
+  if (!bar) return;
+  bar.classList.toggle('scrolled', document.documentElement.dataset.theme === 'glass' && window.scrollY > 8);
+}
+// v1.4.37：设置页主题 radio 与顶栏按钮同步（选中态＋卡片高亮）。
+function syncThemeRadios(mode) {
+  $$('input[name="ui-theme"]').forEach((r) => { r.checked = r.value === mode; });
+  $$('.theme-radio-card').forEach((c) => c.classList.toggle('selected', c.dataset.theme === mode));
 }
 
 /* ---------- 导航 / 路由 ---------- */

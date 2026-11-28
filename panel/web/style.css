@@ -14,6 +14,22 @@ html[data-theme="dark"]{
   --red:#f87171; --red-bg:#7f1d1d; --grey:#94a3b8; --grey-bg:#334155;
   --shadow:0 2px 10px rgba(0,0,0,.35); --shadow-lg:0 8px 30px rgba(0,0,0,.5);
 }
+/* v1.4.37：玻璃拟物主题（浅色玻璃，默认主题）。数值全部取自共享 token
+   ~/workspace/031-invest/glass-theme-tokens.md（浅蓝灰底 #E9EEF3、亮蓝强调
+   #2B7FFF、深蓝灰文字 #33475B、次要文字 #6B7C8D、磨砂白 rgba(255,255,255,0.65–0.75)
+   ＋blur(12–16px)、卡片圆角 20–24px、边框 rgba(255,255,255,0.6) 2–3px、
+   阴影 0 8px 30px rgba(51,71,91,0.10)、深藏青 #0F2A4A 配金色 #EEC362），
+   按观察数值自己实现，不复制任何第三方主题文件。--surface 用半透明，
+   所以玻璃专属规则（文件末尾）再给卡片／弹窗／导航补 backdrop-filter。 */
+html[data-theme="glass"]{
+  --bg:#E9EEF3; --surface:rgba(255,255,255,0.70); --surface-muted:rgba(255,255,255,0.55); --text:#33475B; --muted:#6B7C8D;
+  --border:rgba(255,255,255,0.6); --accent:#2B7FFF; --accent-hover:#1F6FE8; --on-accent:#ffffff;
+  --green:#16a34a; --green-bg:#dcfce7; --yellow:#ca8a04; --yellow-bg:#fef9c3;
+  --red:#dc2626; --red-bg:#fee2e2; --grey:#64748b; --grey-bg:#e2e8f0;
+  --radius:22px; --shadow:0 8px 30px rgba(51,71,91,0.10); --shadow-lg:0 8px 30px rgba(51,71,91,0.10);
+  --focus:#2B7FFF; --sidebar-w:232px; --topbar-h:60px;
+  --navy:#0F2A4A; --gold:#EEC362;
+}
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
 body{
@@ -471,3 +487,90 @@ html[data-theme="dark"] .tag.relay{background:#1e3a5f; color:#93c5fd; border-col
 .user-table-wrap thead th:first-child{background:var(--surface-muted)}
 .user-table-wrap th:last-child,.user-table-wrap td:last-child{position:sticky;right:0;background:var(--surface);z-index:1}
 .user-table-wrap thead th:last-child{background:var(--surface-muted)}
+
+/* ---- v1.4.37：玻璃拟物主题专属规则（只在 html[data-theme="glass"] 下生效，
+   旧浅色／深色主题完全不受影响；数值见文件头部的 glass 变量块与共享 token）。
+   深藏青 #0F2A4A＋金色 #EEC362 只用在两处刻意的对比位置（登录卡品牌块、
+   总览第一张主统计卡），其余一律磨砂白＋亮蓝，不铺大面积深色。 ---- */
+/* 底色：浅蓝灰打底，中部一条更浅的近白横带（token #F4F7FA）。 */
+html[data-theme="glass"] body{background:linear-gradient(180deg,#E9EEF3 0%,#F4F7FA 42%,#E9EEF3 100%);background-attachment:fixed}
+/* 布局按 token：内容区 1200px 居中；区块留白取 60–80px 一档（页面上下
+   padding 70px，标题到卡片 25–30px 取 28px，网格间距 20px）。 */
+html[data-theme="glass"] .content{max-width:1200px;padding:70px 28px}
+html[data-theme="glass"] .page-head{margin-bottom:28px}
+html[data-theme="glass"] .grid{gap:20px}
+html[data-theme="glass"] .card{padding:22px}
+/* 磨砂卡片／列表行／弹窗／提示框：半透明＋blur＋2px 半透明白边框＋大圆角。 */
+html[data-theme="glass"] .card,
+html[data-theme="glass"] .mini-card,
+html[data-theme="glass"] .list-row,
+html[data-theme="glass"] .modal,
+html[data-theme="glass"] .ib-help-pop,
+html[data-theme="glass"] .login-card,
+html[data-theme="glass"] .table-wrap,
+html[data-theme="glass"] .qr-wrap figure{
+  backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+  border:2px solid rgba(255,255,255,0.6);
+}
+html[data-theme="glass"] .card,
+html[data-theme="glass"] .mini-card,
+html[data-theme="glass"] .list-row,
+html[data-theme="glass"] .modal{border-radius:22px}
+html[data-theme="glass"] .login-card{border-radius:24px}
+/* 侧边栏磨砂。 */
+html[data-theme="glass"] .sidebar{
+  background:rgba(255,255,255,0.65); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+  border-right:2px solid rgba(255,255,255,0.6);
+}
+/* 顶部导航：平时与背景融为一体（透明、无边框）；滚动后变磨砂白悬浮条置顶
+   （.scrolled 由 app.js 的滚动监听加，只在玻璃主题下生效）。 */
+html[data-theme="glass"] .topbar{background:transparent;border-bottom-color:transparent;backdrop-filter:none;-webkit-backdrop-filter:none}
+html[data-theme="glass"] .topbar.scrolled{
+  background:rgba(255,255,255,0.70); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+  border-bottom:1px solid rgba(255,255,255,0.6); box-shadow:0 8px 30px rgba(51,71,91,0.10);
+}
+/* 输入框／下拉／多行文本：磨砂白底＋可见的深灰边框（白边框在浅底上看不清，
+   所以这里不用 --border），文字深蓝灰，保证可读。 */
+html[data-theme="glass"] input,
+html[data-theme="glass"] select,
+html[data-theme="glass"] textarea{background:rgba(255,255,255,0.75);border:1px solid rgba(51,71,91,0.25)}
+html[data-theme="glass"] input:focus,
+html[data-theme="glass"] select:focus,
+html[data-theme="glass"] textarea:focus{border-color:var(--accent)}
+html[data-theme="glass"] .list-search{background:rgba(255,255,255,0.75);border:1px solid rgba(51,71,91,0.25)}
+/* 表格：表头磨砂白，粘性首／末列跟表面同色（玻璃下仍是不透明的白，保证横向滚动时字不透底）。 */
+html[data-theme="glass"] th{background:rgba(255,255,255,0.75)}
+html[data-theme="glass"] .user-table-wrap th:first-child,
+html[data-theme="glass"] .user-table-wrap td:first-child,
+html[data-theme="glass"] .user-table-wrap th:last-child,
+html[data-theme="glass"] .user-table-wrap td:last-child{background:rgba(255,255,255,0.92)}
+html[data-theme="glass"] .user-table-wrap thead th:first-child,
+html[data-theme="glass"] .user-table-wrap thead th:last-child{background:rgba(255,255,255,0.75)}
+/* 胶囊选中态与导航选中态：亮蓝文字＋亮蓝下划线（token 桌面横向菜单口径，
+   侧边栏沿用现有 active 底色，不另发明）。 */
+html[data-theme="glass"] .settings-tab[aria-selected="true"],
+html[data-theme="glass"] .central-tab[aria-selected="true"],
+html[data-theme="glass"] .rb-tab[aria-selected="true"],
+html[data-theme="glass"] .add-tab[aria-selected="true"],
+html[data-theme="glass"] .service-tab[aria-selected="true"],
+html[data-theme="glass"] .fw-tab[aria-selected="true"],
+html[data-theme="glass"] .sub-tab[aria-selected="true"],
+html[data-theme="glass"] .links-tab[aria-selected="true"]{color:var(--accent);border-bottom-color:var(--accent)}
+/* 对比位置①：登录卡品牌块——深藏青底＋金色字（只这一处用深色，金色只作标题色）。 */
+html[data-theme="glass"] .login-card .brand{
+  background:#0F2A4A;color:#EEC362;border-radius:14px;padding:12px;margin-bottom:12px;
+}
+html[data-theme="glass"] .login-card .brand span{color:#EEC362}
+/* 对比位置②：总览第一张主统计卡（realm 状态）——深藏青底＋白字＋金色标签。 */
+html[data-theme="glass"] #overview-stats .card:first-child{
+  background:#0F2A4A;border-color:rgba(255,255,255,0.6);color:#FFFFFF;
+}
+html[data-theme="glass"] #overview-stats .card:first-child .stat-label{color:#EEC362}
+html[data-theme="glass"] #overview-stats .card:first-child .stat-num{color:#FFFFFF}
+html[data-theme="glass"] #overview-stats .card:first-child .small{color:rgba(255,255,255,0.75)}
+/* 窄屏（<720px）玻璃下不断、卡片不溢出：已有汉堡抽屉与单列收拢（640px 断点），
+   这里只收玻璃加大的上下留白，免得手机上首屏全是空白。 */
+@media (max-width:720px){
+  html[data-theme="glass"] .content{padding:24px 14px 32px}
+  html[data-theme="glass"] .card{padding:18px}
+}

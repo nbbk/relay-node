@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="light">
+<html lang="zh-CN" data-theme="glass">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -9,9 +9,9 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="__PANEL_NAME__">
-<meta name="theme-color" content="#2563eb">
+<meta name="theme-color" content="#2B7FFF">
 <!-- 内联 manifest：可“存到主屏幕”，无外部依赖 -->
-<link rel="manifest" href='data:application/manifest+json,{"name":"__PANEL_NAME_MANIFEST__","short_name":"__PANEL_NAME_MANIFEST__","display":"standalone","start_url":".","theme_color":"%232563eb","background_color":"%23f4f6fa","icons":[]}'>
+<link rel="manifest" href='data:application/manifest+json,{"name":"__PANEL_NAME_MANIFEST__","short_name":"__PANEL_NAME_MANIFEST__","display":"standalone","start_url":".","theme_color":"%232B7FFF","background_color":"%23f4f6fa","icons":[]}'>
 <link rel="stylesheet" href="style.css">
 <!-- 内联关键样式：即使 style.css 加载失败，登录页与后台也不会堆在一起显示 -->
 <style>.hidden{display:none!important}</style>
@@ -67,7 +67,7 @@
       <button class="icon-btn menu-btn" id="menu-btn" type="button" aria-label="打开菜单" aria-expanded="false">☰</button>
       <div class="title" id="page-title">总览</div>
       <div class="topbar-ip" title="本机 IP（面板对外服务的地址）">本机 IP：<b id="machine-ip">—</b><button class="icon-btn sm" id="machine-ip-copy" type="button" title="复制本机 IP">复制</button></div>
-      <button class="icon-btn" id="theme-btn" type="button" title="切换深色 / 浅色">🌙 深色</button>
+      <button class="icon-btn" id="theme-btn" type="button" title="当前：玻璃主题，点击切换到浅色">🥛 玻璃</button>
       <button class="icon-btn" id="refresh-btn" type="button"><span class="spin-ico">↻</span> 刷新</button>
     </header>
 
@@ -437,6 +437,13 @@
           </div>
           <div class="settings-panel" role="tabpanel" id="settings-panel-basic" aria-labelledby="settings-tab-basic">
             <div class="grid cols-2">
+              <div class="card" id="card-ui-theme">
+            <h2>界面主题</h2>
+            <p class="muted">选一个界面外观，立即生效，浏览器会记住你的选择。玻璃是默认主题（浅蓝灰底＋磨砂白卡片）；浅色与深色是原来的两套外观，随时可以切回来。</p>
+            <label class="radio-card theme-radio-card selected" data-theme="glass"><input type="radio" name="ui-theme" value="glass" checked> <span class="opt-title">🥛 玻璃</span><div class="opt-desc">浅蓝灰底、磨砂白卡片、大圆角；顶栏滚动后变磨砂悬浮条（默认）</div></label>
+            <label class="radio-card theme-radio-card" data-theme="light"><input type="radio" name="ui-theme" value="light"> <span class="opt-title">☀️ 浅色</span><div class="opt-desc">原来的浅色外观：白底、浅灰边框</div></label>
+            <label class="radio-card theme-radio-card" data-theme="dark"><input type="radio" name="ui-theme" value="dark"> <span class="opt-title">🌙 深色</span><div class="opt-desc">原来的深色外观：深蓝灰底，夜间看不刺眼</div></label>
+          </div>
               <div class="card" id="card-mode">
             <h2>面板模式</h2>
             <p class="muted">完整面板：中转 + 面板都在这台机器上，能管本机落地，也能登记别的面板。管理面板：这台机器不装中转，只用来集中管理别的面板（任意机器都能跑）；切过去后本地落地、服务、端口管理全部隐藏，只留集中管理、订阅、节点与设置，数据保留，切回来即恢复。</p>
