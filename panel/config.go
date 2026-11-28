@@ -237,10 +237,15 @@ func validPanelName(name string) bool {
 }
 
 // SubSelection 合并订阅里的一条勾选：Panel 是 "local"（本面板）或
-// 远程面板 id，Landing 是落地编号（relay.conf 的 Index）。
+// 远程面板 id；落地条目 Landing 是落地编号（relay.conf 的 Index，
+// Node=0），后端节点条目 Node 是节点 id（Landing=0，v1.4.41：独立合
+// 并订阅的勾选树里加了后端节点，用户 2026-11-28 18:21 拍板；分组／
+// 订阅用户那路仍只认落地，带 Node 的条目在 validateMergedSelection
+// 里被拒）。
 type SubSelection struct {
 	Panel   string `json:"panel"`
 	Landing int    `json:"landing"`
+	Node    int64  `json:"node,omitempty"`
 }
 
 // IndependentMergedSub 一份独立合并订阅（v1.4.34，第 4 批）：字段与

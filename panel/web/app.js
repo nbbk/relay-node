@@ -382,6 +382,10 @@ async function checkMe() {
     const userEl = $('#side-user');
     if (userEl) userEl.textContent = me.username || 'admin';
     if (me.version) { const verEl = $('#side-version'); if (verEl) verEl.textContent = me.version; }
+    // v1.4.41：顶栏本机 IP 不再依赖总览页——登录时 /api/v1/me 已带
+    // machine_ip（handleMe），在这里顺手填上；管理面板模式下总览页
+    // 隐藏、loadOverview 永远不跑，之前顶栏一直是“—”。
+    if (me.machine_ip) { const ipEl = $('#machine-ip'); if (ipEl) ipEl.textContent = me.machine_ip; }
     managerOnly = !!me.manager_only;
     buildNav(); // 模式定了才建导航：管理面板只显示集中管理与设置
     showApp();
@@ -6928,7 +6932,7 @@ async function openSubGroupModal(group) {
   const groupErrBox = m.querySelector('[data-group-error]');
   const showGroupErr = (msg) => { if (groupErrBox) { groupErrBox.textContent = msg; groupErrBox.hidden = false; } toast(msg, 'err'); };
   const checked = {};
-  (group ? group.selection || [] : []).forEach((e) => { checked[subTreeKey(e.panel, e.landing)] = true; });
+  (group ? group.selection || [] : []).forEach((e) => { checked[subTreeKeyForEntry(e)] = true; });
   const treeBox = m.querySelector('[data-group-tree]');
   try {
     const panels = await fetchSubTreePanels();
@@ -7028,7 +7032,7 @@ async function openSubGroupDetailModal(group) {
     const box = m.querySelector('[data-detail-landings]');
     if (!box) return;
     const checked = {};
-    (cur.selection || []).forEach((e) => { checked[subTreeKey(e.panel, e.landing)] = true; });
+    (cur.selection || []).forEach((e) => { checked[subTreeKeyForEntry(e)] = true; });
     box.innerHTML = '<p class="small"><b>落地</b> <span class="muted">（勾了才按组的落地出内容；不勾就是空组）</span></p><div data-detail-tree>加载中…</div>' +
       '<div class="btn-row" style="margin-top:8px"><button class="btn sm" type="button" data-detail-save-landings>保存落地</button></div>';
     const treeBox = box.querySelector('[data-detail-tree]');
@@ -7172,12 +7176,25 @@ function initSubGroups() {
 // 把面板数据渲染成勾选树（面板框 + 落地行，半选态与全选框与集中管理页同一套）：
 // container 是弹窗里的容器，panels 是 fetchSubTreePanels() 的返回，
 // checked 是 "面板id:落地编号" -> true 的自有映射（改它不影响集中管理页的勾选）。
-function renderSubEditTree(container, panels, checked) {
+// opts.showNodes（v1.4.41，独立合并订阅的编辑树）：每面板再列后端节点
+// （与落地同一套勾选交互，键是 panel:node:<节点 id>）；分组／订阅用户
+// 的树不传这个选项，行为原样。
+function renderSubEditTree(container, panels, checked, opts) {
+  const showNodes = !!(opts && opts.showNodes);
   if (!container) return;
-  const total = panels.reduce((n, p) => n + p.landings.length, 0);
-  let h = '<label class="checkbox-row"><input type="checkbox" data-edit-all><span>全选全部面板（共 ' + total + ' 个落地）</span></label>';
+  // 一面板下可勾的项：落地（panel:<编号>）＋后端节点（panel:node:<id>）。
+  const panelItems = (p) => {
+    const items = (p.landings || []).map((l) => ({ key: subTreeKey(p.id, l.index), isNode: false }));
+    if (showNodes) (p.nodes || []).forEach((n) => items.push({ key: subTreeNodeKey(p.id, n.id), isNode: true }));
+    return items;
+  };
+  const total = panels.reduce((n, p) => n + panelItems(p).length, 0);
+  const totalLandings = panels.reduce((n, p) => n + (p.landings || []).length, 0);
+  const totalNodes = total - totalLandings;
+  let h = '<label class="checkbox-row"><input type="checkbox" data-edit-all><span>全选全部面板（共 ' + (showNodes ? total + ' 项：' + totalLandings + ' 个落地＋' + totalNodes + ' 个后端节点' : total + ' 个落地') + '）</span></label>';
   panels.forEach((p) => {
-    h += '<div style="margin-top:10px"><label class="checkbox-row"><input type="checkbox" data-edit-panel="' + esc(p.id) + '"><b>' + esc(p.name) + '</b><span class="muted small">（' + p.landings.length + ' 个落地' + (p.online === false ? '，离线' : '') + '）</span></label>';
+    const nodes = showNodes ? (p.nodes || []) : [];
+    h += '<div style="margin-top:10px"><label class="checkbox-row"><input type="checkbox" data-edit-panel="' + esc(p.id) + '"><b>' + esc(p.name) + '</b><span class="muted small">（' + p.landings.length + ' 个落地' + (nodes.length ? '、' + nodes.length + ' 个后端节点' : '') + (p.online === false ? '，离线' : '') + '）</span></label>';
     if (!p.landings.length) {
       h += '<p class="muted small" style="margin:4px 0 0 28px">没有落地。</p>';
     } else {
@@ -7186,6 +7203,18 @@ function renderSubEditTree(container, panels, checked) {
         h += '<div style="margin:4px 0 0 28px"><label class="checkbox-row" style="margin:0"><input type="checkbox" data-edit-landing="' + esc(key) + '"' + (checked[key] ? ' checked' : '') + '><span>' + esc(l.title) + ' <span class="small">#' + esc(l.index) + '</span></span></label></div>';
       });
     }
+    if (showNodes) {
+      if (!nodes.length) {
+        h += '<p class="muted small" style="margin:4px 0 0 28px">没有后端节点。</p>';
+      } else {
+        h += '<p class="small" style="margin:8px 0 0 28px"><b>后端节点</b></p>';
+        nodes.forEach((n) => {
+          const key = subTreeNodeKey(p.id, n.id);
+          const sub = n.address ? esc(n.address) : (n.health ? esc(n.health) : '');
+          h += '<div style="margin:4px 0 0 28px"><label class="checkbox-row" style="margin:0"><input type="checkbox" data-edit-node="' + esc(key) + '"' + (checked[key] ? ' checked' : '') + '><span>' + esc(n.name) + (sub ? ' <span class="muted small">' + sub + '</span>' : '') + ' <span class="tag">后端节点</span></span></label></div>';
+        });
+      }
+    }
     h += '</div>';
   });
   container.innerHTML = h;
@@ -7193,10 +7222,11 @@ function renderSubEditTree(container, panels, checked) {
     $$('[data-edit-panel]', container).forEach((cb) => {
       const pid = cb.dataset.editPanel;
       const panel = panels.find((p) => p.id === pid);
-      if (!panel || !panel.landings.length) { cb.checked = false; cb.indeterminate = false; return; }
-      const n = panel.landings.filter((l) => checked[subTreeKey(pid, l.index)]).length;
-      cb.checked = n === panel.landings.length;
-      cb.indeterminate = n > 0 && n < panel.landings.length;
+      const items = panel ? panelItems(panel) : [];
+      if (!items.length) { cb.checked = false; cb.indeterminate = false; return; }
+      const n = items.filter((it) => checked[it.key]).length;
+      cb.checked = n === items.length;
+      cb.indeterminate = n > 0 && n < items.length;
     });
     const all = container.querySelector('[data-edit-all]');
     const n = Object.keys(checked).length;
@@ -7204,36 +7234,44 @@ function renderSubEditTree(container, panels, checked) {
   };
   $$('[data-edit-all]', container).forEach((cb) => cb.addEventListener('change', () => {
     const on = cb.checked;
-    panels.forEach((p) => p.landings.forEach((l) => {
-      if (on) checked[subTreeKey(p.id, l.index)] = true;
-      else delete checked[subTreeKey(p.id, l.index)];
+    panels.forEach((p) => panelItems(p).forEach((it) => {
+      if (on) checked[it.key] = true;
+      else delete checked[it.key];
     }));
     $$('[data-edit-panel]', container).forEach((c) => { c.checked = on; c.indeterminate = false; });
-    $$('[data-edit-landing]', container).forEach((c) => { c.checked = on; });
+    $$('[data-edit-landing],[data-edit-node]', container).forEach((c) => { c.checked = on; });
     refresh();
   }));
   $$('[data-edit-panel]', container).forEach((cb) => cb.addEventListener('change', () => {
     const pid = cb.dataset.editPanel;
     const panel = panels.find((p) => p.id === pid);
     if (!panel) return;
-    panel.landings.forEach((l) => {
-      if (cb.checked) checked[subTreeKey(pid, l.index)] = true;
-      else delete checked[subTreeKey(pid, l.index)];
+    panelItems(panel).forEach((it) => {
+      if (cb.checked) checked[it.key] = true;
+      else delete checked[it.key];
     });
-    $$('[data-edit-landing]', container).forEach((lc) => { if (lc.dataset.editLanding.startsWith(pid + ':')) lc.checked = cb.checked; });
+    $$('[data-edit-landing],[data-edit-node]', container).forEach((lc) => { if ((lc.dataset.editLanding || lc.dataset.editNode || '').startsWith(pid + ':')) lc.checked = cb.checked; });
     refresh();
   }));
-  $$('[data-edit-landing]', container).forEach((cb) => cb.addEventListener('change', () => {
-    if (cb.checked) checked[cb.dataset.editLanding] = true;
-    else delete checked[cb.dataset.editLanding];
+  $$('[data-edit-landing],[data-edit-node]', container).forEach((cb) => cb.addEventListener('change', () => {
+    const key = cb.dataset.editLanding || cb.dataset.editNode;
+    if (cb.checked) checked[key] = true;
+    else delete checked[key];
     refresh();
   }));
   refresh();
 }
-// 把勾选映射收成后端要的 selection 数组。
+// 把勾选映射收成后端要的 selection 数组。节点键 panel:node:<id> 收成
+// {panel, node}，落地键 panel:<编号> 收成 {panel, landing}。
 function subEditTreeSelection(checked) {
   const sel = [];
   Object.keys(checked).forEach((key) => {
+    const ni = key.indexOf(':node:');
+    if (ni > 0) {
+      const nodeId = Number(key.slice(ni + 6));
+      if (nodeId > 0) sel.push({ panel: key.slice(0, ni), node: nodeId });
+      return;
+    }
     const idx = key.lastIndexOf(':');
     if (idx > 0) sel.push({ panel: key.slice(0, idx), landing: Number(key.slice(idx + 1)) });
   });
@@ -7269,7 +7307,7 @@ async function openSubEditModal(opts) {
       '<span class="small muted">订阅级设置优先于节点级：显式选了就按这个订阅的来，覆盖节点上的模式；选“跟随节点”时按节点模式出，和以前一样；选回“跟随节点”会把订阅级设置清掉。</span></div>' +
     '<div data-edit-tree style="margin-top:12px">加载中…</div>' +
     '<p class="muted small hidden" data-edit-group-note hidden></p>' +
-    '<p class="muted small">' + esc(isIndMerged ? '全部不勾 = 还没勾落地，订阅拉出来是空的；随时回来勾。' : '全部不勾 = 全部落地（单面板全量订阅）。') + '</p>' +
+    '<p class="muted small">' + esc(isIndMerged ? '全部不勾 = 还没勾落地和后端节点，订阅拉出来是空的；随时回来勾。' : '全部不勾 = 全部落地（单面板全量订阅）。') + '</p>' +
     '<div style="margin-top:12px">' + subModeSelectHTML('sub-edit-mode', '') + '</div>' +
     '<div class="form-row"><label class="small">到期时间：<input type="date" data-edit-expiry value="' + esc(dateInputOfExpiry(opts.expires_at)) + '"' + (opts.expires_at ? '' : ' disabled') + '></label>' +
     '<label class="small check"><input type="checkbox" data-edit-permanent' + (opts.expires_at ? '' : ' checked') + '> 永久</label></div>' +
@@ -7307,18 +7345,20 @@ async function openSubEditModal(opts) {
     for (const k in checked) delete checked[k];
     if (groupId) {
       const g = (subGroupsCache || []).find((x) => x.id === groupId);
-      (g ? g.selection || [] : []).forEach((e) => { checked[subTreeKey(e.panel, e.landing)] = true; });
-      renderSubEditTree(treeBox, editPanels, checked);
+      (g ? g.selection || [] : []).forEach((e) => { checked[subTreeKeyForEntry(e)] = true; });
+      renderSubEditTree(treeBox, editPanels, checked, { showNodes: isIndMerged });
       if (treeBox) treeBox.querySelectorAll('input').forEach((cb) => { cb.disabled = true; });
       if (note) { note.textContent = '由分组决定：订阅按分组的落地出内容，自己的勾选保留着；改落地去分组里改。'; note.classList.remove('hidden'); note.hidden = false; }
     } else {
-      (opts.selection || []).forEach((e) => { checked[subTreeKey(e.panel, e.landing)] = true; });
-      renderSubEditTree(treeBox, editPanels, checked);
+      (opts.selection || []).forEach((e) => { checked[subTreeKeyForEntry(e)] = true; });
+      renderSubEditTree(treeBox, editPanels, checked, { showNodes: isIndMerged });
       if (note) { note.classList.add('hidden'); note.hidden = true; }
     }
   };
   try {
-    editPanels = await fetchSubTreePanels();
+    // v1.4.41：独立合并订阅的树带后端节点（fetchSubTreePanels(true)），
+    // 订阅用户的树还是只有落地。
+    editPanels = await fetchSubTreePanels(isIndMerged);
     applyEditGroup(groupSel ? groupSel.value : '');
   } catch (e) {
     if (treeBox) treeBox.innerHTML = '<div class="error-box">勾选树加载失败：' + esc(e.message) + '</div>';
@@ -7852,15 +7892,18 @@ function centralNodeStatsRowHtml(row) {
   let note = '';
   if (row.never_polled) note = '（尚未拉取）';
   else if (row.offline) note = '（离线，显示上次数据）';
-  return '<div class="mini-row"><span>' + esc(row.name || '—') + '</span><b>' + (relay + direct + other) + ' 个（中转 ' + relay + ' · 直连 ' + direct + ' · 其它 ' + other + '）' + esc(note) + '</b></div>';
+  return '<div class="mini-row"><span>' + esc(row.name || '—') + '：</span><b>' + (relay + direct + other) + ' 个（中转 ' + relay + ' · 直连 ' + direct + ' · 其它 ' + other + '）' + esc(note) + '</b></div>';
 }
 function renderCentralNodeStats() {
   const box = $('#central-node-stats');
   if (!box) return;
   const st = centralNodeStats;
   if (!st) { box.innerHTML = ''; return; }
-  let h = '<div class="card" style="margin-bottom:12px"><h3 style="margin:0 0 8px">节点统计</h3>' +
-    '<div class="mini-row"><span>全部节点</span><b>' + esc(centralNodeCountText(st.total)) + '</b></div>';
+  // v1.4.41：标题写清口径——这里数的只是落地自带的中转链接数（落地
+  // 子节点），卡片上的“节点 N 个”数的是后端节点，两处定义不同，不要
+  // 混着看；计数口径本身不动。
+  let h = '<div class="card" style="margin-bottom:12px"><h3 style="margin:0 0 8px">节点统计 <span class="muted small">仅中转节点（落地子节点），后端节点不计入内</span></h3>' +
+    '<div class="mini-row"><span>全部节点：</span><b>' + esc(centralNodeCountText(st.total)) + '</b></div>';
   h += centralNodeStatsRowHtml(st.local || { name: '本机', count: {} });
   (st.remotes || []).forEach((row) => { h += centralNodeStatsRowHtml(row); });
   h += '<p class="small muted" style="margin:8px 0 0">只计数，不标在线/离线；数字跟着登记走，增删落地后刷新就变。</p></div>';
@@ -7931,17 +7974,39 @@ function centralLandingTitle(l) {
 // 订阅的最小单位是单个落地：面板 → 下面列它的落地，每级都有勾选框；
 // 勾面板即选它下面全部落地，部分选时面板框显示半选；顶上再放一个“全选全部面板”。
 function subTreeKey(panel, index) { return panel + ':' + index; }
+// 后端节点条目的勾选键（v1.4.41）：panel:node:<节点 id>，与落地键
+// panel:<落地编号> 不会撞（落地编号是纯数字，node: 前缀区分开）。
+function subTreeNodeKey(panel, nodeId) { return panel + ':node:' + nodeId; }
+// 一条勾选的树键（落地或后端节点都行，三个树初始化点共用）。
+function subTreeKeyForEntry(e) {
+  if (!e) return '';
+  return e.node ? subTreeNodeKey(e.panel, e.node) : subTreeKey(e.panel, e.landing);
+}
 // 取订阅勾选树的面板数据（本面板 + 已登记的远程面板，各带落地列表）：
 // 订阅编辑弹窗（v1.3.19）用。v1.4.36：集中管理页的生成树已撤（#central-sub-tree
 // 元素不在了），只剩旧记录只读列表。管理面板模式没有本机
 // 落地，订阅树里不列“本面板”，只列远程面板。
-async function fetchSubTreePanels() {
+// v1.4.41：includeNodes=true 时各面板再带后端节点列表（独立合并订阅
+// 的编辑树用）：本机节点走 GET /api/v1/nodes，远程节点走集中管理快照
+// 的 rm.nodes（NodeID／Name／Health，无地址与入站——地址与入站只在
+// 保存／取订阅时按需拉详情）。管理面板模式下本机没有落地，但后端节
+// 点（美国01、测试机）是本机的，树里单独列一组“本面板”。
+async function fetchSubTreePanels(includeNodes) {
   const r = await api('/api/v1/central/remotes');
   const remotes = r.remotes || [];
   const panels = [];
+  let localNodes = [];
+  if (includeNodes) {
+    try {
+      const cn = await api('/api/v1/nodes');
+      localNodes = (cn.nodes || []).map((n) => ({ id: n.id, name: n.name || n.address || ('#' + n.id), address: n.address || '' }));
+    } catch (e) { localNodes = []; }
+  }
   if (!managerOnly) {
     if (!landingsCache.length) { try { await loadOverview(); } catch (e) { /* 总览读不到就只显示远程 */ } }
-    panels.push({ id: 'local', name: '本面板', online: true, landings: (landingsCache || []).map((l) => ({ index: l.index, title: centralLandingTitle(l) })) });
+    panels.push({ id: 'local', name: '本面板', online: true, landings: (landingsCache || []).map((l) => ({ index: l.index, title: centralLandingTitle(l) })), nodes: localNodes });
+  } else if (includeNodes) {
+    panels.push({ id: 'local', name: '本面板', online: true, landings: [], nodes: localNodes });
   }
   for (const rm of remotes) {
     let landings = (rm.landings || []).map((l) => ({ index: l.index, title: centralLandingTitle(l) }));
@@ -7951,7 +8016,8 @@ async function fetchSubTreePanels() {
         landings = (d.landings || []).map((l) => ({ index: l.index, title: centralLandingTitle(l) }));
       } catch (e) { /* 取不到就显示空 */ }
     }
-    panels.push({ id: rm.id, name: rm.name, online: rm.online, landings });
+    const nodes = includeNodes ? (rm.nodes || []).map((n) => ({ id: n.node_id, name: n.name || ('#' + n.node_id), health: n.health || '' })) : [];
+    panels.push({ id: rm.id, name: rm.name, online: rm.online, landings, nodes });
   }
   return panels;
 }
@@ -7975,15 +8041,17 @@ async function loadIndMergedSubsList() {
   try {
     const r = await api('/api/v1/subscriptions/independent-merged');
     const subs = r.subs || [];
-    if (!subs.length) { list.innerHTML = '<p class="muted small">还没有独立合并订阅：点“新建独立合并订阅”，先建一条（名字选填、可以先不勾落地），再勾落地。</p>'; return; }
+    if (!subs.length) { list.innerHTML = '<p class="muted small">还没有独立合并订阅：点“新建独立合并订阅”，先建一条（名字选填、可以先不勾落地和后端节点），再勾落地和后端节点。</p>'; return; }
     const filtered = subs.filter((s) => matchSubText(indMergedSubSearch, [s.name, s.summary, s.id]));
     if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的独立合并订阅，换个关键词试试。</p>'; return; }
     const pg = paginate(filtered, indMergedSubPage);
     indMergedSubPage = pg.cur;
-    list.innerHTML = '<h3>独立合并订阅 <span class="badge">独立合并订阅</span></h3><div class="table-wrap"><table><thead><tr><th>序号</th><th>ID</th><th>名字</th><th>勾选摘要</th><th>订阅出哪些节点</th><th>到期</th><th>已用／总流量</th><th>状态</th><th>操作</th></tr></thead><tbody>' +
+    // v1.4.41：badge 原来与 h3 文本完全重复（“独立合并订阅 独立合并订
+    // 阅”），改成条数。
+    list.innerHTML = '<h3>独立合并订阅 <span class="badge">共 ' + filtered.length + ' 条</span></h3><div class="table-wrap"><table><thead><tr><th>序号</th><th>ID</th><th>名字</th><th>勾选摘要</th><th>订阅出哪些节点</th><th>到期</th><th>已用／总流量</th><th>状态</th><th>操作</th></tr></thead><tbody>' +
       pg.slice.map((s, i) => '<tr data-indmerged-row="' + esc(s.id) + '"><td>' + ((pg.cur - 1) * pg.per + i + 1) + '</td><td class="mono" title="' + esc(String(s.id)) + '">' + esc(String(s.id)) + ' <button class="btn secondary sm" type="button" data-indmerged-copy-id="' + esc(String(s.id)) + '" title="复制完整 ID">复制</button></td>' +
         '<td>' + esc(s.name || '未命名') + '<br><span class="small muted">' + esc(String(s.id)) + '</span></td>' +
-        '<td>' + (s.empty ? '<span class="muted">尚未勾选落地</span>' : esc(s.summary || '')) + '</td>' +
+        '<td>' + (s.empty ? '<span class="muted">尚未勾选落地或后端节点</span>' : esc(s.summary || '')) + '</td>' +
         '<td>' + esc(subModeLabel(s.mode)) + '</td>' +
         '<td>' + expiryBadge(s.expires_at) + '</td>' +
         '<td>' + subUserTrafficCell(s) + '</td>' +
@@ -8089,7 +8157,7 @@ async function openIndMergedCreateModal(preselection) {
   // preselection: [{panel, landing}]，单落地“订阅”按钮点进来时带上；
   // 建好后“去勾选落地”时预勾进第 2 步的勾选树。不传 = 空着以后再勾。
   const m = openModal('<h2>新建独立合并订阅</h2>' +
-    '<p class="muted small">先建一条，名字可以不填；建好后去勾选落地（第 2 步），也可以先空着、以后再勾。空订阅拉出来是空的，不会报错。</p>' +
+    '<p class="muted small">先建一条，名字可以不填；建好后去勾选落地和后端节点（第 2 步），也可以先空着、以后再勾。空订阅拉出来是空的，不会报错。</p>' +
     '<label class="small">名字（选填）：<input type="text" data-indmerged-name style="width:220px" placeholder="如 香港＋美国合订"></label>' +
     '<div style="margin-top:12px">' + subModeSelectHTML('indmerged-mode', '') + '</div>' +
     '<div class="form-row" style="margin-top:12px"><label class="small">到期时间：<input type="date" data-indmerged-expiry></label>' +
@@ -8130,7 +8198,7 @@ async function openIndMergedCreateModal(preselection) {
           '<div class="kv"><span>订阅链接</span><b class="mono" style="word-break:break-all">' + esc(r.url || '') + '</b></div>' +
           '<p class="muted small">链接已加密存在面板里，关掉弹窗后在独立合并订阅列表里点行、选“查看链接”随时能拿。</p>' +
           '<div class="btn-row"><button class="btn" type="button" data-indmerged-copy-link>复制订阅链接</button>' +
-          '<button class="btn secondary" type="button" data-indmerged-goto-tree>去勾选落地</button>' +
+          '<button class="btn secondary" type="button" data-indmerged-goto-tree>去勾选落地和后端节点</button>' +
           '<button class="btn secondary" type="button" data-indmerged-done>完成</button></div>';
         onIn(body, '[data-indmerged-copy-link]', 'click', (e) => copyText(r.url || '', e.target));
         onIn(body, '[data-indmerged-goto-tree]', 'click', () => {

@@ -549,30 +549,44 @@ func (s *Server) backendSubLinksForUser(kind, id string) []subLink {
 			// 节点模式出。只对 kind="subuser" 生效。
 			mode = subLinkMode
 		}
-		for _, in := range node.Inbounds {
-			if allowed != nil {
-				ok := false
-				for _, tag := range allowed {
-					if tag == in.InboundTag {
-						ok = true
-						break
-					}
-				}
-				if !ok {
-					continue
+		out = append(out, s.backendNodeLinks(node, uuid, allowed, mode, relays)...)
+	}
+	return out
+}
+
+// backendNodeLinks 一台后端节点上一个订阅的链接（直连＋中转，按模式）：
+// uuid 为空时 UUID 制协议的入站跳过（SS／SOCKS5 照常出，见
+// backendInboundLinkHost 的协议级门控）；allowed 非 nil 时只出允许的
+// 入站；mode 为空时按节点 LinkMode（linkModeOf，非法值回落 both）。
+// backendSubLinksForUser 与独立合并订阅的远程节点条目
+// （indMergedRemoteNodeLinks）共用。
+func (s *Server) backendNodeLinks(node BackendNode, uuid string, allowed []string, mode string, relays []twinRelay) []subLink {
+	if mode == "" {
+		mode = linkModeOf(&node)
+	}
+	var out []subLink
+	for _, in := range node.Inbounds {
+		if allowed != nil {
+			ok := false
+			for _, tag := range allowed {
+				if tag == in.InboundTag {
+					ok = true
+					break
 				}
 			}
-			// twin（v1.4.25）：同入站先 A（直连）后 B（中转）。
-			if mode != "relay" {
-				if l, ok := backendInboundLink(node, in, uuid); ok {
+			if !ok {
+				continue
+			}
+		}
+		if mode != "relay" {
+			if l, ok := backendInboundLink(node, in, uuid); ok {
+				out = append(out, l)
+			}
+		}
+		if mode != "direct" {
+			if rt, ok := twinRelayFor(relays, node, in); ok {
+				if l, ok := backendInboundRelayLink(node, in, uuid, rt.host, rt.port); ok {
 					out = append(out, l)
-				}
-			}
-			if mode != "direct" {
-				if rt, ok := twinRelayFor(relays, node, in); ok {
-					if l, ok := backendInboundRelayLink(node, in, uuid, rt.host, rt.port); ok {
-						out = append(out, l)
-					}
 				}
 			}
 		}

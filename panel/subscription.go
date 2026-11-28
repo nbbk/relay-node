@@ -1791,6 +1791,11 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 	// 通用订阅（backendKind 为空）不追加。
 	if backendKind != "" {
 		links = append(links, s.backendSubLinksForUser(backendKind, backendID)...)
+		// v1.4.41：独立合并订阅勾选里的远程后端节点（本地节点条目已由
+		// 上面那路出，这里只补远程条目）。
+		if backendKind == "indmerged" {
+			links = append(links, s.indMergedRemoteNodeLinks(backendID)...)
+		}
 	}
 	links = filterSubLinksByKind(links, contentMode)
 	if userKey != "" {
@@ -3167,13 +3172,18 @@ func (s *Server) handleSubQR(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 勾选集合校验与手动恢复（会话认证） ----------
 
-// canonicalSelection 勾选集合规范化：去重、按面板+落地排序，拼成唯一键。
-// 同一键就是同一份选择（顺序不同也算同一份）。
+// canonicalSelection 勾选集合规范化：去重、按面板+落地/节点排序，拼成唯一键。
+// 同一键就是同一份选择（顺序不同也算同一份）。落地条目（Landing≥1，
+// Node=0）与后端节点条目（Node>0，Landing=0）二选一，两者都空或两者都
+// 填的都丢掉；键里节点条目写成 panel:node:N。
 func canonicalSelection(sel []SubSelection) ([]SubSelection, string) {
 	seen := map[SubSelection]bool{}
 	out := []SubSelection{}
 	for _, e := range sel {
-		if e.Panel == "" || e.Landing < 1 || seen[e] {
+		if e.Panel == "" || seen[e] {
+			continue
+		}
+		if (e.Landing < 1) == (e.Node < 1) {
 			continue
 		}
 		seen[e] = true
@@ -3183,11 +3193,18 @@ func canonicalSelection(sel []SubSelection) ([]SubSelection, string) {
 		if out[i].Panel != out[j].Panel {
 			return out[i].Panel < out[j].Panel
 		}
-		return out[i].Landing < out[j].Landing
+		if out[i].Landing != out[j].Landing {
+			return out[i].Landing < out[j].Landing
+		}
+		return out[i].Node < out[j].Node
 	})
 	var parts []string
 	for _, e := range out {
-		parts = append(parts, e.Panel+":"+strconv.Itoa(e.Landing))
+		if e.Node > 0 {
+			parts = append(parts, e.Panel+":node:"+strconv.FormatInt(e.Node, 10))
+		} else {
+			parts = append(parts, e.Panel+":"+strconv.Itoa(e.Landing))
+		}
 	}
 	return out, strings.Join(parts, ",")
 }
@@ -3217,6 +3234,11 @@ func (s *Server) validateMergedSelectionEntries(sel []SubSelection, key string) 
 		}
 	}
 	for _, e := range sel {
+		// 后端节点条目只有独立合并订阅能带（validateIndMergedSelection
+		// 单独校验），分组／订阅用户那路到这里直接拒掉。
+		if e.Node > 0 {
+			return nil, "", fmt.Errorf("勾选集合里不能有后端节点（只有独立合并订阅能勾后端节点）")
+		}
 		if e.Panel == "local" {
 			if !localIdx[e.Landing] {
 				return nil, "", fmt.Errorf("本面板没有编号 %d 的落地", e.Landing)
@@ -3260,17 +3282,31 @@ func (s *Server) selectionSummary(sel []SubSelection) string {
 		}
 	}
 	byPanel := map[string][]string{}
+	byPanelNodes := map[string][]string{}
 	var order []string
+	seenPanel := map[string]bool{}
+	addName := func(m map[string][]string, panelName, name string) {
+		m[panelName] = append(m[panelName], name)
+	}
 	for _, e := range sel {
 		panelName := e.Panel
-		landingName := ""
 		if e.Panel == "local" {
 			panelName = "本面板"
+		} else if rem := s.remoteByID(e.Panel); rem != nil {
+			panelName = rem.Name
+		}
+		if !seenPanel[panelName] {
+			seenPanel[panelName] = true
+			order = append(order, panelName)
+		}
+		if e.Node > 0 {
+			addName(byPanelNodes, panelName, s.backendNodeDisplayName(e))
+			continue
+		}
+		landingName := ""
+		if e.Panel == "local" {
 			landingName = localName[e.Landing]
 		} else {
-			if rem := s.remoteByID(e.Panel); rem != nil {
-				panelName = rem.Name
-			}
 			s.centralMu.Lock()
 			snap := s.centralCache[e.Panel]
 			s.centralMu.Unlock()
@@ -3286,16 +3322,46 @@ func (s *Server) selectionSummary(sel []SubSelection) string {
 		if landingName == "" {
 			landingName = "#" + strconv.Itoa(e.Landing)
 		}
-		if _, ok := byPanel[panelName]; !ok {
-			order = append(order, panelName)
-		}
-		byPanel[panelName] = append(byPanel[panelName], landingName)
+		addName(byPanel, panelName, landingName)
 	}
 	var parts []string
 	for _, p := range order {
-		parts = append(parts, p+"："+strings.Join(byPanel[p], "、"))
+		if names := byPanel[p]; len(names) > 0 {
+			parts = append(parts, p+"："+strings.Join(names, "、"))
+		}
+		if names := byPanelNodes[p]; len(names) > 0 {
+			parts = append(parts, p+"（后端节点）："+strings.Join(names, "、"))
+		}
 	}
 	return strings.Join(parts, "；")
+}
+
+// backendNodeDisplayName 勾选摘要里的后端节点名：本机按节点 id 查名，
+// 远程按快照的 Nodes 查名；都查不到时用 "#<id>"。
+func (s *Server) backendNodeDisplayName(e SubSelection) string {
+	if e.Panel == "local" {
+		s.nodes.mu.Lock()
+		n := s.nodes.getNode(e.Node)
+		s.nodes.mu.Unlock()
+		if n != nil && strings.TrimSpace(n.Name) != "" {
+			return n.Name
+		}
+		return "#" + strconv.FormatInt(e.Node, 10)
+	}
+	s.centralMu.Lock()
+	snap := s.centralCache[e.Panel]
+	s.centralMu.Unlock()
+	if snap != nil {
+		for _, n := range snap.Nodes {
+			if n.NodeID == e.Node {
+				if strings.TrimSpace(n.Name) != "" {
+					return n.Name
+				}
+				return "#" + strconv.FormatInt(e.Node, 10)
+			}
+		}
+	}
+	return "#" + strconv.FormatInt(e.Node, 10)
 }
 
 // remoteLandingDisplayName 远程落地显示名（快照里有备注名就用，没有用地址）。
@@ -3426,6 +3492,12 @@ func (s *Server) collectMergedSubLinksForSelection(sel []SubSelection, forUser s
 	localIndices := map[int]bool{}
 	remoteIndices := map[string][]int{}
 	for _, e := range sel {
+		// 后端节点条目不走这里：本地节点由 serveSubContent 里的
+		// backendSubLinksForUser 出，远程节点由 indMergedRemoteNodeLinks
+		// 出；这里只拼落地链接。
+		if e.Node > 0 {
+			continue
+		}
 		if e.Panel == "local" {
 			localIndices[e.Landing] = true
 		} else {
@@ -3444,6 +3516,51 @@ func (s *Server) collectMergedSubLinksForSelection(sel []SubSelection, forUser s
 		out = append(out, s.fetchRemoteSubLinks(*rem, indices, forUser)...)
 	}
 	return out, localIndices
+}
+
+// indMergedRemoteNodeLinks 独立合并订阅勾选里远程面板上后端节点的链接
+// （v1.4.41，serveSubContent 里 backendSubLinksForUser 之后追加）：
+// 本地节点条目不走这里（保存时指派同步后由 backendSubLinksForUser 出）；
+// 远程节点条目按地址找本地同胎——有同胎且指派已覆盖时跳过（本机那路
+// 已出，避免重复），没覆盖时按同胎本地节点＋ims 的 UUID 现场补出（保
+// 存时远程失联、指派没同步上的兜底）；无同胎时按远程详情现拼，UUID 传
+// 空串（远程面板不认这个订阅的用户，UUID 制协议的入站由
+// backendInboundLinkHost 的门控拦下，只出 SS／SOCKS5——入站共享凭
+// 证，不用 UUID，节点 agent 按远程面板的节点配置照常跑这些入站）。
+// 远程拉不到或详情解析失败时该节点不出链接、不报错。
+func (s *Server) indMergedRemoteNodeLinks(imsID string) []subLink {
+	ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, imsID)
+	if ims == nil || ims.Disabled {
+		return nil
+	}
+	var out []subLink
+	relays := s.twinRelayCandidates()
+	key := userSubKey("indmerged", imsID)
+	for _, e := range ims.Selection {
+		if e.Node < 1 || e.Panel == "local" {
+			continue
+		}
+		rem := s.remoteByID(e.Panel)
+		if rem == nil {
+			continue
+		}
+		d, err := s.remoteNodeDetail(*rem, e.Node)
+		if err != nil || d == nil {
+			continue
+		}
+		// 有本地同胎：指派已覆盖时本机那路已出，跳过；没覆盖时现场补。
+		if twin := s.localNodeByAddress(d.Address); twin != nil {
+			if nodeHasUser(twin, key) && s.backendAssignAllows(ims.BackendScope, ims.BackendTargets, "", twin) {
+				continue
+			}
+			out = append(out, s.backendNodeLinks(*twin, ims.NodeUUIDs[twin.Address], nil, "", relays)...)
+			continue
+		}
+		// 无同胎：按远程详情现拼，UUID 为空（只出 SS／SOCKS5）。
+		node := BackendNode{ID: e.Node, Name: d.Name, Address: d.Address, LinkMode: d.LinkMode, Inbounds: d.Inbounds}
+		out = append(out, s.backendNodeLinks(node, "", nil, "", relays)...)
+	}
+	return out
 }
 
 // ---------- 被管端：订阅内容（令牌认证） ----------

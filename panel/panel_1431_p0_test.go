@@ -16,14 +16,14 @@ import (
 // test-1432-p0-batch1.js 覆盖。
 
 func TestVersion1431(t *testing.T) {
-	if Version != "1.4.40" {
+	if Version != "1.4.41" {
 		t.Fatalf("Version 应为 1.4.33，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.40" {
+	if strings.TrimSpace(string(vb)) != "1.4.41" {
 		t.Fatalf("VERSION 文件应为 1.4.33，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }

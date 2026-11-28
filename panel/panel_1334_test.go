@@ -414,37 +414,34 @@ func TestChangeUserForwardPortLocalRollback1334(t *testing.T) {
 	}
 }
 
-// ---------- 合并订阅退场：forwards / change-port 一并 410 ----------
+// ---------- 旧合并订阅已移除：forwards / change-port 一并 404 ----------
+// v1.4.40：旧合并订阅记录已删，merged  kind 查不到记录（不再 410）；
+// 独立合并订阅走 kind=indmerged，见 TestIndMergedForwardKeyNamespace1434。
 
-func TestMergedForwardsAndChangePortRetired1334(t *testing.T) {
+func TestOldMergedForwardsAndChangePortGone1334(t *testing.T) {
 	remote := newFakeChangePortRemote1334(t)
 	s := newChangePortServer1334(t, remote)
-	// 直接调 handler：merged 的两个接口都 410，文案与其它退场接口一致。
+	// 直接调 handler：merged 的两个接口都 404（记录已不存在）。
 	req := httptest.NewRequest("GET", "/api/v1/subscriptions/merged/ms-test/forwards", nil)
 	req.SetPathValue("id", "ms-test")
 	rec := httptest.NewRecorder()
 	s.handleSubUserForwards("merged")(rec, req)
-	if rec.Code != 410 {
-		t.Fatalf("合并订阅 forwards 应 410（已退场），实际 %d：%s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), retiredSubMsg) {
-		t.Fatalf("合并订阅 forwards 的 410 文案应与其它退场接口一致，实际 %s", rec.Body.String())
+	if rec.Code != 404 {
+		t.Fatalf("旧合并订阅 forwards 应 404（记录已删），实际 %d：%s", rec.Code, rec.Body.String())
 	}
 	r := callChangePort1334(t, s, "merged", "ms-test", `{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30005}`)
-	if r.Code != 410 {
-		t.Fatalf("合并订阅 change-port 应 410（已退场），实际 %d：%s", r.Code, r.Body.String())
+	if r.Code != 404 {
+		t.Fatalf("旧合并订阅 change-port 应 404（记录已删），实际 %d：%s", r.Code, r.Body.String())
 	}
-	if !strings.Contains(r.Body.String(), retiredSubMsg) {
-		t.Fatalf("合并订阅 change-port 的 410 文案应与其它退场接口一致，实际 %s", r.Body.String())
-	}
-	// 退场不应动任何记录：换口没发生，远程没收到下发。
+	// 404 不应动任何记录：换口没发生，远程没收到下发。
 	if f := s.findRemoteUserForward("subuser:su-test", "rm-1334", "203.0.113.1"); f == nil || f.ListenPort != 30002 {
-		t.Fatalf("410 后原转发应不动（30002），实际 %+v", f)
+		t.Fatalf("404 后原转发应不动（30002），实际 %+v", f)
 	}
 	if len(remote.posts) != 0 {
-		t.Fatalf("410 后不应向远程下发，实际 posts=%d", len(remote.posts))
+		t.Fatalf("404 后不应向远程下发，实际 posts=%d", len(remote.posts))
 	}
-	// 走完整路由也 410（注册的 merged 路由已退场），subuser 路由不受影响。
+	// 走完整路由：旧 merged 路由已撤，落到 SPA 兜底（200＋首页 HTML，不再是
+	// 410 JSON）；subuser 路由不受影响。
 	h := s.routes()
 	cookie := loginTestCookie(t, h)
 	get := func(target string) *httptest.ResponseRecorder {
@@ -454,18 +451,18 @@ func TestMergedForwardsAndChangePortRetired1334(t *testing.T) {
 		h.ServeHTTP(rec, req)
 		return rec
 	}
-	if rec := get("/api/v1/subscriptions/merged/ms-test/forwards"); rec.Code != 410 {
-		t.Fatalf("路由上合并订阅 forwards 应 410，实际 %d：%s", rec.Code, rec.Body.String())
+	if rec := get("/api/v1/subscriptions/merged/ms-test/forwards"); rec.Code != 200 || !strings.HasPrefix(rec.Body.String(), "<!DOCTYPE html>") {
+		t.Fatalf("路由上旧合并订阅 forwards 应落到 SPA 兜底（200＋首页），实际 %d：%s", rec.Code, rec.Body.String()[:min(120, rec.Body.Len())])
 	}
 	postReq := httptest.NewRequest("POST", "/api/v1/subscriptions/merged/ms-test/change-port", strings.NewReader(`{"panel_id":"rm-1334","landing_addr":"203.0.113.1","new_port":30005}`))
 	postReq.Header.Set("Cookie", cookie)
 	postReq.Header.Set("Content-Type", "application/json")
 	postRec := httptest.NewRecorder()
 	h.ServeHTTP(postRec, postReq)
-	if postRec.Code != 410 {
-		t.Fatalf("路由上合并订阅 change-port 应 410，实际 %d：%s", postRec.Code, postRec.Body.String())
+	if postRec.Code != 200 || !strings.HasPrefix(postRec.Body.String(), "<!DOCTYPE html>") {
+		t.Fatalf("路由上旧合并订阅 change-port 应落到 SPA 兜底（200＋首页），实际 %d：%s", postRec.Code, postRec.Body.String()[:min(120, postRec.Body.Len())])
 	}
 	if rec := get("/api/v1/subscriptions/users/su-test/forwards"); rec.Code != 200 {
-		t.Fatalf("订阅用户的 forwards 不应受退场影响，应 200，实际 %d：%s", rec.Code, rec.Body.String())
+		t.Fatalf("订阅用户的 forwards 不应受旧合并移除影响，应 200，实际 %d：%s", rec.Code, rec.Body.String())
 	}
 }

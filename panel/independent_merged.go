@@ -15,7 +15,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -86,21 +88,97 @@ func (s *Server) effectiveSelectionForIndMerged(ims *IndependentMergedSub) []Sub
 
 // ensureNodeUUIDsForIndMerged 按生效勾选给一条独立合并订阅补齐每人 UUID。
 func (s *Server) ensureNodeUUIDsForIndMerged(ims *IndependentMergedSub) bool {
-	addrs := s.landingAddrsForSelection(s.effectiveSelectionForIndMerged(ims))
+	sel := s.effectiveSelectionForIndMerged(ims)
+	addrs := s.landingAddrsForSelection(sel)
+	// v1.4.41：勾选里的后端节点也要补 UUID（本机节点＋远程节点的本地
+	// 同胎；无同胎的远程节点不补——远程面板不认这个订阅的用户）。
+	addrs = append(addrs, s.backendNodeAddrsForSelection(sel)...)
 	uuids, changed := ensureNodeUUIDs(ims.NodeUUIDs, addrs)
 	ims.NodeUUIDs = uuids
 	return changed
 }
 
+// equalInt64Slice 两份已排序的节点 id 列表是否相同（指派同步比对用）。
+func equalInt64Slice(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// validateIndMergedNodeEntries 校验独立合并订阅勾选里的后端节点条目：
+// 本机节点要存在；远程节点要快照里有，且远程面板版本 ≥1.4.19（节点
+// 详情接口是 1.4.19 切片 9 加的，保存与取订阅时要靠它拿地址与入站）。
+func (s *Server) validateIndMergedNodeEntries(nodes []SubSelection) error {
+	for _, e := range nodes {
+		if e.Panel == "local" {
+			s.nodes.mu.Lock()
+			n := s.nodes.getNode(e.Node)
+			s.nodes.mu.Unlock()
+			if n == nil {
+				return fmt.Errorf("本面板没有编号 %d 的后端节点", e.Node)
+			}
+			continue
+		}
+		rem := s.remoteByID(e.Panel)
+		if rem == nil {
+			return fmt.Errorf("没有登记过这台远程面板")
+		}
+		snap, err := s.fetchRemoteStatus(*rem)
+		if err != nil {
+			_, msg := remoteSideOf(err)
+			return fmt.Errorf("远程面板 %s 连不上：%s", rem.Name, msg)
+		}
+		if snap.Version != "" && isNewerVersion("1.4.19", snap.Version) {
+			return fmt.Errorf("远程面板 %s 版本太旧（%s，需要 1.4.19+），请先升级远程面板", rem.Name, snap.Version)
+		}
+		found := false
+		for _, n := range snap.Nodes {
+			if n.NodeID == e.Node {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("远程面板 %s 没有编号 %d 的后端节点", rem.Name, e.Node)
+		}
+	}
+	return nil
+}
+
 // validateIndMergedSelection 校验独立合并订阅的勾选集合：复用
 // validateMergedSelection 的逐项校验逻辑（面板存在、落地编号存在、
-// 远程面板版本），但允许空集合——先建空订阅、稍后勾落地。
+// 远程面板版本），但允许空集合——先建空订阅、稍后勾落地。v1.4.41：
+// 落地条目与后端节点条目分开校验（节点条目走 validateIndMergedNodeEntries）。
 func (s *Server) validateIndMergedSelection(sel []SubSelection) ([]SubSelection, string, error) {
 	sel, key := canonicalSelection(sel)
 	if len(sel) == 0 {
 		return []SubSelection{}, "", nil
 	}
-	return s.validateMergedSelectionEntries(sel, key)
+	var landings, nodes []SubSelection
+	for _, e := range sel {
+		if e.Node > 0 {
+			nodes = append(nodes, e)
+		} else {
+			landings = append(landings, e)
+		}
+	}
+	if len(landings) > 0 {
+		if _, _, err := s.validateMergedSelectionEntries(landings, ""); err != nil {
+			return nil, "", err
+		}
+	}
+	if len(nodes) > 0 {
+		if err := s.validateIndMergedNodeEntries(nodes); err != nil {
+			return nil, "", err
+		}
+	}
+	return sel, key, nil
 }
 
 // handleIndMergedSub 公开订阅端点：GET /m/{token}。分发顺序与 handleSub
@@ -155,7 +233,7 @@ func (s *Server) handleIndMergedSubLink(w http.ResponseWriter, r *http.Request) 
 
 // handleIndMergedSubsList 列出独立合并订阅（不含令牌与链接；has_link
 // 表示有没有密文）。一行一个订阅：名字、勾选摘要、内容模式、到期、
-// 用量、停用态、转发数；空订阅摘要写“尚未勾选落地”。
+// 用量、停用态、转发数；空订阅摘要写“尚未勾选落地或后端节点”。
 func (s *Server) handleIndMergedSubsList(w http.ResponseWriter, r *http.Request) {
 	type item struct {
 		ID             string         `json:"id"`
@@ -189,7 +267,7 @@ func (s *Server) handleIndMergedSubsList(w http.ResponseWriter, r *http.Request)
 		}
 		summary := s.selectionSummary(ims.Selection)
 		if summary == "" {
-			summary = "尚未勾选落地"
+			summary = "尚未勾选落地或后端节点"
 		}
 		key := indMergedSubKey(ims.ID)
 		used, _, hasUsed := s.userUsageSummary(key, ims.TrafficLimitBytes, ims.TrafficLimitMode)
@@ -480,6 +558,8 @@ func (s *Server) handleIndMergedSubsUpdate(w http.ResponseWriter, r *http.Reques
 		if nameGiven {
 			ims.Name = name
 		}
+		// v1.4.41：先记下改之前的勾选（下面指派同步要比对节点集合变没变）。
+		oldSel := ims.Selection
 		if selGiven {
 			ims.Selection = sel
 		}
@@ -494,6 +574,23 @@ func (s *Server) handleIndMergedSubsUpdate(w http.ResponseWriter, r *http.Reques
 		ims.ResetMode = resetMode
 		ims.ResetDay = resetDay
 		ims.NextResetAt = nextResetAt
+		// v1.4.41：勾选里的后端节点集合变了时同步指派（本地节点＋远程
+		// 节点的本地同胎），让节点 agent 拿到 UUID、/m/ 能出链接；只
+		// 动节点勾选时才调，不动落地时原有指派原样保留。
+		if selGiven {
+			oldIDs := s.indMergedLocalNodeIDs(oldSel)
+			newIDs := s.indMergedLocalNodeIDs(sel)
+			if !equalInt64Slice(oldIDs, newIDs) {
+				targets := make([]string, 0, len(newIDs))
+				for _, nid := range newIDs {
+					targets = append(targets, strconv.FormatInt(nid, 10))
+				}
+				if _, aerr := s.applyBackendAssignment("indmerged", id, "node", targets, ""); aerr != nil {
+					writeJSON(w, 400, errResp(aerr.Error()))
+					return
+				}
+			}
+		}
 		s.ensureNodeUUIDsForIndMerged(ims)
 		if err := s.saveConfig(); err != nil {
 			writeJSON(w, 500, errResp("保存失败："+err.Error()))
@@ -512,7 +609,7 @@ func (s *Server) handleIndMergedSubsUpdate(w http.ResponseWriter, r *http.Reques
 		effSel := ims.Selection
 		summary := s.selectionSummary(effSel)
 		if summary == "" {
-			summary = "尚未勾选落地"
+			summary = "尚未勾选落地或后端节点"
 		}
 		selOut := ims.Selection
 		if selOut == nil {

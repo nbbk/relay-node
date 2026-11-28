@@ -18,14 +18,14 @@ import (
 // test-1434-batch4.js 覆盖。
 
 func TestVersion1434(t *testing.T) {
-	if Version != "1.4.40" {
+	if Version != "1.4.41" {
 		t.Fatalf("Version 应为 1.4.34，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.40" {
+	if strings.TrimSpace(string(vb)) != "1.4.41" {
 		t.Fatalf("VERSION 文件应为 1.4.34，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }
@@ -64,7 +64,7 @@ func TestIndMergedCreateEmptyAndFetch1434(t *testing.T) {
 
 	// 空订阅能建（名字选填、Selection 允许空）。
 	id, url := createIndMerged1434(t, h, cookie, `{"name":"空订阅"}`)
-	// 列表里一行一个订阅：空订阅标注“尚未勾选落地”。
+	// 列表里一行一个订阅：空订阅标注“尚未勾选落地或后端节点”。
 	code, resp := getJSON144(t, h, cookie, "/api/v1/subscriptions/independent-merged")
 	if code != 200 {
 		t.Fatalf("列表状态=%d want 200：%v", code, resp)
@@ -74,7 +74,7 @@ func TestIndMergedCreateEmptyAndFetch1434(t *testing.T) {
 		t.Fatalf("列表应有 1 条，实际 %d：%v", len(list), resp)
 	}
 	row, _ := list[0].(map[string]any)
-	if row["id"] != id || row["empty"] != true || row["summary"] != "尚未勾选落地" {
+	if row["id"] != id || row["empty"] != true || row["summary"] != "尚未勾选落地或后端节点" {
 		t.Fatalf("空订阅行不对：%v", row)
 	}
 	if _, ok := row["token"]; ok {

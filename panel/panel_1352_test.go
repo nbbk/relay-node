@@ -221,7 +221,7 @@ func TestCentralRemotesListNodeStats1352(t *testing.T) {
 // ---------- 8. 版本断言 ----------
 
 func TestVersion1352(t *testing.T) {
-	if Version != "1.4.40" {
+	if Version != "1.4.41" {
 		t.Fatalf("VERSION 应是 1.4.33，实际 %q", Version)
 	}
 }

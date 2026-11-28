@@ -144,6 +144,10 @@ func (s *Server) landingAddrsForSelection(sel []SubSelection) []string {
 		out = append(out, l.Landing)
 	}
 	for _, e := range sel {
+		// 后端节点条目不是落地（Landing=0），不进落地地址表。
+		if e.Node > 0 {
+			continue
+		}
 		if e.Panel == "local" {
 			continue
 		}
@@ -154,6 +158,141 @@ func (s *Server) landingAddrsForSelection(sel []SubSelection) []string {
 		seen[addr] = true
 		out = append(out, addr)
 	}
+	return out
+}
+
+// ---------- 独立合并订阅勾选树里的后端节点（v1.4.41） ----------
+//
+// 背景（用户 2026-11-28 18:21 拍板）：勾选树只读 relay.conf 里的落地，
+// 后端节点（美国01、测试机）是另一套实体、永远不进树；香港2 卡片下面
+// 明明有“节点（2 个）”，树里却显示 0 个落地。修法是把后端节点也放
+// 进树里选，链接按下面三条路出，不另起一套。
+
+// remoteNodeDetail 远程面板上一台后端节点的详情（地址＋入站＋链接模式）：
+// GET /api/v1/central/nodes/{id}（令牌认证，1.4.19+，handleCentralNodeDetail
+// 的回包：node 行含 address＋link_mode，inbounds 是除私钥外的完整入站）。
+// 失败返回 error，调用方按“该节点出不了链接”处理，不报错。
+type remoteNodeDetail struct {
+	Address  string
+	LinkMode string
+	Name     string
+	Inbounds []NodeInbound
+}
+
+func (s *Server) remoteNodeDetail(rem RemotePanel, nodeID int64) (*remoteNodeDetail, error) {
+	_, body, err := s.remoteCall(rem, "GET", "/api/v1/central/nodes/"+strconv.FormatInt(nodeID, 10), nil, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		OK   bool `json:"ok"`
+		Node struct {
+			Address  string `json:"address"`
+			LinkMode string `json:"link_mode"`
+			Name     string `json:"name"`
+		} `json:"node"`
+		Inbounds []NodeInbound `json:"inbounds"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil || !resp.OK {
+		return nil, fmt.Errorf("远程面板回的节点详情解析失败")
+	}
+	return &remoteNodeDetail{Address: resp.Node.Address, LinkMode: resp.Node.LinkMode, Name: resp.Node.Name, Inbounds: resp.Inbounds}, nil
+}
+
+// localNodeByAddress 按地址找本机后端节点（远程节点条目找本地同胎用：
+// 测试机就是这例——香港2 登记的测试机与本机节点 2 是同一台机器）。
+// 地址按 EqualFold 比（大小写不敏感），前后空白去掉。
+func (s *Server) localNodeByAddress(addr string) *BackendNode {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return nil
+	}
+	s.nodes.mu.Lock()
+	defer s.nodes.mu.Unlock()
+	for _, n := range s.nodes.data.Nodes {
+		if strings.EqualFold(strings.TrimSpace(n.Address), addr) {
+			c := *n
+			return &c
+		}
+	}
+	return nil
+}
+
+// backendNodeAddrsForSelection 勾选里后端节点条目对应的地址（补 UUID
+// 用，v1.4.41）：本机节点直接取地址；远程节点条目按地址找本地同胎，
+// 有同胎才取同胎地址（无同胎的远程节点不补 UUID——远程面板不认这个
+// 订阅的用户，UUID 制协议的链接本来就出不来）。远程详情拉不到时跳
+// 过该条目（下次保存或取订阅时再试）。
+func (s *Server) backendNodeAddrsForSelection(sel []SubSelection) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, e := range sel {
+		if e.Node < 1 {
+			continue
+		}
+		var addr string
+		if e.Panel == "local" {
+			s.nodes.mu.Lock()
+			if n := s.nodes.getNode(e.Node); n != nil {
+				addr = n.Address
+			}
+			s.nodes.mu.Unlock()
+		} else {
+			rem := s.remoteByID(e.Panel)
+			if rem == nil {
+				continue
+			}
+			d, err := s.remoteNodeDetail(*rem, e.Node)
+			if err != nil || d == nil {
+				continue
+			}
+			if twin := s.localNodeByAddress(d.Address); twin != nil {
+				addr = twin.Address
+			}
+		}
+		if addr == "" || seen[addr] {
+			continue
+		}
+		seen[addr] = true
+		out = append(out, addr)
+	}
+	return out
+}
+
+// indMergedLocalNodeIDs 勾选里后端节点条目对应的本机节点 id 集合（指派
+// 同步用，v1.4.41）：本机节点条目直接取 id；远程节点条目按地址找本机
+// 同胎，有同胎取同胎 id（远程详情拉不到时跳过该条目）。返回已排序、
+// 去重后的 id 列表。
+func (s *Server) indMergedLocalNodeIDs(sel []SubSelection) []int64 {
+	seen := map[int64]bool{}
+	var out []int64
+	for _, e := range sel {
+		if e.Node < 1 {
+			continue
+		}
+		var id int64
+		if e.Panel == "local" {
+			id = e.Node
+		} else {
+			rem := s.remoteByID(e.Panel)
+			if rem == nil {
+				continue
+			}
+			d, err := s.remoteNodeDetail(*rem, e.Node)
+			if err != nil || d == nil {
+				continue
+			}
+			if twin := s.localNodeByAddress(d.Address); twin != nil {
+				id = twin.ID
+			}
+		}
+		if id < 1 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
 }
 

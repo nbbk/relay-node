@@ -21,14 +21,14 @@ import (
 // 与更新后的 test-1427/1429/1434/1436/1437/1438 覆盖。
 
 func TestVersion1440(t *testing.T) {
-	if Version != "1.4.40" {
+	if Version != "1.4.41" {
 		t.Fatalf("Version 应为 1.4.40，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.40" {
+	if strings.TrimSpace(string(vb)) != "1.4.41" {
 		t.Fatalf("VERSION 文件应为 1.4.40，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }
@@ -216,7 +216,7 @@ func TestIndMergedCreateSelectFetch1440(t *testing.T) {
 		t.Fatalf("列表应有 1 条，实际 %d", len(list))
 	}
 	row, _ := list[0].(map[string]any)
-	if row["empty"] != false || row["summary"] == "尚未勾选落地" {
+	if row["empty"] != false || row["summary"] == "尚未勾选落地或后端节点" {
 		t.Fatalf("勾选后列表行不应再是空订阅：%v", row)
 	}
 	// /m/ 拉取：base64 解码后是落地 1 的两条 vless 链接。

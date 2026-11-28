@@ -442,7 +442,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	u, _ := s.sessions.get(r)
-	writeJSON(w, 200, okResp(map[string]any{"username": u, "version": Version, "manager_only": s.cfg.ManagerOnly}))
+	// v1.4.41：machine_ip 也随 /api/v1/me 下发——顶栏 IP 不再依赖总览页
+	// （管理面板模式下总览页隐藏、loadOverview 永远不跑，顶栏一直是
+	// “—”）；checkMe 在填 #side-version 的同一处顺手填 #machine-ip。
+	writeJSON(w, 200, okResp(map[string]any{"username": u, "version": Version, "manager_only": s.cfg.ManagerOnly, "machine_ip": machineIP()}))
 }
 
 // ---------- 总览与体检 ----------

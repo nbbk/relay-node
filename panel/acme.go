@@ -108,6 +108,10 @@ var (
 // 失败只记 5 分钟、5 分钟后下一次 status 调用重试）；回显失败仍回
 // ""，不阻塞、不报错。本地能拿到 IP 的机器行为不变，本地枚举的逻辑
 // 本身不动。
+// v1.4.41：本地只有内网 IP 时也问一次回显（Oracle 机典型情况：网卡
+// 上有个内网 IP，公网 IP 是 NAT 映射）：回显回公网 IP 就优先回公网
+// IP，回显失败再回内网 IP；本地已有公网 IP 的机器行为不变（直接回，
+// 不问回显）。回显缓存逻辑不动。
 func machineIP() string {
 	ips, err := localIPsFunc()
 	if err != nil || len(ips) == 0 {
@@ -117,6 +121,9 @@ func machineIP() string {
 		if !ip.IsPrivate() && !ip.IsLinkLocalUnicast() {
 			return ip.String()
 		}
+	}
+	if echo := publicIPEchoIP(); echo != "" {
+		return echo
 	}
 	return ips[0].String()
 }
