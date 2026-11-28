@@ -218,18 +218,18 @@ function syncThemeRadios(mode) {
 
 /* ---------- 导航 / 路由 ---------- */
 const PAGES = [
-  { id: 'overview', title: '总览', icon: '🏠' },
-  { id: 'add', title: '添加落地', icon: '➕' },
-  { id: 'manage', title: '落地管理', icon: '🗂️' },
-  { id: 'nodes', title: '节点', icon: '🖧' },
-  { id: 'links', title: '节点链接', icon: '🔗' },
-  { id: 'certs', title: '落地证书', icon: '🔒' },
-  { id: 'service', title: '服务与日志', icon: '⚙️' },
-  { id: 'settings', title: '设置', icon: '🔧' },
-  { id: 'subscription', title: '订阅', icon: '👤' },
-  { id: 'firewall', title: '端口管理', icon: '🧱' },
-  { id: 'traffic', title: '流量', icon: '📊' },
-  { id: 'central', title: '集中管理', icon: '🖥️' },
+  { id: 'overview', title: '总览', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="2" style="fill:var(--ic-fill,rgba(43,127,255,0.14))" stroke="none"/><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg>' },
+  { id: 'add', title: '添加落地', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="4.5" style="fill:var(--ic-fill,rgba(43,127,255,0.14))" stroke="none"/><rect x="3.5" y="3.5" width="17" height="17" rx="4.5"/><path d="M12 8.5v7M8.5 12h7"/></svg>' },
+  { id: 'manage', title: '落地管理', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3.5" width="16" height="6.5" rx="2" style="fill:var(--ic-fill,rgba(43,127,255,0.14))" stroke="none"/><rect x="4" y="3.5" width="16" height="6.5" rx="2"/><rect x="4" y="14" width="16" height="6.5" rx="2"/><path d="M11 6.75h5.5M11 17.25h5.5"/><path d="M7.5 6.75h.01M7.5 17.25h.01"/></svg>' },
+  { id: 'nodes', title: '节点', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="18" r="2.2" style="fill:var(--ic-fill,rgba(43,127,255,0.14))" stroke="none"/><circle cx="6" cy="6" r="2.2"/><circle cx="18" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/><path d="M8.2 6h7.6M6.98 7.97l4.04 8.06M17.02 7.97l-4.04 8.06"/></svg>' },
+  { id: 'links', title: '节点链接', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4.5" style="fill:var(--ic-fill,rgba(43,127,255,0.14))" stroke="none"/><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>' },
+  { id: 'certs', title: '落地证书', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="15.5" cy="16.5" r="3" style="fill:var(--ic-fill,rgba(43,127,255,0.14))" stroke="none"/><rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M8.5 9h7M8.5 12.5h7"/><circle cx="15.5" cy="16.5" r="3"/><path d="M14.4 16.5l.8.8 1.5-1.7"/></svg>' },
+  { id: 'service', title: '服务与日志', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2" style="fill:var(--ic-fill,rgba(43,127,255,0.14))" stroke="none"/><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8"/></svg>' },
+  { id: 'settings', title: '设置', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="7" r="2.2" style="fill:var(--ic-fill,rgba(43,127,255,0.14))" stroke="none"/><circle cx="15" cy="12" r="2.2" style="fill:var(--ic-fill,rgba(43,127,255,0.14))" stroke="none"/><circle cx="8" cy="17" r="2.2" style="fill:var(--ic-fill,rgba(43,127,255,0.14))" stroke="none"/><path d="M4 7h2.8M11.2 7H20M4 12h8.8M17.2 12H20M4 17h1.8M10.2 17H20"/><circle cx="9" cy="7" r="2.2"/><circle cx="15" cy="12" r="2.2"/><circle cx="8" cy="17" r="2.2"/></svg>' },
+  { id: 'subscription', title: '订阅', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5" style="fill:var(--ic-fill,rgba(43,127,255,0.14))" stroke="none"/><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c1.2-3.6 4-5.5 7.5-5.5s6.3 1.9 7.5 5.5"/></svg>' },
+  { id: 'firewall', title: '端口管理', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.5" style="fill:var(--ic-fill,rgba(43,127,255,0.14))" stroke="none"/><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><g fill="currentColor" stroke="none"><circle cx="8" cy="9.8" r="1.05"/><circle cx="12" cy="9.8" r="1.05"/><circle cx="16" cy="9.8" r="1.05"/><circle cx="8" cy="14.2" r="1.05"/><circle cx="12" cy="14.2" r="1.05"/><circle cx="16" cy="14.2" r="1.05"/></g></svg>' },
+  { id: 'traffic', title: '流量', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4v16h16"/><rect x="7.3" y="13" width="2.4" height="7" rx="1.2" fill="#2B7FFF" fill-opacity="0.25" stroke="none"/><rect x="11.3" y="9" width="2.4" height="11" rx="1.2" fill="#2B7FFF" fill-opacity="0.5" stroke="none"/><rect x="15.3" y="12" width="2.4" height="8" rx="1.2" fill="#2B7FFF" fill-opacity="0.85" stroke="none"/></svg>' },
+  { id: 'central', title: '集中管理', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="2.5" style="fill:var(--ic-fill,rgba(43,127,255,0.14))" stroke="none"/><circle cx="12" cy="12" r="2.5"/><circle cx="5.5" cy="5.5" r="1.8"/><circle cx="18.5" cy="5.5" r="1.8"/><circle cx="5.5" cy="18.5" r="1.8"/><circle cx="18.5" cy="18.5" r="1.8"/><path d="M10.2 10.2L6.8 6.8M13.8 10.2l3.4-3.4M10.2 13.8l-3.4 3.4M13.8 13.8l3.4 3.4"/></svg>' },
 ];
 let currentPage = 'overview';
 let landingsCache = [];
@@ -254,10 +254,34 @@ function buildNav() {
   visiblePages().forEach((p) => {
     const b1 = document.createElement('button');
     b1.type = 'button'; b1.className = 'nav-item'; b1.dataset.page = p.id;
-    b1.innerHTML = '<span class="ico">' + p.icon + '</span><span>' + esc(p.title) + '</span>';
+    b1.innerHTML = '<span class="ico">' + p.icon + '</span><span class="lbl">' + esc(p.title) + '</span>';
+    b1.title = p.title;
     b1.addEventListener('click', () => goto(p.id));
     side.appendChild(b1);
   });
+  applyNavMini(); // v1.4.43：导航重建后恢复收起态（登录后模式定了会再建一次导航）
+}
+// v1.4.43：导航收起——侧边栏只留图标（64px），状态记 localStorage，下次打开还生效。
+const NAV_MINI_KEY = 'relay-panel-nav-mini';
+function navMiniOn() { try { return localStorage.getItem(NAV_MINI_KEY) === '1'; } catch (e) { return false; } }
+function applyNavMini() {
+  const bar = $('#sidebar');
+  const btn = $('#nav-mini-btn');
+  const mini = navMiniOn();
+  if (bar) bar.classList.toggle('mini', mini);
+  if (btn) {
+    btn.textContent = mini ? '»' : '« 收起导航';
+    btn.setAttribute('aria-expanded', mini ? 'false' : 'true');
+    btn.title = mini ? '展开导航' : '收起导航';
+  }
+}
+function toggleNavMini() {
+  try { localStorage.setItem(NAV_MINI_KEY, navMiniOn() ? '0' : '1'); } catch (e) { /* 忽略 */ }
+  applyNavMini();
+}
+function initNavMini() {
+  on('#nav-mini-btn', 'click', toggleNavMini);
+  applyNavMini();
 }
 /* ---------- 手机抽屉菜单 ---------- */
 function openDrawer() {
@@ -9050,6 +9074,7 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initTheme);
   safeInit(initLogos); // v1.3.20：登录页/侧边栏 Logo 加载成败回退（登录前就要能显示）
   safeInit(buildNav);
+  safeInit(initNavMini); // v1.4.43：导航收起开关绑定 + 恢复上次状态
   safeInit(initDrawer);
   safeInit(initLogin);
   safeInit(initCheck);

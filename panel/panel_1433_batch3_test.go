@@ -14,14 +14,14 @@ import (
 // SubUser 表序号与 ID 复制按钮。交互行为由 jsdom test-1433-batch3.js 覆盖。
 
 func TestVersion1433(t *testing.T) {
-	if Version != "1.4.42" {
+	if Version != "1.4.43" {
 		t.Fatalf("Version 应为 1.4.33，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.42" {
+	if strings.TrimSpace(string(vb)) != "1.4.43" {
 		t.Fatalf("VERSION 文件应为 1.4.33，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }

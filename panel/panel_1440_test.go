@@ -21,14 +21,14 @@ import (
 // 与更新后的 test-1427/1429/1434/1436/1437/1438 覆盖。
 
 func TestVersion1440(t *testing.T) {
-	if Version != "1.4.42" {
+	if Version != "1.4.43" {
 		t.Fatalf("Version 应为 1.4.40，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.42" {
+	if strings.TrimSpace(string(vb)) != "1.4.43" {
 		t.Fatalf("VERSION 文件应为 1.4.40，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }
