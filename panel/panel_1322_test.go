@@ -83,7 +83,9 @@ func TestSettingsSystemTab1322(t *testing.T) {
 	}
 	// 备份面板应只有两张卡，左右并排：备份在左、远程备份在右（grid cols-2，
 	// 与订阅选项卡的订阅链接/订阅用户同款两列布局）。
-	// 注意备份卡里有两个 h2（“备份”与“自动定时备份”），数卡片而不是数 h2。
+	// 注意 1.4.42 审计去掉了左卡的“备份”h2（与“备份”选项卡标签重复），
+	// 左卡现在只剩“自动定时备份”一个 h2；数卡片而不是数 h2。
+	// 左卡仍是备份卡：凭“立即备份”按钮（bk-now）与“自动定时备份”认。
 	if !strings.Contains(backup, `<div class="grid cols-2">`) {
 		t.Fatal("备份面板的两张卡应左右并排（grid cols-2）")
 	}
@@ -91,7 +93,7 @@ func TestSettingsSystemTab1322(t *testing.T) {
 	if len(cards) != 3 {
 		t.Fatalf("备份面板应只有两张卡，实际 %d 张", len(cards)-1)
 	}
-	if !strings.Contains(cards[1], "<h2>备份</h2>") || !strings.Contains(cards[1], "自动定时备份") {
+	if !strings.Contains(cards[1], `id="bk-now"`) || !strings.Contains(cards[1], "自动定时备份") {
 		t.Fatalf("备份面板第一张卡（左）应是备份（含自动定时备份），实际 %q", cards[1][:200])
 	}
 	if !strings.Contains(cards[2], "远程备份（异地备份）") {

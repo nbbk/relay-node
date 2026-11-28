@@ -20,14 +20,14 @@ import (
 )
 
 func TestVersion1441(t *testing.T) {
-	if Version != "1.4.41" {
+	if Version != "1.4.42" {
 		t.Fatalf("Version 应为 1.4.41，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.41" {
+	if strings.TrimSpace(string(vb)) != "1.4.42" {
 		t.Fatalf("VERSION 文件应为 1.4.41，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }
@@ -444,7 +444,7 @@ func TestHandleMeMachineIP1441(t *testing.T) {
 	if resp["machine_ip"] != "10.0.0.5" {
 		t.Fatalf("/api/v1/me 应带 machine_ip=10.0.0.5，实际 %v", resp)
 	}
-	if resp["version"] != "1.4.41" {
+	if resp["version"] != "1.4.42" {
 		t.Fatalf("/api/v1/me 的 version 应为 1.4.41，实际 %v", resp["version"])
 	}
 }

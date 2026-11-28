@@ -176,7 +176,6 @@
         <div id="manage-list"></div>
           </div>
           <div class="manage-panel hidden" role="tabpanel" id="manage-panel-recycle" aria-labelledby="manage-tab-recycle" hidden>
-        <h2>回收站 <span class="small">（删除后保留 7 天，可恢复）</span></h2>
         <div id="recycle-list"></div>
           </div>
         </div>
@@ -214,7 +213,6 @@
         <!-- 中转路由（v1.4.18，切片 8）：面板改路由，本机 realm 配置跟着变
              并重启生效；管理面板本机无中转，路由经代理下发到选中的中转
              面板（C 方案），本地不再存路由。 -->
-        <h2>中转路由</h2>
         <p class="muted">中转机 realm 的转发：监听地址收到的流量转到目标节点的落地地址。保存后立即重下发并重启 realm，已建立的中转连接会断开、须重连；只改路由不改节点配置。</p>
           <div class="btn-row"><button class="btn" type="button" id="nodes-relay-add">添加路由</button><button class="btn secondary" type="button" id="nodes-relay-reapply">重新下发</button></div>
           <div class="btn-row" id="nodes-relay-panel-row" hidden><label for="nodes-relay-panel">中转机</label><select id="nodes-relay-panel"></select></div>
@@ -304,7 +302,6 @@
         </template>
           <div class="nodes-panel hidden" role="tabpanel" id="nodes-panel-certs" aria-labelledby="nodes-tab-certs" hidden>
         <div class="card" id="node-certs-card">
-          <h2>节点证书（轻量节点后端）</h2>
           <p class="muted">HY2、TUIC、AnyTLS、Trojan 与 VLESS＋TLS 入站用的真证书：面板签发后随配置下发到节点，节点 60 秒内换上；到期前 30 天自动续签。REALITY 入站不用证书。证书文件存在面板 certs/ 下（node-&lt;ref&gt;.crt／.key），元数据存在 nodes.json 里。</p>
           <p class="muted">旧落地证书与续签引导在「落地证书」页。</p>
           <form id="node-cert-issue-form">
@@ -357,7 +354,6 @@
             <button type="button" class="links-tab" role="tab" id="links-tab-twin" aria-controls="links-panel-twin" aria-selected="false" data-links-tab="twin">生成 twin</button>
           </div>
           <div class="links-panel" role="tabpanel" id="links-panel-history" aria-labelledby="links-tab-history">
-            <h2>历史记录（nodes.txt）</h2>
             <p class="muted">每组一行，点一行展开看链接与二维码。删除只删历史记录，不影响落地转发与节点本身；导出是纯文本文件，一行一条链接。</p>
             <div class="list-toolbar"><input id="links-search" class="list-search" type="search" placeholder="搜索历史记录：名字、落地、编号…" aria-label="搜索历史记录"></div>
             <div id="links-toolbar"></div>
@@ -372,7 +368,7 @@
               <div class="form-grid">
                 <div><label for="twin-landing">落地 IP <span class="hint">必填</span></label><input id="twin-landing" placeholder="203.0.113.1" required></div>
                 <div><label for="twin-sni">SNI / 域名 <span class="hint">可空，自动推断</span></label><input id="twin-sni" placeholder="example.com"></div>
-                <div><label for="twin-name">节点名称 <span class="hint">选填；直连备注“&lt;名称&gt;-直连”、中转备注“&lt;名称&gt;-中转”，空着用原链接备注名</span></label><input id="twin-name" placeholder="如 香港-01" maxlength="64"></div>
+                <div><label for="twin-name"><span style="white-space:nowrap">节点名称</span> <span class="hint">选填；直连备注“&lt;名称&gt;-直连”、中转备注“&lt;名称&gt;-中转”，空着用原链接备注名</span></label><input id="twin-name" placeholder="如 香港-01" maxlength="64"></div>
               </div>
               <div class="setting-row">
                 <label class="small" for="twin-mode">生成方式：</label>
@@ -437,7 +433,6 @@
           <p class="small">分流组件（nginx / HAProxy）随 SHARE80 / SHARE443 一起启停。面板挂了、关了都不影响 realm 转发。</p>
         </div>
         <div class="service-panel hidden" role="tabpanel" id="service-panel-logs" aria-labelledby="service-tab-logs" hidden>
-          <h2>实时日志 <span class="small">（最近 200 行，每 10 秒自动刷新）</span></h2>
           <div class="btn-row" style="margin:0 0 10px"><button class="btn secondary sm" id="logs-refresh" type="button">立即刷新</button>
           <label class="checkbox-row" style="margin:0"><input type="checkbox" id="logs-auto" checked><span style="font-weight:400">自动刷新</span></label></div>
           <div class="log-box" id="log-box">加载中…</div>
@@ -872,7 +867,6 @@
           <div class="settings-panel hidden" role="tabpanel" id="settings-panel-backup" aria-labelledby="settings-tab-backup" hidden>
             <div class="grid cols-2">
               <div class="card">
-            <h2>备份</h2>
             <p class="muted">每次备份都先存本机；R2 和七牛云开了才另外加密传一份，没开就不传。备份内容包括落地、设置、订阅用户、流量库；设了异地备份口令后，备份还含订阅令牌与一个加密的迁移信封（登录密码、TOTP、令牌密钥等），换机恢复后旧链接继续可用；没设口令的备份换机要逐个轮换令牌。保留份数到了就删最旧的，不会把盘写满。</p>
             <div class="btn-row" style="margin-top:0"><button class="btn" id="bk-now" type="button">立即备份</button></div>
             <h2 style="margin-top:20px">自动定时备份</h2>
@@ -921,7 +915,6 @@
             <div id="rb-r2-list" style="margin-top:8px"></div>
             </div>
             <div class="rb-panel hidden" role="tabpanel" id="rb-panel-qiniu" aria-labelledby="rb-tab-qiniu" hidden>
-            <h3 style="margin-top:16px">七牛云 Kodo</h3>
             <label class="small"><input id="rb-qn-enabled" type="checkbox"> 启用七牛云上传</label>
             <div class="form-grid">
               <div><label for="rb-qn-region">区域</label><select id="rb-qn-region">
@@ -1038,7 +1031,6 @@
         </div>
         </div>
         <div class="fw-panel hidden" role="tabpanel" id="fw-panel-rules" aria-labelledby="fw-tab-rules" hidden>
-          <h2>已开放的端口</h2>
           <div id="firewall-rules"></div>
         </div>
         </div>
@@ -1093,13 +1085,11 @@
             <button type="button" class="central-tab" role="tab" id="central-tab-indmerged" aria-controls="central-panel-indmerged" aria-selected="false" data-central-tab="indmerged">独立合并订阅</button>
           </div>
           <div class="central-panel" role="tabpanel" id="central-panel-list" aria-labelledby="central-tab-list">
-            <h2>已登记的远程面板</h2>
             <div id="central-node-stats" style="margin-top:12px"></div>
             <div class="central-tabs" role="tablist" id="central-sub-tabs" style="margin-top:8px"></div>
             <div id="central-sub-panels" style="margin-top:12px"></div>
           </div>
           <div class="central-panel hidden" role="tabpanel" id="central-panel-add" aria-labelledby="central-tab-add" hidden>
-            <h2>登记远程面板</h2>
             <p class="muted">先到被管面板的设置页“远程管理令牌”卡片里生成令牌，再把地址和令牌填进来。令牌只保存在主面板的配置文件里（600 权限），不会显示出来。登记时会当场连一次，连不上、令牌不对或远程面板版本太旧（低于 1.2.0）都会直接拒绝并写清原因。</p>
             <form id="central-add-form">
               <div class="form-grid">
@@ -1111,7 +1101,6 @@
             </form>
           </div>
           <div class="central-panel hidden" role="tabpanel" id="central-panel-indmerged" aria-labelledby="central-tab-indmerged" hidden>
-            <h2>独立合并订阅 <span class="badge">独立合并订阅</span></h2>
             <p class="muted">一份“勾选了哪些落地”的订阅，不登录、不绑用户、不挂档位、不进分组：先建一条（名字选填、可以先不勾落地），再勾落地；链接是 <span class="mono">/m/…</span>，与订阅用户的 <span class="mono">/sub/…</span> 完全分开。</p>
             <div class="btn-row"><button class="btn" type="button" id="indmerged-create">新建独立合并订阅</button></div>
             <div style="margin-top:12px"><input id="indmerged-search" type="search" placeholder="搜索：名字 / 勾选摘要 / ID" style="width:280px"></div>
@@ -1132,7 +1121,6 @@
             <button type="button" class="sub-tab" role="tab" id="subws-tab-settings" aria-controls="subws-panel-settings" aria-selected="false" data-subws-tab="settings">订阅设置</button>
           </div>
           <div class="sub-panel" role="tabpanel" id="subws-panel-plans" aria-labelledby="subws-tab-plans">
-            <h2>① 套餐档位</h2>
             <p class="muted">档位决定一个订阅用户能拿多少流量、用多久、走哪些节点：建用户时选档位，流量、到期与分组按档位默认值填好，可再改。</p>
             <div class="btn-row">
               <button class="btn" id="sub-plan-create" type="button">新建档位</button>
@@ -1142,7 +1130,6 @@
             <div id="sub-plan-list" style="margin-top:12px">加载中…</div>
           </div>
           <div class="sub-panel hidden" role="tabpanel" id="subws-panel-groups" aria-labelledby="subws-tab-groups" hidden>
-            <h2>② 分组（权限组）</h2>
             <p class="muted">一组 = 一组落地 + 一组用户，组里的人用组里的节点。建一次组、加用户就行，不用每人重复勾落地；通用共享节点放一个组，美国/英国/法国等定制用户各放各的组。改组的落地，组里所有人的订阅下次更新立即同步，链接不变；删组后成员恢复自己原来勾的落地，链接也不变。</p>
             <p class="small muted">分组只决定用户能看到哪些落地，限流还是按人单独算（组里开了限流的人各走自己的独立转发端口，互不干扰）。</p>
             <div class="btn-row">
@@ -1153,7 +1140,6 @@
             <div id="sub-group-list" style="margin-top:12px">加载中…</div>
           </div>
           <div class="sub-panel hidden" role="tabpanel" id="subws-panel-users" aria-labelledby="subws-tab-users" hidden>
-            <h2>③ 订阅用户（一人一条）</h2>
             <p class="muted">每人一个独立令牌，封一条只影响一个人；登录后按档位拿节点、看流量与到期。名字用来认人（例如“张三的手机”），链接加密存在面板里，列表里每人都有“复制”按钮，随时能重新拿；撤销只影响那个人，其他人的链接照常。</p>
             <div class="btn-row">
               <button class="btn" id="sub-user-create" type="button">新建订阅用户</button>
@@ -1177,7 +1163,6 @@
             <div id="sub-user-list" style="margin-top:12px">加载中…</div>
           </div>
           <div class="sub-panel hidden" role="tabpanel" id="subws-panel-settings" aria-labelledby="subws-tab-settings" hidden>
-            <h2>订阅设置</h2>
             <p class="muted">订阅对外域名、订阅路径与订阅网关：订阅链接长什么样、走哪个域名出去，在这里改，和用户管理同页，不用再去设置页找。</p>
             <div class="grid cols-2">
               <div class="card">

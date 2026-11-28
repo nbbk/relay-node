@@ -7777,7 +7777,7 @@ function centralRemoteCardHtml(rm) {
   const checked = rm.last_checked_at ? esc(fmtDate(rm.last_checked_at)) : '尚未拉取';
   const onlineLine = landings.length ? '（在线 ' + onlineCount + ' / 离线 ' + offlineCount + (unknownCount ? ' / 未知 ' + unknownCount : '') + '）' : '';
   return '<div class="mini-card static">' +
-    '<div class="mini-top"><h3>' + esc(rm.name || rm.base_url) + '</h3><span>' + centralOnlineBadge(rm) +
+    '<div class="mini-top"><span>' + centralOnlineBadge(rm) +
     ' <span class="tag" title="这是登记在主面板上的另一台面板，数据由主面板每 2 分钟拉取；点“打开远程面板”跳到它自己的页面">远程面板</span></span></div>' +
     '<div class="mini-row"><span>地址</span><b class="mono" style="word-break:break-all">' + esc(rm.base_url) + '</b></div>' +
     '<div class="mini-row"><span>版本</span><b>' + esc(rm.version || '—') + '</b></div>' +
