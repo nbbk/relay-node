@@ -14,14 +14,14 @@ import (
 // SubUser 表序号与 ID 复制按钮。交互行为由 jsdom test-1433-batch3.js 覆盖。
 
 func TestVersion1433(t *testing.T) {
-	if Version != "1.4.38" {
+	if Version != "1.4.39" {
 		t.Fatalf("Version 应为 1.4.33，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.38" {
+	if strings.TrimSpace(string(vb)) != "1.4.39" {
 		t.Fatalf("VERSION 文件应为 1.4.33，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }
@@ -55,15 +55,16 @@ func TestBatch3Workspace1433(t *testing.T) {
 	if strings.Contains(html, `id="page-users"`) {
 		t.Fatalf("index.html 里还留着 page-users")
 	}
-	// 三栏＋订阅设置同页，三个列表容器都在订阅页里。
-	for _, id := range []string{"card-sub-plans", "card-sub-groups", "card-sub-users", "card-sub-settings",
+	// 四子选项卡（v1.4.39）＋三列表容器都在订阅页里。
+	for _, id := range []string{"subws-tab-plans", "subws-tab-groups", "subws-tab-users", "subws-tab-settings",
+		"subws-panel-plans", "subws-panel-groups", "subws-panel-users", "subws-panel-settings",
 		"sub-plan-list", "sub-group-list", "sub-user-list"} {
 		if !strings.Contains(html, `id="`+id+`"`) {
 			t.Fatalf("订阅页里没有 %s", id)
 		}
 	}
-	// 三栏互跳链接都在。
-	for _, jump := range []string{`data-sub-jump="card-sub-groups"`, `data-sub-jump="card-sub-users"`, `data-sub-jump="card-sub-plans"`} {
+	// 四选项卡互跳链接都在（v1.4.39：值改成选项卡 id，不再是卡片 id）。
+	for _, jump := range []string{`data-sub-jump="groups"`, `data-sub-jump="users"`, `data-sub-jump="plans"`} {
 		if !strings.Contains(html, jump) {
 			t.Fatalf("订阅页里没有互跳链接 %s", jump)
 		}

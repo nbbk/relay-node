@@ -3342,6 +3342,206 @@ function initLinksTabs() {
     if (btn) btn.focus();
   });
 }
+/* ---------- 订阅工作区子选项卡（v1.4.39） ---------- */
+// 命名注意：旧设置页订阅二级选项卡的 id 与函数名被 Go 测试断言已删，
+// 这里改用 subws-* 前缀，不撞旧名（旧名见 panel_1436_batch6_test.go 的 gone 清单）。
+const SUBWS_TABS = ['plans', 'groups', 'users', 'settings'];
+const SUBWS_TAB_KEY = 'relay-panel-subscription-tab';
+function subwsTabValid(id) { return SUBWS_TABS.indexOf(id) >= 0; }
+function showSubwsTab(id) {
+  if (!subwsTabValid(id)) id = 'plans';
+  SUBWS_TABS.forEach((t) => {
+    const btn = document.getElementById('subws-tab-' + t);
+    if (btn) btn.setAttribute('aria-selected', t === id ? 'true' : 'false');
+    setVisible(document.getElementById('subws-panel-' + t), t === id);
+  });
+  try { localStorage.setItem(SUBWS_TAB_KEY, id); } catch (e) { /* 隐私模式等存不了就每次回档位 */ }
+}
+function initSubwsTabs() {
+  let saved = null;
+  try { saved = localStorage.getItem(SUBWS_TAB_KEY); } catch (e) { /* 读不到就用默认 */ }
+  showSubwsTab(subwsTabValid(saved) ? saved : 'plans');
+  if (initSubwsTabs.bound) return;
+  initSubwsTabs.bound = true;
+  SUBWS_TABS.forEach((t) => {
+    on('#subws-tab-' + t, 'click', () => showSubwsTab(t));
+  });
+  const bar = document.querySelector('.sub-tabs');
+  if (bar) bar.addEventListener('keydown', (e) => {
+    const cur = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.subwsTab : null;
+    if (!cur || !subwsTabValid(cur)) return;
+    let idx = SUBWS_TABS.indexOf(cur);
+    if (e.key === 'ArrowRight') idx = (idx + 1) % SUBWS_TABS.length;
+    else if (e.key === 'ArrowLeft') idx = (idx - 1 + SUBWS_TABS.length) % SUBWS_TABS.length;
+    else if (e.key === 'Home') idx = 0;
+    else if (e.key === 'End') idx = SUBWS_TABS.length - 1;
+    else return;
+    e.preventDefault();
+    showSubwsTab(SUBWS_TABS[idx]);
+    const btn = document.getElementById('subws-tab-' + SUBWS_TABS[idx]);
+    if (btn) btn.focus();
+  });
+}
+/* ---------- 节点页子选项卡（v1.4.39） ---------- */
+const NODES_TABS = ['backend', 'relay', 'certs'];
+const NODES_TAB_KEY = 'relay-panel-nodes-tab';
+function nodesTabValid(id) { return NODES_TABS.indexOf(id) >= 0; }
+function showNodesTab(id) {
+  if (!nodesTabValid(id)) id = 'backend';
+  NODES_TABS.forEach((t) => {
+    const btn = document.getElementById('nodes-tab-' + t);
+    if (btn) btn.setAttribute('aria-selected', t === id ? 'true' : 'false');
+    setVisible(document.getElementById('nodes-panel-' + t), t === id);
+  });
+  try { localStorage.setItem(NODES_TAB_KEY, id); } catch (e) { /* 隐私模式等存不了就每次回后端节点 */ }
+}
+function initNodesTabs() {
+  let saved = null;
+  try { saved = localStorage.getItem(NODES_TAB_KEY); } catch (e) { /* 读不到就用默认 */ }
+  showNodesTab(nodesTabValid(saved) ? saved : 'backend');
+  if (initNodesTabs.bound) return;
+  initNodesTabs.bound = true;
+  NODES_TABS.forEach((t) => {
+    on('#nodes-tab-' + t, 'click', () => showNodesTab(t));
+  });
+  const bar = document.querySelector('.nodes-tabs');
+  if (bar) bar.addEventListener('keydown', (e) => {
+    const cur = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.nodesTab : null;
+    if (!cur || !nodesTabValid(cur)) return;
+    let idx = NODES_TABS.indexOf(cur);
+    if (e.key === 'ArrowRight') idx = (idx + 1) % NODES_TABS.length;
+    else if (e.key === 'ArrowLeft') idx = (idx - 1 + NODES_TABS.length) % NODES_TABS.length;
+    else if (e.key === 'Home') idx = 0;
+    else if (e.key === 'End') idx = NODES_TABS.length - 1;
+    else return;
+    e.preventDefault();
+    showNodesTab(NODES_TABS[idx]);
+    const btn = document.getElementById('nodes-tab-' + NODES_TABS[idx]);
+    if (btn) btn.focus();
+  });
+}
+/* ---------- 落地证书页子选项卡（v1.4.39） ---------- */
+const CERTS_TABS = ['list', 'guide'];
+const CERTS_TAB_KEY = 'relay-panel-certs-tab';
+function certsTabValid(id) { return CERTS_TABS.indexOf(id) >= 0; }
+function showCertsTab(id) {
+  if (!certsTabValid(id)) id = 'list';
+  CERTS_TABS.forEach((t) => {
+    const btn = document.getElementById('certs-tab-' + t);
+    if (btn) btn.setAttribute('aria-selected', t === id ? 'true' : 'false');
+    setVisible(document.getElementById('certs-panel-' + t), t === id);
+  });
+  try { localStorage.setItem(CERTS_TAB_KEY, id); } catch (e) { /* 隐私模式等存不了就每次回证书列表 */ }
+}
+function initCertsTabs() {
+  let saved = null;
+  try { saved = localStorage.getItem(CERTS_TAB_KEY); } catch (e) { /* 读不到就用默认 */ }
+  showCertsTab(certsTabValid(saved) ? saved : 'list');
+  if (initCertsTabs.bound) return;
+  initCertsTabs.bound = true;
+  CERTS_TABS.forEach((t) => {
+    on('#certs-tab-' + t, 'click', () => showCertsTab(t));
+  });
+  const bar = document.querySelector('.certs-tabs');
+  if (bar) bar.addEventListener('keydown', (e) => {
+    const cur = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.certsTab : null;
+    if (!cur || !certsTabValid(cur)) return;
+    let idx = CERTS_TABS.indexOf(cur);
+    if (e.key === 'ArrowRight') idx = (idx + 1) % CERTS_TABS.length;
+    else if (e.key === 'ArrowLeft') idx = (idx - 1 + CERTS_TABS.length) % CERTS_TABS.length;
+    else if (e.key === 'Home') idx = 0;
+    else if (e.key === 'End') idx = CERTS_TABS.length - 1;
+    else return;
+    e.preventDefault();
+    showCertsTab(CERTS_TABS[idx]);
+    const btn = document.getElementById('certs-tab-' + CERTS_TABS[idx]);
+    if (btn) btn.focus();
+  });
+}
+/* ---------- 落地管理页子选项卡（v1.4.39） ---------- */
+const MANAGE_TABS = ['list', 'recycle'];
+const MANAGE_TAB_KEY = 'relay-panel-manage-tab';
+function manageTabValid(id) { return MANAGE_TABS.indexOf(id) >= 0; }
+function showManageTab(id) {
+  if (!manageTabValid(id)) id = 'list';
+  MANAGE_TABS.forEach((t) => {
+    const btn = document.getElementById('manage-tab-' + t);
+    if (btn) btn.setAttribute('aria-selected', t === id ? 'true' : 'false');
+    setVisible(document.getElementById('manage-panel-' + t), t === id);
+  });
+  try { localStorage.setItem(MANAGE_TAB_KEY, id); } catch (e) { /* 隐私模式等存不了就每次回落地列表 */ }
+}
+function initManageTabs() {
+  let saved = null;
+  try { saved = localStorage.getItem(MANAGE_TAB_KEY); } catch (e) { /* 读不到就用默认 */ }
+  showManageTab(manageTabValid(saved) ? saved : 'list');
+  if (initManageTabs.bound) return;
+  initManageTabs.bound = true;
+  MANAGE_TABS.forEach((t) => {
+    on('#manage-tab-' + t, 'click', () => showManageTab(t));
+  });
+  const bar = document.querySelector('.manage-tabs');
+  if (bar) bar.addEventListener('keydown', (e) => {
+    const cur = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.manageTab : null;
+    if (!cur || !manageTabValid(cur)) return;
+    let idx = MANAGE_TABS.indexOf(cur);
+    if (e.key === 'ArrowRight') idx = (idx + 1) % MANAGE_TABS.length;
+    else if (e.key === 'ArrowLeft') idx = (idx - 1 + MANAGE_TABS.length) % MANAGE_TABS.length;
+    else if (e.key === 'Home') idx = 0;
+    else if (e.key === 'End') idx = MANAGE_TABS.length - 1;
+    else return;
+    e.preventDefault();
+    showManageTab(MANAGE_TABS[idx]);
+    const btn = document.getElementById('manage-tab-' + MANAGE_TABS[idx]);
+    if (btn) btn.focus();
+  });
+}
+/* ---------- 流量页时间范围选项卡（v1.4.39） ---------- */
+// 与上面四套不同：这里没有面板，选项卡只切时间范围（trafficRange）并重拉数据。
+const TRAFFIC_TABS = ['day', 'month', 'total'];
+const TRAFFIC_TAB_KEY = 'relay-panel-traffic-tab';
+function trafficTabValid(id) { return TRAFFIC_TABS.indexOf(id) >= 0; }
+function showTrafficTab(id, opts) {
+  if (!trafficTabValid(id)) id = 'day';
+  trafficRange = id;
+  TRAFFIC_TABS.forEach((t) => {
+    const btn = document.getElementById('traffic-tab-' + t);
+    if (btn) btn.setAttribute('aria-selected', t === id ? 'true' : 'false');
+  });
+  try { localStorage.setItem(TRAFFIC_TAB_KEY, id); } catch (e) { /* 隐私模式等存不了就每次回按天 */ }
+  if (!opts || opts.load !== false) loadTrafficData();
+}
+function initTrafficTabs() {
+  let saved = null;
+  try { saved = localStorage.getItem(TRAFFIC_TAB_KEY); } catch (e) { /* 读不到就用默认 */ }
+  // 启动时只恢复选中态与 trafficRange，不拉数据（数据由 loadTrafficPage 在进页时拉）。
+  showTrafficTab(trafficTabValid(saved) ? saved : 'day', { load: false });
+  if (initTrafficTabs.bound) return;
+  initTrafficTabs.bound = true;
+  TRAFFIC_TABS.forEach((t) => {
+    on('#traffic-tab-' + t, 'click', () => showTrafficTab(t));
+  });
+  const bar = document.querySelector('.traffic-tabs');
+  if (bar) bar.addEventListener('keydown', (e) => {
+    const cur = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.range : null;
+    if (!cur || !trafficTabValid(cur)) return;
+    let idx = TRAFFIC_TABS.indexOf(cur);
+    if (e.key === 'ArrowRight') idx = (idx + 1) % TRAFFIC_TABS.length;
+    else if (e.key === 'ArrowLeft') idx = (idx - 1 + TRAFFIC_TABS.length) % TRAFFIC_TABS.length;
+    else if (e.key === 'Home') idx = 0;
+    else if (e.key === 'End') idx = TRAFFIC_TABS.length - 1;
+    else return;
+    e.preventDefault();
+    showTrafficTab(TRAFFIC_TABS[idx]);
+    const btn = document.getElementById('traffic-tab-' + TRAFFIC_TABS[idx]);
+    if (btn) btn.focus();
+  });
+}
 /* ---------- 节点链接 ---------- */
 let linksPage = 1;
 let linksGroupsCache = []; // 本页接口返回的全部历史分组（按文件顺序）
@@ -3910,8 +4110,8 @@ function initFirewallTabs() {
     if (btn) btn.focus();
   });
 }
-// 订阅工作区顶级页（v1.4.33）：档位／分组／订阅用户三栏同页（①套餐档位
-// ②分组 ③订阅用户）＋订阅设置区；三套列表的渲染函数（loadSubPlans／
+// 订阅工作区顶级页（v1.4.33）：档位／分组／订阅用户四子选项卡同页（①套餐档位
+// ②分组 ③订阅用户）＋订阅设置选项卡；三套列表的渲染函数（loadSubPlans／
 // loadSubGroups／loadSubUsers）与弹窗复用，只换了容器位置。管理面板模式
 // 下也可见（MANAGER_PAGES 含 subscription）。
 async function loadSubscriptionPage() {
@@ -5317,11 +5517,8 @@ function initTraffic() {
     chartCv.addEventListener('mouseleave', hideTrafficChartTip);
   }
   on('#limit-bytes-gb', 'input', syncTrafficLimitForm);
-  $$('[data-range]').forEach((b) => b.addEventListener('click', () => {
-    trafficRange = b.dataset.range;
-    $$('[data-range]').forEach((x) => x.classList.toggle('active', x === b));
-    loadTrafficData();
-  }));
+  // v1.4.39：时间范围按钮改成选项卡样式，点击与键盘逻辑由 initTrafficTabs 管；
+  // 这里不再单独绑 click，避免同一按钮两处都改状态。
   on('#traffic-limit-form', 'submit', async (e) => {
     e.preventDefault();
     if (!trafficLanding) { toast('请先选择落地', 'err'); return; }
@@ -6412,6 +6609,9 @@ async function openSubUserModal() {
       if (accBox) { accBox.classList.remove('hidden'); accBox.hidden = false; }
       const box = $('#sub-user-once');
       if (box) { box.classList.remove('hidden'); box.hidden = false; }
+      // v1.4.39：新建成功后切到“订阅用户”选项卡，让成功区（链接＋登录账号）立刻可见
+      // （用户可能正在“分组”或“套餐档位”选项卡里建用户，成功区在“订阅用户”选项卡里）。
+      showSubwsTab('users');
       if (r.warning) toast(r.warning, 'err');
       else toast(password ? '订阅用户已新建，链接显示在下面，随时能复制' : '订阅用户已新建，链接显示在下面；没填登录密码，这个账号还不能登录，以后在编辑用户里设置密码', 'ok');
       loadSubUsers();
@@ -6608,12 +6808,17 @@ function openSubPlanModal(plan) {
     } catch (err) { showPlanErr('保存失败：' + err.message); }
   });
 }
-// 订阅工作区三栏互跳 + 设置页指针卡跳订阅页（v1.4.33）：栏内按钮滚到对应
-// 卡片，不用换顶级导航；设置页里的指针卡点一下直接 goto('subscription')。
+// 订阅工作区选项卡互跳 + 设置页指针卡跳订阅页（v1.4.33，v1.4.39 改切选项卡）：
+// 栏内按钮切到对应选项卡，不用换顶级导航；设置页里的指针卡点一下直接 goto('subscription')。
 function initSubscriptionJumps() {
+  // v1.4.39：订阅页三栏改成子选项卡，互跳按钮改切选项卡（不再滚动到卡片）；
+  // 切完再把目标选项卡按钮聚焦，键盘用户知道焦点在哪。
   $$('[data-sub-jump]').forEach((b) => b.addEventListener('click', () => {
-    const el = document.getElementById(b.dataset.subJump || '');
-    if (el && el.scrollIntoView) el.scrollIntoView();
+    const tab = b.dataset.subJump || '';
+    if (!subwsTabValid(tab)) return;
+    showSubwsTab(tab);
+    const btn = document.getElementById('subws-tab-' + tab);
+    if (btn) btn.focus();
   }));
   $$('[data-sub-goto]').forEach((b) => b.addEventListener('click', () => goto(b.dataset.subGoto || 'subscription')));
 }
@@ -8830,12 +9035,17 @@ document.addEventListener('DOMContentLoaded', () => {
   safeInit(initServiceTabs); // v1.3.41：服务与日志页选项卡绑定 + 恢复上次选项卡
   safeInit(initLinksTabs); // v1.4.35：节点链接页选项卡绑定 + 恢复上次选项卡
   safeInit(initFirewallTabs); // v1.3.41：端口管理页选项卡绑定 + 恢复上次选项卡
+  safeInit(initSubwsTabs); // v1.4.39：订阅工作区子选项卡绑定 + 恢复上次选项卡
+  safeInit(initNodesTabs); // v1.4.39：节点页子选项卡绑定 + 恢复上次选项卡
+  safeInit(initCertsTabs); // v1.4.39：落地证书页子选项卡绑定 + 恢复上次选项卡
+  safeInit(initManageTabs); // v1.4.39：落地管理页子选项卡绑定 + 恢复上次选项卡
+  safeInit(initTrafficTabs); // v1.4.39：流量页时间范围选项卡绑定 + 恢复上次范围
   safeInit(initTwin);
   safeInit(initSubMode); // v1.3.17：“订阅出哪些节点”三选一绑定 + 恢复上次选择
   safeInit(initService);
   safeInit(initSettings);
   safeInit(initSubGroups); // v1.3.26：分组卡片新建按钮 + 搜索框绑定
-  safeInit(initSubscriptionJumps); // v1.4.33：订阅工作区三栏互跳 + 设置页指针卡跳订阅页
+  safeInit(initSubscriptionJumps); // v1.4.33：订阅工作区选项卡互跳 + 设置页指针卡跳订阅页
   safeInit(initSubPlans); // v1.4.27：套餐档位卡片新建按钮 + 搜索框绑定
   safeInit(initAnnouncements); // v1.4.29：公告卡片新建按钮绑定
   safeInit(initClientConfig); // v1.4.29：客户端远程配置保存／撤下按钮绑定

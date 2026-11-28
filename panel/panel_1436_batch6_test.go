@@ -18,14 +18,14 @@ import (
 // 退场 410 判定全部保留。前端行为由 jsdom test-1436-batch6.js 覆盖。
 
 func TestVersion1436(t *testing.T) {
-	if Version != "1.4.38" {
+	if Version != "1.4.39" {
 		t.Fatalf("Version 应为 1.4.36，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.38" {
+	if strings.TrimSpace(string(vb)) != "1.4.39" {
 		t.Fatalf("VERSION 文件应为 1.4.36，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }

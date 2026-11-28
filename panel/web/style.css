@@ -380,27 +380,26 @@ html[data-theme="dark"] .tag.relay{background:#1e3a5f; color:#93c5fd; border-col
 /* ---- 设置页选项卡（v1.3.12）：一个卡片外壳＋顶部选项卡栏 ---- */
 /* v1.3.13：集中管理大选项卡/子选项卡与异地备份子选项卡复用同一套样式 */
 /* v1.3.41：添加落地表单、服务与日志页、端口管理页也用同一套选项卡样式 */
-.settings-shell, .central-shell, .add-shell, .service-shell, .fw-shell, .links-shell{padding:0}
-.settings-tabs, .central-tabs, .rb-tabs, .add-tabs, .service-tabs, .fw-tabs, .sub-tabs, .links-tabs{
+.settings-shell, .central-shell, .add-shell, .service-shell, .fw-shell, .links-shell, .sub-shell, .nodes-shell, .certs-shell, .manage-shell{padding:0}
+.settings-tabs, .central-tabs, .rb-tabs, .add-tabs, .service-tabs, .fw-tabs, .sub-tabs, .links-tabs, .nodes-tabs, .certs-tabs, .manage-tabs, .traffic-tabs{
   display:flex; gap:2px; padding:12px 12px 0; overflow-x:auto;
   border-bottom:1px solid var(--border);
   scrollbar-width:thin; -webkit-overflow-scrolling:touch;
 }
-.settings-tab, .central-tab, .rb-tab, .add-tab, .service-tab, .fw-tab, .sub-tab, .links-tab{
+.settings-tab, .central-tab, .rb-tab, .add-tab, .service-tab, .fw-tab, .sub-tab, .links-tab, .nodes-tab, .certs-tab, .manage-tab, .traffic-tab{
   flex:0 0 auto; background:transparent; border:0; border-bottom:2px solid transparent;
   color:var(--muted); padding:10px 16px; font-size:15px; font-weight:600;
   border-radius:8px 8px 0 0; white-space:nowrap;
 }
-.settings-tab:hover, .central-tab:hover, .rb-tab:hover, .add-tab:hover, .service-tab:hover, .fw-tab:hover, .sub-tab:hover, .links-tab:hover{background:var(--surface-muted); color:var(--text)}
-.settings-tab[aria-selected="true"], .central-tab[aria-selected="true"], .rb-tab[aria-selected="true"], .add-tab[aria-selected="true"], .service-tab[aria-selected="true"], .fw-tab[aria-selected="true"], .sub-tab[aria-selected="true"], .links-tab[aria-selected="true"]{color:var(--accent); border-bottom-color:var(--accent)}
-.settings-tab:focus-visible, .central-tab:focus-visible, .rb-tab:focus-visible, .add-tab:focus-visible, .service-tab:focus-visible, .fw-tab:focus-visible, .sub-tab:focus-visible, .links-tab:focus-visible{outline:2px solid var(--focus); outline-offset:2px}
-.settings-panel, .central-panel, .add-panel, .service-panel, .fw-panel, .links-panel{padding:18px}
-.sub-panel{padding:18px 0 0}
+.settings-tab:hover, .central-tab:hover, .rb-tab:hover, .add-tab:hover, .service-tab:hover, .fw-tab:hover, .sub-tab:hover, .links-tab:hover, .nodes-tab:hover, .certs-tab:hover, .manage-tab:hover, .traffic-tab:hover{background:var(--surface-muted); color:var(--text)}
+.settings-tab[aria-selected="true"], .central-tab[aria-selected="true"], .rb-tab[aria-selected="true"], .add-tab[aria-selected="true"], .service-tab[aria-selected="true"], .fw-tab[aria-selected="true"], .sub-tab[aria-selected="true"], .links-tab[aria-selected="true"], .nodes-tab[aria-selected="true"], .certs-tab[aria-selected="true"], .manage-tab[aria-selected="true"], .traffic-tab[aria-selected="true"]{color:var(--accent); border-bottom-color:var(--accent)}
+.settings-tab:focus-visible, .central-tab:focus-visible, .rb-tab:focus-visible, .add-tab:focus-visible, .service-tab:focus-visible, .fw-tab:focus-visible, .sub-tab:focus-visible, .links-tab:focus-visible, .nodes-tab:focus-visible, .certs-tab:focus-visible, .manage-tab:focus-visible, .traffic-tab:focus-visible{outline:2px solid var(--focus); outline-offset:2px}
+.settings-panel, .central-panel, .add-panel, .service-panel, .fw-panel, .links-panel, .sub-panel, .nodes-panel, .certs-panel, .manage-panel{padding:18px}
 .rb-panel{padding-top:12px}
 @media (max-width:640px){
-  .settings-tabs, .central-tabs, .rb-tabs, .add-tabs, .service-tabs, .fw-tabs, .sub-tabs, .links-tabs{padding:10px 8px 0}
-  .settings-tab, .central-tab, .rb-tab, .add-tab, .service-tab, .fw-tab, .sub-tab, .links-tab{padding:10px 13px}
-  .settings-panel, .central-panel, .add-panel, .service-panel, .fw-panel, .links-panel{padding:14px}
+  .settings-tabs, .central-tabs, .rb-tabs, .add-tabs, .service-tabs, .fw-tabs, .sub-tabs, .links-tabs, .nodes-tabs, .certs-tabs, .manage-tabs, .traffic-tabs{padding:10px 8px 0}
+  .settings-tab, .central-tab, .rb-tab, .add-tab, .service-tab, .fw-tab, .sub-tab, .links-tab, .nodes-tab, .certs-tab, .manage-tab, .traffic-tab{padding:10px 13px}
+  .settings-panel, .central-panel, .add-panel, .service-panel, .fw-panel, .links-panel, .sub-panel, .nodes-panel, .certs-panel, .manage-panel{padding:14px}
 }
 
 /* ---- v1.3.20：列表工具条 / 搜索框 ---- */
@@ -562,7 +561,11 @@ html[data-theme="glass"] .add-tab[aria-selected="true"],
 html[data-theme="glass"] .service-tab[aria-selected="true"],
 html[data-theme="glass"] .fw-tab[aria-selected="true"],
 html[data-theme="glass"] .sub-tab[aria-selected="true"],
-html[data-theme="glass"] .links-tab[aria-selected="true"]{color:var(--accent);border-bottom-color:var(--accent)}
+html[data-theme="glass"] .links-tab[aria-selected="true"],
+html[data-theme="glass"] .nodes-tab[aria-selected="true"],
+html[data-theme="glass"] .certs-tab[aria-selected="true"],
+html[data-theme="glass"] .manage-tab[aria-selected="true"],
+html[data-theme="glass"] .traffic-tab[aria-selected="true"]{color:var(--accent);border-bottom-color:var(--accent)}
 /* 对比位置①：登录卡品牌块——深藏青底＋金色字（只这一处用深色，金色只作标题色）。 */
 html[data-theme="glass"] .login-card .brand{
   background:#0F2A4A;color:#EEC362;border-radius:14px;padding:12px;margin-bottom:12px;
