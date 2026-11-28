@@ -5,7 +5,7 @@ package main
 // 四级（由粗到细）：全部／组／节点／入站。默认全部。
 //
 //
-// - 级别与目标存在用户记录上：SubUser／MergedSub 的 BackendScope
+// - 级别与目标存在用户记录上：SubUser／独立合并订阅的 BackendScope
 // 与 BackendTargets（config.json，随用户走，备份／恢复全量跟走）。
 // Scope 是 "" 或 "all" = 全部；"group" = 跟所在分组走；"node" =
 // 只上指定节点；"inbound" = 只上指定入站。Targets 的含义随 scope
@@ -64,7 +64,7 @@ func backendAssignScopeValid(scope string) bool {
 }
 
 // backendAssignAllows 用户侧四级门：该用户在节点 node 上吗。
-// groupID 是用户自己的 GroupID（SubUser／MergedSub.GroupID）。
+// groupID 是用户自己的 GroupID（SubUser.GroupID；独立合并订阅没有分组）。
 // 读 s.cfg.SubGroups（组级要分组的 BackendNodeIDs），调用方须持有
 // opMu（与 nodeBackendUsersForNode 同一调用链）。
 func (s *Server) backendAssignAllows(scope string, targets []string, groupID string, node *BackendNode) bool {
@@ -306,10 +306,6 @@ func (s *Server) handleBackendAssignmentGet(w http.ResponseWriter, r *http.Reque
 		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
 			scope, targets = ims.BackendScope, ims.BackendTargets
 		}
-	} else {
-		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-			scope, targets, groupID = ms.BackendScope, ms.BackendTargets, ms.GroupID
-		}
 	}
 	if strings.TrimSpace(scope) == "" {
 		scope = "all"
@@ -357,12 +353,6 @@ func (s *Server) applyBackendAssignment(kind, id, scope string, targets []string
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
 			oldScope, oldTargets = u.BackendScope, u.BackendTargets
 			u.BackendScope, u.BackendTargets = scope, targets
-			recOK = true
-		}
-	} else if kind == "merged" {
-		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-			oldScope, oldTargets = ms.BackendScope, ms.BackendTargets
-			ms.BackendScope, ms.BackendTargets = scope, targets
 			recOK = true
 		}
 	} else if kind == "indmerged" {
@@ -454,10 +444,6 @@ func (s *Server) handleBackendAssignmentUpdate(w http.ResponseWriter, r *http.Re
 		}
 	} else if kind == "indmerged" {
 		// 独立合并订阅没有分组，groupID 留空。
-	} else {
-		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-			groupID = ms.GroupID
-		}
 	}
 	ids, err := s.applyBackendAssignment(kind, id, req.Scope, req.Targets, groupID)
 	if err != nil {
@@ -478,10 +464,6 @@ func (s *Server) handleBackendAssignmentUpdate(w http.ResponseWriter, r *http.Re
 	} else if kind == "indmerged" {
 		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
 			respScope, respTargets = ims.BackendScope, ims.BackendTargets
-		}
-	} else {
-		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-			respScope, respTargets = ms.BackendScope, ms.BackendTargets
 		}
 	}
 	s.audit(s.currentUser(r), "改用户后端指派", fmt.Sprintf("%s %s 指派 %s", key, name, respScope), "成功", "")

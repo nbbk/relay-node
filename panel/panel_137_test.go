@@ -138,12 +138,14 @@ func mustSubKey137(t *testing.T, s *Server) []byte {
 func TestSubLinkEndpoint137(t *testing.T) {
 	s := newTestSubServer(t)
 
-	// 1.4.27：通用/合并订阅已退场，取链接接口里 generic 与 merged 一律
-	// 410；kind=user 恢复解密返回（见 TestSubLinkUserRefresh137）。
-	for _, kind := range []string{"generic", "merged"} {
-		if rec := callLink137(t, s, kind, ""); rec.Code != 410 {
-			t.Fatalf("kind=%s 的取链接应 410，实际 %d：%s", kind, rec.Code, rec.Body.String())
-		}
+	// 1.4.27：通用订阅已退场，取链接接口里 generic 一律 410；1.4.40：
+	// 旧合并订阅彻底移除，kind=merged 不再是合法 kind，按非法 kind 400；
+	// kind=user 恢复解密返回（见 TestSubLinkUserRefresh137）。
+	if rec := callLink137(t, s, "generic", ""); rec.Code != 410 {
+		t.Fatalf("kind=generic 的取链接应 410，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	if rec := callLink137(t, s, "merged", ""); rec.Code != 400 {
+		t.Fatalf("kind=merged 的取链接应 400（旧合并订阅已移除），实际 %d：%s", rec.Code, rec.Body.String())
 	}
 	if rec := callLink137(t, s, "bogus", ""); rec.Code != 400 {
 		t.Fatalf("kind=bogus 的取链接应 400，实际 %d：%s", rec.Code, rec.Body.String())
@@ -155,25 +157,25 @@ func TestSubLinkEndpoint137(t *testing.T) {
 	if rec := callLink137(t, s, "user", ""); rec.Code != 400 {
 		t.Fatalf("不给 id 的取链接应 400，实际 %d：%s", rec.Code, rec.Body.String())
 	}
-	// 合并订阅列表仍可查（供核对），has_link 按密文有无区分。
+	// 独立合并订阅列表仍可查，has_link 按密文有无区分；没有退场标记。
 	remoteTok := generateSubToken()
 	remoteEnc, err := s.encryptSubTokenNow(remoteTok)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs,
-		MergedSub{ID: "ms-with137", Name: "有密文", TokenHash: hashSubToken(remoteTok), TokenEnc: remoteEnc, Selection: []SubSelection{{Panel: "local", Landing: 1}}},
-		MergedSub{ID: "ms-no137", Name: "无密文", TokenHash: "hash-x", Selection: []SubSelection{{Panel: "local", Landing: 1}}},
+	s.cfg.IndependentMergedSubs = append(s.cfg.IndependentMergedSubs,
+		IndependentMergedSub{ID: "ims-with137", Name: "有密文", TokenHash: hashSubToken(remoteTok), TokenEnc: remoteEnc, Selection: []SubSelection{{Panel: "local", Landing: 1}}},
+		IndependentMergedSub{ID: "ims-no137", Name: "无密文", TokenHash: "hash-x", Selection: []SubSelection{{Panel: "local", Landing: 1}}},
 	)
-	rec := callJSON130(t, s.handleMergedSubsList, "GET", "/api/v1/subscriptions/merged", "")
+	rec := callJSON130(t, s.handleIndMergedSubsList, "GET", "/api/v1/subscriptions/independent-merged", "")
 	if rec.Code != 200 {
-		t.Fatalf("列合并订阅应 200，实际 %d", rec.Code)
+		t.Fatalf("列独立合并订阅应 200，实际 %d", rec.Code)
 	}
 	if !strings.Contains(rec.Body.String(), `"has_link":true`) || !strings.Contains(rec.Body.String(), `"has_link":false`) {
-		t.Fatalf("合并列表应同时有 has_link true/false：%s", rec.Body.String())
+		t.Fatalf("独立合并列表应同时有 has_link true/false：%s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"retired":true`) {
-		t.Fatalf("合并列表应标 retired:true：%s", rec.Body.String())
+	if strings.Contains(rec.Body.String(), `"retired"`) {
+		t.Fatalf("独立合并列表不应有退场标记：%s", rec.Body.String())
 	}
 }
 
@@ -431,7 +433,7 @@ func TestBackupRestoreKeepsTokenEnc137(t *testing.T) {
 		{ID: "u1", Name: "张三", TokenHash: "hash-aaa", TokenEnc: "enc-aaa", CreatedAt: "2026-01-01T00:00:00Z"},
 		{ID: "u3", Name: "李四", TokenHash: "hash-ddd", TokenEnc: "enc-ddd", CreatedAt: "2026-01-01T00:00:00Z"},
 	}
-	s.cfg.MergedSubs = []MergedSub{{ID: "m1", Name: "合并", TokenHash: "hash-bbb", TokenEnc: "enc-bbb", CreatedAt: "2026-01-01T00:00:00Z", Selection: []SubSelection{{Landing: 1}}}}
+	s.cfg.IndependentMergedSubs = []IndependentMergedSub{{ID: "ims-1", Name: "独立合并", TokenHash: "hash-bbb", TokenEnc: "enc-bbb", CreatedAt: "2026-01-01T00:00:00Z", Selection: []SubSelection{{Landing: 1}}}}
 	id, err := s.runScheduledBackup("恢复密文测试")
 	if err != nil {
 		t.Fatalf("备份失败：%v", err)
@@ -442,12 +444,12 @@ func TestBackupRestoreKeepsTokenEnc137(t *testing.T) {
 		strings.Contains(string(raw), "enc-aaa") || strings.Contains(string(raw), "hash-ddd") {
 		t.Fatalf("备份文件里不应有令牌哈希/密文，实际：%s", raw)
 	}
-	// 改掉现状：u1 删了（恢复后应回来，但密文为空、须轮换）；u3 留着；备份后新增 u2、m2
+	// 改掉现状：u1 删了（恢复后应回来，但密文为空、须轮换）；u3 留着；备份后新增 u2、ims-2
 	s.cfg.SubUsers = []SubUser{
 		{ID: "u3", Name: "李四", TokenHash: "hash-ddd", TokenEnc: "enc-ddd", CreatedAt: "2026-01-01T00:00:00Z"},
 		{ID: "u2", Name: "备份后新增", TokenHash: "hash-ccc", TokenEnc: "enc-ccc"},
 	}
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: "m2", Name: "备份后新增", TokenHash: "hash-eee", TokenEnc: "enc-eee"})
+	s.cfg.IndependentMergedSubs = append(s.cfg.IndependentMergedSubs, IndependentMergedSub{ID: "ims-2", Name: "备份后新增", TokenHash: "hash-eee", TokenEnc: "enc-eee"})
 	req := httptest.NewRequest("POST", "/api/v1/scheduled-backups/"+id+"/restore", nil)
 	req.SetPathValue("id", id)
 	rec := httptest.NewRecorder()
@@ -468,8 +470,8 @@ func TestBackupRestoreKeepsTokenEnc137(t *testing.T) {
 	if _, ok := byID["u2"]; ok {
 		t.Fatalf("备份后新增的 u2 应被移除，实际 %+v", s.cfg.SubUsers)
 	}
-	if len(s.cfg.MergedSubs) != 1 || s.cfg.MergedSubs[0].ID != "m1" ||
-		s.cfg.MergedSubs[0].TokenHash != "hash-bbb" || s.cfg.MergedSubs[0].TokenEnc != "enc-bbb" {
-		t.Fatalf("合并订阅应恢复成 m1 且保留原哈希与密文，实际 %+v", s.cfg.MergedSubs)
+	if len(s.cfg.IndependentMergedSubs) != 1 || s.cfg.IndependentMergedSubs[0].ID != "ims-1" ||
+		s.cfg.IndependentMergedSubs[0].TokenHash != "hash-bbb" || s.cfg.IndependentMergedSubs[0].TokenEnc != "enc-bbb" {
+		t.Fatalf("独立合并订阅应恢复成 ims-1 且保留原哈希与密文，实际 %+v", s.cfg.IndependentMergedSubs)
 	}
 }

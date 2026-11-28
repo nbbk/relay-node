@@ -20,7 +20,7 @@ import (
 const testNodeUUID = "11111111-2222-3333-4444-555555555555"
 
 // newNodeAgentServer1330 造一台带订阅用户与合并订阅的面板：
-// su-1（限流 100MB，带一个落地 UUID）与 ms-1（限流 200MB，monthly），
+// su-1（限流 100MB，带一个落地 UUID）与 ims-1（限流 200MB，monthly），
 // rpt_ 令牌已设好，明文返回给调用方。
 func newNodeAgentServer1330(t *testing.T) (*Server, string) {
 	t.Helper()
@@ -35,8 +35,8 @@ func newNodeAgentServer1330(t *testing.T) (*Server, string) {
 		ResetMode: "monthly", ResetDay: 1,
 		NodeUUIDs: map[string]string{"203.0.113.1": testNodeUUID},
 	}}
-	s.cfg.MergedSubs = []MergedSub{{
-		ID: "ms-1", Name: "合并一", TokenHash: "hash-ms-1",
+	s.cfg.IndependentMergedSubs = []IndependentMergedSub{{
+		ID: "ims-1", Name: "合并一", TokenHash: "hash-ims-1",
 		CreatedAt: "2026-11-20T00:00:00Z", Selection: []SubSelection{{Panel: "local", Landing: 1}},
 		Mode: "both", ExpiresAt: "2027-06-01T23:59:59Z",
 		TrafficLimitBytes: 200 * 1024 * 1024, TrafficLimitMode: "monthly",
@@ -91,7 +91,7 @@ func TestNodeUsersFieldsAndAuth1330(t *testing.T) {
 		t.Fatalf("下发应带 ETag 头")
 	}
 	resp := decodeNode1330(t, rec)
-	if resp["panel_version"] != "1.4.39" {
+	if resp["panel_version"] != "1.4.40" {
 		t.Fatalf("panel_version 应为 1.4.33，实际 %v", resp["panel_version"])
 	}
 	if resp["generic_email"] != "generic@node" {
@@ -99,7 +99,7 @@ func TestNodeUsersFieldsAndAuth1330(t *testing.T) {
 	}
 	users, _ := resp["users"].([]any)
 	if len(users) != 2 {
-		t.Fatalf("用户表应有 2 条（订阅用户 + 合并订阅），实际 %d：%s", len(users), rec.Body.String())
+		t.Fatalf("用户表应有 2 条（订阅用户 + 独立合并订阅），实际 %d：%s", len(users), rec.Body.String())
 	}
 	byID := map[string]map[string]any{}
 	for _, u := range users {
@@ -117,12 +117,12 @@ func TestNodeUsersFieldsAndAuth1330(t *testing.T) {
 	if su["traffic_limit_bytes"] != float64(100*1024*1024) || su["traffic_limit_mode"] != "total" || su["expires_at"] != "2027-05-01T23:59:59Z" {
 		t.Fatalf("su-1 的限流/到期字段不对：%v", su)
 	}
-	ms := byID["ms-1"]
-	if ms["user_id"] != "merged:ms-1" || ms["email"] != "u-merged-ms-1@node" {
-		t.Fatalf("ms-1 的 user_id/email 不对：%v", ms)
+	ims := byID["ims-1"]
+	if ims["user_id"] != "indmerged:ims-1" || ims["email"] != "u-indmerged-ims-1@node" {
+		t.Fatalf("ims-1 的 user_id/email 不对：%v", ims)
 	}
-	if ms["traffic_limit_mode"] != "monthly" || ms["next_reset_at"] != "2026-12-01T00:00:00Z" {
-		t.Fatalf("ms-1 的限流/重置字段不对：%v", ms)
+	if ims["traffic_limit_mode"] != "monthly" || ims["next_reset_at"] != "2026-12-01T00:00:00Z" {
+		t.Fatalf("ims-1 的限流/重置字段不对：%v", ims)
 	}
 	st, _ := resp["agent_status"].(map[string]any)
 	if st == nil || st["online"] != false || st["metering_source"] != "" {
@@ -187,7 +187,7 @@ func TestNodeConfigFields1330(t *testing.T) {
 	if resp["enforce"] != false {
 		t.Fatalf("本版 enforce 应为 false，实际 %v", resp["enforce"])
 	}
-	if resp["panel_version"] != "1.4.39" {
+	if resp["panel_version"] != "1.4.40" {
 		t.Fatalf("panel_version 应为 1.4.33，实际 %v", resp["panel_version"])
 	}
 	st, _ := resp["agent_status"].(map[string]any)
@@ -247,7 +247,7 @@ func TestNodePushDedup1330(t *testing.T) {
 	// 未知用户与负数：整单不失败，只记 rejected。
 	resp = push(`{"node_id":"203.0.113.1","entries":[
 		{"user_id":"subuser:su-404","period_id":0,"seq":1,"up_bytes":10,"down_bytes":10},
-		{"user_id":"merged:ms-1","period_id":0,"seq":1,"up_bytes":-5,"down_bytes":10},
+		{"user_id":"indmerged:ims-1","period_id":0,"seq":1,"up_bytes":-5,"down_bytes":10},
 		{"user_id":"badformat","period_id":0,"seq":1,"up_bytes":10,"down_bytes":10}]}`)
 	if resp["accepted"] != float64(0) {
 		t.Fatalf("三条坏条目应 accepted=0，实际 %v", resp)
@@ -313,9 +313,9 @@ func TestNodePushPeriodRollover1330(t *testing.T) {
 			t.Fatalf("推送应 200，实际 %d：%s", rec.Code, rec.Body.String())
 		}
 	}
-	push(`{"node_id":"203.0.113.1","entries":[{"user_id":"merged:ms-1","period_id":0,"seq":1,"up_bytes":100,"down_bytes":100}]}`)
-	push(`{"node_id":"203.0.113.1","entries":[{"user_id":"merged:ms-1","period_id":1,"seq":1,"up_bytes":50,"down_bytes":60}]}`)
-	up, down, upP, downP, ok := s.userTraffic.totals("merged:ms-1")
+	push(`{"node_id":"203.0.113.1","entries":[{"user_id":"indmerged:ims-1","period_id":0,"seq":1,"up_bytes":100,"down_bytes":100}]}`)
+	push(`{"node_id":"203.0.113.1","entries":[{"user_id":"indmerged:ims-1","period_id":1,"seq":1,"up_bytes":50,"down_bytes":60}]}`)
+	up, down, upP, downP, ok := s.userTraffic.totals("indmerged:ims-1")
 	if !ok || up != 150 || down != 160 || upP != 50 || downP != 60 {
 		t.Fatalf("翻周期后总量应 150/160、本期 50/60，实际 up=%d down=%d upP=%d downP=%d ok=%v", up, down, upP, downP, ok)
 	}
@@ -385,10 +385,10 @@ func TestNodeUUIDsBackupRoundTrip1330(t *testing.T) {
 	if !strings.Contains(string(b), `"node_uuids"`) {
 		t.Fatalf("备份 JSON 里应有 node_uuids：%s", b)
 	}
-	subs := []MergedSub{{ID: "ms-1", Name: "合并一",
+	subs := []IndependentMergedSub{{ID: "ims-1", Name: "合并一",
 		NodeUUIDs: map[string]string{"203.0.113.1": testNodeUUID}}}
-	backedM := sanitizeMergedSubs(subs, true)
+	backedM := sanitizeIndMergedSubs(subs, true)
 	if len(backedM) != 1 || backedM[0].NodeUUIDs["203.0.113.1"] != testNodeUUID {
-		t.Fatalf("合并订阅备份里 node_uuids 丢了：%+v", backedM)
+		t.Fatalf("独立合并订阅备份里 node_uuids 丢了：%+v", backedM)
 	}
 }

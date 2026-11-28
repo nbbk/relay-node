@@ -13,7 +13,7 @@ import (
 // 不用每人重复勾落地；通用共享节点放一个组，美国/英国/法国等定制用户
 // 各放各的组。
 //
-// 成员归属的唯一事实来源是 SubUser/MergedSub 上的 GroupID（单字段，
+// 成员归属的唯一事实来源是 SubUser 上的 GroupID（单字段，
 // 一个订阅最多属于一个组，不会有两个组的落地集合冲突）；组本身不另存
 // 成员列表，groupMembers() 现算。成员自己的 Selection 保留在记录里：
 // 进组后订阅按组的落地集合出内容，自己的勾选不用；出组/删组后自动恢复，
@@ -31,11 +31,10 @@ func (s *Server) findSubGroup(id string) *SubGroup {
 	return nil
 }
 
-// groupMember 分组里的一名成员（列表接口用）：Kind 是 "user"（订阅用户）
-// 或 "merged"（合并订阅），Name 是显示名（合并订阅没填名时用勾选摘要）。
-// v1.4.34（方案 A）：独立合并订阅不进分组，"indmerged" 不是分组成员
-// kind——validateGroupMembers 只认 user/merged，传 indmerged 会 400；
-// 本文件各处 merged 分支保持只指旧实体，不并列新 kind。
+// groupMember 分组里的一名成员（列表接口用）：Kind 是 "user"（订阅用户），
+// Name 是显示名。v1.4.34（方案 A）：独立合并订阅不进分组，"indmerged"
+// 不是分组成员 kind——validateGroupMembers 只认 user，传 indmerged 会 400。
+// （旧合并订阅已在 v1.4.40 彻底移除，merged 分支已删。）
 type groupMember struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id"`
@@ -50,15 +49,6 @@ func (s *Server) groupMembers(id string) []groupMember {
 			out = append(out, groupMember{Kind: "user", ID: u.ID, Name: u.Name})
 		}
 	}
-	for _, m := range s.cfg.MergedSubs {
-		if m.GroupID == id {
-			name := m.Name
-			if name == "" {
-				name = s.selectionSummary(m.Selection)
-			}
-			out = append(out, groupMember{Kind: "merged", ID: m.ID, Name: name})
-		}
-	}
 	return out
 }
 
@@ -71,16 +61,6 @@ func (s *Server) effectiveSelectionForSubUser(u *SubUser) []SubSelection {
 		}
 	}
 	return u.Selection
-}
-
-// effectiveSelectionForMerged 一条合并订阅的生效落地集合（与订阅用户同理）。
-func (s *Server) effectiveSelectionForMerged(m *MergedSub) []SubSelection {
-	if m.GroupID != "" {
-		if g := s.findSubGroup(m.GroupID); g != nil && len(g.Selection) > 0 {
-			return g.Selection
-		}
-	}
-	return m.Selection
 }
 
 // groupNameOf 分组显示名（列表徽章用）：没分组返回 ""。
@@ -122,25 +102,16 @@ func (s *Server) applyGroupMembers(groupID string, members []groupMember) {
 			s.cfg.SubUsers[i].GroupID = ""
 		}
 	}
-	for i := range s.cfg.MergedSubs {
-		if s.cfg.MergedSubs[i].GroupID == groupID {
-			s.cfg.MergedSubs[i].GroupID = ""
-		}
-	}
 	for _, m := range members {
 		if m.Kind == "user" {
 			if u := findSubUserByID(s.cfg.SubUsers, m.ID); u != nil {
 				u.GroupID = groupID
 			}
-		} else if m.Kind == "merged" {
-			if ms := findMergedSubByID(s.cfg.MergedSubs, m.ID); ms != nil {
-				ms.GroupID = groupID
-			}
 		}
 	}
 }
 
-// validateGroupMembers 校验成员名单：kind 只能是 user/merged，id 必须存在，
+// validateGroupMembers 校验成员名单：kind 只能是 user，id 必须存在，
 // 重复的去重（保留第一次）。
 func (s *Server) validateGroupMembers(members []groupMember) ([]groupMember, error) {
 	seen := map[string]bool{}
@@ -154,10 +125,6 @@ func (s *Server) validateGroupMembers(members []groupMember) ([]groupMember, err
 		if m.Kind == "user" {
 			if findSubUserByID(s.cfg.SubUsers, m.ID) == nil {
 				return nil, &groupError{"没有这个订阅用户：" + m.ID}
-			}
-		} else if m.Kind == "merged" {
-			if findMergedSubByID(s.cfg.MergedSubs, m.ID) == nil {
-				return nil, &groupError{"没有这条合并订阅：" + m.ID}
 			}
 		} else {
 			return nil, &groupError{"成员类型不对：" + m.Kind}
@@ -181,18 +148,6 @@ func (s *Server) reconcileGroupMembersForwards(affected []groupMember) string {
 			}
 			if w := s.syncUserForwardsWarning("subuser", u.ID, u.Name, s.effectiveSelectionForSubUser(u), u.TrafficLimitBytes, u.TrafficLimitMode, u.ResetMode, u.ResetDay, u.NextResetAt); w != "" {
 				warns = append(warns, u.Name+"："+w)
-			}
-		} else if m.Kind == "merged" {
-			ms := findMergedSubByID(s.cfg.MergedSubs, m.ID)
-			if ms == nil || ms.TrafficLimitBytes <= 0 {
-				continue
-			}
-			name := ms.Name
-			if name == "" {
-				name = s.selectionSummary(ms.Selection)
-			}
-			if w := s.syncUserForwardsWarning("merged", ms.ID, name, s.effectiveSelectionForMerged(ms), ms.TrafficLimitBytes, ms.TrafficLimitMode, ms.ResetMode, ms.ResetDay, ms.NextResetAt); w != "" {
-				warns = append(warns, name+"："+w)
 			}
 		}
 	}
@@ -256,7 +211,7 @@ func (s *Server) validateBackendNodeIDs(ids []int64) ([]int64, error) {
 // 允许空集合（先建空组、稍后在组详情里再勾落地）；非空时走
 // validateMergedSelection 的同一套校验（面板存在、落地编号存在，
 // 远程面板当场验版本）。注意不要直接放宽 validateMergedSelection：
-// 它还被订阅用户/合并订阅的创建共用，那两处仍要求非空时才校验、
+// 它还被订阅用户的创建共用，那两处仍要求非空时才校验、
 // 空集合走各自的默认值逻辑；分组这两处单独放宽。
 func (s *Server) validateGroupSelection(sel []SubSelection) ([]SubSelection, string, error) {
 	if len(sel) == 0 {
@@ -463,11 +418,6 @@ func (s *Server) handleSubGroupsDelete(w http.ResponseWriter, r *http.Request) {
 			s.cfg.SubUsers[i].GroupID = ""
 		}
 	}
-	for i := range s.cfg.MergedSubs {
-		if s.cfg.MergedSubs[i].GroupID == id {
-			s.cfg.MergedSubs[i].GroupID = ""
-		}
-	}
 	if err := s.saveConfig(); err != nil {
 		writeJSON(w, 500, errResp("保存失败："+err.Error()))
 		return
@@ -488,20 +438,11 @@ func (s *Server) handleSubGroupsDelete(w http.ResponseWriter, r *http.Request) {
 // 的 GroupID，减人只清那个人的 GroupID，组里其他人一律不动。
 // 加已在别组的人时后端直接换组（前端负责二次确认，后端只做换组本身）。
 
-// groupMemberDisplayName 成员显示名（审计日志用）：订阅用户用名字，
-// 合并订阅没填名时用勾选摘要。
+// groupMemberDisplayName 成员显示名（审计日志用）：订阅用户用名字。
 func (s *Server) groupMemberDisplayName(kind, id string) string {
 	if kind == "user" {
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
 			return u.Name
-		}
-	}
-	if kind == "merged" {
-		if m := findMergedSubByID(s.cfg.MergedSubs, id); m != nil {
-			if m.Name != "" {
-				return m.Name
-			}
-			return s.selectionSummary(m.Selection)
 		}
 	}
 	return id
@@ -517,13 +458,6 @@ func (s *Server) setGroupMemberGroupID(kind, id, groupID string) bool {
 		}
 		return false
 	}
-	if kind == "merged" {
-		if m := findMergedSubByID(s.cfg.MergedSubs, id); m != nil {
-			m.GroupID = groupID
-			return true
-		}
-		return false
-	}
 	return false
 }
 
@@ -532,12 +466,6 @@ func (s *Server) memberGroupID(kind, id string) (string, bool) {
 	if kind == "user" {
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
 			return u.GroupID, true
-		}
-		return "", false
-	}
-	if kind == "merged" {
-		if m := findMergedSubByID(s.cfg.MergedSubs, id); m != nil {
-			return m.GroupID, true
 		}
 		return "", false
 	}
@@ -611,17 +539,13 @@ func (s *Server) handleSubGroupMembersRemove(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, 404, errResp("没有这个分组"))
 		return
 	}
-	if kind != "user" && kind != "merged" {
+	if kind != "user" {
 		writeJSON(w, 400, errResp("成员类型不对："+kind))
 		return
 	}
 	cur, ok := s.memberGroupID(kind, memberID)
 	if !ok {
-		if kind == "user" {
-			writeJSON(w, 404, errResp("没有这个订阅用户："+memberID))
-		} else {
-			writeJSON(w, 404, errResp("没有这条合并订阅："+memberID))
-		}
+		writeJSON(w, 404, errResp("没有这个订阅用户："+memberID))
 		return
 	}
 	if cur != id {

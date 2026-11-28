@@ -17,7 +17,8 @@ html[data-theme="dark"]{
 /* v1.4.37：玻璃拟物主题（浅色玻璃，默认主题）。数值全部取自共享 token
    ~/workspace/031-invest/glass-theme-tokens.md；v1.4.38 按用户反馈（颜色要偏蓝、
    卡片要更通透有质感）改偏蓝：底色 #DCE8F3、横带 #EAF1F8、带蓝调磨砂面
-   rgba(230,238,248,0.55–0.65)＋blur(12–16px)、卡片顶部加高光、底色渐变加深段
+   rgba(230,238,248,0.55–0.65)＋blur(12–16px)、顶栏滚动态 0.92（v1.4.40：0.65 遮不住
+   滚动上来的深色标题、看着像页面错位）、卡片顶部加高光、底色渐变加深段
    #D5E3F2 与顶部径向亮斑；亮蓝强调 #2B7FFF、深蓝灰文字 #33475B、次要文字
    #6B7C8D、卡片圆角 20–24px、边框 rgba(255,255,255,0.6) 2–3px、
    阴影 0 8px 30px rgba(51,71,91,0.10)、深藏青 #0F2A4A 配金色 #EEC362 不变，
@@ -491,8 +492,8 @@ html[data-theme="dark"] .tag.relay{background:#1e3a5f; color:#93c5fd; border-col
 
 /* ---- v1.4.37：玻璃拟物主题专属规则（只在 html[data-theme="glass"] 下生效，
    旧浅色／深色主题完全不受影响；数值见文件头部的 glass 变量块与共享 token）。
-   深藏青 #0F2A4A＋金色 #EEC362 只用在两处刻意的对比位置（登录卡品牌块、
-   总览第一张主统计卡），其余一律带蓝调磨砂＋亮蓝，不铺大面积深色。 ---- */
+   深藏青 #0F2A4A＋金色 #EEC362 只用在总览第一张主统计卡这处刻意的对比位置
+   （v1.4.40：登录卡品牌块的深藏青底已去掉，见下），其余一律带蓝调磨砂＋亮蓝，不铺大面积深色。 ---- */
 /* 底色：偏蓝的浅蓝灰打底，中部一条更浅的近白横带（token #EAF1F8，约 42% 处），
    再加一段略深的蓝 #D5E3F2 与顶部淡淡的径向亮斑，让模糊有东西可透、不死板。 */
 html[data-theme="glass"] body{background:radial-gradient(1200px 420px at 50% -80px,rgba(255,255,255,0.55),rgba(255,255,255,0) 70%),linear-gradient(180deg,#DCE8F3 0%,#EAF1F8 42%,#D5E3F2 78%,#DCE8F3 100%);background-attachment:fixed}
@@ -529,10 +530,12 @@ html[data-theme="glass"] .sidebar{
   border-right:2px solid rgba(255,255,255,0.6);
 }
 /* 顶部导航：平时与背景融为一体（透明、无边框）；滚动后变磨砂悬浮条置顶
-   （.scrolled 由 app.js 的滚动监听加，只在玻璃主题下生效）。 */
+   （.scrolled 由 app.js 的滚动监听加，只在玻璃主题下生效）。
+   v1.4.40：底色 0.65→0.92——0.65 遮不住滚动上来的深色标题／正文，透出来
+   看着像页面错位（用户 2026-11-28 反馈）；0.92 与表格粘性列同口径。 */
 html[data-theme="glass"] .topbar{background:transparent;border-bottom-color:transparent;backdrop-filter:none;-webkit-backdrop-filter:none}
 html[data-theme="glass"] .topbar.scrolled{
-  background:rgba(230,238,248,0.65); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+  background:rgba(230,238,248,0.92); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
   border-bottom:1px solid rgba(255,255,255,0.6); box-shadow:0 8px 30px rgba(51,71,91,0.10);
 }
 /* 输入框／下拉／多行文本：磨砂白底＋可见的深灰边框（白边框在浅底上看不清，
@@ -566,12 +569,10 @@ html[data-theme="glass"] .nodes-tab[aria-selected="true"],
 html[data-theme="glass"] .certs-tab[aria-selected="true"],
 html[data-theme="glass"] .manage-tab[aria-selected="true"],
 html[data-theme="glass"] .traffic-tab[aria-selected="true"]{color:var(--accent);border-bottom-color:var(--accent)}
-/* 对比位置①：登录卡品牌块——深藏青底＋金色字（只这一处用深色，金色只作标题色）。 */
-html[data-theme="glass"] .login-card .brand{
-  background:#0F2A4A;color:#EEC362;border-radius:14px;padding:12px;margin-bottom:12px;
-}
-html[data-theme="glass"] .login-card .brand span{color:#EEC362}
-/* 对比位置②：总览第一张主统计卡（realm 状态）——深藏青底＋白字＋金色标签。 */
+/* 对比位置：总览第一张主统计卡（realm 状态）——深藏青底＋白字＋金色标签。
+   （v1.4.40：登录卡品牌块的深藏青底已去掉——用户 2026-11-28 反馈登录页
+   名称不用做这种底色；品牌块恢复成浅／深主题同款 24px 居中大字，后半截
+   走 --accent 亮蓝。） */
 html[data-theme="glass"] #overview-stats .card:first-child{
   background:#0F2A4A;border-color:rgba(255,255,255,0.6);color:#FFFFFF;
 }

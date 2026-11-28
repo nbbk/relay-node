@@ -70,10 +70,10 @@ const (
 	nodeAgentGenericEmail = "generic@node"
 )
 
-// nodeUser 下发给 agent 的一条用户记录：订阅记录（SubUser/MergedSub）
-// 的计量子集。user_id 与面板内部的订阅标识一致（"subuser:su-…" /
-// "merged:ms-…"），email 是 Xray 计数钥匙（方案 §3.2：
-// u-sub-<id>@node / u-merged-<id>@node），轮换 UUID 不断用户历史
+// nodeUser 下发给 agent 的一条用户记录：订阅记录（SubUser／独立合并订阅）
+// 的计量子集。user_id 与面板内部的订阅标识一致（"subuser:su-…" ／
+// "indmerged:ims-…"），email 是 Xray 计数钥匙（方案 §3.2：
+// u-sub-<id>@node / u-indmerged-<id>@node），轮换 UUID 不断用户历史
 // （流量永远按 user_id 记）。
 type nodeUser struct {
 	UserID            string            `json:"user_id"`
@@ -96,9 +96,6 @@ type nodeUser struct {
 
 // nodeUserEmail Xray 计数钥匙（方案 §3.2）。
 func nodeUserEmail(kind, id string) string {
-	if kind == "merged" {
-		return "u-merged-" + id + "@node"
-	}
 	if kind == "indmerged" {
 		return "u-indmerged-" + id + "@node"
 	}
@@ -203,26 +200,13 @@ func (s *Server) ensureNodeUUIDsForSubUser(u *SubUser) bool {
 	return changed
 }
 
-// ensureNodeUUIDsForMerged 按生效勾选给一条合并订阅补齐每人 UUID。
-func (s *Server) ensureNodeUUIDsForMerged(m *MergedSub) bool {
-	addrs := s.landingAddrsForSelection(s.effectiveSelectionForMerged(m))
-	uuids, changed := ensureNodeUUIDs(m.NodeUUIDs, addrs)
-	m.NodeUUIDs = uuids
-	return changed
-}
-
-// backfillNodeUUIDs 给全部订阅用户与合并订阅补齐每人 UUID（启动与
+// backfillNodeUUIDs 给全部订阅用户与独立合并订阅补齐每人 UUID（启动与
 // 集中管理轮询时调用）。只改内存、返回有没有改动，改了的调用方负责
 // 调 saveConfig 落盘。
 func (s *Server) backfillNodeUUIDs() bool {
 	changed := false
 	for i := range s.cfg.SubUsers {
 		if s.ensureNodeUUIDsForSubUser(&s.cfg.SubUsers[i]) {
-			changed = true
-		}
-	}
-	for i := range s.cfg.MergedSubs {
-		if s.ensureNodeUUIDsForMerged(&s.cfg.MergedSubs[i]) {
 			changed = true
 		}
 	}
@@ -267,33 +251,13 @@ func nodeUserForIndMerged(ims *IndependentMergedSub) nodeUser {
 	}
 }
 
-// nodeUserForMerged 一条合并订阅的下发记录（同上）。
-func nodeUserForMerged(m *MergedSub) nodeUser {
-	uuids := map[string]string{}
-	for a, v := range m.NodeUUIDs {
-		uuids[a] = v
-	}
-	return nodeUser{
-		UserID: userSubKey("merged", m.ID), Kind: "merged", ID: m.ID, Name: m.Name,
-		Email: nodeUserEmail("merged", m.ID), NodeUUIDs: uuids,
-		TrafficLimitBytes: m.TrafficLimitBytes, TrafficLimitMode: m.TrafficLimitMode,
-		ResetMode: m.ResetMode, ResetDay: m.ResetDay, NextResetAt: m.NextResetAt, LastResetAt: m.LastResetAt,
-		ExpiresAt: m.ExpiresAt, Disabled: m.Disabled, DisabledReason: m.DisabledReason, GroupID: m.GroupID,
-	}
-}
-
-// nodeUsersPayload 组装用户表（SubUser + MergedSub，按 ID 排序，稳定
+// nodeUsersPayload 组装用户表（SubUser + 独立合并订阅，按 ID 排序，稳定
 // 的 ETag 前提）与它的 ETag（用户表 JSON 的 SHA-256，强校验）。
 func (s *Server) nodeUsersPayload() ([]nodeUser, string) {
-	users := make([]nodeUser, 0, len(s.cfg.SubUsers)+len(s.cfg.MergedSubs))
+	users := make([]nodeUser, 0, len(s.cfg.SubUsers)+len(s.cfg.IndependentMergedSubs))
 	byID := map[string]int{}
 	for i := range s.cfg.SubUsers {
 		row := nodeUserForSubUser(&s.cfg.SubUsers[i])
-		byID[row.UserID] = len(users)
-		users = append(users, row)
-	}
-	for i := range s.cfg.MergedSubs {
-		row := nodeUserForMerged(&s.cfg.MergedSubs[i])
 		byID[row.UserID] = len(users)
 		users = append(users, row)
 	}
@@ -531,12 +495,10 @@ func (s *Server) handleNodePush(w http.ResponseWriter, r *http.Request) {
 			key = nodeAgentGenericUserID
 		default:
 			kind, id, found := strings.Cut(userID, ":")
-			if !found || (kind != "subuser" && kind != "merged" && kind != "indmerged") || id == "" {
+			if !found || (kind != "subuser" && kind != "indmerged") || id == "" {
 				why = "user_id 格式不对"
 			} else if kind == "subuser" && findSubUserByID(s.cfg.SubUsers, id) == nil && !s.hasCentralUser("subuser", id) {
 				why = "订阅用户不存在"
-			} else if kind == "merged" && findMergedSubByID(s.cfg.MergedSubs, id) == nil && !s.hasCentralUser("merged", id) {
-				why = "合并订阅不存在"
 			} else if kind == "indmerged" && findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id) == nil && !s.hasCentralUser("indmerged", id) {
 				why = "独立合并订阅不存在"
 			} else {

@@ -253,43 +253,28 @@ func TestClashNameDedup(t *testing.T) {
 	}
 }
 
-func TestMergedSubCreate(t *testing.T) {
+func TestOldMergedSubRemoved(t *testing.T) {
 	s := newTestSubServer(t)
-	call := func(body string) (int, map[string]any) {
-		req := httptest.NewRequest("POST", "/api/v1/subscriptions/merged", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		rec := httptest.NewRecorder()
-		s.handleMergedSubsCreate(rec, req)
-		var resp map[string]any
-		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-		return rec.Code, resp
+	// 1.4.40：旧合并订阅彻底移除——创建/列表接口与记录都不存在。
+	// 旧合并令牌（无任何记录可认）拉取 /sub/ 时与随机错令牌一样走 404，
+	// 不再 410；独立合并订阅列表照常 200 且没有退场标记。
+	tok := generateSubToken()
+	if rec := callSub(t, s, tok, "/sub/"+tok, ""); rec.Code != 404 {
+		t.Fatalf("旧合并订阅令牌拉取应 404（记录已删），实际 %d", rec.Code)
 	}
-	// 1.4.27：合并订阅已退场，创建一律 410（到不了选择校验）。
-	for _, body := range []string{
-		`{"selection":[]}`,
-		`{"selection":[{"panel":"local","landing":99}]}`,
-		`{"selection":[{"panel":"rm-nope","landing":1}]}`,
-		`{"selection":[{"panel":"local","landing":1}]}`,
-		`{"selection":[{"panel":"local","landing":2}]}`,
-	} {
-		if code, _ := call(body); code != 410 {
-			t.Fatalf("合并订阅创建 %s 应 410（已退场），实际 %d", body, code)
-		}
-	}
-	// 列表仍可查（供核对），顶层标 retired:true。
-	req := httptest.NewRequest("GET", "/api/v1/subscriptions/merged", nil)
+	req := httptest.NewRequest("GET", "/api/v1/subscriptions/independent-merged", nil)
 	rec2 := httptest.NewRecorder()
-	s.handleMergedSubsList(rec2, req)
+	s.handleIndMergedSubsList(rec2, req)
 	if rec2.Code != 200 {
-		t.Fatalf("列合并订阅应 200，实际 %d", rec2.Code)
+		t.Fatalf("列独立合并订阅应 200，实际 %d", rec2.Code)
 	}
 	var list map[string]any
 	_ = json.Unmarshal(rec2.Body.Bytes(), &list)
-	if list["retired"] != true {
-		t.Fatalf("合并订阅列表应标 retired:true，实际 %v", list)
+	if _, ok := list["retired"]; ok {
+		t.Fatalf("独立合并订阅列表不应有 retired 标记，实际 %v", list)
 	}
 	if subs, _ := list["subs"].([]any); len(subs) != 0 {
-		t.Fatalf("退场后创建失败，列表应为空，实际 %v", list)
+		t.Fatalf("没有独立合并订阅时列表应为空，实际 %v", list)
 	}
 }
 

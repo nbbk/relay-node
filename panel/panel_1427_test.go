@@ -19,7 +19,7 @@ import (
 // TestVersion1427 版本断言与 VERSION 一致（订阅体系统一 B＋订阅级
 // LinkMode，v1.4.27）。
 func TestVersion1427(t *testing.T) {
-	if Version != "1.4.39" {
+	if Version != "1.4.40" {
 		t.Fatalf("Version 应为 1.4.33，实际 %q", Version)
 	}
 }
@@ -688,7 +688,7 @@ func TestRetiredGenericSub1427(t *testing.T) {
 	h := s.routes()
 	cookie := loginCookie144(t, h)
 	genTok := setupGenericSub1345(t, s)
-	mergedTok := setupMergedSub1426(t, s, "ms-1427-a", false, true)
+	imsTok := setupIndMergedSub1426(t, s, "ims-1427-a", false, true)
 	// 旧通用订阅链接 410。
 	req := httptest.NewRequest("GET", "/"+s.subPath()+"/"+genTok, nil)
 	rec := httptest.NewRecorder()
@@ -696,12 +696,12 @@ func TestRetiredGenericSub1427(t *testing.T) {
 	if rec.Code != 410 || !strings.Contains(rec.Body.String(), "已退场") {
 		t.Fatalf("旧通用订阅应 410 退场，实际 %d：%s", rec.Code, rec.Body.String())
 	}
-	// 旧合并订阅链接 410。
-	req = httptest.NewRequest("GET", "/"+s.subPath()+"/"+mergedTok, nil)
+	// 独立合并订阅链接仍 200（不受通用退场影响；mrg_ 令牌走 /sub/ 同样解析）。
+	req = httptest.NewRequest("GET", "/"+s.subPath()+"/"+imsTok, nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != 410 || !strings.Contains(rec.Body.String(), "已退场") {
-		t.Fatalf("旧合并订阅应 410 退场，实际 %d：%s", rec.Code, rec.Body.String())
+	if rec.Code != 200 {
+		t.Fatalf("独立合并订阅应仍 200，实际 %d：%s", rec.Code, rec.Body.String())
 	}
 	// SubUser 链接仍 200（游客模式不受退场影响）。
 	_, resp := createSubUser1427(t, h, cookie, `{"name":"小明"}`)
@@ -722,46 +722,26 @@ func TestRetiredGenericSub1427(t *testing.T) {
 	}
 }
 
-func TestRetiredMergedCreate1427(t *testing.T) {
+// TestOldMergedSubRemoved1427 1.4.40：旧合并订阅彻底移除——创建/轮换/
+// 恢复/停用/编辑/列表/删除接口与记录都不存在，旧令牌拉取 /sub/ 时与
+// 随机错令牌一样走 404，不再 410；独立合并订阅是唯一的合并订阅功能，
+// 列表里没有退场标记（见 TestIndMergedCreateEmptyAndFetch1434）。
+func TestOldMergedSubRemoved1427(t *testing.T) {
 	s := newTestServer144(t)
 	h := s.routes()
 	cookie := loginCookie144(t, h)
-	// 合并订阅创建 410。
-	code, resp := postJSON144(t, h, cookie, "/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1}]}`)
-	if code != 410 {
-		t.Fatalf("合并订阅创建应 410，实际 %d：%v", code, resp)
+	// 旧合并令牌无从分辨：没有记录，handleSub 按未知令牌 404。
+	tok := generateSubToken()
+	if rec := callSub(t, s, tok, "/sub/"+tok, ""); rec.Code != 404 {
+		t.Fatalf("旧合并订阅令牌拉取应 404（记录已删），实际 %d", rec.Code)
 	}
-	// rotate/resume/disable/PUT 同样 410（先直接放一条记录，不走创建接口）。
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: "ms-1427-x", CreatedAt: "2026-11-25T00:00:00Z"})
-	for _, p := range []string{
-		"/api/v1/subscriptions/merged/ms-1427-x/rotate",
-		"/api/v1/subscriptions/merged/ms-1427-x/resume",
-		"/api/v1/subscriptions/merged/ms-1427-x/disable",
-	} {
-		code, resp := postJSON144(t, h, cookie, p, `{}`)
-		if code != 410 {
-			t.Fatalf("%s 应 410，实际 %d：%v", p, code, resp)
-		}
+	// 独立合并订阅列表照常返回 200，且没有退场标记。
+	code, resp := getJSON144(t, h, cookie, "/api/v1/subscriptions/independent-merged")
+	if code != 200 {
+		t.Fatalf("独立合并订阅列表应 200，实际 %d：%v", code, resp)
 	}
-	req := httptest.NewRequest("PUT", "/api/v1/subscriptions/merged/ms-1427-x", strings.NewReader(`{"selection":[{"panel":"local","landing":1}]}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Cookie", cookie)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != 410 {
-		t.Fatalf("合并订阅编辑应 410，实际 %d：%s", rec.Code, rec.Body.String())
-	}
-	// 列表照常返回，顶层 retired:true；删除保留。
-	code, resp = getJSON144(t, h, cookie, "/api/v1/subscriptions/merged")
-	if code != 200 || resp["retired"] != true {
-		t.Fatalf("合并订阅列表应 200 且 retired:true，实际 %d：%v", code, resp)
-	}
-	req = httptest.NewRequest("DELETE", "/api/v1/subscriptions/merged/ms-1427-x", nil)
-	req.Header.Set("Cookie", cookie)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("合并订阅删除应保留 200，实际 %d：%s", rec.Code, rec.Body.String())
+	if _, ok := resp["retired"]; ok {
+		t.Fatalf("独立合并订阅列表不应有 retired 标记，实际 %v", resp)
 	}
 }
 

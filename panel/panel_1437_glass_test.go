@@ -27,14 +27,14 @@ import (
 // 前端行为由 jsdom test-1437-glass.js 覆盖。
 
 func TestVersion1437(t *testing.T) {
-	if Version != "1.4.39" {
+	if Version != "1.4.40" {
 		t.Fatalf("Version 应为 1.4.37，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.39" {
+	if strings.TrimSpace(string(vb)) != "1.4.40" {
 		t.Fatalf("VERSION 文件应为 1.4.37，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }
@@ -71,7 +71,7 @@ func TestGlassFrontend1437(t *testing.T) {
 		"backdrop-filter:blur(14px)",
 		"border:2px solid rgba(255,255,255,0.6)",
 		".topbar.scrolled",
-		"background:rgba(230,238,248,0.65)",
+		"background:rgba(230,238,248,0.92)",
 		"max-width:1200px",
 		"padding:70px 28px",
 	} {
@@ -79,9 +79,13 @@ func TestGlassFrontend1437(t *testing.T) {
 			t.Fatalf("玻璃专属规则里缺 %s", want)
 		}
 	}
-	// 深藏青＋金色只用在两处对比位置：登录卡品牌块、总览第一张主统计卡。
+	// 深藏青＋金色只剩总览第一张主统计卡（v1.4.40：登录卡品牌块的玻璃
+	// 覆盖已去掉；基础样式 24px 居中大字仍在）。
 	if !strings.Contains(css, `.login-card .brand`) || !strings.Contains(css, `#overview-stats .card:first-child`) {
-		t.Fatalf("深藏青＋金色对比位置应为登录卡品牌块与总览第一张主统计卡")
+		t.Fatalf("登录卡品牌块基础样式与总览主统计卡应还在")
+	}
+	if strings.Contains(css, `html[data-theme="glass"] .login-card .brand`) {
+		t.Fatalf("玻璃主题下登录卡品牌块不应再有深藏青覆盖")
 	}
 	// 输入框／下拉／表格在玻璃主题下保持可读（不透明的底／粘性列）。
 	if !strings.Contains(css, `background:rgba(255,255,255,0.75)`) {

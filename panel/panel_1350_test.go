@@ -273,7 +273,7 @@ func TestGatewayCodeNoToken1350(t *testing.T) {
 	}
 	s.cfg.SubTokenEnc = enc
 	s.cfg.SubUsers = []SubUser{{ID: "u1", Name: "甲", TokenEnc: enc}}
-	s.cfg.MergedSubs = []MergedSub{{ID: "m1", TokenEnc: enc}}
+	s.cfg.IndependentMergedSubs = []IndependentMergedSub{{ID: "ims-1", TokenEnc: enc}}
 	for _, typ := range []string{"worker", "caddy", "install"} {
 		_, content, _, _, err := s.gatewayCode(typ)
 		if err != nil {

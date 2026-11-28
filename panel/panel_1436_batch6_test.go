@@ -18,14 +18,14 @@ import (
 // 退场 410 判定全部保留。前端行为由 jsdom test-1436-batch6.js 覆盖。
 
 func TestVersion1436(t *testing.T) {
-	if Version != "1.4.39" {
+	if Version != "1.4.40" {
 		t.Fatalf("Version 应为 1.4.36，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.39" {
+	if strings.TrimSpace(string(vb)) != "1.4.40" {
 		t.Fatalf("VERSION 文件应为 1.4.36，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }
@@ -82,21 +82,20 @@ func TestBatch6Frontend1436(t *testing.T) {
 	if !strings.Contains(js, "async function reloadSettingsForm() { return loadSettingsPage({ lists: false }); }") {
 		t.Fatalf("应有 reloadSettingsForm（只重填表单、不重拉 7 个列表）")
 	}
-	// 死代码清理后仍活着的：独立合并订阅的链接弹窗（已改名）、
-	// 勾选树共用函数、旧记录只读列表与退场提示。
+	// 死代码清理后仍活着的：独立合并订阅的链接弹窗（已改名）、勾选树共用函数。
+	// v1.4.40：旧记录只读列表与退场提示整个移除（函数与文案都不应再有）。
 	if !strings.Contains(js, "function openSubLinkModal(url, opts)") {
 		t.Fatalf("独立合并订阅的链接弹窗 openSubLinkModal 应还在")
 	}
-	for _, live := range []string{"subTreeKey", "fetchSubTreePanels", "renderSubEditTree", "loadMergedSubsList", "showMergedRetiredNotice"} {
+	for _, live := range []string{"subTreeKey", "fetchSubTreePanels", "renderSubEditTree"} {
 		if !strings.Contains(js, live) {
 			t.Fatalf("不应误删仍在用的：%s", live)
 		}
 	}
-	if !strings.Contains(js, "合并订阅已退场；要用合并订阅请去集中管理页 → 独立合并订阅") {
-		t.Fatalf("退场提示文案应保留并指向新入口")
-	}
-	if !strings.Contains(js, "已退场") {
-		t.Fatalf("旧记录只读列表的“已退场”徽章应保留")
+	for _, gone := range []string{"loadMergedSubsList", "showMergedRetiredNotice(", "合并订阅已退场；要用合并订阅请去集中管理页 → 独立合并订阅"} {
+		if strings.Contains(js, gone) {
+			t.Fatalf("旧记录列表／退场提示应已删掉：%s", gone)
+		}
 	}
 	// openUserOpsMenu 与 openSubEditModal 不再有 merged 分支。
 	for _, gone := range []string{"data-sub-edit-merged", "data-sub-copy-merged", "data-sub-qr-merged", "data-sub-rotate-merged", "data-sub-nodes-merged", "data-sub-revoke-merged", "openSubEditModal({ kind: 'merged'", "openUserOpsMenu('merged'"} {
@@ -113,9 +112,10 @@ func TestBatch6Frontend1436(t *testing.T) {
 	}
 }
 
-func TestBatch6MergedRetained1436(t *testing.T) {
-	// 旧记录只读列表与逐条删除接口保留（红线）：GET 列表与 DELETE 路由还在，
-	// 退场判定 isRetiredSubToken 与 410（StatusGone）不动。
+func TestOldMergedRoutesRemoved1436(t *testing.T) {
+	// v1.4.40：旧合并订阅接口整个移除（GET 列表与 DELETE 路由都不应再有）；
+	// 退场判定 isRetiredSubToken 与 410（StatusGone）不动——那是通用订阅
+	// 的退场路径，与旧合并订阅无关。
 	hB, err := os.ReadFile("handlers.go")
 	if err != nil {
 		t.Fatalf("读 handlers.go 失败：%v", err)
@@ -125,8 +125,8 @@ func TestBatch6MergedRetained1436(t *testing.T) {
 		`GET /api/v1/subscriptions/merged`,
 		`DELETE /api/v1/subscriptions/merged/{id}`,
 	} {
-		if !strings.Contains(handlers, route) {
-			t.Fatalf("旧合并订阅接口应保留：%s", route)
+		if strings.Contains(handlers, route) {
+			t.Fatalf("旧合并订阅接口应已移除：%s", route)
 		}
 	}
 	subB, err := os.ReadFile("subscription.go")

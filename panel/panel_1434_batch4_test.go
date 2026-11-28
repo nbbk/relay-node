@@ -13,19 +13,19 @@ import (
 // ---------- 1.4.34：面板 UI/UX 重设计第 4 批（合并订阅独立体系） ----------
 //
 // 新实体 IndependentMergedSub（mrg_ 令牌、/m/ 链接、ims- ID、新切片
-// independent_merged_subs、转发 key indmerged:<id>），与旧合并订阅
-// （sub_、/sub/、MergedSubs 切片、已退场）彻底隔离。前端行为由 jsdom
+// independent_merged_subs、转发 key indmerged:<id>）；旧合并订阅已在
+// v1.4.40 彻底移除（记录、接口、退场 410 全删，旧令牌走 404）。前端行为由 jsdom
 // test-1434-batch4.js 覆盖。
 
 func TestVersion1434(t *testing.T) {
-	if Version != "1.4.39" {
+	if Version != "1.4.40" {
 		t.Fatalf("Version 应为 1.4.34，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.39" {
+	if strings.TrimSpace(string(vb)) != "1.4.40" {
 		t.Fatalf("VERSION 文件应为 1.4.34，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }
@@ -95,25 +95,21 @@ func TestIndMergedCreateEmptyAndFetch1434(t *testing.T) {
 	}
 }
 
-func TestIndMergedOldLinkStill4101434(t *testing.T) {
+func TestOldMergedLinkNow4041434(t *testing.T) {
 	s := newTestServer144(t)
 	h := s.routes()
 
-	// 旧合并订阅记录（sub_ 令牌）仍走退场 410。
+	// 1.4.40：旧合并订阅彻底移除——旧合并订阅记录（sub_ 令牌）已不存在，
+	// 旧令牌拉取 /sub/ 与 /m/ 都与随机错令牌一样走 404，不再 410。
 	oldTok := "sub_" + strings.Repeat("a1", 32)
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: "ms-old1434", Name: "旧合并", TokenHash: hashSubToken(oldTok)})
 	rec := callSub(t, s, oldTok, "/sub/"+oldTok, "")
-	if rec.Code != http.StatusGone {
-		t.Fatalf("旧链接状态=%d want 410：%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("旧链接状态=%d want 404：%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), retiredSubMsg) {
-		t.Fatalf("旧链接 410 文案应为退场文案，实际：%s", rec.Body.String())
-	}
-	// 旧令牌在新端点 /m/ 上同样退场 410（handleIndMergedSub 开头也是
-	// 退场检查兜底，不是 404）。
+	// 旧令牌在新端点 /m/ 上同样 404（handleIndMergedSub 只认 mrg_ 令牌）。
 	rec = fetchIndMerged1434(t, h, "/m/"+oldTok)
-	if rec.Code != http.StatusGone {
-		t.Fatalf("旧令牌走 /m/ 应 410，实际 %d：%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("旧令牌走 /m/ 应 404，实际 %d：%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -128,7 +124,7 @@ func TestIndMergedIsolation1434(t *testing.T) {
 
 	// mrg_ 令牌走 /sub/ 也能解析：handleSub 与 /m/ 共用 serveSubContent
 	// 的同一套分发（任务指定的顺序：退场→新实体→SubUser→404），路径段
-	// 不做二次隔离；规范链接仍是 /m/，旧 sub_ 链接两条路都 410。
+	// 不做二次隔离；规范链接仍是 /m/，旧 sub_ 令牌两条路都 404（记录已删）。
 	rec := callSub(t, s, tok, "/sub/"+tok, "")
 	if rec.Code != 200 {
 		t.Fatalf("mrg_ 令牌走 /sub/ 应 200（共享分发），实际 %d：%s", rec.Code, rec.Body.String())
@@ -138,9 +134,13 @@ func TestIndMergedIsolation1434(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("mrg_ 令牌走 /m/ 应 200，实际 %d：%s", rec.Code, rec.Body.String())
 	}
-	// mrg_ 令牌不进旧表：旧列表里没有它，subTokenValid 也不把它当旧令牌。
-	if findMergedSubByID(s.cfg.MergedSubs, id) != nil {
-		t.Fatalf("新记录不应出现在旧 MergedSubs 切片里")
+	// mrg_ 令牌不进旧命名空间：旧 "merged:<id>" key 下没有任何记录
+	// （旧合并订阅已在 v1.4.40 彻底移除，userLimitForKey 查不到）。
+	if _, _, _, _, _, _, ok := s.userLimitForKey("merged:" + id); ok {
+		t.Fatalf("旧 merged:<id> 命名空间下不应有记录")
+	}
+	if findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id) == nil {
+		t.Fatalf("新记录应在 IndependentMergedSubs 切片里")
 	}
 	if !validIndependentMergedTokenFormat(tok) || !strings.HasPrefix(tok, "mrg_") {
 		t.Fatalf("新令牌格式不对：%q", tok)
@@ -204,9 +204,6 @@ func TestIndMergedRotateDisableDelete1434(t *testing.T) {
 	}
 	if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims == nil || !ims.Disabled {
 		t.Fatalf("停用后 indmerged:<id> 应为停用态")
-	}
-	if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil && ms.Disabled {
-		t.Fatalf("旧 merged:<id> 不应被停用")
 	}
 	// 恢复。
 	code, _ = postJSON144(t, h, cookie, "/api/v1/subscriptions/independent-merged/"+id+"/resume", `{}`)
@@ -272,10 +269,9 @@ func TestIndMergedGroupReject1434(t *testing.T) {
 	if _, err := s.validateGroupMembers([]groupMember{{Kind: "indmerged", ID: "ims-abc123"}}); err == nil {
 		t.Fatalf("kind=indmerged 加分组应返回错误")
 	}
-	// 旧 kind 仍可用（回归）。
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: "ms-ok1434"})
-	if _, err := s.validateGroupMembers([]groupMember{{Kind: "merged", ID: "ms-ok1434"}}); err != nil {
-		t.Fatalf("kind=merged 加分组不应报错：%v", err)
+	// 旧 kind 同样被拒（1.4.40：旧合并订阅已移除，validateGroupMembers 只认 user）。
+	if _, err := s.validateGroupMembers([]groupMember{{Kind: "merged", ID: "ms-ok1434"}}); err == nil {
+		t.Fatalf("kind=merged 加分组应返回错误（旧合并订阅已移除）")
 	}
 }
 
@@ -352,9 +348,9 @@ func TestBatch4Frontend1434(t *testing.T) {
 	if !strings.Contains(html, `id="indmerged-list"`) {
 		t.Fatalf("index.html 里没有 indmerged-list")
 	}
-	// 旧只读列表在新选项卡内重新有渲染目标。
-	if !strings.Contains(html, `id="central-sub-list"`) {
-		t.Fatalf("index.html 里没有 central-sub-list（旧记录只读区）")
+	// 旧只读列表已撤（v1.4.40）：index.html 里不应再有 central-sub-list。
+	if strings.Contains(html, `id="central-sub-list"`) {
+		t.Fatalf("index.html 里不应再有 central-sub-list（旧记录只读区已撤）")
 	}
 	// 选项卡切换调新列表。
 	if !strings.Contains(js, "loadIndMergedSubsList") {
@@ -363,9 +359,13 @@ func TestBatch4Frontend1434(t *testing.T) {
 	if !strings.Contains(js, "'indmerged'") {
 		t.Fatalf("CENTRAL_TABS 里没有 indmerged")
 	}
-	// 退场提示指向新入口。
-	if !strings.Contains(js, "独立合并订阅") || !strings.Contains(js, "旧链接已失效，不能恢复") {
-		t.Fatalf("退场提示文案应指向新入口并说明旧链接不能恢复")
+	// 退场提示已删（v1.4.40）：旧函数与旧文案都不应再有；单落地“订阅”
+	// 入口改开新建弹窗（带预选）。
+	if strings.Contains(js, "showMergedRetiredNotice(") || strings.Contains(js, "旧链接已失效，不能恢复") {
+		t.Fatalf("退场提示函数与旧文案应已删掉")
+	}
+	if !strings.Contains(js, "openIndMergedCreateModal") {
+		t.Fatalf("app.js 里没有 openIndMergedCreateModal（新建入口）")
 	}
 	// 一行一个订阅：序号列＋ID 复制按钮；名字列只放名字＋短 ID，不放链接。
 	if !strings.Contains(js, "data-indmerged-copy-id") {

@@ -140,20 +140,11 @@ func TestSubModeLegacyDefaultBoth(t *testing.T) {
 	if links := subPlainLinks(t, s2, tok2); len(links) != 4 {
 		t.Fatalf("老订阅用户记录（无模式）应按全部（4 条），实际 %d：%v", len(links), links)
 	}
-	// 合并订阅已退场：创建与旧链接一律 410。
-	code, resp = subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsCreate(w, r) },
-		"/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1},{"panel":"local","landing":2}]}`)
-	if code != 410 {
-		t.Fatalf("合并订阅创建应 410（已退场），实际 %d %v", code, resp)
-	}
-	s3 := newTestSubServer(t)
+	// 1.4.40：旧合并订阅彻底移除——创建接口与记录都不存在，旧令牌拉取
+	// /sub/ 时与随机错令牌一样走 404，不再 410。
 	tok3 := generateSubToken()
-	s3.cfg.MergedSubs = append(s3.cfg.MergedSubs, MergedSub{
-		ID: "legacy", TokenHash: hashSubToken(tok3),
-		Selection: []SubSelection{{Panel: "local", Landing: 1}, {Panel: "local", Landing: 2}},
-	})
-	if rec := callSub(t, s3, tok3, "/sub/"+tok3, ""); rec.Code != 410 {
-		t.Fatalf("老合并订阅链接应 410（已退场），实际 %d", rec.Code)
+	if rec := callSub(t, s, tok3, "/sub/"+tok3, ""); rec.Code != 404 {
+		t.Fatalf("旧合并订阅令牌拉取应 404（记录已删），实际 %d", rec.Code)
 	}
 }
 
@@ -194,19 +185,8 @@ func TestSubModeCreateAndRotateKeepsMode(t *testing.T) {
 		}
 	}
 
-	// 1.4.27：合并订阅已退场，创建与轮换一律 410。
-	code, resp = subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsCreate(w, r) },
-		"/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1},{"panel":"local","landing":2}],"mode":"direct"}`)
-	if code != 410 {
-		t.Fatalf("建合并订阅应 410（已退场），实际 %d %v", code, resp)
-	}
-	req = httptest.NewRequest("POST", "/api/v1/subscriptions/merged/ms-x/rotate", nil)
-	req.SetPathValue("id", "ms-x")
-	rec = httptest.NewRecorder()
-	s.handleMergedSubsRotate(rec, req)
-	if rec.Code != 410 {
-		t.Fatalf("轮换合并订阅应 410（已退场），实际 %d %s", rec.Code, rec.Body.String())
-	}
+	// 1.4.40：旧合并订阅彻底移除——创建与轮换接口都不存在（独立合并订阅
+	// 的轮换见 TestIndMergedRotateDisableDelete1434）。
 
 	// 1.4.27：通用订阅已退场，生成一律 410。
 	code, resp = subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleSubTokenGenerate(w, r) },
@@ -223,8 +203,9 @@ func TestSubModeCreateAndRotateKeepsMode(t *testing.T) {
 
 func TestSubModeInvalidRejected(t *testing.T) {
 	s := newTestSubServer(t)
-	// 1.4.27：通用/合并订阅已退场，非法模式到不了校验，直接 410；
+	// 1.4.27：通用订阅已退场，非法模式到不了校验，直接 410；
 	// 订阅用户仍在，非法模式 400。
+	// 1.4.40：旧合并订阅彻底移除，不再有“合并订阅”这一行。
 	cases := []struct {
 		name    string
 		handler func(w http.ResponseWriter, r *http.Request)
@@ -236,8 +217,6 @@ func TestSubModeInvalidRejected(t *testing.T) {
 			"/api/v1/settings/subscription/generate", `{"mode":"bogus"}`, 410},
 		{"每人链接", func(w http.ResponseWriter, r *http.Request) { s.handleSubUsersCreate(w, r) },
 			"/api/v1/subscriptions/users", `{"name":"张三","mode":"bogus"}`, 400},
-		{"合并订阅", func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsCreate(w, r) },
-			"/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1}],"mode":"bogus"}`, 410},
 	}
 	for _, c := range cases {
 		code, resp := subModeCreatePOST(t, c.handler, c.target, c.body)

@@ -199,31 +199,16 @@ func TestSubUserMerged130(t *testing.T) {
 	}
 }
 
-// TestMergedSubName130 合并订阅填名称：同一勾选集合可有多个不同名称的令牌，
-// 各归各人；不填名称走老逻辑（同一选择重新生成会轮换），且轮换不能误伤已命名的那条。
-// TestMergedSubName130 1.4.27：合并订阅已退场，创建接口一律 410
-// （同一勾选多名称、多令牌各归各人的能力，现在由订阅用户承担：
-// 每人一条独立令牌，见 TestSubUsers130）。
-func TestMergedSubName130(t *testing.T) {
+// TestOldMergedSubRemoved130 1.4.40：旧合并订阅彻底移除——创建/列表接口与
+// 记录都不存在。旧合并令牌（无任何记录可认）拉取 /sub/ 时与随机错令牌
+// 一样走 404，不再 410（通用订阅令牌仍 410，见 TestSubUsers130）；同一勾选多名称、多令牌各归各人的能力，现在由订阅用户承担：
+// 每人一条独立令牌，见 TestSubUsers130。
+func TestOldMergedSubRemoved130(t *testing.T) {
 	s := newTestSubServer(t)
-	sel := `[{"panel":"local","landing":1}]`
-	for _, body := range []string{
-		`{"selection":` + sel + `,"name":"张三"}`,
-		`{"selection":` + sel + `,"name":"李四"}`,
-		`{"selection":` + sel + `}`,
-	} {
-		rec := callJSON130(t, s.handleMergedSubsCreate, "POST", "/api/v1/subscriptions/merged", body)
-		if rec.Code != 410 {
-			t.Fatalf("合并订阅创建 %s 应 410（已退场），实际 %d：%s", body, rec.Code, rec.Body.String())
-		}
-	}
-	// 列表仍可查（供核对），但不再有新建的记录。
-	rec := callJSON130(t, s.handleMergedSubsList, "GET", "/api/v1/subscriptions/merged", "")
-	if rec.Code != 200 {
-		t.Fatalf("列合并订阅应 200，实际 %d", rec.Code)
-	}
-	if strings.Contains(rec.Body.String(), "张三") || strings.Contains(rec.Body.String(), "李四") {
-		t.Fatalf("退场后创建失败，列表不应出现张三/李四：%s", rec.Body.String())
+	// 旧合并令牌无从分辨：没有记录，handleSub 按未知令牌 404。
+	tok := generateSubToken()
+	if rec := callSub(t, s, tok, "/sub/"+tok, ""); rec.Code != 404 {
+		t.Fatalf("旧合并订阅令牌拉取应 404（记录已删），实际 %d：%s", rec.Code, rec.Body.String())
 	}
 }
 

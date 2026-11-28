@@ -438,13 +438,6 @@ func (s *Server) handleNodeInboundLink(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		uuids, scope, targets, groupID, userName, disabled = u.NodeUUIDs, u.BackendScope, u.BackendTargets, u.GroupID, u.Name, u.Disabled
-	case "merged":
-		m := findMergedSubByID(s.cfg.MergedSubs, userID)
-		if m == nil {
-			writeJSON(w, 404, errResp("用户不存在"))
-			return
-		}
-		uuids, scope, targets, groupID, userName, disabled = m.NodeUUIDs, m.BackendScope, m.BackendTargets, m.GroupID, m.Name, m.Disabled
 	case "indmerged":
 		ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, userID)
 		if ims == nil {

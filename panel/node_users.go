@@ -16,8 +16,8 @@ package main
 //     里 user_ids 是 null 或字段缺失 = 全部用户；[] 空数组 = 一个不发；
 //     非空数组 = 只发这些用户。不认的用户键直接 400。
 //   - POST /api/v1/users/{user_id}/rotate-uuid：user_id 是用户键
-//     "subuser:su-…" / "merged:ms-…"（不带 kind 的裸 id 也认，先找
-//     subuser 再找 merged）；轮换该用户在所有已指派节点上的 per-node
+//     "subuser:su-…" / "indmerged:ims-…"（不带 kind 的裸 id 也认，先找
+//     subuser 再找 indmerged）；轮换该用户在所有已指派节点上的 per-node
 //     UUID（NodeUUIDs 里按节点地址存的那些），每个节点地址各换一个
 //     新 UUID；旧 UUID 在 agent 下次拉取应用后失效。
 //
@@ -60,7 +60,7 @@ func (s *Server) bumpBackendNodesForUserLocked(key string) {
 // 与 NodeUUIDs 表（调用方改完要自己 saveConfig 落盘）。
 func (s *Server) findBackendUser(key string) (kind, id, name string, disabled bool, uuids map[string]string, ok bool) {
 	kind, id, found := strings.Cut(strings.TrimSpace(key), ":")
-	if !found || (kind != "subuser" && kind != "merged" && kind != "indmerged") || id == "" {
+	if !found || (kind != "subuser" && kind != "indmerged") || id == "" {
 		return "", "", "", false, nil, false
 	}
 	if kind == "subuser" {
@@ -69,9 +69,6 @@ func (s *Server) findBackendUser(key string) (kind, id, name string, disabled bo
 		}
 		return "", "", "", false, nil, false
 	}
-	if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-		return kind, id, ms.Name, ms.Disabled, ms.NodeUUIDs, true
-	}
 	if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
 		return kind, id, ims.Name, ims.Disabled, ims.NodeUUIDs, true
 	}
@@ -79,7 +76,7 @@ func (s *Server) findBackendUser(key string) (kind, id, name string, disabled bo
 }
 
 // parseRotateUserKey 解析轮换接口的 user_id：带 kind 的键直接用；
-// 不带 kind 的裸 id 先找 subuser 再找 merged；找不到返回 ok=false。
+// 不带 kind 的裸 id 先找 subuser 再找 indmerged；找不到返回 ok=false。
 func (s *Server) parseRotateUserKey(raw string) (key string, ok bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -91,7 +88,7 @@ func (s *Server) parseRotateUserKey(raw string) (key string, ok bool) {
 		}
 		return "", false
 	}
-	for _, kind := range []string{"subuser", "merged", "indmerged"} {
+	for _, kind := range []string{"subuser", "indmerged"} {
 		k := userSubKey(kind, raw)
 		if _, _, _, _, _, found := s.findBackendUser(k); found {
 			return k, true
@@ -242,13 +239,11 @@ func (s *Server) handleUserRotateNodeUUID(w http.ResponseWriter, r *http.Request
 						}
 					}
 				}
-			} else {
-				if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-					for _, v := range ms.NodeUUIDs {
-						if v == uuid {
-							dup = true
-							break
-						}
+			} else if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+				for _, v := range ims.NodeUUIDs {
+					if v == uuid {
+						dup = true
+						break
 					}
 				}
 			}
@@ -264,13 +259,11 @@ func (s *Server) handleUserRotateNodeUUID(w http.ResponseWriter, r *http.Request
 				}
 				u.NodeUUIDs[node.Address] = uuid
 			}
-		} else {
-			if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-				if ms.NodeUUIDs == nil {
-					ms.NodeUUIDs = map[string]string{}
-				}
-				ms.NodeUUIDs[node.Address] = uuid
+		} else if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
+			if ims.NodeUUIDs == nil {
+				ims.NodeUUIDs = map[string]string{}
 			}
+			ims.NodeUUIDs[node.Address] = uuid
 		}
 		uuids[strconv.FormatInt(node.ID, 10)] = uuid
 		nodeIDs = append(nodeIDs, node.ID)

@@ -3,7 +3,7 @@ package main
 // ---------- v1.4.28：审计日志记用户名＋令牌成对自检 ----------
 //
 // 反馈 2：handleSub 四处审计原来全写死 user="订阅客户端"，现在记该订阅
-// 用户的 Name（空回落 Username）；退场记合并订阅 Name／通用订阅记
+// 用户的 Name（空回落 Username）；退场记通用订阅记
 // “通用订阅”；令牌不对时 detail 补哈希前 8 位（绝不记明文）；429 也记
 // 一条。反馈 4 顺手修：客户端登录失败 detail 按真实原因记（停用／过期／
 // 密码错误），响应仍是统一 401。反馈 5 服务端部分：启动／恢复后自检
@@ -28,7 +28,7 @@ func lastAudit1429(t *testing.T, s *Server, action string) AuditEntry {
 }
 
 // TestSubAuditUserName1429 拉取订阅审计记用户名：成功记 SubUser 的 Name，
-// Name 为空回落 Username；过期记 Name；退场记合并订阅 Name／通用订阅。
+// Name 为空回落 Username；过期记 Name；成功记独立合并订阅 Name；退场记通用订阅。
 func TestSubAuditUserName1429(t *testing.T) {
 	s := newTestSubServer(t)
 	// 成功：Name 在，用 Name。
@@ -64,15 +64,19 @@ func TestSubAuditUserName1429(t *testing.T) {
 	if e.User != "过期户" || e.Detail != "订阅已过期" {
 		t.Fatalf("过期审计应记 Name 过期户／订阅已过期，实际 %+v", e)
 	}
-	// 退场：合并订阅记它的 Name。
-	mergedTok := generateSubToken()
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: "ms-a", Name: "合并一", TokenHash: hashSubToken(mergedTok), CreatedAt: "2026-11-25T00:00:00Z"})
-	if rec := callSub(t, s, mergedTok, "/sub/"+mergedTok, ""); rec.Code != 410 {
-		t.Fatalf("合并订阅令牌应 410，实际 %d", rec.Code)
+	// 成功：独立合并订阅记它的 Name。
+	imsTok := generateIndMergedToken()
+	imsEnc, err := s.encryptSubTokenNow(imsTok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.IndependentMergedSubs = append(s.cfg.IndependentMergedSubs, IndependentMergedSub{ID: "ims-a", Name: "独立合并一", TokenHash: hashSubToken(imsTok), TokenEnc: imsEnc, CreatedAt: "2026-11-25T00:00:00Z"})
+	if rec := callSub(t, s, imsTok, "/sub/"+imsTok, ""); rec.Code != 200 {
+		t.Fatalf("独立合并订阅令牌应 200，实际 %d", rec.Code)
 	}
 	e = lastAudit1429(t, s, "拉取订阅")
-	if e.User != "合并一" || e.Detail != "订阅已退场" {
-		t.Fatalf("合并退场审计应记合并订阅 Name，实际 %+v", e)
+	if e.User != "独立合并一" || e.Result != "成功" {
+		t.Fatalf("独立合并订阅成功审计应记 Name，实际 %+v", e)
 	}
 	// 退场：通用订阅记“通用订阅”。
 	genTok := generateSubToken()

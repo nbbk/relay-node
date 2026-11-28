@@ -443,7 +443,7 @@ func TestGatewayCheckSub200NoProbe1351(t *testing.T) {
 // ---------- 5. 检测三类订阅与分类计数 ----------
 
 // TestGatewayCheckTokens1351 三类令牌各取一个：通用订阅、每人订阅取第一个用户、
-// 合并订阅取第一个；解不开的跳过、那类就不测。
+// 独立合并订阅取第一个；解不开的跳过、那类就不测。
 func TestGatewayCheckTokens1351(t *testing.T) {
 	s := newTestServer1350(t)
 	encMerged := mustEnc1351(t, s, "sub_"+strings.Repeat("m", 64))
@@ -451,29 +451,29 @@ func TestGatewayCheckTokens1351(t *testing.T) {
 	encGeneric := mustEnc1351(t, s, "sub_"+strings.Repeat("g", 64))
 
 	// 三种都有：三类各一个。
-	s.cfg.MergedSubs = []MergedSub{{ID: "m1", TokenEnc: encMerged}}
+	s.cfg.IndependentMergedSubs = []IndependentMergedSub{{ID: "ims-1", TokenEnc: encMerged}}
 	s.cfg.SubUsers = []SubUser{{ID: "u1", Name: "甲", TokenEnc: encUser}}
 	s.cfg.SubTokenEnc = encGeneric
 	toks := s.gatewayCheckTokens()
-	if len(toks) != 3 || toks["merged"] != "sub_"+strings.Repeat("m", 64) || toks["subuser"] != "sub_"+strings.Repeat("u", 64) || toks["generic"] != "sub_"+strings.Repeat("g", 64) {
+	if len(toks) != 3 || toks["indmerged"] != "sub_"+strings.Repeat("m", 64) || toks["subuser"] != "sub_"+strings.Repeat("u", 64) || toks["generic"] != "sub_"+strings.Repeat("g", 64) {
 		t.Fatalf("三种都有时应三类各取一个，实际 %v", toks)
 	}
 	// 只有通用订阅。
-	s.cfg.MergedSubs = nil
+	s.cfg.IndependentMergedSubs = nil
 	s.cfg.SubUsers = nil
 	toks = s.gatewayCheckTokens()
 	if len(toks) != 1 || toks["generic"] == "" {
 		t.Fatalf("只有通用订阅时应只取通用，实际 %v", toks)
 	}
-	// 合并订阅的解不开：那类跳过，其余两类照常。
-	s.cfg.MergedSubs = []MergedSub{{ID: "m1", TokenEnc: "bogus-ciphertext"}}
+	// 独立合并订阅的解不开：那类跳过，其余两类照常。
+	s.cfg.IndependentMergedSubs = []IndependentMergedSub{{ID: "ims-1", TokenEnc: "bogus-ciphertext"}}
 	s.cfg.SubUsers = []SubUser{{ID: "u1", Name: "甲", TokenEnc: encUser}}
 	toks = s.gatewayCheckTokens()
-	if len(toks) != 2 || toks["merged"] != "" || toks["subuser"] == "" || toks["generic"] == "" {
-		t.Fatalf("合并订阅解不开时应跳过那类、取其余两类，实际 %v", toks)
+	if len(toks) != 2 || toks["indmerged"] != "" || toks["subuser"] == "" || toks["generic"] == "" {
+		t.Fatalf("独立合并订阅解不开时应跳过那类、取其余两类，实际 %v", toks)
 	}
 	// 什么都没有。
-	s.cfg.MergedSubs = nil
+	s.cfg.IndependentMergedSubs = nil
 	s.cfg.SubUsers = nil
 	s.cfg.SubTokenEnc = ""
 	if len(s.gatewayCheckTokens()) != 0 {
@@ -512,11 +512,11 @@ func singboxBodyTagged1351(t *testing.T, nodes []gatewaySubOutbound) string {
 func TestGatewayCheckSubKinds1351(t *testing.T) {
 	s := newTestServer1350(t)
 	setGatewayCfg1350(s, true, "ccpanel.example.com", "gw.example.com")
-	s.cfg.MergedSubs = []MergedSub{{ID: "m1", TokenEnc: mustEnc1351(t, s, "sub_"+strings.Repeat("m", 64))}}
+	s.cfg.IndependentMergedSubs = []IndependentMergedSub{{ID: "ims-1", TokenEnc: mustEnc1351(t, s, "sub_"+strings.Repeat("m", 64))}}
 	s.cfg.SubUsers = []SubUser{{ID: "u1", Name: "甲", TokenEnc: mustEnc1351(t, s, "sub_"+strings.Repeat("u", 64))}}
 	s.cfg.SubTokenEnc = mustEnc1351(t, s, "sub_"+strings.Repeat("g", 64))
 
-	// 桩网关：三类订阅各回不同的节点——合并 2 个（中转 1、直连 1），
+	// 桩网关：三类订阅各回不同的节点——独立合并 2 个（中转 1、直连 1），
 	// 每人 1 个（其它），通用 0 个。
 	gw := &stubHTTP1351{handler: func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/public-info" || r.URL.Path == "/client-config.json" {
@@ -524,7 +524,7 @@ func TestGatewayCheckSubKinds1351(t *testing.T) {
 			fmt.Fprint(w, `{}`)
 			return
 		}
-		// 按令牌尾巴区分是哪类订阅：m=合并、u=每人、g=通用。
+		// 按令牌尾巴区分是哪类订阅：m=独立合并、u=每人、g=通用。
 		body := singboxBody1350(0)
 		if strings.Contains(r.URL.Path, strings.Repeat("m", 64)) {
 			body = singboxBodyTagged1351(t, []gatewaySubOutbound{
@@ -550,13 +550,13 @@ func TestGatewayCheckSubKinds1351(t *testing.T) {
 	if len(sub.Subs) != 3 {
 		t.Fatalf("订阅项下应分三行，实际 %d 行", len(sub.Subs))
 	}
-	// 合并订阅行：2 个节点（中转 1，直连 1）。
+	// 独立合并订阅行：2 个节点（中转 1，直连 1）。
 	m := sub.Subs[0]
-	if m.Kind != "merged" || m.Label != "合并订阅" || !m.OK || m.Nodes != 2 || m.Relay != 1 || m.Direct != 1 || m.Other != 0 {
-		t.Fatalf("合并订阅行不对：%+v", m)
+	if m.Kind != "indmerged" || m.Label != "独立合并订阅" || !m.OK || m.Nodes != 2 || m.Relay != 1 || m.Direct != 1 || m.Other != 0 {
+		t.Fatalf("独立合并订阅行不对：%+v", m)
 	}
 	if m.Reason != "通，2 个节点（中转 1，直连 1）" {
-		t.Fatalf("合并订阅行理由不对：%q", m.Reason)
+		t.Fatalf("独立合并订阅行理由不对：%q", m.Reason)
 	}
 	// 每人订阅行：1 个节点（其它 1）。
 	u := sub.Subs[1]
@@ -585,7 +585,7 @@ func TestGatewayCheckSubKinds1351(t *testing.T) {
 func TestGatewayCheckSubMissingKind1351(t *testing.T) {
 	s := newTestServer1350(t)
 	setGatewayCfg1350(s, true, "ccpanel.example.com", "gw.example.com")
-	s.cfg.MergedSubs = []MergedSub{{ID: "m1", TokenEnc: mustEnc1351(t, s, "sub_"+strings.Repeat("m", 64))}}
+	s.cfg.IndependentMergedSubs = []IndependentMergedSub{{ID: "ims-1", TokenEnc: mustEnc1351(t, s, "sub_"+strings.Repeat("m", 64))}}
 
 	gw := &stubHTTP1351{handler: func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/public-info" || r.URL.Path == "/client-config.json" {
@@ -602,7 +602,7 @@ func TestGatewayCheckSubMissingKind1351(t *testing.T) {
 	items := s.runGatewayChecks(srv.URL, "", checkClient1350())
 	sub := items[2]
 	if !sub.OK || sub.Nodes != 2 {
-		t.Fatalf("只有合并订阅通时订阅项应通、总数 2 个，实际 ok=%v nodes=%d reason=%q", sub.OK, sub.Nodes, sub.Reason)
+		t.Fatalf("只有独立合并订阅通时订阅项应通、总数 2 个，实际 ok=%v nodes=%d reason=%q", sub.OK, sub.Nodes, sub.Reason)
 	}
 	if !sub.Subs[1].Skipped || sub.Subs[1].Reason != "无此类型订阅" {
 		t.Fatalf("每人订阅缺令牌时那行应报无此类型订阅，实际 %+v", sub.Subs[1])

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -121,14 +122,10 @@ type PanelConfig struct {
 	// workerOrigin 校验（明确填 IP 会 400）；旧 config.json 里没有这个字段
 	// 时按空处理，不用迁移。
 	WorkerOrigin string `json:"worker_origin"`
-	// 合并订阅（v1.2.7，主面板端）：每份勾选集合一条令牌，只存哈希；
-	// 选择变了就新起一条，不同选择绝不共用一个令牌；同一选择重新生成
-	// 会轮换（旧链接立即失效）。内容按勾选的落地集合实时生成。
-	MergedSubs []MergedSub `json:"merged_subs"`
 	// 独立合并订阅（v1.4.34，第 4 批，方案 A 彻底独立）：与 SubUser
 	// 用户订阅链接完全不关联、不混合。只是一份“勾选了哪些落地”的
-	// 订阅内容：不登录、不绑用户、不挂档位、不进分组。旧 MergedSubs
-	// 切片已被 isRetiredSubToken 划为退场，绝不能复用——新记录放这里。
+	// 订阅内容：不登录、不绑用户、不挂档位、不进分组。旧合并订阅已在
+	// v1.4.40 彻底移除（记录连同退场分支一起删），这里是唯一的合并订阅。
 	IndependentMergedSubs []IndependentMergedSub `json:"independent_merged_subs,omitempty"`
 	// 订阅用户（v1.3.0，一人一条订阅链接）：每人一个独立令牌，只存哈希；
 	// 名字用来认人，令牌泄露/撤销只影响那个人，其他人照常。
@@ -136,7 +133,7 @@ type PanelConfig struct {
 	// 已发出去的通用链接继续能用。
 	SubUsers []SubUser `json:"sub_users"`
 	// 分组（v1.3.26，权限组）：一组 = 一组落地 + 一组用户，组里的人用组里
-	// 的节点；成员归属存在 SubUser/MergedSub 的 GroupID 上（单字段，一人
+	// 的节点；成员归属存在 SubUser 的 GroupID 上（单字段，一人
 	// 最多一个组），这里只存组的落地集合与名称。通用订阅（全量）不进分组。
 	SubGroups []SubGroup `json:"sub_groups,omitempty"`
 	// 套餐档位（v1.4.27，方案 B）：管理员自定义创建的档位模板；订阅用户
@@ -149,7 +146,7 @@ type PanelConfig struct {
 	// 远程面板上的转发存在远程面板自己的 config.json 里。
 	UserForwards []UserForward `json:"user_forwards,omitempty"`
 	// 集中用户（v1.3.36，Phase 1 切片 2）：管理面板同步来的用户记录，
-	// 按落地地址分表存放；与本面板本地用户（SubUsers/MergedSubs）分开，
+	// 按落地地址分表存放；与本面板本地用户（SubUsers）分开，
 	// node/users 下发时按落地合并。键是落地地址，值是该落地上的用户行
 	// （nodeUser 形状，每行只带该落地的 UUID）。管理面板按落地全量替
 	// 换：空表 = 该落地无集中用户。备份/恢复全量跟走（丢了它下次同步
@@ -246,59 +243,8 @@ type SubSelection struct {
 	Landing int    `json:"landing"`
 }
 
-// MergedSub 一份合并订阅：TokenHash 是订阅令牌的 SHA-256 哈希（鉴权查表），
-// TokenEnc 是同一令牌的 AES-GCM 密文（v1.3.7，密钥在 PANEL_HOME/sub_token.key），
-// 用来重新拼链接；1.3.7 之前生成的没有密文，复制时提示轮换一次。
-// Selection 是这份订阅绑定的勾选集合。
-// Mode（v1.3.17）：内容范围，both|relay|direct，空（老记录）按 both；
-// /sub/ 服务时按它过滤链接；轮换令牌时保持不变（专用轮换接口不带 mode）。
-// ExpiresAt（v1.3.20）：到期时间，RFC3339，空 = 永久；到期后 /sub/{token}
-// 返回 410；轮换不改它，编辑时可改。
-// Name 是归属到人（v1.3.0，选填）：填了就新起一条，同一勾选集合可有
-// 多个不同名称的令牌，各归各人；不填走老逻辑（同一选择重新生成会轮换）。
-// 流量上限（v1.3.25，按订阅限流量 A）：TrafficLimitBytes > 0 才限流，
-// 0 = 不限流（走共享端口）；TrafficLimitMode 是 "total"（累计）或
-// "monthly"（按月）；ResetMode 只在 monthly 下有效，是 "monthly"
-// （自然月，每月 1 号）/ "anniversary"（跟随生成日）/ "custom"
-// （自定义每月几号，ResetDay 1–31，31 号钳制到月末）；NextResetAt /
-// LastResetAt 是 RFC3339；Disabled 是超量停用（转发已撤）。
-// GroupID（v1.3.26，分组）：所属分组的 ID，空 = 不分组；非空时订阅按
-// 组的落地集合出内容，自己的 Selection 保留在记录里（出组/删组后恢复）。
-type MergedSub struct {
-	ID        string         `json:"id"`
-	Name      string         `json:"name,omitempty"`
-	TokenHash string         `json:"token_hash"`
-	TokenEnc  string         `json:"token_enc,omitempty"`
-	CreatedAt string         `json:"created_at"`
-	Selection []SubSelection `json:"selection"`
-	Mode      string         `json:"mode,omitempty"`
-	ExpiresAt string         `json:"expires_at,omitempty"`
-	GroupID   string         `json:"group_id,omitempty"`
-	// 流量上限（v1.3.25，A 方案）：见 MergedSub 头注释。
-	TrafficLimitBytes int64  `json:"traffic_limit_bytes,omitempty"`
-	TrafficLimitMode  string `json:"traffic_limit_mode,omitempty"`
-	ResetMode         string `json:"reset_mode,omitempty"`
-	ResetDay          int    `json:"reset_day,omitempty"`
-	NextResetAt       string `json:"next_reset_at,omitempty"`
-	LastResetAt       string `json:"last_reset_at,omitempty"`
-	TrafficWarned80   bool   `json:"traffic_warned_80,omitempty"`
-	TrafficWarned100  bool   `json:"traffic_warned_100,omitempty"`
-	Disabled          bool   `json:"disabled,omitempty"`
-	DisabledReason    string `json:"disabled_reason,omitempty"`
-	// NodeUUIDs（v1.3.30，节点侧按人计量）：每落地一个 UUID，键是落地
-	// 地址（relay.conf 的 LANDING，与 state.json 的落地键一致），值是
-	// 该落地给这份订阅的 UUID（明文，与节点 UUID 同款存法）。1.3.35
-	// 起生成（新建即生成、已有补生成、删除随记录回收）；备份/恢复
-	// 全量跟走，丢了它用户就得重新导入。
-	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
-	// BackendScope/BackendTargets（v1.4.4，切片 4，四级指派，见
-	// node_assign.go）：与 SubUser 同款字段（见 SubUser 上的注释）。
-	BackendScope   string   `json:"backend_scope,omitempty"`
-	BackendTargets []string `json:"backend_targets,omitempty"`
-}
-
-// IndependentMergedSub 一份独立合并订阅（v1.4.34，第 4 批）：字段照抄
-// 旧 MergedSub，但删掉登录与档位字段——没有 PlanID / Username /
+// IndependentMergedSub 一份独立合并订阅（v1.4.34，第 4 批）：字段与
+// 旧合并订阅同款，但删掉登录与档位字段——没有 PlanID / Username /
 // PasswordHash / LinkMode，也没有 GroupID（方案 A：不进分组，节点范围
 // 就是自己的 Selection）。ID 前缀 ims- ＋ 6 位随机十六进制；令牌前缀
 // mrg_ ＋ 64 位十六进制（见 subtoken.go）；链接路径 /m/<token>（见
@@ -315,7 +261,8 @@ type IndependentMergedSub struct {
 	Selection []SubSelection `json:"selection"`
 	Mode      string         `json:"mode,omitempty"`
 	ExpiresAt string         `json:"expires_at,omitempty"`
-	// 流量上限（v1.3.25，A 方案）：见 MergedSub 头注释。
+	// 流量上限（v1.3.25，A 方案）：TrafficLimitBytes > 0 才限流，0 = 不限流；
+	// ResetMode 只在 monthly 下有效（monthly/anniversary/custom）。
 	TrafficLimitBytes int64  `json:"traffic_limit_bytes,omitempty"`
 	TrafficLimitMode  string `json:"traffic_limit_mode,omitempty"`
 	ResetMode         string `json:"reset_mode,omitempty"`
@@ -326,7 +273,8 @@ type IndependentMergedSub struct {
 	TrafficWarned100  bool   `json:"traffic_warned_100,omitempty"`
 	Disabled          bool   `json:"disabled,omitempty"`
 	DisabledReason    string `json:"disabled_reason,omitempty"`
-	// NodeUUIDs（v1.3.30，节点侧按人计量）：与 MergedSub 同款，见上。
+	// NodeUUIDs（v1.3.30，节点侧按人计量）：每落地一个 UUID，键是落地
+	// 地址，值是该落地给这份订阅的 UUID（明文，与节点 UUID 同款存法）。
 	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
 	// BackendScope/BackendTargets（v1.4.4，切片 4，四级指派，见
 	// node_assign.go）：与 SubUser 同款字段；没有分组，组级指派不可用
@@ -341,8 +289,8 @@ type IndependentMergedSub struct {
 // 给了的个人值优先（档位默认值＋个人覆盖）。档位关联的权限组决定节点
 // 范围（GroupID）；档位本身不存落地勾选，节点范围只走分组。
 // TrafficLimitBytes 0 = 不限流；TrafficLimitMode total/monthly；
-// ResetMode 只在 monthly 下有效（monthly/anniversary/custom，见
-// MergedSub 头注释）；ExpiresDays 0 = 永久；Mode both/relay/direct。
+// ResetMode 只在 monthly 下有效（monthly/anniversary/custom）；
+// ExpiresDays 0 = 永久；Mode both/relay/direct。
 // 默认档位（Plans 为空时）：Name "默认"，无分组、不限流、永不过期、both，
 // 由 plans.go 的 ensureDefaultPlan() 保证（写路径上建，GET 不写盘）。
 type Plan struct {
@@ -363,7 +311,7 @@ type Plan struct {
 // 用组里的节点。建一次组、加用户就行，不用每人重复勾落地；通用共享节点
 // 放一个组，美国/英国/法国等定制用户各放各的组。
 // Selection 是组的落地集合（本面板 + 远程落地，与合并订阅同一套勾选）；
-// 成员不另存列表——成员归属的唯一事实来源是 SubUser/MergedSub 上的
+// 成员不另存列表——成员归属的唯一事实来源是 SubUser 上的
 // GroupID（groupMembers() 现算），一个订阅最多属于一个组（单字段天然
 // 保证，不会有两个组的落地集合冲突）；换组直接改成员的 GroupID。
 // 成员自己的 Selection 保留在记录里（进组后订阅按组的落地出，自己的勾选
@@ -390,7 +338,7 @@ type SubGroup struct {
 // /sub/ 服务时按它过滤链接；轮换令牌时保持不变（专用轮换接口不带 mode）。
 // ExpiresAt（v1.3.20）：到期时间，RFC3339，空 = 永久；到期后 /sub/{token}
 // 返回 410；轮换不改它，编辑时可改。
-// 流量上限（v1.3.25，按订阅限流量 A）：与 MergedSub 同一套字段（见上），
+// 流量上限（v1.3.25，按订阅限流量 A）：与独立合并订阅同一套字段，
 // > 0 才限流，0 = 不限流（走共享端口）。
 // GroupID（v1.3.26，分组）：所属分组的 ID，空 = 不分组；非空时订阅按
 // 组的落地集合出内容，自己的 Selection 保留在记录里（出组/删组后恢复）。
@@ -421,7 +369,7 @@ type SubUser struct {
 	PlanID       string `json:"plan_id,omitempty"`
 	Username     string `json:"username,omitempty"`
 	PasswordHash string `json:"password_hash,omitempty"`
-	// 流量上限（v1.3.25，A 方案）：见 MergedSub 头注释。
+	// 流量上限（v1.3.25，A 方案）：见本类型头注释。
 	TrafficLimitBytes int64  `json:"traffic_limit_bytes,omitempty"`
 	TrafficLimitMode  string `json:"traffic_limit_mode,omitempty"`
 	ResetMode         string `json:"reset_mode,omitempty"`
@@ -432,7 +380,8 @@ type SubUser struct {
 	TrafficWarned100  bool   `json:"traffic_warned_100,omitempty"`
 	Disabled          bool   `json:"disabled,omitempty"`
 	DisabledReason    string `json:"disabled_reason,omitempty"`
-	// NodeUUIDs（v1.3.30，节点侧按人计量）：与 MergedSub 同款，见上；
+	// NodeUUIDs（v1.3.30，节点侧按人计量）：每落地一个 UUID，键是落地
+	// 地址，值是该落地给这个用户的 UUID（明文，与节点 UUID 同款存法）；
 	// 1.3.35 起生成（新建即生成、已有补生成、删除随记录回收）。
 	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
 	// BackendScope/BackendTargets（v1.4.4，切片 4，四级指派，见
@@ -1006,6 +955,22 @@ func (s *Server) loadConfig() error {
 	}
 	if err := json.Unmarshal(data, &s.cfg); err != nil {
 		return fmt.Errorf("config.json 解析失败：%w", err)
+	}
+	// v1.4.40 迁移：旧合并订阅已彻底移除（用户 2026-11-28 13:53 拍板，
+	// 失效的直接移除、不留只读列表）。结构体里已无 merged_subs 字段，
+	// 上面这行 unmarshal 本来就忽略它；这里探到文件里还残留记录就立
+	// 即落盘清掉（saveConfig 按新结构体写，merged_subs 键就没了），
+	// 并记一条日志。清盘失败只记日志、不拦启动（记录反正不再被读）。
+	var probe struct {
+		MergedSubs []json.RawMessage `json:"merged_subs"`
+	}
+	if json.Unmarshal(data, &probe) == nil && len(probe.MergedSubs) > 0 {
+		n := len(probe.MergedSubs)
+		if err := s.saveConfig(); err != nil {
+			log.Printf("旧合并订阅迁移：config.json 里 %d 条已退场记录清盘失败：%v（记录已不再被读）", n, err)
+		} else {
+			log.Printf("旧合并订阅迁移：已从 config.json 移除 %d 条已退场的旧合并订阅记录（B 方案，旧链接已失效）", n)
+		}
 	}
 	if s.cfg.Port == 0 {
 		s.cfg.Port = 11111

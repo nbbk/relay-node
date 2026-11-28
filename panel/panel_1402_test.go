@@ -29,13 +29,13 @@ import (
 	"testing"
 )
 
-// seedUsers1402 往测试面板里放两个订阅用户与一条合并订阅（直接写
+// seedUsers1402 往测试面板里放两个订阅用户与一条独立合并订阅（直接写
 // s.cfg，与 TestNodeBackendUsers1401 同款做法），返回它们的用户键。
 func seedUsers1402(s *Server) (u1, u2, m1 string) {
 	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: "su-test1", Name: "测试用户一"})
 	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: "su-test2", Name: "测试用户二"})
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: "ms-test1", Name: "合并用户"})
-	return "subuser:su-test1", "subuser:su-test2", "merged:ms-test1"
+	s.cfg.IndependentMergedSubs = append(s.cfg.IndependentMergedSubs, IndependentMergedSub{ID: "ims-test1", Name: "独立合并用户"})
+	return "subuser:su-test1", "subuser:su-test2", "indmerged:ims-test1"
 }
 
 // nodeUsers1402 GET /api/v1/nodes/{id}/users，期望 200，返回解析后的 map。
@@ -540,7 +540,7 @@ func TestInboundSNISync1402(t *testing.T) {
 // ---------- 6. 版本断言 ----------
 
 func TestVersion1402(t *testing.T) {
-	if Version != "1.4.39" {
+	if Version != "1.4.40" {
 		t.Fatalf("VERSION 应是 1.4.33，实际 %q", Version)
 	}
 }

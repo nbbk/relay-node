@@ -316,12 +316,6 @@ func (s *Server) centralUsersForLanding(landingAddr string) []nodeUser {
 			add(nodeUserForSubUser(u), u.NodeUUIDs[landingAddr])
 		}
 	}
-	for i := range s.cfg.MergedSubs {
-		m := &s.cfg.MergedSubs[i]
-		if s.selectionHasLanding(s.effectiveSelectionForMerged(m), landingAddr) {
-			add(nodeUserForMerged(m), m.NodeUUIDs[landingAddr])
-		}
-	}
 	for i := range s.cfg.IndependentMergedSubs {
 		ims := &s.cfg.IndependentMergedSubs[i]
 		if s.selectionHasLanding(s.effectiveSelectionForIndMerged(ims), landingAddr) {
@@ -464,8 +458,6 @@ func (s *Server) handleCentralUserTraffic(w http.ResponseWriter, r *http.Request
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil && u.Disabled {
 			disabled = true
 		}
-	} else if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil && ms.Disabled {
-		disabled = true
 	} else if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil && ims.Disabled {
 		disabled = true
 	}
@@ -820,16 +812,10 @@ func (s *Server) changeUserForwardPort(key, panelID, landingAddr string, newPort
 }
 
 // handleSubUserForwards 管理端：一条订阅的按人转发列表（更换端口入口
-// 用）。只读内存配置，不读文件。kind 是 "subuser"、"merged"（旧实体，
-// 已退场，走 410）或 "indmerged"（独立合并订阅）。
+// 用）。只读内存配置，不读文件。kind 是 "subuser" 或 "indmerged"
+// （旧 "merged" 已在 v1.4.40 随旧合并订阅移除，传了也 404）。
 func (s *Server) handleSubUserForwards(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// v1.4.27：合并订阅已退场，merged 的转发列表接口一并 410
-		//（与其它合并订阅接口同一口径）；subuser 不受影响。
-		if kind == "merged" {
-			handleRetiredSub(w, r)
-			return
-		}
 		id := r.PathValue("id")
 		key := userSubKey(kind, id)
 		var subName string
@@ -838,8 +824,6 @@ func (s *Server) handleSubUserForwards(kind string) http.HandlerFunc {
 			if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
 				found, subName = true, u.Name
 			}
-		} else if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-			found, subName = true, ms.Name
 		} else if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
 			found, subName = true, ims.Name
 		}
@@ -873,16 +857,10 @@ func (s *Server) handleSubUserForwards(kind string) http.HandlerFunc {
 // handleSubChangePort 管理端：给一条订阅换一个中转端口（v1.3.34）。
 // 请求体 {panel_id, landing_addr, new_port}，new_port 为 0 = 自动分配。
 // 换完订阅链接里的中转端口跟着变（下次取订阅即新端口），用量记录按
-// 订阅 key 走不清零，旧端口释放回池子。kind 是 "subuser"、"merged"
-// （旧实体，已退场，走 410）或 "indmerged"（独立合并订阅）。
+// 订阅 key 走不清零，旧端口释放回池子。kind 是 "subuser" 或 "indmerged"
+// （独立合并订阅）。
 func (s *Server) handleSubChangePort(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// v1.4.27：合并订阅已退场，merged 的换端口接口一并 410
-		//（与其它合并订阅接口同一口径）；subuser 不受影响。
-		if kind == "merged" {
-			handleRetiredSub(w, r)
-			return
-		}
 		id := r.PathValue("id")
 		key := userSubKey(kind, id)
 		var req struct {
@@ -900,8 +878,6 @@ func (s *Server) handleSubChangePort(kind string) http.HandlerFunc {
 			if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
 				found, subName = true, u.Name
 			}
-		} else if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-			found, subName = true, ms.Name
 		} else if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
 			found, subName = true, ims.Name
 		}
@@ -1307,12 +1283,6 @@ func (s *Server) centralUserTargets() []centralUserTarget {
 			out = append(out, centralUserTarget{key: userSubKey("subuser", u.ID), kind: "subuser", id: u.ID, name: u.Name, mode: u.TrafficLimitMode, limit: u.TrafficLimitBytes, sel: u.Selection})
 		}
 	}
-	for i := range s.cfg.MergedSubs {
-		ms := &s.cfg.MergedSubs[i]
-		if ms.TrafficLimitBytes > 0 && hasRemote(ms.Selection) {
-			out = append(out, centralUserTarget{key: userSubKey("merged", ms.ID), kind: "merged", id: ms.ID, name: ms.Name, mode: ms.TrafficLimitMode, limit: ms.TrafficLimitBytes, sel: ms.Selection})
-		}
-	}
 	for i := range s.cfg.IndependentMergedSubs {
 		ims := &s.cfg.IndependentMergedSubs[i]
 		if ims.TrafficLimitBytes > 0 && hasRemote(ims.Selection) {
@@ -1396,7 +1366,7 @@ func (s *Server) enforceCentralUserTraffic() {
 			if u := findSubUserByID(s.cfg.SubUsers, t.id); u != nil && u.Disabled {
 				anyDisabled = true
 			}
-		} else if ms := findMergedSubByID(s.cfg.MergedSubs, t.id); ms != nil && ms.Disabled {
+		} else if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, t.id); ims != nil && ims.Disabled {
 			anyDisabled = true
 		}
 		for _, rem := range s.remotePanelsOf(t.sel) {

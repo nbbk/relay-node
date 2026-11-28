@@ -30,14 +30,14 @@ import (
 // 前端行为由 jsdom test-1438-glass-blue.js 覆盖。
 
 func TestVersion1438(t *testing.T) {
-	if Version != "1.4.39" {
+	if Version != "1.4.40" {
 		t.Fatalf("Version 应为 1.4.38，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.39" {
+	if strings.TrimSpace(string(vb)) != "1.4.40" {
 		t.Fatalf("VERSION 文件应为 1.4.38，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }
@@ -75,12 +75,12 @@ func TestGlassBlue1438(t *testing.T) {
 			t.Fatalf("玻璃卡片组高光规则里缺 %s", want)
 		}
 	}
-	// 侧边栏与顶栏 .scrolled 的字面量底同步改带蓝调。
+	// 侧边栏 0.60 透、顶栏 .scrolled 0.92 不透（v1.4.40：0.65 遮不住标题）。
 	if !strings.Contains(css, "background:rgba(230,238,248,0.60)") {
 		t.Fatalf("玻璃侧边栏底应为 rgba(230,238,248,0.60)")
 	}
-	if !strings.Contains(css, "background:rgba(230,238,248,0.65)") {
-		t.Fatalf("玻璃顶栏 .scrolled 底应为 rgba(230,238,248,0.65)")
+	if !strings.Contains(css, "background:rgba(230,238,248,0.92)") {
+		t.Fatalf("玻璃顶栏 .scrolled 底应为 rgba(230,238,248,0.92)")
 	}
 	// 不动项：blur 仍是 14px、边框仍是 2px 半透明白描边、强调／主文字／深藏青／金色不变。
 	for _, want := range []string{

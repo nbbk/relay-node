@@ -66,14 +66,14 @@ func setupMigrationSource1329(t *testing.T) (*Server, string, string, string) {
 		TrafficLimitBytes: 100 * 1024 * 1024, TrafficLimitMode: "total",
 		ResetMode: "monthly", ResetDay: 1, NextResetAt: "",
 	}}
-	// 合并订阅：带到期 + 限流（200MB，monthly）。
-	mergedTok := generateSubToken()
-	mergedEnc, err := s.encryptSubTokenNow(mergedTok)
+	// 独立合并订阅：带到期 + 限流（200MB，monthly）。
+	imsTok := generateSubToken()
+	imsEnc, err := s.encryptSubTokenNow(imsTok)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.cfg.MergedSubs = []MergedSub{{
-		ID: "ms-1", Name: "合并一", TokenHash: hashSubToken(mergedTok), TokenEnc: mergedEnc,
+	s.cfg.IndependentMergedSubs = []IndependentMergedSub{{
+		ID: "ims-1", Name: "合并一", TokenHash: hashSubToken(imsTok), TokenEnc: imsEnc,
 		CreatedAt: "2026-11-20T00:00:00Z", Selection: []SubSelection{{Panel: "local", Landing: 1}},
 		Mode: "both", ExpiresAt: "2027-06-01T23:59:59Z",
 		TrafficLimitBytes: 200 * 1024 * 1024, TrafficLimitMode: "monthly",
@@ -276,12 +276,12 @@ func TestMigrationCrossMachineRestore1329(t *testing.T) {
 	if u.ExpiresAt != "2027-05-01T23:59:59Z" || u.TrafficLimitBytes != 100*1024*1024 || u.TrafficLimitMode != "total" || u.ResetMode != "monthly" {
 		t.Fatalf("订阅用户到期/限流应全量恢复，实际 %+v", u)
 	}
-	if len(dst.cfg.MergedSubs) != 1 {
-		t.Fatalf("恢复后应有 1 个合并订阅，实际 %d", len(dst.cfg.MergedSubs))
+	if len(dst.cfg.IndependentMergedSubs) != 1 {
+		t.Fatalf("恢复后应有 1 个独立合并订阅，实际 %d", len(dst.cfg.IndependentMergedSubs))
 	}
-	ms := dst.cfg.MergedSubs[0]
-	if ms.TokenHash != src.cfg.MergedSubs[0].TokenHash || ms.ExpiresAt != "2027-06-01T23:59:59Z" || ms.TrafficLimitBytes != 200*1024*1024 || ms.TrafficLimitMode != "monthly" || ms.NextResetAt != "2026-12-01T00:00:00Z" {
-		t.Fatalf("合并订阅令牌/到期/限流应全量恢复，实际 %+v", ms)
+	ms := dst.cfg.IndependentMergedSubs[0]
+	if ms.TokenHash != src.cfg.IndependentMergedSubs[0].TokenHash || ms.ExpiresAt != "2027-06-01T23:59:59Z" || ms.TrafficLimitBytes != 200*1024*1024 || ms.TrafficLimitMode != "monthly" || ms.NextResetAt != "2026-12-01T00:00:00Z" {
+		t.Fatalf("独立合并订阅令牌/到期/限流应全量恢复，实际 %+v", ms)
 	}
 	// 通用订阅：哈希回来，密文用恢复回来的 sub_token.key 能解出原令牌。
 	if dst.cfg.SubTokenHash != src.cfg.SubTokenHash {
@@ -458,9 +458,9 @@ func TestMigrationTokenGateNoEnvelope1329(t *testing.T) {
 	}
 	p := importPayload{
 		Version: "1.3.29", RelayConf: subTestRelayConf,
-		ConfigToml: "[[endpoints]]\nlisten = \"0.0.0.0:24443\"\nremote = \"203.0.113.1:24443\"\n",
-		SubUsers:   []subUserBackup{{ID: "su-gate", Name: "门控", TokenHash: "hash-should-not-survive", TokenEnc: "enc-should-not-survive", ExpiresAt: "2027-05-01T23:59:59Z"}},
-		MergedSubs: []mergedSubBackup{{ID: "ms-gate", Name: "门控合并", TokenHash: "hash-m-should-not-survive"}},
+		ConfigToml:    "[[endpoints]]\nlisten = \"0.0.0.0:24443\"\nremote = \"203.0.113.1:24443\"\n",
+		SubUsers:      []subUserBackup{{ID: "su-gate", Name: "门控", TokenHash: "hash-should-not-survive", TokenEnc: "enc-should-not-survive", ExpiresAt: "2027-05-01T23:59:59Z"}},
+		IndMergedSubs: []indMergedSubBackup{{ID: "ims-gate", Name: "门控合并", TokenHash: "hash-m-should-not-survive"}},
 		// 注意：MigrationEnc 故意留空。
 	}
 	dst := newTestSubServer(t)
@@ -470,8 +470,8 @@ func TestMigrationTokenGateNoEnvelope1329(t *testing.T) {
 	if len(dst.cfg.SubUsers) != 1 || dst.cfg.SubUsers[0].TokenHash != "" || dst.cfg.SubUsers[0].TokenEnc != "" {
 		t.Fatalf("没信封时正文令牌不得恢复，用户实际 %+v", dst.cfg.SubUsers)
 	}
-	if len(dst.cfg.MergedSubs) != 1 || dst.cfg.MergedSubs[0].TokenHash != "" {
-		t.Fatalf("没信封时正文令牌不得恢复，合并订阅实际 %+v", dst.cfg.MergedSubs)
+	if len(dst.cfg.IndependentMergedSubs) != 1 || dst.cfg.IndependentMergedSubs[0].TokenHash != "" {
+		t.Fatalf("没信封时正文令牌不得恢复，独立合并订阅实际 %+v", dst.cfg.IndependentMergedSubs)
 	}
 }
 

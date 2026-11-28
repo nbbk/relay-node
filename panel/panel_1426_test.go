@@ -3,8 +3,9 @@ package main
 // ---------- 1.4.27：客户端登录不再取合并/通用订阅 ----------
 // 1.4.26 的行为（登录回包优先合并订阅、回落通用订阅）已随方案 B 退场
 // 而废止：SubUser 登录取他自己的订阅，管理员登录兜底取第一份已启用的
-// SubUser 的订阅；只有合并/通用订阅时不再给 subscription_url。
-// 本文件保留 1426 的脚手架（setupMergedSub1426），断言改成新口径。
+// SubUser 的订阅；只有独立合并/通用订阅时不再给 subscription_url。
+// 1.4.40：旧合并订阅彻底移除，夹具改用独立合并订阅（setupIndMergedSub1426）。
+// 本文件保留 1426 的脚手架（setupIndMergedSub1426），断言改成新口径。
 
 import (
 	"net/http/httptest"
@@ -13,24 +14,24 @@ import (
 	"time"
 )
 
-// setupMergedSub1426 给测试面板加一份合并订阅，返回令牌明文。
+// setupIndMergedSub1426 给测试面板加一份独立合并订阅，返回令牌明文。
 // withToken=false 时只占位（TokenEnc 为空，算“无链接”）；disabled=true
 // 时是停用那份。调用方按需要多调几次、按顺序加多份。
-func setupMergedSub1426(t *testing.T, s *Server, id string, disabled, withToken bool) string {
+func setupIndMergedSub1426(t *testing.T, s *Server, id string, disabled, withToken bool) string {
 	t.Helper()
-	ms := MergedSub{ID: id, Name: "测试合并订阅 " + id, CreatedAt: "2026-11-25T00:00:00Z", Disabled: disabled}
+	ims := IndependentMergedSub{ID: id, Name: "测试独立合并订阅 " + id, CreatedAt: "2026-11-25T00:00:00Z", Disabled: disabled}
 	if withToken {
-		tok := generateSubToken()
+		tok := generateIndMergedToken()
 		enc, err := s.encryptSubTokenNow(tok)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ms.TokenHash = hashSubToken(tok)
-		ms.TokenEnc = enc
-		s.cfg.MergedSubs = append(s.cfg.MergedSubs, ms)
+		ims.TokenHash = hashSubToken(tok)
+		ims.TokenEnc = enc
+		s.cfg.IndependentMergedSubs = append(s.cfg.IndependentMergedSubs, ims)
 		return tok
 	}
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, ms)
+	s.cfg.IndependentMergedSubs = append(s.cfg.IndependentMergedSubs, ims)
 	return ""
 }
 
@@ -47,30 +48,30 @@ func setupSubUser1426(t *testing.T, s *Server, id, username string) string {
 	return tok
 }
 
-// TestClientLoginMergedSub1426 只有合并订阅与通用订阅时，管理员登录
+// TestClientLoginIndMergedSub1426 只有独立合并订阅与通用订阅时，管理员登录
 // 不再给 subscription_url（两类订阅已退场，不再从登录回包取）。
-func TestClientLoginMergedSub1426(t *testing.T) {
+func TestClientLoginIndMergedSub1426(t *testing.T) {
 	s := newTestServer144(t)
 	setupGenericSub1345(t, s)
-	setupMergedSub1426(t, s, "ms-1426-a", false, true)
+	setupIndMergedSub1426(t, s, "ims-1426-a", false, true)
 	code, resp := clientLogin1345(t, s, `{"username":"admin","password":"test-password-123"}`)
 	if code != 200 {
 		t.Fatalf("应 200，实际 %d：%v", code, resp)
 	}
 	if _, ok := resp["subscription_url"]; ok {
-		t.Fatalf("只有合并/通用订阅时不应给 subscription_url，实际 %v", resp["subscription_url"])
+		t.Fatalf("只有独立合并/通用订阅时不应给 subscription_url，实际 %v", resp["subscription_url"])
 	}
 	if resp["account_type"] != "admin" || resp["plan"] != nil {
 		t.Fatalf("管理员登录 account_type 应为 admin、plan 为 null，实际 %v", resp)
 	}
 }
 
-// TestClientLoginMergedSubFirstEnabled1426 有订阅用户时管理员登录取
-// 第一份已启用的 SubUser 的订阅，不是合并订阅也不是通用订阅。
-func TestClientLoginMergedSubFirstEnabled1426(t *testing.T) {
+// TestClientLoginIndMergedSubFirstEnabled1426 有订阅用户时管理员登录取
+// 第一份已启用的 SubUser 的订阅，不是独立合并订阅也不是通用订阅。
+func TestClientLoginIndMergedSubFirstEnabled1426(t *testing.T) {
 	s := newTestServer144(t)
 	setupGenericSub1345(t, s)
-	setupMergedSub1426(t, s, "ms-1426-first", false, true)
+	setupIndMergedSub1426(t, s, "ims-1426-first", false, true)
 	firstTok := setupSubUser1426(t, s, "su-1426-first", "u-first")
 	setupSubUser1426(t, s, "su-1426-second", "u-second")
 	_, resp := clientLogin1345(t, s, `{"username":"admin","password":"test-password-123"}`)
@@ -126,29 +127,29 @@ func TestClientLoginFirstEnabledSkipsExpired1426(t *testing.T) {
 	}
 }
 
-// TestClientLoginMergedSubFallback1426 合并订阅停用/无链接/密文解不开
+// TestClientLoginIndMergedSubFallback1426 合并订阅停用/无链接/密文解不开
 // 时，管理员登录仍不回落通用订阅（通用订阅同样已退场）。
-func TestClientLoginMergedSubFallback1426(t *testing.T) {
+func TestClientLoginIndMergedSubFallback1426(t *testing.T) {
 	s := newTestServer144(t)
-	setupMergedSub1426(t, s, "ms-1426-off", true, true)
+	setupIndMergedSub1426(t, s, "ims-1426-off", true, true)
 	setupGenericSub1345(t, s)
 	_, resp := clientLogin1345(t, s, `{"username":"admin","password":"test-password-123"}`)
 	if _, ok := resp["subscription_url"]; ok {
-		t.Fatalf("合并订阅停用时不应回落通用订阅，实际 %v", resp["subscription_url"])
+		t.Fatalf("独立合并订阅停用时不应回落通用订阅，实际 %v", resp["subscription_url"])
 	}
 
 	s2 := newTestServer144(t)
-	s2.cfg.MergedSubs = append(s2.cfg.MergedSubs, MergedSub{ID: "ms-1426-bad", TokenEnc: "not-valid-ciphertext"})
+	s2.cfg.IndependentMergedSubs = append(s2.cfg.IndependentMergedSubs, IndependentMergedSub{ID: "ims-1426-bad", TokenEnc: "not-valid-ciphertext"})
 	setupGenericSub1345(t, s2)
 	_, resp2 := clientLogin1345(t, s2, `{"username":"admin","password":"test-password-123"}`)
 	if _, ok := resp2["subscription_url"]; ok {
-		t.Fatalf("合并订阅密文解不开时不应回落通用订阅，实际 %v", resp2["subscription_url"])
+		t.Fatalf("独立合并订阅密文解不开时不应回落通用订阅，实际 %v", resp2["subscription_url"])
 	}
 }
 
-// TestClientLoginNoMergedNoGeneric1426 既无 SubUser、又无可用合并/通用
+// TestClientLoginNoSubUserNoGeneric1426 既无 SubUser、又无可用合并/通用
 // 订阅时，登录成功但不给 subscription_url 字段。
-func TestClientLoginNoMergedNoGeneric1426(t *testing.T) {
+func TestClientLoginNoSubUserNoGeneric1426(t *testing.T) {
 	s := newTestServer144(t)
 	code, resp := clientLogin1345(t, s, `{"username":"admin","password":"test-password-123"}`)
 	if code != 200 {
@@ -159,10 +160,10 @@ func TestClientLoginNoMergedNoGeneric1426(t *testing.T) {
 	}
 }
 
-// TestClientSubURLMerged1426 订阅链接拼法（现取 SubUser 的订阅）：
+// TestClientSubURLSubUser1426 订阅链接拼法（现取 SubUser 的订阅）：
 // 对外域名优先；没填时用主端口（不是登录监听的 9876 端口），
 // scheme 跟主端口的 HTTPS 开关。
-func TestClientSubURLMerged1426(t *testing.T) {
+func TestClientSubURLSubUser1426(t *testing.T) {
 	s := newTestServer144(t)
 	subTok := setupSubUser1426(t, s, "su-1426-a", "u-a")
 	req := httptest.NewRequest("POST", "/api/v1/client/login", nil)

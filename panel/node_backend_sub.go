@@ -3,7 +3,7 @@ package main
 // ---------- 轻量节点后端进订阅（v1.4.20，切片 10） ----------
 //
 // 后端节点（BackendNode＋NodeInbound）进订阅的规则：
-//   - 只进按人订阅（SubUser／MergedSub 的令牌）：凭证是每人每节点一个
+//   - 只进按人订阅（SubUser／独立合并订阅的令牌）：凭证是每人每节点一个
 //     UUID（NodeUUIDs[节点地址]），通用订阅没有用户身份、拿不到 UUID，
 //     不含后端节点（与“发人用合并订阅”的口径一致）。
 //   - 只认八种后端入站：VLESS＋REALITY、VLESS＋TLS、AnyTLS、
@@ -464,7 +464,7 @@ func twinRelayFor(cands []twinRelay, node BackendNode, in NodeInbound) (twinRela
 	return twinRelay{}, false
 }
 
-// backendSubLinksForUser 取某份按人订阅（kind="subuser"/"merged"）在
+// backendSubLinksForUser 取某份按人订阅（kind="subuser"/"indmerged"）在
 // 全部后端节点上的订阅链接（只读：不生成 UUID、不写 config、不 bump
 // 版本）。调用方是订阅内容生成（serveSubContent 与被管端订阅接口）。
 // 节点顺序按节点 id（listNodes 已排好序），同节点内按入站列表顺序。
@@ -472,7 +472,7 @@ func twinRelayFor(cands []twinRelay, node BackendNode, in NodeInbound) (twinRela
 // （-B），同入站先 A 后 B；没有路由的节点照常只出直连；relay 模式
 // 但无路由时该入站不出链接。订阅级 LinkMode（Unreleased）：
 // kind="subuser" 时订阅的 LinkMode 非空就优先于节点 LinkMode；
-// 空值 = 跟随节点；MergedSub 没有该字段，走节点模式。
+// 空值 = 跟随节点；独立合并订阅没有该字段，走节点模式。
 func (s *Server) backendSubLinksForUser(kind, id string) []subLink {
 	var uuids map[string]string
 	var scope string
@@ -496,22 +496,6 @@ func (s *Server) backendSubLinksForUser(kind, id string) []subLink {
 				case "direct", "relay", "both":
 					subLinkMode = strings.TrimSpace(u.LinkMode)
 				}
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil
-		}
-	case "merged":
-		found := false
-		for i := range s.cfg.MergedSubs {
-			if s.cfg.MergedSubs[i].ID == id {
-				m := &s.cfg.MergedSubs[i]
-				if m.Disabled {
-					return nil
-				}
-				uuids, scope, targets, groupID = m.NodeUUIDs, m.BackendScope, m.BackendTargets, m.GroupID
 				found = true
 				break
 			}

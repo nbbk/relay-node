@@ -674,7 +674,7 @@ function showLandingDetail(l) {
   if (!m) return;
   onIn(m, '#detail-close', 'click', closeModal);
   $$('[data-addnode]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); addNodeWizard(Number(b.dataset.addnode)); }));
-  $$('[data-sub-landing]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); const l = landingsCache.find((x) => x.index === Number(b.dataset.subLanding)); askSubModeForSelection([{ panel: 'local', landing: Number(b.dataset.subLanding) }], (l ? displayNameOf(l) : '落地') + ' 的订阅'); }));
+  $$('[data-sub-landing]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); openIndMergedCreateModal([{ panel: 'local', landing: Number(b.dataset.subLanding) }]); }));
   $$('[data-renew]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); renewLanding(Number(b.dataset.renew)); }));
   $$('[data-addtraffic]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); addTraffic(Number(b.dataset.addtraffic)); }));
   $$('[data-trafficset]', m).forEach((b) => b.addEventListener('click', () => { closeModal(); trafficSettings(Number(b.dataset.trafficset)); }));
@@ -707,8 +707,7 @@ function wireMiniCards(wrap) {
   }));
   $$('[data-mini-sub]', wrap).forEach((b) => b.addEventListener('click', (e) => {
     e.stopPropagation();
-    const l = landingsCache.find((x) => x.index === Number(b.dataset.miniSub));
-    askSubModeForSelection([{ panel: 'local', landing: Number(b.dataset.miniSub) }], (l ? displayNameOf(l) : '落地') + ' 的订阅');
+    openIndMergedCreateModal([{ panel: 'local', landing: Number(b.dataset.miniSub) }]);
   }));
 }
 let overviewPage = 1;
@@ -2024,12 +2023,12 @@ async function openInboundLinkModal(inb) {
     return;
   }
   // 用户下拉框（真正 select，不是 datalist）：选项是能访问这个节点的
-  // 用户；合并订阅的用户标出来。默认选中第一个，打开就直接出它的链接。
+  // 用户；独立合并订阅的用户标出来。默认选中第一个，打开就直接出它的链接。
   // SS／SOCKS5（v1.4.23）：凭证是入站级全员共用，轮换影响全部人；
   // 换用户链接内容不变，别以为换用户链接就变。
   const sharedCred = inb.protocol === 'shadowsocks' || inb.protocol === 'socks';
   const optHtml = users.map((u) => {
-    const kind = String(u.user_id || '').indexOf('merged:') === 0 ? '（合并订阅）' : '';
+    const kind = String(u.user_id || '').indexOf('indmerged:') === 0 ? '（独立合并订阅）' : '';
     return '<option value="' + esc(u.user_id || '') + '">' + esc((u.username || u.user_id || '') + kind) + '</option>';
   }).join('');
   body.innerHTML = '<label for="ib-link-user">用户：</label>' +
@@ -5781,7 +5780,7 @@ async function refreshSubQrModal(kind) {
   } catch (err) { toast('二维码生成失败：' + err.message, 'err'); }
 }
 // ---------- 重新复制订阅链接（v1.3.7） ----------
-// 取回一条订阅链接：kind=generic|user|merged，id 只在 user/merged 时传。
+// 取回一条订阅链接：kind=generic|user|indmerged，id 只在 user/indmerged 时传。
 // 有密文返回 {url, legacy:false}；旧链接返回 {legacy:true, message}。
 async function fetchSubLink(kind, id) {
   const q = new URLSearchParams({ kind });
@@ -6150,8 +6149,8 @@ function subUserStatusCell(u) {
   }
   return '<span class="badge green">正常</span>';
 }
-// 手动恢复一条停用的订阅（订阅用户或合并订阅共用）：
-// kind 是 'users' 或 'merged'，恢复后刷新对应列表。
+// 手动恢复一条停用的订阅（订阅用户或独立合并订阅共用）：
+// kind 是 'users' 或 'independent-merged'，恢复后刷新对应列表。
 // v1.4.3：手动停用的恢复不看流量，确认文案按原因区分。
 async function resumeSubTraffic(kind, id, reason) {
   const manual = reason === '手动停用' || reason === 'manual';
@@ -6160,20 +6159,20 @@ async function resumeSubTraffic(kind, id, reason) {
   try {
     await apiPost('/api/v1/subscriptions/' + kind + '/' + encodeURIComponent(id) + '/resume', {});
     toast('已恢复，转发已加回去', 'ok');
-    if (kind === 'merged') loadMergedSubsList(); else if (kind === 'independent-merged') loadIndMergedSubsList(); else loadSubUsers();
+    if (kind === 'independent-merged') loadIndMergedSubsList(); else loadSubUsers();
   } catch (e) { toast('恢复失败：' + e.message, 'err'); }
 }
 
-// 手动停用一条订阅（v1.4.3，订阅用户或合并订阅共用）：停用后节点
+// 手动停用一条订阅（v1.4.3，订阅用户或独立合并订阅共用）：停用后节点
 // 60 秒内拿掉这个人、新连接被拒，订阅也取不到节点；恢复用行上的
-// “恢复”按钮。kind 是 'users' 或 'merged'，停用后刷新对应列表。
+// “恢复”按钮。kind 是 'users' 或 'independent-merged'，停用后刷新对应列表。
 async function disableSubTraffic(kind, id) {
   const ok = await confirmModal('停用订阅', '<p>停用后这个人的节点 60 秒内拿掉他，新连接被拒，订阅也取不到节点。确定停用吗？</p>', '停用', true);
   if (!ok) return;
   try {
     await apiPost('/api/v1/subscriptions/' + kind + '/' + encodeURIComponent(id) + '/disable', {});
     toast('已停用', 'ok');
-    if (kind === 'merged') loadMergedSubsList(); else if (kind === 'independent-merged') loadIndMergedSubsList(); else loadSubUsers();
+    if (kind === 'independent-merged') loadIndMergedSubsList(); else loadSubUsers();
   } catch (e) { toast('停用失败：' + e.message, 'err'); }
 }
 
@@ -6447,7 +6446,7 @@ async function openNodeAssignModal(kind, id, name) {
       await api('/api/v1/users/' + encodeURIComponent(key) + '/backend-assignment', { method: 'PUT', body: JSON.stringify({ scope, targets }) });
       closeModal();
       toast('已保存，节点 60 秒内应用', 'ok');
-      if (kind === 'merged') loadMergedSubsList(); else if (kind === 'independent-merged') loadIndMergedSubsList(); else loadSubUsers();
+      if (kind === 'independent-merged') loadIndMergedSubsList(); else loadSubUsers();
     } catch (e) { toast('保存失败：' + e.message, 'err'); }
   });
 }
@@ -6872,7 +6871,7 @@ async function loadSubGroups() {
       const g = subGroupsCache.find((x) => x.id === b.dataset.subGroupDelete);
       const ok = await confirmModal('删除分组', '<p>删掉分组「' + esc(g ? g.name : '') + '」？成员恢复自己原来勾的落地，不删用户、不换令牌、链接不变。确定吗？</p>', '删除', true);
       if (!ok) return;
-      try { await api('/api/v1/subscriptions/groups/' + encodeURIComponent(b.dataset.subGroupDelete), { method: 'DELETE' }); toast('分组已删除，成员已恢复自己勾选', 'ok'); loadSubGroups(); loadSubUsers(); loadMergedSubsList(); }
+      try { await api('/api/v1/subscriptions/groups/' + encodeURIComponent(b.dataset.subGroupDelete), { method: 'DELETE' }); toast('分组已删除，成员已恢复自己勾选', 'ok'); loadSubGroups(); loadSubUsers(); }
       catch (e) { toast('删除失败：' + e.message, 'err'); }
     }));
   } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
@@ -6904,7 +6903,7 @@ async function openSubGroupModal(group) {
         const r = await apiPost('/api/v1/subscriptions/groups', { name, note, selection: [], members: [], backend_node_ids: [] });
         closeModal();
         toast('分组已新建（空组），下面配落地、成员与后端节点', 'ok');
-        loadSubGroups(); loadSubUsers(); loadMergedSubsList();
+        loadSubGroups(); loadSubUsers();
         openSubGroupDetailModal({ id: r.id, name, note, selection: [], members: [], backend_node_ids: [] });
       } catch (err) { showErr1('新建失败：' + err.message); }
     });
@@ -6974,10 +6973,7 @@ async function openSubGroupModal(group) {
     const name = ((m.querySelector('[data-group-name]') || {}).value || '').trim();
     if (!name) { showGroupErr('请先填分组名字'); return; }
     const selection = subEditTreeSelection(checked);
-    const members = $$('[data-group-member-user]', m).filter((cb) => cb.checked).map((cb) => ({ kind: 'user', id: cb.dataset.groupMemberUser }))
-      // v1.4.31（P0-4）：合并订阅成员不在弹窗里列出，但已在组里的原样保留
-      // 进保存体，免得编辑一次分组就把它们悄悄踢出组。
-      .concat((group ? group.members || [] : []).filter((x) => x.kind === 'merged').map((x) => ({ kind: 'merged', id: x.id })));
+    const members = $$('[data-group-member-user]', m).filter((cb) => cb.checked).map((cb) => ({ kind: 'user', id: cb.dataset.groupMemberUser }));
     const backend_node_ids = $$('[data-group-backend-node]', m).filter((cb) => cb.checked).map((cb) => Number(cb.dataset.groupBackendNode));
     if (groupErrBox) groupErrBox.hidden = true;
     try {
@@ -6986,7 +6982,7 @@ async function openSubGroupModal(group) {
       else await apiPost('/api/v1/subscriptions/groups', body);
       closeModal();
       toast(isEdit ? '分组已保存，成员订阅下次更新即同步' : '分组已新建', 'ok');
-      loadSubGroups(); loadSubUsers(); loadMergedSubsList();
+      loadSubGroups(); loadSubUsers();
     } catch (err) { showGroupErr('保存失败：' + err.message); }
   });
 }
@@ -7162,7 +7158,7 @@ async function openSubGroupDetailModal(group) {
       } catch (err) { showErr('保存后端节点失败：' + err.message); }
     });
   };
-  onIn(m, '[data-detail-close]', 'click', () => { closeModal(); loadSubGroups(); loadSubUsers(); loadMergedSubsList(); });
+  onIn(m, '[data-detail-close]', 'click', () => { closeModal(); loadSubGroups(); loadSubUsers(); });
   renderSummary();
   await renderLandings();
   await renderMembers();
@@ -7545,25 +7541,9 @@ function openSubLinkModal(url, opts) {
   onIn(m, '[data-sub-close]', 'click', closeModal);
   return m;
 }
-// 给一份勾选（单个或多个落地）生成订阅链接，弹窗显示链接与复制按钮。
-// selection: [{panel:'local'|远程面板 id, landing:编号}]；name 选填（归属到人，
-// 只在合并订阅生成时传，填了就新起一条、不走轮换）；mode 是内容范围
-// （both|relay|direct），不传默认全部；expiresAt 选填（日期，空 = 永久）。
-// v1.4.27：合并订阅已退场（创建接口后端回 410）。生成入口（集中管理页
-// 的“生成合并订阅”按钮已撤、各落地详情里的“订阅”按钮）不再发创建请求，
-// 改弹退场提示；旧的生成函数留作防护，任何残留调用都只显示提示。
-function showMergedRetiredNotice() {
-  const m = openModal('<h2>合并订阅已退场</h2><p class="muted">合并订阅已退场；要用合并订阅请去集中管理页 → 独立合并订阅，新建一条（旧链接已失效，不能恢复）。</p><div class="btn-row"><button class="btn secondary" type="button" data-retired-close>知道了</button></div>');
-  if (m) onIn(m, '[data-retired-close]', 'click', closeModal);
-}
-async function showSubForSelection(selection, title, name, mode, expiresAt, traffic, groupId) {
-  showMergedRetiredNotice();
-}
-// 单落地“订阅”按钮：以前先弹小窗选订阅内容再生成合并订阅；
-// v1.4.27 合并订阅已退场，直接弹退场提示，不再选模式、不再生成。
-function askSubModeForSelection(selection, title) {
-  showMergedRetiredNotice();
-}
+// 单落地“订阅”按钮：开独立合并订阅新建弹窗（第 1 步），点的那个落地
+// 预选进第 2 步的勾选树；建好后“去勾选落地”时已勾上，保存即生效。
+// v1.4.40：旧合并订阅彻底移除，退场提示与 askSubModeForSelection 一并删除。
 // ---------- 集中管理卡片汇总（v1.3.4） ----------
 // 远程落地流量与到期都来自集中管理快照（主面板每 2 分钟拉远程状态，
 // 快照里的 traffic/days_left 与远程面板自己的 /api/v1/central/traffic
@@ -7644,7 +7624,7 @@ function showCentralTab(id) {
     setVisible(document.getElementById('central-panel-' + t), t === id);
   });
   try { localStorage.setItem(CENTRAL_TAB_KEY, id); } catch (e) { /* 隐私模式等存不了就每次回已登记 */ }
-  if (id === 'indmerged') { loadIndMergedSubsList(); loadMergedSubsList(); }
+  if (id === 'indmerged') { loadIndMergedSubsList(); }
 }
 function initCentralTabs() {
   let saved = null;
@@ -7835,7 +7815,6 @@ function centralLocalNodesHtml() {
 }
 async function loadCentral() {
   centralDetailId = null;
-  loadMergedSubsList(); // v1.4.36：第 6 批，生成树已撤，只剩旧记录只读列表
   loadSubGroups(); // v1.3.26：集中管理页生成表单的“所属分组”下拉也要有数据
   try {
     const r = await api('/api/v1/central/remotes');
@@ -7976,28 +7955,6 @@ async function fetchSubTreePanels() {
   }
   return panels;
 }
-// 已生成的合并订阅列表（只列勾选内容与生成时间，不含链接本身）。
-// v1.3.20：合并订阅列表搜索（名字/勾选摘要）+ 分页（每页 20 条）+ 到期徽章。
-let mergedSubPage = 1, mergedSubSearch = '';
-async function loadMergedSubsList() {
-  const list = $('#central-sub-list');
-  if (!list) return;
-  try {
-    const r = await api('/api/v1/subscriptions/merged');
-    const subs = r.subs || [];
-    // v1.4.27：合并订阅已退场（后端 GET 列表照常返回已有记录，顶层带
-    // retired:true）：只读展示，每行加“已退场”徽章，操作按钮置灰不可点。
-    if (!subs.length) { list.innerHTML = '<p class="muted small">还没有合并订阅。合并订阅已退场，请使用订阅用户。</p>'; return; }
-    const filtered = subs.filter((s) => matchSubText(mergedSubSearch, [s.name, s.summary]));
-    if (!filtered.length) { list.innerHTML = '<p class="muted small">没有匹配的合并订阅，换个关键词试试。</p>'; return; }
-    const pg = paginate(filtered, mergedSubPage);
-    mergedSubPage = pg.cur;
-    list.innerHTML = '<h3>已生成的合并订阅 <span class="badge grey">已退场</span></h3>' + pg.slice.map((s) => '<div class="kv"><span><span class="badge grey">已退场</span> ' + (s.name ? esc(s.name) + ' — ' : '') + (s.group_name ? '<span class="badge">分组：' + esc(s.group_name) + '</span> ' : '') + esc(s.summary || '') + '<br><span class="small muted">内容' + esc(subModeLabel(s.mode)) + ' · ' + expiryBadge(s.expires_at) + ' · 生成于 ' + esc(fmtDate(s.created_at)) + '</span><br><span class="small">' + userTrafficText(s) + '</span></span><span><button class="btn secondary sm" type="button" disabled title="合并订阅已退场，链接不可用">操作</button></span></div>').join('') +
-      pagerHtml(pg.total, pg.cur, pg.totalPages, 'mergedsub') +
-      '<p class="muted small">合并订阅已退场，请使用订阅用户；旧链接已失效。</p>';
-    if (pg.totalPages > 1 || pg.total > 10) wirePager(list, 'mergedsub', pg.cur, pg.totalPages, (p) => { mergedSubPage = p; loadMergedSubsList(); });
-  } catch (e) { list.innerHTML = '<div class="error-box">加载失败：' + esc(e.message) + '</div>'; }
-}
 // ---------- 独立合并订阅（v1.4.34，第 4 批） ----------
 // 集中管理页第三个选项卡（v1.4.34）：一行一个订阅，列：序号、ID、名字、勾选摘要、
 // 订阅出哪些节点、到期、已用／总流量、状态、操作。名字列只放名字＋短 ID
@@ -8128,7 +8085,9 @@ function openIndMergedOpsModal(s) {
 // 第 1 步只填名字（选填）＋订阅出哪些节点＋到期/限流，点“创建”即建成
 // （Selection 允许空）；第 2 步去勾选落地（打开编辑弹窗里的勾选树），
 // 可稍后做——列表行点“操作”→“编辑成员”随时能勾。
-async function openIndMergedCreateModal() {
+async function openIndMergedCreateModal(preselection) {
+  // preselection: [{panel, landing}]，单落地“订阅”按钮点进来时带上；
+  // 建好后“去勾选落地”时预勾进第 2 步的勾选树。不传 = 空着以后再勾。
   const m = openModal('<h2>新建独立合并订阅</h2>' +
     '<p class="muted small">先建一条，名字可以不填；建好后去勾选落地（第 2 步），也可以先空着、以后再勾。空订阅拉出来是空的，不会报错。</p>' +
     '<label class="small">名字（选填）：<input type="text" data-indmerged-name style="width:220px" placeholder="如 香港＋美国合订"></label>' +
@@ -8176,7 +8135,7 @@ async function openIndMergedCreateModal() {
         onIn(body, '[data-indmerged-copy-link]', 'click', (e) => copyText(r.url || '', e.target));
         onIn(body, '[data-indmerged-goto-tree]', 'click', () => {
           closeModal();
-          openSubEditModal({ kind: 'indmerged', id: r.id, name: r.name || '', selection: [], mode: r.mode || 'both', expires_at: r.expires_at, traffic_limit_mb: r.traffic_limit_mb || 0, traffic_limit_mode: r.traffic_limit_mode, reset_mode: r.reset_mode, reset_day: r.reset_day });
+          openSubEditModal({ kind: 'indmerged', id: r.id, name: r.name || '', selection: (preselection || []), mode: r.mode || 'both', expires_at: r.expires_at, traffic_limit_mb: r.traffic_limit_mb || 0, traffic_limit_mode: r.traffic_limit_mode, reset_mode: r.reset_mode, reset_day: r.reset_day });
         });
         onIn(body, '[data-indmerged-done]', 'click', closeModal);
       } else closeModal();
@@ -8978,10 +8937,6 @@ function initCentral() {
   initCentralTabs(); // v1.3.13：大选项卡绑定 + 恢复上次大选项卡
   initCentralSubTabs(); // v1.3.13：子选项卡事件委托（栏只绑一次）+ 恢复上次子选项卡在重绘时做
   on('#central-refresh', 'click', centralRefreshAll);
-  // v1.4.27：合并订阅已退场，集中管理页的生成表单（模式/分组/归属/到期/
-  // 限流/“生成合并订阅”按钮）已撤，这里只留合并订阅列表搜索。
-  // 合并订阅列表搜索（v1.3.20）：输入即过滤，回到第 1 页。
-  wireListSearch('#central-sub-search', (q) => { mergedSubSearch = q; mergedSubPage = 1; loadMergedSubsList(); });
   on('#central-add-form', 'submit', async (e) => {
     e.preventDefault();
     const name = $('#central-name').value.trim();

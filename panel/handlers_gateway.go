@@ -335,7 +335,7 @@ type gatewayCheckItem struct {
 
 // gatewayCheckSub 订阅检测里某一类订阅的结果。
 type gatewayCheckSub struct {
-	Kind    string `json:"kind"`  // merged | subuser | generic
+	Kind    string `json:"kind"`  // indmerged | subuser | generic
 	Label   string `json:"label"` // 合并订阅 | 每人订阅 | 通用订阅
 	OK      bool   `json:"ok"`
 	Skipped bool   `json:"skipped"` // 没有这种订阅的令牌，没测，不算不通
@@ -447,10 +447,10 @@ func (s *Server) checkGatewayClientConfig(base string, client *http.Client) gate
 }
 
 // gatewayCheckTokens 检测订阅用的三类令牌：通用订阅（SubTokenEnc）、
-// 每人订阅（取第一个 SubUsers 的令牌）、合并订阅（取第一个 MergedSubs 的
-// 令牌）。每类只取第一个能解出来的；解不开或没有就不测那类。令牌只留在服务端。
+// 每人订阅（取第一个 SubUsers 的令牌）、独立合并订阅（取第一个
+// IndependentMergedSubs 的令牌）。每类只取第一个能解出来的；解不开或没有就不测那类。令牌只留在服务端。
 // 三类都测，不再只挑一条——管理面板模式下通用订阅是空的（本机无落地，节点
-// 都在远程面板上，只有合并订阅有节点），只测通用会报“通，0 个节点”，
+// 都在远程面板上，只有独立合并订阅有节点），只测通用会报“通，0 个节点”，
 // 路由明明是通的，容易误导。
 func (s *Server) gatewayCheckTokens() map[string]string {
 	out := map[string]string{}
@@ -467,10 +467,10 @@ func (s *Server) gatewayCheckTokens() map[string]string {
 			}
 		}
 	}
-	for i := range s.cfg.MergedSubs {
-		if s.cfg.MergedSubs[i].TokenEnc != "" {
-			if tok, err := s.decryptSubTokenNow(s.cfg.MergedSubs[i].TokenEnc); err == nil && tok != "" {
-				out["merged"] = tok
+	for i := range s.cfg.IndependentMergedSubs {
+		if s.cfg.IndependentMergedSubs[i].TokenEnc != "" {
+			if tok, err := s.decryptSubTokenNow(s.cfg.IndependentMergedSubs[i].TokenEnc); err == nil && tok != "" {
+				out["indmerged"] = tok
 				break
 			}
 		}
@@ -478,28 +478,15 @@ func (s *Server) gatewayCheckTokens() map[string]string {
 	return out
 }
 
-// gatewaySubKindLabel 检测订阅用的令牌种类中文名（显示在检测结果里，
-// 让用户知道测的是哪种订阅）。
-func gatewaySubKindLabel(kind string) string {
-	switch kind {
-	case "merged":
-		return "合并订阅"
-	case "subuser":
-		return "每人订阅"
-	default:
-		return "通用订阅"
-	}
-}
-
 var gatewayNodeOutboundTypes = map[string]bool{
 	"vless": true, "vmess": true, "trojan": true, "shadowsocks": true,
 	"hysteria2": true, "tuic": true,
 }
 
-// gatewaySubKinds 订阅检测的三类顺序：合并订阅、每人订阅、通用订阅。
+// gatewaySubKinds 订阅检测的三类顺序：独立合并订阅、每人订阅、通用订阅。
 // 展示时按这个顺序分三行。
 var gatewaySubKinds = []struct{ kind, label string }{
-	{"merged", "合并订阅"},
+	{"indmerged", "独立合并订阅"},
 	{"subuser", "每人订阅"},
 	{"generic", "通用订阅"},
 }
@@ -547,7 +534,11 @@ func (s *Server) checkGatewaySubscription(base, originBase string, client *http.
 // 数节点并按 tag 分中转/直连/其它。404 时加直连对照探测（见 gatewaySub404Reason）。
 func (s *Server) checkGatewaySubscriptionKind(base, originBase, kind, label, tok string, client *http.Client) gatewayCheckSub {
 	sub := gatewayCheckSub{Kind: kind, Label: label}
+	// 独立合并订阅走 /m/ 路径（v1.4.34），其余走订阅路径 /sub/（或自定义 sub_path）。
 	subURLPath := "/" + s.subPath() + "/" + tok + "?format=singbox"
+	if kind == "indmerged" {
+		subURLPath = "/m/" + tok + "?format=singbox"
+	}
 	req, err := http.NewRequest("GET", base+subURLPath, nil)
 	if err != nil {
 		sub.Reason = "请求失败：" + err.Error()

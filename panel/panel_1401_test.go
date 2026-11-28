@@ -464,7 +464,7 @@ func TestNodeBackendUsers1401(t *testing.T) {
 	// 一个启用、一个停用：停用的不下发。
 	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: "su-test1", Name: "测试用户"})
 	s.cfg.SubUsers = append(s.cfg.SubUsers, SubUser{ID: "su-test2", Name: "停用用户", Disabled: true})
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: "ms-test1", Name: "合并用户"})
+	s.cfg.IndependentMergedSubs = append(s.cfg.IndependentMergedSubs, IndependentMergedSub{ID: "ims-test1", Name: "独立合并用户"})
 
 	// 新建节点默认一个用户不发（§5.3：老用户不自动上新节点，须手动勾）。
 	users, changed := s.nodeBackendUsersForNode(node)
@@ -475,7 +475,7 @@ func TestNodeBackendUsers1401(t *testing.T) {
 		t.Fatalf("新建节点默认一个用户不发，实际 %d", len(users))
 	}
 	// 指派两个用户后才下发。
-	if code, body := authed1400(t, h, cookie, "PUT", "/api/v1/nodes/1/users", `{"user_ids":["subuser:su-test1","merged:ms-test1"]}`); code != 200 {
+	if code, body := authed1400(t, h, cookie, "PUT", "/api/v1/nodes/1/users", `{"user_ids":["subuser:su-test1","indmerged:ims-test1"]}`); code != 200 {
 		t.Fatalf("指派应 200，实际 %d：%s", code, body)
 	}
 	users, changed = s.nodeBackendUsersForNode(node)
@@ -489,8 +489,8 @@ func TestNodeBackendUsers1401(t *testing.T) {
 	if u1.UserID != "subuser:su-test1" || u1.VLESSUUID == "" || u1.Email != "u-sub-su-test1@node" {
 		t.Fatalf("用户记录不对：%+v", u1)
 	}
-	if u2 := users[1]; u2.UserID != "merged:ms-test1" || u2.VLESSUUID == "" {
-		t.Fatalf("合并用户记录不对：%+v", u2)
+	if u2 := users[1]; u2.UserID != "indmerged:ims-test1" || u2.VLESSUUID == "" {
+		t.Fatalf("独立合并用户记录不对：%+v", u2)
 	}
 	// UUID 已写回 config，且两用户互不相同。
 	if got := s.cfg.SubUsers[0].NodeUUIDs["203.0.113.1"]; got != u1.VLESSUUID {
@@ -562,7 +562,7 @@ func TestInboundListen1401(t *testing.T) {
 // ---------- 9. 版本断言 ----------
 
 func TestVersion1401(t *testing.T) {
-	if Version != "1.4.39" {
+	if Version != "1.4.40" {
 		t.Fatalf("VERSION 应是 1.4.33，实际 %q", Version)
 	}
 }

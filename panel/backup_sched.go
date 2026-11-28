@@ -160,8 +160,7 @@ func (s *Server) buildScheduledBackupData(label string) map[string]any {
 	}
 	withTokens := s.migrationPassphraseSet()
 	out["sub_users"] = sanitizeSubUsers(s.cfg.SubUsers, withTokens)
-	out["merged_subs"] = sanitizeMergedSubs(s.cfg.MergedSubs, withTokens)
-	// 独立合并订阅（v1.4.34）：新切片分支，与旧合并订阅同款口径。
+	// 独立合并订阅（v1.4.34）：与订阅用户同款口径。
 	out["independent_merged_subs"] = sanitizeIndMergedSubs(s.cfg.IndependentMergedSubs, withTokens)
 	// 套餐档位（v1.4.27）：全量跟走（不含敏感字段，什么时候都进备份）。
 	out["plans"] = sanitizePlans(s.cfg.Plans)
@@ -176,7 +175,7 @@ func (s *Server) migrationPassphraseSet() bool {
 	return err == nil
 }
 
-// subUserBackup / mergedSubBackup 备份文件里的订阅用户。
+// subUserBackup / indMergedSubBackup 备份文件里的订阅用户。
 // v1.3.29：到期与限流字段全量跟走（恢复后不再变永久/不限流）；
 // token_hash/token_enc 只在已设迁移口令时才进备份（sanitize 时按
 // withTokens 开关控制）。安全性：token_hash 单独拿不到订阅（鉴权要算
@@ -247,32 +246,8 @@ func sanitizePlans(plans []Plan) []planBackup {
 	return out
 }
 
-type mergedSubBackup struct {
-	ID                string         `json:"id"`
-	Name              string         `json:"name,omitempty"`
-	CreatedAt         string         `json:"created_at,omitempty"`
-	Selection         []SubSelection `json:"selection"`
-	Mode              string         `json:"mode,omitempty"`
-	GroupID           string         `json:"group_id,omitempty"`
-	ExpiresAt         string         `json:"expires_at,omitempty"`
-	TrafficLimitBytes int64          `json:"traffic_limit_bytes,omitempty"`
-	TrafficLimitMode  string         `json:"traffic_limit_mode,omitempty"`
-	ResetMode         string         `json:"reset_mode,omitempty"`
-	ResetDay          int            `json:"reset_day,omitempty"`
-	NextResetAt       string         `json:"next_reset_at,omitempty"`
-	LastResetAt       string         `json:"last_reset_at,omitempty"`
-	TrafficWarned80   bool           `json:"traffic_warned_80,omitempty"`
-	TrafficWarned100  bool           `json:"traffic_warned_100,omitempty"`
-	Disabled          bool           `json:"disabled,omitempty"`
-	DisabledReason    string         `json:"disabled_reason,omitempty"`
-	// NodeUUIDs（v1.3.30）：与 subUserBackup 同款，见上。
-	NodeUUIDs map[string]string `json:"node_uuids,omitempty"`
-	TokenHash string            `json:"token_hash,omitempty"`
-	TokenEnc  string            `json:"token_enc,omitempty"`
-}
-
 // indMergedSubBackup 备份文件里的独立合并订阅（v1.4.34）：与
-// mergedSubBackup 同款字段，但没有 GroupID（独立订阅不进分组）；
+// subUserBackup 同款字段，但没有 GroupID（独立订阅不进分组）；
 // token_hash/token_enc 只在已设迁移口令时才进备份（与旧合并订阅同款开关）。
 type indMergedSubBackup struct {
 	ID                string            `json:"id"`
@@ -319,22 +294,6 @@ func sanitizeSubUsers(users []SubUser, withTokens bool) []subUserBackup {
 		if withTokens {
 			b.TokenHash, b.TokenEnc = u.TokenHash, u.TokenEnc
 			b.PasswordHash = u.PasswordHash
-		}
-		out = append(out, b)
-	}
-	return out
-}
-
-func sanitizeMergedSubs(subs []MergedSub, withTokens bool) []mergedSubBackup {
-	out := make([]mergedSubBackup, 0, len(subs))
-	for _, m := range subs {
-		b := mergedSubBackup{ID: m.ID, Name: m.Name, CreatedAt: m.CreatedAt, Selection: m.Selection, Mode: m.Mode, GroupID: m.GroupID,
-			ExpiresAt: m.ExpiresAt, TrafficLimitBytes: m.TrafficLimitBytes, TrafficLimitMode: m.TrafficLimitMode,
-			ResetMode: m.ResetMode, ResetDay: m.ResetDay, NextResetAt: m.NextResetAt, LastResetAt: m.LastResetAt,
-			TrafficWarned80: m.TrafficWarned80, TrafficWarned100: m.TrafficWarned100, Disabled: m.Disabled, DisabledReason: m.DisabledReason,
-			NodeUUIDs: m.NodeUUIDs}
-		if withTokens {
-			b.TokenHash, b.TokenEnc = m.TokenHash, m.TokenEnc
 		}
 		out = append(out, b)
 	}
@@ -653,7 +612,7 @@ func (s *Server) exportData() map[string]any {
 // ---------- 导入 / 恢复的共用落地逻辑 ----------
 
 // importPayload 导入文件（手动导出与定时备份共用格式；定时备份多了
-// kind/label/traffic/sub_users/merged_subs，手动导出没有这些键时不走那几步）。
+// kind/label/traffic/sub_users/independent_merged_subs，手动导出没有这些键时不走那几步）。
 // v1.3.29：补 sub_token、按人转发、每订阅用量、nodes.txt、Logo、证书、
 // 迁移信封与版本号；passphrase 只在导入请求体里带（前端恢复时用户现输），
 // 绝不进备份文件。
@@ -664,7 +623,6 @@ type importPayload struct {
 	State         json.RawMessage      `json:"state"`
 	Traffic       json.RawMessage      `json:"traffic"`
 	SubUsers      []subUserBackup      `json:"sub_users"`
-	MergedSubs    []mergedSubBackup    `json:"merged_subs"`
 	IndMergedSubs []indMergedSubBackup `json:"independent_merged_subs"`
 	Plans         []planBackup         `json:"plans"`
 	SubGroups     []SubGroup           `json:"sub_groups"`
@@ -799,7 +757,7 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 	// v1.4.28：先恢复令牌密钥，再核对订阅令牌成对性——成对校验要解密
 	// 备份密文，跨机恢复必须用备份里的密钥解，不能用本机旧密钥。密钥
 	// 写盘在下面迁移信封段还会再做一次（同值，幂等），这里提前是为了
-	// 让 SubUsers/MergedSubs 恢复循环里的 tokenPairMatches 能解开。
+	// 让 SubUsers／独立合并订阅恢复循环里的 tokenPairMatches 能解开。
 	if mig != nil && mig.SubTokenKey != "" {
 		if kb, err := base64.StdEncoding.DecodeString(strings.TrimSpace(mig.SubTokenKey)); err == nil && len(kb) == 32 {
 			if err := writeFileAtomic(filepath.Join(s.env.PanelHome, subTokenKeyFile), kb, 0o600); err == nil {
@@ -998,57 +956,6 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 		s.cfg.SubUsers = users
 		cfgChanged = true
 	}
-	if p.MergedSubs != nil {
-		keepHash := map[string]string{}
-		keepEnc := map[string]string{}
-		for _, m := range s.cfg.MergedSubs {
-			if m.TokenHash != "" {
-				keepHash[m.ID] = m.TokenHash
-			}
-			if m.TokenEnc != "" {
-				keepEnc[m.ID] = m.TokenEnc
-			}
-		}
-		subs := make([]MergedSub, 0, len(p.MergedSubs))
-		for _, bm := range p.MergedSubs {
-			m := MergedSub{ID: bm.ID, Name: bm.Name, CreatedAt: bm.CreatedAt, Selection: bm.Selection, Mode: bm.Mode, GroupID: bm.GroupID,
-				ExpiresAt: bm.ExpiresAt, TrafficLimitBytes: bm.TrafficLimitBytes, TrafficLimitMode: bm.TrafficLimitMode,
-				ResetMode: bm.ResetMode, ResetDay: bm.ResetDay, NextResetAt: bm.NextResetAt, LastResetAt: bm.LastResetAt,
-				TrafficWarned80: bm.TrafficWarned80, TrafficWarned100: bm.TrafficWarned100, Disabled: bm.Disabled, DisabledReason: bm.DisabledReason,
-				NodeUUIDs: bm.NodeUUIDs}
-			// v1.4.28：与 SubUser 同款按“对”取（见上），绝不把本机哈希与
-			// 备份密文分开混配；合并订阅已退场，这里只保记录本身不错配。
-			localH, hasLocalH := keepHash[bm.ID]
-			localE, hasLocalE := keepEnc[bm.ID]
-			switch {
-			case hasLocalH && hasLocalE:
-				m.TokenHash, m.TokenEnc = localH, localE
-			case hasLocalH:
-				m.TokenHash = localH
-				if mig != nil && bm.TokenEnc != "" && s.tokenPairMatches(localH, bm.TokenEnc) {
-					m.TokenEnc = bm.TokenEnc
-				}
-			case hasLocalE:
-				m.TokenEnc = localE
-				if mig != nil && bm.TokenHash != "" && s.tokenPairMatches(bm.TokenHash, localE) {
-					m.TokenHash = bm.TokenHash
-				}
-			case mig != nil && bm.TokenHash != "" && bm.TokenEnc != "":
-				m.TokenHash, m.TokenEnc = bm.TokenHash, bm.TokenEnc
-				tokenRestored++
-			case mig != nil && bm.TokenHash != "":
-				m.TokenHash = bm.TokenHash
-			case mig != nil && bm.TokenEnc != "":
-				m.TokenEnc = bm.TokenEnc
-			}
-			if m.TokenHash == "" {
-				tokenEmpty++
-			}
-			subs = append(subs, m)
-		}
-		s.cfg.MergedSubs = subs
-		cfgChanged = true
-	}
 	if p.IndMergedSubs != nil {
 		keepHash := map[string]string{}
 		keepEnc := map[string]string{}
@@ -1110,7 +1017,7 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 	// 列表里时，清掉该成员的分组（恢复为自己勾选），并在导入结果里写明。
 	// 档位指向核对（v1.4.27）：同理，PlanID 指向的档位不在恢复后的档位
 	// 列表里时清掉该用户的档位（只清档位挂接，不动限流/到期现值）。
-	if p.SubGroups != nil || p.SubUsers != nil || p.MergedSubs != nil || p.Plans != nil {
+	if p.SubGroups != nil || p.SubUsers != nil || p.Plans != nil {
 		for i := range s.cfg.SubUsers {
 			if s.cfg.SubUsers[i].PlanID != "" && s.findPlan(s.cfg.SubUsers[i].PlanID) == nil {
 				groupWarns = append(groupWarns, "订阅用户「"+s.cfg.SubUsers[i].Name+"」的套餐档位在备份里没有，已取消档位")
@@ -1120,17 +1027,6 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 			if s.cfg.SubUsers[i].GroupID != "" && s.findSubGroup(s.cfg.SubUsers[i].GroupID) == nil {
 				groupWarns = append(groupWarns, "订阅用户「"+s.cfg.SubUsers[i].Name+"」的分组在备份里没有，已恢复为自己勾选")
 				s.cfg.SubUsers[i].GroupID = ""
-				cfgChanged = true
-			}
-		}
-		for i := range s.cfg.MergedSubs {
-			if s.cfg.MergedSubs[i].GroupID != "" && s.findSubGroup(s.cfg.MergedSubs[i].GroupID) == nil {
-				name := s.cfg.MergedSubs[i].Name
-				if name == "" {
-					name = "未命名合并订阅"
-				}
-				groupWarns = append(groupWarns, "合并订阅「"+name+"」的分组在备份里没有，已恢复为自己勾选")
-				s.cfg.MergedSubs[i].GroupID = ""
 				cfgChanged = true
 			}
 		}
@@ -1333,7 +1229,7 @@ func (s *Server) applyImportPayload(p importPayload, o importApplyOpts) (warn st
 	// 按人转发对齐（v1.3.29）：先清掉 config.toml 里恢复出来的无主按人段
 	// （applyUserForwards/reconcile 都删不掉它们），再按恢复后的订阅限流
 	// 重建合法段；没有限流订阅时只清孤儿、不新建。
-	if p.UserForwards != nil || p.SubUsers != nil || p.MergedSubs != nil || p.IndMergedSubs != nil {
+	if p.UserForwards != nil || p.SubUsers != nil || p.IndMergedSubs != nil {
 		if n := s.removeOrphanUserEndpoints(); n > 0 {
 			o.addNote(fmt.Sprintf("已清理 %d 个无主按人转发段", n))
 		}

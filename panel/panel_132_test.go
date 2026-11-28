@@ -115,72 +115,25 @@ func TestSubPublicDomainSet132(t *testing.T) {
 	}
 }
 
-// TestMergedSubsRotate132 合并订阅轮换：同一勾选集合与同一归属人换新令牌，
-// 旧链接 404、新链接 200，选择与名称不变；不存在的 id 返回 404。
-// TestMergedSubsRotate132 1.4.27：合并订阅已退场，创建与轮换一律 410；
-// 列表仍可查（供核对）。轮换语义现在由订阅用户承担，见 TestSubUsers130。
-func TestMergedSubsRotate132(t *testing.T) {
+// TestOldMergedSubRemoved132 1.4.40：旧合并订阅彻底移除——创建/轮换/列表/
+// 删除接口与记录都不存在。旧合并令牌（无任何记录可认）拉取 /sub/ 与
+// /m/ 时都与随机错令牌一样走 404，不再 410。轮换语义现在由订阅用户
+// （见 TestSubUsers130）与独立合并订阅（见
+// TestIndMergedRotateDisableDelete1434）承担。
+func TestOldMergedSubRemoved132(t *testing.T) {
 	s := newTestSubServer(t)
-	sel := `[{"panel":"local","landing":1}]`
-	rec := callJSON130(t, s.handleMergedSubsCreate, "POST", "/api/v1/subscriptions/merged",
-		`{"selection":`+sel+`,"name":"张三"}`)
-	if rec.Code != 410 {
-		t.Fatalf("生成合并订阅应 410（已退场），实际 %d：%s", rec.Code, rec.Body.String())
-	}
-	rotate := func(id string) *httptest.ResponseRecorder {
-		t.Helper()
-		req := httptest.NewRequest("POST", "/api/v1/subscriptions/merged/"+id+"/rotate", nil)
-		req.SetPathValue("id", id)
-		req.Header.Set("Content-Type", "application/json")
-		req.Host = "203.0.113.1:11111"
-		rec := httptest.NewRecorder()
-		s.handleMergedSubsRotate(rec, req)
-		return rec
-	}
-	if rec := rotate("ms-000000000000"); rec.Code != 410 {
-		t.Fatalf("轮换合并订阅应 410（已退场），实际 %d：%s", rec.Code, rec.Body.String())
-	}
-	rec = callJSON130(t, s.handleMergedSubsList, "GET", "/api/v1/subscriptions/merged", "")
-	if rec.Code != 200 {
-		t.Fatalf("列合并订阅应 200，实际 %d", rec.Code)
-	}
-}
-
-// TestMergedSubsRotateRevokes132 轮换后撤销：撤销掉轮换后的令牌，新链接也 404。
-// TestMergedSubsRotateRevokes132 1.4.27：合并订阅已退场，创建与轮换一律
-// 410；删除接口保留（清理用），删后旧令牌 404。
-func TestMergedSubsRotateRevokes132(t *testing.T) {
-	s := newTestSubServer(t)
-	rec := callJSON130(t, s.handleMergedSubsCreate, "POST", "/api/v1/subscriptions/merged",
-		`{"selection":[{"panel":"local","landing":1}]}`)
-	if rec.Code != 410 {
-		t.Fatalf("生成合并订阅应 410（已退场），实际 %d：%s", rec.Code, rec.Body.String())
-	}
-	// 直接写一条合并订阅记录（供核对与清理），删掉它。
+	// 旧合并令牌无从分辨：没有记录，handleSub 按未知令牌 404。
 	tok := generateSubToken()
-	enc, err := s.encryptSubTokenNow(tok)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: "ms-132", Name: "待删", TokenHash: hashSubToken(tok), TokenEnc: enc, Selection: []SubSelection{{Panel: "local", Landing: 1}}})
-	req := httptest.NewRequest("POST", "/api/v1/subscriptions/merged/ms-132/rotate", nil)
-	req.SetPathValue("id", "ms-132")
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "203.0.113.1:11111"
-	rec2 := httptest.NewRecorder()
-	s.handleMergedSubsRotate(rec2, req)
-	if rec2.Code != 410 {
-		t.Fatalf("轮换合并订阅应 410（已退场），实际 %d", rec2.Code)
-	}
-	del := httptest.NewRequest("DELETE", "/api/v1/subscriptions/merged/ms-132", nil)
-	del.SetPathValue("id", "ms-132")
-	rec3 := httptest.NewRecorder()
-	s.handleMergedSubsDelete(rec3, del)
-	if rec3.Code != 200 {
-		t.Fatalf("删除合并订阅应 200（清理用），实际 %d", rec3.Code)
-	}
 	if rec := callSub(t, s, tok, "/sub/"+tok, ""); rec.Code != 404 {
-		t.Fatalf("删除后旧链接应 404，实际 %d", rec.Code)
+		t.Fatalf("旧合并订阅令牌拉取 /sub/ 应 404（记录已删），实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	// /m/ 端点只认独立合并订阅的 mrg_ 令牌，旧令牌同样 404。
+	req := httptest.NewRequest("GET", "/m/"+tok, nil)
+	req.SetPathValue("token", tok)
+	rec := httptest.NewRecorder()
+	s.handleIndMergedSub(rec, req)
+	if rec.Code != 404 {
+		t.Fatalf("旧合并订阅令牌拉取 /m/ 应 404（记录已删），实际 %d：%s", rec.Code, rec.Body.String())
 	}
 }
 

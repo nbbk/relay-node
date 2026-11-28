@@ -65,7 +65,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/sub-path", s.requireAuth(s.handleSubPathSet))
 	mux.HandleFunc("POST /api/v1/subscription/qr", s.requireAuth(s.handleSubQR))
 	mux.HandleFunc("GET /api/v1/subscriptions/link", s.requireAuth(s.handleSubLink))
-	// 独立合并订阅（v1.4.34）：新路由组，与旧 /subscriptions/merged 并存。
+	// 独立合并订阅（v1.4.34）：新路由组；旧 /subscriptions/merged 已在
+	// v1.4.40 彻底移除（记录连同路由一起删）。
 	mux.HandleFunc("GET /api/v1/subscriptions/independent-merged", s.requireAuth(s.handleIndMergedSubsList))
 	mux.HandleFunc("POST /api/v1/subscriptions/independent-merged", s.requireAuth(s.handleIndMergedSubsCreate))
 	mux.HandleFunc("GET /api/v1/subscriptions/independent-merged/link", s.requireAuth(s.handleIndMergedSubLink))
@@ -76,15 +77,6 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/subscriptions/independent-merged/{id}/disable", s.requireAuth(s.handleIndMergedSubsDisable))
 	mux.HandleFunc("PUT /api/v1/subscriptions/independent-merged/{id}", s.requireAuth(s.handleIndMergedSubsUpdate))
 	mux.HandleFunc("DELETE /api/v1/subscriptions/independent-merged/{id}", s.requireAuth(s.handleIndMergedSubsDelete))
-	mux.HandleFunc("GET /api/v1/subscriptions/merged", s.requireAuth(s.handleMergedSubsList))
-	mux.HandleFunc("POST /api/v1/subscriptions/merged", s.requireAuth(s.handleMergedSubsCreate))
-	mux.HandleFunc("GET /api/v1/subscriptions/merged/{id}/forwards", s.requireAuth(s.handleSubUserForwards("merged")))
-	mux.HandleFunc("POST /api/v1/subscriptions/merged/{id}/change-port", s.requireAuth(s.handleSubChangePort("merged")))
-	mux.HandleFunc("POST /api/v1/subscriptions/merged/{id}/rotate", s.requireAuth(s.handleMergedSubsRotate))
-	mux.HandleFunc("POST /api/v1/subscriptions/merged/{id}/resume", s.requireAuth(s.handleMergedSubsResume))
-	mux.HandleFunc("POST /api/v1/subscriptions/merged/{id}/disable", s.requireAuth(s.handleMergedSubsDisable))
-	mux.HandleFunc("PUT /api/v1/subscriptions/merged/{id}", s.requireAuth(s.handleMergedSubsUpdate))
-	mux.HandleFunc("DELETE /api/v1/subscriptions/merged/{id}", s.requireAuth(s.handleMergedSubsDelete))
 	mux.HandleFunc("GET /api/v1/subscriptions/users", s.requireAuth(s.handleSubUsersList))
 	mux.HandleFunc("POST /api/v1/subscriptions/users", s.requireAuth(s.handleSubUsersCreate))
 	mux.HandleFunc("GET /api/v1/subscriptions/users/{id}/forwards", s.requireAuth(s.handleSubUserForwards("subuser")))

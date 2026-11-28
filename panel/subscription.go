@@ -160,7 +160,7 @@ func (s *Server) collectSubLinks(landingIndices map[int]bool) []subLink {
 }
 
 // ---------- 订阅内容范围三选一（v1.3.17） ----------
-// 模式存在令牌记录上（通用订阅是 cfg.SubTokenMode，SubUser/MergedSub 是
+// 模式存在令牌记录上（通用订阅是 cfg.SubTokenMode，SubUser／独立合并订阅是
 // 各自的 Mode 字段），/sub/ 服务时按它过滤链接再渲染；与 ?mode=split|global
 // 的分流模式无关（那个只改 Clash 规则的 MATCH 走向，不改链接集合）。
 // 值：both=全部（中转+直连，默认）、relay=仅中转、direct=仅直连。
@@ -1561,17 +1561,11 @@ func subUserAuditName(u *SubUser) string {
 	return "订阅客户端"
 }
 
-// retiredSubAuditName 已退场令牌的审计用户名：合并订阅记它的 Name
-// （空时“未命名合并订阅”），通用订阅记“通用订阅”。
+// retiredSubAuditName 已退场令牌的审计用户名：通用订阅记“通用订阅”。
+// （旧合并订阅已在 v1.4.40 彻底移除，记录删了就无从分辨，拉取直接 404。）
 func (s *Server) retiredSubAuditName(tok string) string {
 	if tok != "" && s.cfg.SubTokenHash != "" && verifySubToken(tok, s.cfg.SubTokenHash) {
 		return "通用订阅"
-	}
-	if ms, ok := s.findMergedSub(tok); ok {
-		if strings.TrimSpace(ms.Name) != "" {
-			return ms.Name
-		}
-		return "未命名合并订阅"
 	}
 	return "订阅客户端"
 }
@@ -1627,21 +1621,12 @@ func (s *Server) findSubUser(tok string) (*SubUser, bool) {
 	return nil, false
 }
 
-// findMergedSub 按令牌找一份合并订阅（常数时间比较）。
-func (s *Server) findMergedSub(tok string) (*MergedSub, bool) {
-	for i := range s.cfg.MergedSubs {
-		if verifySubToken(tok, s.cfg.MergedSubs[i].TokenHash) {
-			return &s.cfg.MergedSubs[i], true
-		}
-	}
-	return nil, false
-}
-
 // ---------- 退场（v1.4.27，方案 B） ----------
-// 通用订阅与合并订阅直接退场、旧链接不保留：命中这两类令牌的订阅请求
-// 一律 410；新建/轮换/恢复/停用/编辑合并订阅与通用订阅的全部管理接口
-// 同样 410。config 里的 MergedSubs/SubToken* 字段与备份记录留着备查
-// 与回滚，只是不再提供内容与新建。
+// 通用订阅直接退场、旧链接不保留：命中通用订阅令牌的订阅请求一律 410；
+// 通用订阅的全部管理接口同样 410。config 里的 SubToken* 字段与备份
+// 记录留着备查与回滚，只是不再提供内容与新建。
+// （旧合并订阅已在 v1.4.40 彻底移除：记录连同退场分支一起删，旧合并
+// 令牌拉取现在走 404——记录没了，无从分辨它是旧合并令牌还是随机错令牌。）
 const retiredSubMsg = "该订阅已退场，请使用新的订阅链接"
 
 // handleRetiredSub 退场接口的统一回包：410＋退场文案。
@@ -1649,13 +1634,10 @@ func handleRetiredSub(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 410, errResp(retiredSubMsg))
 }
 
-// isRetiredSubToken 令牌是不是已退场的订阅（通用订阅或任一合并订阅）。
-// SubUser 令牌不是退场的，走正常流程。
+// isRetiredSubToken 令牌是不是已退场的订阅（只剩通用订阅）。
+// SubUser 与独立合并订阅令牌不是退场的，走正常流程。
 func (s *Server) isRetiredSubToken(tok string) bool {
 	if tok != "" && s.cfg.SubTokenHash != "" && verifySubToken(tok, s.cfg.SubTokenHash) {
-		return true
-	}
-	if _, ok := s.findMergedSub(tok); ok {
 		return true
 	}
 	return false
@@ -1666,10 +1648,11 @@ func (s *Server) isRetiredSubToken(tok string) bool {
 // 限流（v1.3.7）：先验令牌，对的永远放行（正常客户端不受影响）；
 // 错的才看锁——锁了返回 429，没锁记一次失败（只记 IP 与时间，绝不记令牌）
 // 再返回 404。
-// v1.4.27：通用订阅与合并订阅已退场，命中这两类令牌直接 410（旧链接
-// 失效）；SubUser 令牌走正常流程；无效令牌仍 404。
-// v1.4.34：分发顺序是退场检查（旧切片）→ 新实体（独立合并订阅）
+// v1.4.27：通用订阅已退场，命中通用订阅令牌直接 410（旧链接失效）；
+// SubUser 与独立合并订阅令牌走正常流程；无效令牌仍 404。
+// v1.4.34：分发顺序是退场检查（通用订阅）→ 新实体（独立合并订阅）
 // → SubUser → 404；顺序错了，新令牌会被旧逻辑吞掉或 404。
+// v1.4.40：旧合并订阅已彻底移除，退场检查里不再有合并订阅分支。
 // serveSubContent 里同款顺序（见该函数）。
 func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 	tok := r.PathValue("token")
@@ -1729,16 +1712,13 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 }
 
 // subExpiryForToken 取一条令牌的到期时间（RFC3339，空 = 永久）：
-// 通用订阅、每人链接、合并订阅三处都查；令牌不存在返回 false。
+// 通用订阅、每人链接、独立合并订阅三处都查；令牌不存在返回 false。
 func (s *Server) subExpiryForToken(tok string) (string, bool) {
 	if tok != "" && s.cfg.SubTokenHash != "" && verifySubToken(tok, s.cfg.SubTokenHash) {
 		return s.cfg.SubTokenExpiresAt, true
 	}
 	if u, ok := s.findSubUser(tok); ok {
 		return u.ExpiresAt, true
-	}
-	if ms, ok := s.findMergedSub(tok); ok {
-		return ms.ExpiresAt, true
 	}
 	if ims, ok := s.findIndependentMergedSub(tok); ok {
 		return ims.ExpiresAt, true
@@ -1789,7 +1769,7 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 		}
 		links, localIndices = s.collectMergedSubLinksForSelection(ims.Selection, userKey)
 	} else if u, ok := s.findSubUser(tok); ok {
-		// 一人一条（v1.3.0）：没勾选 = 单面板全量订阅，有勾选 = 合并订阅
+		// 一人一条（v1.3.0）：没勾选 = 单面板全量订阅，有勾选 = 按勾选集合出内容。
 		// 分组（v1.3.26）：进了组的用组的落地集合，自己的勾选保留在记录里
 		// （出组/删组后恢复）；没进组按自己的勾选。
 		backendKind, backendID = "subuser", u.ID
@@ -1800,14 +1780,8 @@ func (s *Server) serveSubContent(w http.ResponseWriter, r *http.Request, tok str
 		if sel := s.effectiveSelectionForSubUser(u); len(sel) == 0 {
 			links = s.collectSubLinks(nil)
 		} else {
-			links, localIndices = s.collectMergedSubLinks(&MergedSub{Selection: sel}, userKey)
+			links, localIndices = s.collectMergedSubLinksForSelection(sel, userKey)
 		}
-	} else if ms, ok := s.findMergedSub(tok); ok {
-		// v1.4.27：合并订阅已退场（handleSub 已拦，这里是兜底，绝不
-		// 再提供内容）。
-		_ = ms
-		http.Error(w, retiredSubMsg, http.StatusGone)
-		return
 	} else {
 		http.NotFound(w, r)
 		return
@@ -1987,13 +1961,13 @@ func (s *Server) handleSubTokenRevoke(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------- 重新复制订阅链接（v1.3.7，会话认证） ----------
-// GET /api/v1/subscriptions/link?kind=generic|user|merged&id=...
+// GET /api/v1/subscriptions/link?kind=generic|user|indmerged&id=...
 // 有密文就解密拼链接返回（前端直接复制；二维码也用这条链接生成）。
 // 1.3.7 之前生成的旧链接没有密文，返回 legacy:true 与提示，前端弹轮换确认
 // （轮换一次后就有密文了）；密钥丢了/密文损坏也按旧链接处理，不编链接。
 // 绝不走公开的 /sub/ 路径；复制是只读操作，不记审计日志（明文令牌
 // 绝不进审计日志）。
-// v1.4.27：通用订阅与合并订阅已退场，kind=generic|merged 一律 410；
+// v1.4.27：通用订阅已退场，kind=generic 一律 410；
 // kind=user 仍可取（订阅用户的链接只存了密文，创建/轮换回包丢了之后
 // 只能从这里恢复，否则刷新页面后就只能轮换——轮换让旧链接立即失效）。
 // 路由已包 requireAuth，只给管理员取。
@@ -2030,8 +2004,8 @@ func (s *Server) handleSubLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if kind != "user" {
-		// 通用订阅与合并订阅已退场（见文件顶部退场注释）；非法 kind 400。
-		if kind == "generic" || kind == "merged" {
+		// 通用订阅已退场（见文件顶部退场注释）；非法 kind 400。
+		if kind == "generic" {
 			handleRetiredSub(w, r)
 			return
 		}
@@ -3191,7 +3165,7 @@ func (s *Server) handleSubQR(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, okResp(map[string]any{"qr": q}))
 }
 
-// ---------- 合并订阅（会话认证） ----------
+// ---------- 勾选集合校验与手动恢复（会话认证） ----------
 
 // canonicalSelection 勾选集合规范化：去重、按面板+落地排序，拼成唯一键。
 // 同一键就是同一份选择（顺序不同也算同一份）。
@@ -3335,137 +3309,6 @@ func remoteLandingDisplayName(l remoteLandingSummary) string {
 	return l.Domain
 }
 
-// handleMergedSubsList 列出已生成的合并订阅（不含令牌与链接；has_link 表示
-// 有没有密文，有就能点复制重新拿链接，没有就是 1.3.7 之前的旧链接）。
-func (s *Server) handleMergedSubsList(w http.ResponseWriter, r *http.Request) {
-	type item struct {
-		ID        string         `json:"id"`
-		Name      string         `json:"name"`
-		CreatedAt string         `json:"created_at"`
-		Selection []SubSelection `json:"selection"`
-		Summary   string         `json:"summary"`
-		HasLink   bool           `json:"has_link"`
-		Mode      string         `json:"mode"`                 // both|relay|direct，老记录空 = 全部
-		ExpiresAt string         `json:"expires_at,omitempty"` // v1.3.20：RFC3339，空 = 永久
-		// 流量上限（v1.3.25）：与订阅用户列表同一套字段含义。
-		// v1.4.3：disabled_reason 见订阅用户列表（停用原因原文）。
-		LimitMB        int64  `json:"traffic_limit_mb"`
-		LimitMode      string `json:"traffic_limit_mode,omitempty"`
-		ResetMode      string `json:"reset_mode,omitempty"`
-		ResetDay       int    `json:"reset_day,omitempty"`
-		NextResetAt    string `json:"next_reset_at,omitempty"`
-		Used           int64  `json:"traffic_used"`
-		HasUsed        bool   `json:"has_used"`
-		Disabled       bool   `json:"traffic_disabled"`
-		DisabledReason string `json:"disabled_reason,omitempty"`
-		ForwardCount   int    `json:"forward_count"`
-		// v1.3.27：流量采样失败提示（空 = 正常；有值时列表用量不可信）。
-		TrafficWarn string `json:"traffic_warn,omitempty"`
-		// v1.3.27：限流的远程版本警告（远程面板低于 1.3.25 时限流不生效）。
-		LimitWarn string `json:"limit_warn,omitempty"`
-		// 分组（v1.3.26）：GroupID 空 = 不分组；GroupName 是分组显示名
-		// （列表徽章用）；进了组时 Summary 是组的落地摘要。
-		GroupID   string `json:"group_id,omitempty"`
-		GroupName string `json:"group_name,omitempty"`
-	}
-	items := []item{}
-	for _, ms := range s.cfg.MergedSubs {
-		if ms.Selection == nil {
-			ms.Selection = []SubSelection{}
-		}
-		summary := s.selectionSummary(ms.Selection)
-		if ms.GroupID != "" {
-			summary = "分组「" + s.groupNameOf(ms.GroupID) + "」：" + s.selectionSummary(s.effectiveSelectionForMerged(&ms))
-		}
-		used, _, hasUsed := s.userUsageSummary(userSubKey("merged", ms.ID), ms.TrafficLimitBytes, ms.TrafficLimitMode)
-		limitWarn := ""
-		if ms.TrafficLimitBytes > 0 {
-			limitWarn = s.userLimitVersionWarn(s.effectiveSelectionForMerged(&ms))
-		}
-		items = append(items, item{ID: ms.ID, Name: ms.Name, CreatedAt: ms.CreatedAt, Selection: ms.Selection, Summary: summary, HasLink: ms.TokenEnc != "", Mode: ms.Mode, ExpiresAt: ms.ExpiresAt, LimitMB: ms.TrafficLimitBytes / 1024 / 1024, LimitMode: ms.TrafficLimitMode, ResetMode: ms.ResetMode, ResetDay: ms.ResetDay, NextResetAt: ms.NextResetAt, Used: used, HasUsed: hasUsed, Disabled: ms.Disabled, DisabledReason: ms.DisabledReason, ForwardCount: len(s.userForwardsFor(userSubKey("merged", ms.ID))), TrafficWarn: s.userTrafficWarnFor(userSubKey("merged", ms.ID), s.effectiveSelectionForMerged(&ms)), LimitWarn: limitWarn, GroupID: ms.GroupID, GroupName: s.groupNameOf(ms.GroupID)})
-	}
-	// v1.4.27：合并订阅已退场，列表只供核对（顶层 retired:true，旧链接
-	// 已失效，不再提供内容与新建）。
-	writeJSON(w, 200, okResp(map[string]any{"subs": items, "retired": true}))
-}
-
-// handleMergedSubsCreate 生成合并订阅：不填名称时同一选择重新生成 = 轮换
-// （旧链接立即失效）；填了名称（归属到人）就新起一条——同一勾选集合可有
-// 多个不同名称的令牌，各归各人，撤销只影响那一个。链接在这一次返回，
-// 之后随时能点复制重新拿。
-// v1.3.17：请求可带 mode（both|relay|direct，不带默认 both），存进记录；
-// 同一选择重新生成时按表单当前选择存（生成表单的显式选择）；专用轮换接口
-// （handleMergedSubsRotate）不带 mode，轮换时保持原模式不变。
-// v1.3.20：请求可带 expires_at（日期或 RFC3339，空串 = 永久；不带 = 永久；
-// 同一选择重新生成时不带 expires_at 字段 = 保持原到期时间）。
-func (s *Server) handleMergedSubsCreate(w http.ResponseWriter, r *http.Request) {
-	// v1.4.27：合并订阅已退场，不再新建。
-	handleRetiredSub(w, r)
-}
-
-// handleMergedSubsRotate 轮换一条合并订阅：同一勾选集合与同一归属人换一个
-// 新令牌，旧链接立即失效；新链接在这一次返回（弹窗里直接显示），之后
-// 随时能点复制重新拿。模式保持不变（不带 mode 参数）。
-func (s *Server) handleMergedSubsRotate(w http.ResponseWriter, r *http.Request) {
-	// v1.4.27：合并订阅已退场。
-	handleRetiredSub(w, r)
-}
-
-// handleMergedSubsDelete 撤销一条合并订阅（该订阅链接立即失效）。
-func (s *Server) handleMergedSubsDelete(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	for i := range s.cfg.MergedSubs {
-		if s.cfg.MergedSubs[i].ID == id {
-			summary := s.selectionSummary(s.effectiveSelectionForMerged(&s.cfg.MergedSubs[i]))
-			// 分组（v1.3.26）：进了组的按组的落地集合回收远程转发。
-			sel := s.effectiveSelectionForMerged(&s.cfg.MergedSubs[i])
-			s.cfg.MergedSubs = append(s.cfg.MergedSubs[:i], s.cfg.MergedSubs[i+1:]...)
-			if err := s.saveConfig(); err != nil {
-				writeJSON(w, 500, errResp("保存失败："+err.Error()))
-				return
-			}
-			// 按人限流（v1.3.25）：订阅删了就回收它的转发与端口
-			// （本机 + 各远程面板）。
-			s.opMu.Lock()
-			recErr := s.removeUserForwards("merged", id)
-			// 切片 3：删用户会改变节点上的有效用户集合，bump 已指派该用户的节点。
-			s.bumpBackendNodesForUserLocked(userSubKey("merged", id))
-			s.opMu.Unlock()
-			var warns []string
-			if recErr != nil {
-				warns = append(warns, "本机转发没撤干净："+recErr.Error())
-			}
-			warns = append(warns, s.removeUserForwardsFromRemotes(userSubKey("merged", id), sel)...)
-			// 集中用户表（v1.3.36）：订阅已从本机删掉，全量同步把这条
-			// 从各远程面板的集中用户表里清掉。
-			for _, w := range s.syncCentralUsersToRemotes() {
-				warns = append(warns, w.String())
-			}
-			resp := map[string]any{}
-			if len(warns) > 0 {
-				resp["warning"] = "订阅已删，但" + strings.Join(warns, "；") + "，请检查中转机上的转发。"
-				s.audit(s.currentUser(r), "撤销合并订阅", summary, "部分成功", strings.Join(warns, "；"))
-			} else {
-				s.audit(s.currentUser(r), "撤销合并订阅", summary, "成功", "该订阅链接已失效")
-			}
-			writeJSON(w, 200, okResp(resp))
-			return
-		}
-	}
-	writeJSON(w, 404, errResp("没有这条合并订阅"))
-}
-
-// handleMergedSubsUpdate 编辑一条合并订阅：改勾选集合/内容模式/归属人名，
-// 令牌不动（TokenHash/TokenEnc 原样保留），链接不变，下次取订阅即按新
-// 勾选与新模式出内容。勾选不能为空（合并订阅至少要一个落地）；与轮换
-// 互不干扰——轮换换令牌、编辑不换令牌。
-// v1.3.20：请求可带 expires_at（日期或 RFC3339，空串 = 永久）；不带
-// expires_at 字段时保持原到期时间。
-func (s *Server) handleMergedSubsUpdate(w http.ResponseWriter, r *http.Request) {
-	// v1.4.27：合并订阅已退场。
-	handleRetiredSub(w, r)
-}
-
 // ---------- 按订阅限流：手动恢复（v1.3.25） ----------
 // resumeSub 手动恢复一条订阅（超量停用后）：先看当前用量——仍超上限
 // 就不恢复（恢复了下一分钟也会再停用，提示先调高上限或等下个周期）；
@@ -3541,23 +3384,10 @@ func (s *Server) handleSubUsersDisable(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, okResp(map[string]any{"id": id, "name": name}))
 }
 
-// handleMergedSubsResume 手动恢复一条合并订阅（超量停用后）。
-func (s *Server) handleMergedSubsResume(w http.ResponseWriter, r *http.Request) {
-	// v1.4.27：合并订阅已退场。
-	handleRetiredSub(w, r)
-}
-
-// handleMergedSubsDisable 手动停用一条合并订阅（v1.4.3）：与单用户停用
-// 同一套状态机；已停用时幂等返回成功。
-func (s *Server) handleMergedSubsDisable(w http.ResponseWriter, r *http.Request) {
-	// v1.4.27：合并订阅已退场。
-	handleRetiredSub(w, r)
-}
-
-// ---------- 合并订阅的内容来源 ----------
+// ---------- 订阅内容来源（远程取链） ----------
 
 // fetchRemoteSubLinks 从一台远程面板取指定落地的节点链接（走 central 令牌通道）：
-// 远程面板连不上或版本太旧时返回空（合并订阅里这台暂时跳过，下次拉取自动恢复）。
+// 远程面板连不上或版本太旧时返回空（订阅里这台暂时跳过，下次拉取自动恢复）。
 // forUser 不为空时带上 for_user 参数（v1.3.25）：远程按该订阅在它
 // 那边的转发改写中转节点链接端口；远程版本太旧（没这个参数概念）
 // 时忽略参数、返回共享端口的链接（走共享端口、不限流）。
@@ -3587,17 +3417,11 @@ func (s *Server) fetchRemoteSubLinks(rem RemotePanel, indices []int, forUser str
 	return resp.Links
 }
 
-// collectMergedSubLinks 按一份合并订阅的勾选集合取全部节点链接（实时生成）：
-// 本面板的部分读 nodes.txt，远程的部分当场去各远程面板取。
+// collectMergedSubLinksForSelection 按一份勾选集合取全部节点链接
+// （实时生成：本面板的部分读 nodes.txt，远程的部分当场去各远程面板取。
 // forUser 不为空时远程链接带 for_user 参数（v1.3.25，按人转发改写端口）。
 // 返回链接与其中本面板落地的编号集合（给 subscription-userinfo 用）。
-func (s *Server) collectMergedSubLinks(ms *MergedSub, forUser string) ([]subLink, map[int]bool) {
-	return s.collectMergedSubLinksForSelection(ms.Selection, forUser)
-}
-
-// collectMergedSubLinksForSelection 按一份勾选集合取全部节点链接
-// （与 collectMergedSubLinks 同一套拼装；独立合并订阅只要能提供一份
-// Selection，拼装逻辑与旧合并订阅完全相同，见设计文档 §5.3）。
+// 订阅用户与独立合并订阅共用这一套拼装，见设计文档 §5.3）。
 func (s *Server) collectMergedSubLinksForSelection(sel []SubSelection, forUser string) ([]subLink, map[int]bool) {
 	localIndices := map[int]bool{}
 	remoteIndices := map[string][]int{}

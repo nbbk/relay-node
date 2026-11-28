@@ -61,17 +61,21 @@ func TestNodeUUIDCreateSubUser1335(t *testing.T) {
 	}
 }
 
-// TestNodeUUIDCreateMerged1335 1.4.27：合并订阅已退场，新建接口 410；
-// 新建时按勾选生成 UUID 的行为现在由订阅用户承担，见
+// TestNodeUUIDCreateIndMerged1335 1.4.40：旧合并订阅已彻底移除，新建独立
+// 合并订阅时按勾选生成 UUID 的行为与订阅用户一致，见
 // TestNodeUUIDCreateUser1335。
-func TestNodeUUIDCreateMerged1335(t *testing.T) {
+func TestNodeUUIDCreateIndMerged1335(t *testing.T) {
 	s := newTestSubServer(t)
-	rec := callJSON130(t, s.handleMergedSubsCreate, "POST", "/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1},{"panel":"local","landing":2}]}`)
-	if rec.Code != 410 {
-		t.Fatalf("新建合并订阅应 410（已退场），实际 %d：%s", rec.Code, rec.Body.String())
+	rec := callJSON130(t, s.handleIndMergedSubsCreate, "POST", "/api/v1/subscriptions/independent-merged", `{"name":"合并一","selection":[{"panel":"local","landing":1},{"panel":"local","landing":2}]}`)
+	if rec.Code != 200 {
+		t.Fatalf("新建独立合并订阅应 200，实际 %d：%s", rec.Code, rec.Body.String())
 	}
-	if len(s.cfg.MergedSubs) != 0 {
-		t.Fatalf("退场后创建失败，不应新增合并订阅记录，实际 %+v", s.cfg.MergedSubs)
+	if len(s.cfg.IndependentMergedSubs) != 1 {
+		t.Fatalf("新建后应有 1 条独立合并订阅记录，实际 %+v", s.cfg.IndependentMergedSubs)
+	}
+	uuids := s.cfg.IndependentMergedSubs[0].NodeUUIDs
+	if len(uuids) != 2 || uuids["203.0.113.1"] == "" || uuids["203.0.113.2"] == "" {
+		t.Fatalf("新建时应按勾选给两个落地生成 UUID，实际 %v", uuids)
 	}
 }
 
@@ -83,22 +87,22 @@ func TestNodeUUIDBackfillExisting1335(t *testing.T) {
 		ID: "su-old", Name: "老用户", TokenHash: "hash-old",
 		CreatedAt: "2026-11-20T00:00:00Z", Selection: []SubSelection{{Panel: "local", Landing: 1}},
 	}}
-	s.cfg.MergedSubs = []MergedSub{{
-		ID: "ms-old", Name: "老合并", TokenHash: "hash-old",
+	s.cfg.IndependentMergedSubs = []IndependentMergedSub{{
+		ID: "ims-old", Name: "老独立合并", TokenHash: "hash-old",
 		CreatedAt: "2026-11-20T00:00:00Z", Selection: []SubSelection{{Panel: "local", Landing: 2}},
 	}}
 	if !s.backfillNodeUUIDs() {
 		t.Fatalf("旧用户应补生成 UUID")
 	}
 	u1 := s.cfg.SubUsers[0].NodeUUIDs["203.0.113.1"]
-	m1 := s.cfg.MergedSubs[0].NodeUUIDs["203.0.113.2"]
+	m1 := s.cfg.IndependentMergedSubs[0].NodeUUIDs["203.0.113.2"]
 	if u1 == "" || m1 == "" {
-		t.Fatalf("补生成后 UUID 不应为空：用户 %v，合并 %v", s.cfg.SubUsers[0].NodeUUIDs, s.cfg.MergedSubs[0].NodeUUIDs)
+		t.Fatalf("补生成后 UUID 不应为空：用户 %v，独立合并 %v", s.cfg.SubUsers[0].NodeUUIDs, s.cfg.IndependentMergedSubs[0].NodeUUIDs)
 	}
 	if s.backfillNodeUUIDs() {
 		t.Fatalf("第二次补生成不应再有改动")
 	}
-	if s.cfg.SubUsers[0].NodeUUIDs["203.0.113.1"] != u1 || s.cfg.MergedSubs[0].NodeUUIDs["203.0.113.2"] != m1 {
+	if s.cfg.SubUsers[0].NodeUUIDs["203.0.113.1"] != u1 || s.cfg.IndependentMergedSubs[0].NodeUUIDs["203.0.113.2"] != m1 {
 		t.Fatalf("补生成的 UUID 应稳定不变")
 	}
 	if err := s.saveConfig(); err != nil {
@@ -112,8 +116,8 @@ func TestNodeUUIDBackfillExisting1335(t *testing.T) {
 	if err := json.Unmarshal(b, &back); err != nil {
 		t.Fatalf("config.json 解析失败：%v", err)
 	}
-	if back.SubUsers[0].NodeUUIDs["203.0.113.1"] != u1 || back.MergedSubs[0].NodeUUIDs["203.0.113.2"] != m1 {
-		t.Fatalf("落盘后读回的 UUID 应一致，实际 %v / %v", back.SubUsers[0].NodeUUIDs, back.MergedSubs[0].NodeUUIDs)
+	if back.SubUsers[0].NodeUUIDs["203.0.113.1"] != u1 || back.IndependentMergedSubs[0].NodeUUIDs["203.0.113.2"] != m1 {
+		t.Fatalf("落盘后读回的 UUID 应一致，实际 %v / %v", back.SubUsers[0].NodeUUIDs, back.IndependentMergedSubs[0].NodeUUIDs)
 	}
 }
 

@@ -40,7 +40,7 @@ func (s *Server) userPortRange() (int, int) {
 	return start, end
 }
 
-// userSubKey 订阅标识："subuser:<id>" 或 "merged:<id>"。
+// userSubKey 订阅标识："subuser:<id>"（旧 "merged:<id>" 已在 v1.4.40 随旧合并订阅移除；独立合并订阅用 indMergedSubKey）。
 func userSubKey(kind, id string) string {
 	return kind + ":" + id
 }
@@ -726,13 +726,6 @@ func (s *Server) reconcileAllUserForwards() {
 		}
 		_ = s.reconcileUserForwards("subuser", u.ID, u.Name, u.Selection, u.TrafficLimitBytes, u.TrafficLimitMode, u.ResetMode, u.ResetDay, u.NextResetAt)
 	}
-	for i := range s.cfg.MergedSubs {
-		ms := &s.cfg.MergedSubs[i]
-		if ms.TrafficLimitBytes <= 0 {
-			continue
-		}
-		_ = s.reconcileUserForwards("merged", ms.ID, ms.Name, ms.Selection, ms.TrafficLimitBytes, ms.TrafficLimitMode, ms.ResetMode, ms.ResetDay, ms.NextResetAt)
-	}
 	for i := range s.cfg.IndependentMergedSubs {
 		ims := &s.cfg.IndependentMergedSubs[i]
 		if ims.TrafficLimitBytes <= 0 {
@@ -1085,25 +1078,6 @@ func (s *Server) rollUserPeriods(now time.Time) bool {
 			changed = true
 		}
 	}
-	for i := range s.cfg.MergedSubs {
-		ms := &s.cfg.MergedSubs[i]
-		if ms.TrafficLimitBytes <= 0 {
-			continue
-		}
-		if roll(ms.TrafficLimitMode, ms.ResetMode, ms.ResetDay, &ms.NextResetAt, &ms.Disabled, &ms.DisabledReason) {
-			key := userSubKey("merged", ms.ID)
-			rolled[key] = true
-			rec := s.userTraffic.get(key)
-			s.userTraffic.mu.Lock()
-			rec.UpPeriod, rec.DownPeriod = 0, 0
-			rec.PeriodID++
-			s.userTraffic.saveLocked()
-			s.userTraffic.mu.Unlock()
-			ms.TrafficWarned80, ms.TrafficWarned100 = false, false
-			ms.LastResetAt = now.Format(time.RFC3339)
-			changed = true
-		}
-	}
 	for i := range s.cfg.IndependentMergedSubs {
 		ims := &s.cfg.IndependentMergedSubs[i]
 		if ims.TrafficLimitBytes <= 0 {
@@ -1135,9 +1109,6 @@ func (s *Server) rollUserPeriods(now time.Time) bool {
 			continue
 		}
 		if f.SubKind == "subuser" && findSubUserByID(s.cfg.SubUsers, f.SubID) != nil {
-			continue
-		}
-		if f.SubKind == "merged" && findMergedSubByID(s.cfg.MergedSubs, f.SubID) != nil {
 			continue
 		}
 		if f.SubKind == "indmerged" && findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, f.SubID) != nil {
@@ -1186,9 +1157,6 @@ func (s *Server) rollUserPeriods(now time.Time) bool {
 			if u := findSubUserByID(s.cfg.SubUsers, f.SubID); u != nil && f.SubKind == "subuser" {
 				f.NextResetAt = u.NextResetAt
 			}
-			if ms := findMergedSubByID(s.cfg.MergedSubs, f.SubID); ms != nil && f.SubKind == "merged" {
-				f.NextResetAt = ms.NextResetAt
-			}
 			if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, f.SubID); ims != nil && f.SubKind == "indmerged" {
 				f.NextResetAt = ims.NextResetAt
 			}
@@ -1215,15 +1183,6 @@ func findSubUserByID(users []SubUser, id string) *SubUser {
 	return nil
 }
 
-func findMergedSubByID(subs []MergedSub, id string) *MergedSub {
-	for i := range subs {
-		if subs[i].ID == id {
-			return &subs[i]
-		}
-	}
-	return nil
-}
-
 // userLimitForKey 取一个订阅的限流设置（本地订阅记录优先；远程面板上
 // 只有转发记录时用转发上的）。返回 limit、mode、resetMode、resetDay、
 // nextResetAt 与显示名。
@@ -1235,10 +1194,6 @@ func (s *Server) userLimitForKey(key string) (limit int64, mode, resetMode strin
 	if kind == "subuser" {
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil && u.TrafficLimitBytes > 0 {
 			return u.TrafficLimitBytes, u.TrafficLimitMode, u.ResetMode, u.ResetDay, u.NextResetAt, u.Name, true
-		}
-	} else if kind == "merged" {
-		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil && ms.TrafficLimitBytes > 0 {
-			return ms.TrafficLimitBytes, ms.TrafficLimitMode, ms.ResetMode, ms.ResetDay, ms.NextResetAt, ms.Name, true
 		}
 	} else if kind == "indmerged" {
 		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil && ims.TrafficLimitBytes > 0 {
@@ -1310,10 +1265,6 @@ func (s *Server) userWarned80(key string) bool {
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
 			return u.TrafficWarned80
 		}
-	} else if kind == "merged" {
-		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-			return ms.TrafficWarned80
-		}
 	} else if kind == "indmerged" {
 		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
 			return ims.TrafficWarned80
@@ -1330,10 +1281,6 @@ func (s *Server) userWarned100(key string) bool {
 	if kind == "subuser" {
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
 			return u.TrafficWarned100
-		}
-	} else if kind == "merged" {
-		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-			return ms.TrafficWarned100
 		}
 	} else if kind == "indmerged" {
 		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
@@ -1352,11 +1299,6 @@ func (s *Server) setUserWarned80(key string, v bool) {
 	if kind == "subuser" {
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
 			u.TrafficWarned80 = v
-			changed = true
-		}
-	} else if kind == "merged" {
-		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-			ms.TrafficWarned80 = v
 			changed = true
 		}
 	} else if kind == "indmerged" {
@@ -1379,11 +1321,6 @@ func (s *Server) setUserWarned100(key string, v bool) {
 	if kind == "subuser" {
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
 			u.TrafficWarned100 = v
-			changed = true
-		}
-	} else if kind == "merged" {
-		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-			ms.TrafficWarned100 = v
 			changed = true
 		}
 	} else if kind == "indmerged" {
@@ -1451,12 +1388,6 @@ func (s *Server) applyDisableUserForwardsLocked(key, reason string) (bool, error
 			u.DisabledReason = reason
 			changed = true
 		}
-	} else if kind == "merged" {
-		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil && !ms.Disabled {
-			ms.Disabled = true
-			ms.DisabledReason = reason
-			changed = true
-		}
 	} else if kind == "indmerged" {
 		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil && !ims.Disabled {
 			ims.Disabled = true
@@ -1490,10 +1421,6 @@ func (s *Server) userDisabledReason(key string) string {
 	if kind == "subuser" {
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
 			return u.DisabledReason
-		}
-	} else if kind == "merged" {
-		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-			return ms.DisabledReason
 		}
 	} else if kind == "indmerged" {
 		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
@@ -1626,15 +1553,6 @@ func (s *Server) clearUserDisabled(key string) {
 			u.DisabledReason = ""
 			u.TrafficWarned100 = false
 		}
-	} else if kind == "merged" {
-		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-			if ms.Disabled {
-				wasDisabled = true
-			}
-			ms.Disabled = false
-			ms.DisabledReason = ""
-			ms.TrafficWarned100 = false
-		}
 	} else if kind == "indmerged" {
 		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
 			if ims.Disabled {
@@ -1668,10 +1586,6 @@ func (s *Server) maybeResumeUser(key string, limitBytes int64, limitMode string)
 	if kind == "subuser" {
 		if u := findSubUserByID(s.cfg.SubUsers, id); u != nil {
 			disabled = u.Disabled && u.DisabledReason == "traffic"
-		}
-	} else if kind == "merged" {
-		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil {
-			disabled = ms.Disabled && ms.DisabledReason == "traffic"
 		}
 	} else if kind == "indmerged" {
 		if ims := findIndependentMergedSubByID(s.cfg.IndependentMergedSubs, id); ims != nil {
@@ -1709,13 +1623,6 @@ func (s *Server) resumeUserForwardsLocked(key string) error {
 			u.Disabled = false
 			u.DisabledReason = ""
 			u.TrafficWarned100 = false
-			changed = true
-		}
-	} else if kind == "merged" {
-		if ms := findMergedSubByID(s.cfg.MergedSubs, id); ms != nil && ms.Disabled {
-			ms.Disabled = false
-			ms.DisabledReason = ""
-			ms.TrafficWarned100 = false
 			changed = true
 		}
 	} else if kind == "indmerged" {

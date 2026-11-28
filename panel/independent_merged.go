@@ -8,9 +8,9 @@ package main
 //
 // 三点区分（缺一不可）：令牌前缀 mrg_（vs sub_）、链接路径 /m/<token>
 // （vs /sub/<token>）、记录 ID 前缀 ims-（vs su- / 旧 ms-）。
-// 存储是 Config 里新切片 independent_merged_subs，绝不复用已被
-// isRetiredSubToken 划为退场的 MergedSubs 切片。转发/用量 key 用
-// indmerged:<id>（旧 merged:<id> 留给旧记录）。
+// 存储是 Config 里新切片 independent_merged_subs；旧 MergedSubs 切片已在
+// v1.4.40 随旧合并订阅彻底移除，不复用、不共存。转发/用量 key 用
+// indmerged:<id>。
 // 审计单独命名“独立合并订阅”，不要复用“未命名合并订阅”。
 
 import (
@@ -339,8 +339,7 @@ func (s *Server) handleIndMergedSubsRotate(w http.ResponseWriter, r *http.Reques
 }
 
 // handleIndMergedSubsDelete 删除一条独立合并订阅（链接立即失效）：
-// 回收转发（本机＋各远程面板）、清集中用户表，参照旧
-// handleMergedSubsDelete 的回收逻辑。
+// 回收转发（本机＋各远程面板）、清集中用户表，参照按人订阅的回收逻辑。
 func (s *Server) handleIndMergedSubsDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	for i := range s.cfg.IndependentMergedSubs {

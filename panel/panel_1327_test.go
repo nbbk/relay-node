@@ -245,7 +245,7 @@ func TestSubUserinfoHeaderForUserNoUsage1327(t *testing.T) {
 	s := newTestManagerServer1327(t)
 	// 开了限流但还没产生用量记录：头里仍应有 total（上限）与 expire（令牌到期），
 	// 只是没有 upload/download（不编用量数据）。
-	key := userSubKey("merged", "m-1327")
+	key := indMergedSubKey("ims-1327")
 	h := s.subUserinfoHeaderForUser(key, 1024*1024*1024, "total", "2027-05-01T23:59:59Z", map[int]bool{1: true})
 	if !strings.Contains(h, "total=1073741824") {
 		t.Fatalf("无用量记录时头里应有 total=上限，实际 %q", h)
@@ -284,7 +284,7 @@ const sampleTestNodesTxt1327 = `## 落地 1：203.0.113.1
 `
 
 // newTestSamplingServer1327 搭一个带 1 个落地（203.0.113.1:24443）与
-// 1 条每用户转发（merged:m-1327，端口 30000，上限 1GB）的完整面板，
+// 1 条每用户转发（indmerged:ims-1327，端口 30000，上限 1GB）的完整面板，
 // 假 iptables 已就位。返回服务器与假 iptables 状态文件。
 func newTestSamplingServer1327(t *testing.T) (*Server, string) {
 	t.Helper()
@@ -301,9 +301,9 @@ func newTestSamplingServer1327(t *testing.T) (*Server, string) {
 		t.Fatal(err)
 	}
 	s := newTestAddLandingServer(t, kitDir, realmDir)
-	key := userSubKey("merged", "m-1327")
+	key := indMergedSubKey("ims-1327")
 	s.cfg.UserForwards = []UserForward{{
-		Key: key, SubKind: "merged", SubID: "m-1327", SubName: "12",
+		Key: key, SubKind: "indmerged", SubID: "ims-1327", SubName: "12",
 		Panel: "local", LandingAddr: "203.0.113.1", ListenPort: 30000,
 		LimitBytes: 1024 * 1024 * 1024, LimitMode: "total", ResetMode: "monthly",
 		NextResetAt: "2027-06-01T00:00:00Z",
@@ -313,7 +313,7 @@ func newTestSamplingServer1327(t *testing.T) (*Server, string) {
 
 func TestSamplingSurvivesEnforceFlush1327(t *testing.T) {
 	s, state := newTestSamplingServer1327(t)
-	key := userSubKey("merged", "m-1327")
+	key := indMergedSubKey("ims-1327")
 
 	// 先建链（模拟“落地早就加上了，链已建好”）：tick1 时计数还是 0，
 	// 首采按 0 起算计入 0；之后两分钟的流量都要被计上（建链后、首采
@@ -421,20 +421,20 @@ func TestTrafficSamplingErrorSurfaced1327(t *testing.T) {
 
 // ---------- 问题二之三：列表行的限流版本警告与采样失败警告 ----------
 
-func callMergedSubsList1327(t *testing.T, s *Server) []map[string]any {
+func callIndMergedSubsList1327(t *testing.T, s *Server) []map[string]any {
 	t.Helper()
-	req := httptest.NewRequest("GET", "/api/v1/subscriptions/merged", nil)
+	req := httptest.NewRequest("GET", "/api/v1/subscriptions/independent-merged", nil)
 	rec := httptest.NewRecorder()
-	s.handleMergedSubsList(rec, req)
+	s.handleIndMergedSubsList(rec, req)
 	if rec.Code != 200 {
-		t.Fatalf("合并订阅列表应 200，实际 %d：%s", rec.Code, rec.Body.String())
+		t.Fatalf("独立合并订阅列表应 200，实际 %d：%s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
 		OK   bool             `json:"ok"`
 		Subs []map[string]any `json:"subs"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("合并订阅列表解析失败：%v", err)
+		t.Fatalf("独立合并订阅列表解析失败：%v", err)
 	}
 	return resp.Subs
 }
@@ -461,13 +461,13 @@ func TestLimitVersionWarnInList1327(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{
-		ID: "m-1327", Name: "12", TokenHash: hashSubToken(tok), TokenEnc: enc,
+	s.cfg.IndependentMergedSubs = append(s.cfg.IndependentMergedSubs, IndependentMergedSub{
+		ID: "ims-1327", Name: "12", TokenHash: hashSubToken(tok), TokenEnc: enc,
 		Selection:         []SubSelection{{Panel: "rm-old", Landing: 1}},
 		TrafficLimitBytes: 1024 * 1024 * 1024, TrafficLimitMode: "total",
 	})
 	// 远程 1.3.24：列表行里要有版本警告（创建/编辑时的瞬时警告一闪而过）。
-	it := findSubInList1327(t, callMergedSubsList1327(t, s), "m-1327")
+	it := findSubInList1327(t, callIndMergedSubsList1327(t, s), "ims-1327")
 	warn, _ := it["limit_warn"].(string)
 	if warn == "" || !strings.Contains(warn, "1.3.24") || !strings.Contains(warn, "升级") {
 		t.Fatalf("远程 1.3.24 时列表应有版本警告（含版本号与升级），实际 %q", warn)
@@ -476,7 +476,7 @@ func TestLimitVersionWarnInList1327(t *testing.T) {
 	s.centralMu.Lock()
 	s.centralCache["rm-old"] = &RemoteStatusSnapshot{ID: "rm-old", Version: "1.3.25"}
 	s.centralMu.Unlock()
-	it = findSubInList1327(t, callMergedSubsList1327(t, s), "m-1327")
+	it = findSubInList1327(t, callIndMergedSubsList1327(t, s), "ims-1327")
 	if warn, _ := it["limit_warn"].(string); warn != "" {
 		t.Fatalf("远程 1.3.25 后不应再有版本警告，实际 %q", warn)
 	}
@@ -493,25 +493,25 @@ func TestTrafficWarnInList1327(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{
-		ID: "m-1327", Name: "12", TokenHash: hashSubToken(tok), TokenEnc: enc,
+	s.cfg.IndependentMergedSubs = append(s.cfg.IndependentMergedSubs, IndependentMergedSub{
+		ID: "ims-1327", Name: "12", TokenHash: hashSubToken(tok), TokenEnc: enc,
 		Selection:         []SubSelection{{Panel: "rm-new", Landing: 1}},
 		TrafficLimitBytes: 1024 * 1024 * 1024, TrafficLimitMode: "total",
 	})
 	// 聚合缓存里放一条远程采样错误：列表行里要有提示（用量不可信）。
 	s.centralUserUsageMu.Lock()
-	s.centralUserUsage["merged:m-1327"] = &centralUserUsage{TrafficError: "远程面板 香港plus：iptables-save 读不到计数"}
+	s.centralUserUsage["indmerged:ims-1327"] = &centralUserUsage{TrafficError: "远程面板 香港plus：iptables-save 读不到计数"}
 	s.centralUserUsageMu.Unlock()
-	it := findSubInList1327(t, callMergedSubsList1327(t, s), "m-1327")
+	it := findSubInList1327(t, callIndMergedSubsList1327(t, s), "ims-1327")
 	warn, _ := it["traffic_warn"].(string)
 	if !strings.Contains(warn, "香港plus") || !strings.Contains(warn, "iptables-save") {
 		t.Fatalf("远程采样失败时列表应有 traffic_warn，实际 %q", warn)
 	}
 	// 没错误时不显示。
 	s.centralUserUsageMu.Lock()
-	delete(s.centralUserUsage, "merged:m-1327")
+	delete(s.centralUserUsage, "indmerged:ims-1327")
 	s.centralUserUsageMu.Unlock()
-	it = findSubInList1327(t, callMergedSubsList1327(t, s), "m-1327")
+	it = findSubInList1327(t, callIndMergedSubsList1327(t, s), "ims-1327")
 	if warn, _ := it["traffic_warn"].(string); warn != "" {
 		t.Fatalf("没采样错误时不应有 traffic_warn，实际 %q", warn)
 	}
@@ -525,7 +525,7 @@ func TestTrafficWarnInList1327(t *testing.T) {
 
 func TestFirstSampleCountsTraffic1327(t *testing.T) {
 	s, state := newTestSamplingServer1327(t)
-	key := userSubKey("merged", "m-1327")
+	key := indMergedSubKey("ims-1327")
 	rc, _, err := s.readRelayConf()
 	if err != nil {
 		t.Fatal(err)
@@ -570,7 +570,7 @@ func TestFirstSampleCountsTraffic1327(t *testing.T) {
 
 func TestCentralCachePreferredOverLocalStub1327(t *testing.T) {
 	s := newTestManagerServer1327(t)
-	key := userSubKey("merged", "m-1327")
+	key := indMergedSubKey("ims-1327")
 	const mb = int64(1024 * 1024)
 	// 本地空壳记录（全 0）：enforceUserTrafficLimits 建的那种。
 	_ = s.userTraffic.get(key)
@@ -590,7 +590,7 @@ func TestCentralCachePreferredOverLocalStub1327(t *testing.T) {
 		t.Fatalf("userinfo 头应用聚合缓存，期望 %q，实际 %q", want, h)
 	}
 	// 回落：缓存没有时仍用本地记录（本机落地订阅不受影响）。
-	key2 := userSubKey("merged", "m-local")
+	key2 := indMergedSubKey("ims-local")
 	s.userTraffic.addDelta(key2, map[string][2]int64{"tcp:30001": {mb, 2 * mb}})
 	used2, _, ok2 := s.userUsageSummary(key2, 1024*mb, "total")
 	if !ok2 || used2 != 3*mb {

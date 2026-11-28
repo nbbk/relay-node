@@ -274,7 +274,7 @@ func TestScheduledBackupWriteRotate136(t *testing.T) {
 	s := newTestSubServer(t)
 	s.cfg.Backup = BackupCfg{Enabled: true, Time: "03:00", Keep: 2}
 	s.cfg.SubUsers = []SubUser{{ID: "u1", Name: "张三", Note: "测试", TokenHash: "hash-should-not-appear-aaa", CreatedAt: "2026-01-01T00:00:00Z"}}
-	s.cfg.MergedSubs = []MergedSub{{ID: "m1", Name: "合并", TokenHash: "hash-should-not-appear-bbb", Selection: []SubSelection{{Landing: 1}}}}
+	s.cfg.IndependentMergedSubs = []IndependentMergedSub{{ID: "ims-1", Name: "独立合并", TokenHash: "hash-should-not-appear-bbb", Selection: []SubSelection{{Landing: 1}}}}
 	if _, err := s.runScheduledBackup("测试1"); err != nil {
 		t.Fatalf("第一次备份失败：%v", err)
 	}
@@ -308,7 +308,7 @@ func TestScheduledBackupWriteRotate136(t *testing.T) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatalf("备份文件应是合法 JSON：%v", err)
 	}
-	for _, k := range []string{"relay_conf", "config_toml", "state", "panel_config", "kind", "label", "sub_users", "merged_subs"} {
+	for _, k := range []string{"relay_conf", "config_toml", "state", "panel_config", "kind", "label", "sub_users", "independent_merged_subs"} {
 		if _, ok := m[k]; !ok {
 			t.Fatalf("备份文件缺字段 %s", k)
 		}
@@ -339,7 +339,7 @@ func TestScheduledBackupRestore136(t *testing.T) {
 		{ID: "u1", Name: "张三", TokenHash: "hash-aaa", CreatedAt: "2026-01-01T00:00:00Z"},
 		{ID: "u3", Name: "李四", TokenHash: "hash-ddd", CreatedAt: "2026-01-01T00:00:00Z"},
 	}
-	s.cfg.MergedSubs = []MergedSub{{ID: "m1", Name: "合并", TokenHash: "hash-bbb", CreatedAt: "2026-01-01T00:00:00Z", Selection: []SubSelection{{Landing: 1}}}}
+	s.cfg.IndependentMergedSubs = []IndependentMergedSub{{ID: "ims-1", Name: "独立合并", TokenHash: "hash-bbb", CreatedAt: "2026-01-01T00:00:00Z", Selection: []SubSelection{{Landing: 1}}}}
 	// 流量库先写一份已知数据
 	trafficJSON := `{"203.0.113.1": {"up_total": 1000, "down_total": 2000, "up_month": 100, "down_month": 200, "month_key": "2026-11", "hourly": [], "daily": [], "last_counters": {"tcp:24443": [10, 20]}}}`
 	if err := os.WriteFile(filepath.Join(s.env.PanelHome, "traffic.json"), []byte(trafficJSON), 0o600); err != nil {
@@ -351,7 +351,7 @@ func TestScheduledBackupRestore136(t *testing.T) {
 		t.Fatalf("备份失败：%v", err)
 	}
 	// 改掉现状：流量变了；u1 删了（恢复后应回来，但令牌哈希找不回来——
-	// 备份里本来就不含令牌，须重新生成）；u3 留着；备份后新增 u2、m2。
+	// 备份里本来就不含令牌，须重新生成）；u3 留着；备份后新增 u2、ims-2。
 	if err := os.WriteFile(filepath.Join(s.env.PanelHome, "traffic.json"), []byte(`{"203.0.113.1": {"up_total": 99999, "down_total": 99999, "up_month": 0, "down_month": 0, "month_key": "2026-11", "hourly": [], "daily": []}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func TestScheduledBackupRestore136(t *testing.T) {
 		{ID: "u3", Name: "李四", TokenHash: "hash-ddd", CreatedAt: "2026-01-01T00:00:00Z"},
 		{ID: "u2", Name: "备份后新增", TokenHash: "hash-ccc"},
 	}
-	s.cfg.MergedSubs = append(s.cfg.MergedSubs, MergedSub{ID: "m2", Name: "备份后新增", TokenHash: "hash-eee"})
+	s.cfg.IndependentMergedSubs = append(s.cfg.IndependentMergedSubs, IndependentMergedSub{ID: "ims-2", Name: "备份后新增", TokenHash: "hash-eee"})
 	// 恢复（测试环境 realm 起不来，走“配置已恢复，但重启失败”分支，仍是 200）
 	req := httptest.NewRequest("POST", "/api/v1/scheduled-backups/"+id+"/restore", nil)
 	req.SetPathValue("id", id)
@@ -400,8 +400,8 @@ func TestScheduledBackupRestore136(t *testing.T) {
 	if _, ok := byID["u2"]; ok {
 		t.Fatalf("备份后新增的 u2 应被移除，实际 %+v", s.cfg.SubUsers)
 	}
-	if len(s.cfg.MergedSubs) != 1 || s.cfg.MergedSubs[0].ID != "m1" || s.cfg.MergedSubs[0].TokenHash != "hash-bbb" {
-		t.Fatalf("合并订阅应恢复成 m1 且保留原令牌哈希，备份后新增的 m2 被移除，实际 %+v", s.cfg.MergedSubs)
+	if len(s.cfg.IndependentMergedSubs) != 1 || s.cfg.IndependentMergedSubs[0].ID != "ims-1" || s.cfg.IndependentMergedSubs[0].TokenHash != "hash-bbb" {
+		t.Fatalf("独立合并订阅应恢复成 ims-1 且保留原令牌哈希，备份后新增的 ims-2 被移除，实际 %+v", s.cfg.IndependentMergedSubs)
 	}
 }
 

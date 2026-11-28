@@ -200,9 +200,6 @@ func (s *Server) subTokenValid(tok string) bool {
 	if _, ok := s.findSubUser(tok); ok {
 		return true
 	}
-	if _, ok := s.findMergedSub(tok); ok {
-		return true
-	}
 	if _, ok := s.findIndependentMergedSub(tok); ok {
 		return true
 	}

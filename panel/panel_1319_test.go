@@ -35,17 +35,6 @@ func subUserTokenHash(t *testing.T, s *Server, id string) string {
 	return ""
 }
 
-func subMergedTokenHash(t *testing.T, s *Server, id string) string {
-	t.Helper()
-	for _, m := range s.cfg.MergedSubs {
-		if m.ID == id {
-			return m.TokenHash
-		}
-	}
-	t.Fatalf("没有 id=%s 的合并订阅", id)
-	return ""
-}
-
 // subUserListItem 取订阅用户列表里的一行（验编辑后列表摘要与模式跟着变）。
 func subUserListItem(t *testing.T, s *Server, id string) map[string]any {
 	t.Helper()
@@ -121,22 +110,16 @@ func TestSubUserEditKeepsToken(t *testing.T) {
 	}
 }
 
-func TestMergedSubEditKeepsToken(t *testing.T) {
+func TestOldMergedSubRemoved1319(t *testing.T) {
 	s := newTestSubServer(t)
 
-	// 1.4.27：合并订阅已退场，创建与编辑一律 410。
-	// “编辑不换令牌、内容跟着新勾选走”的行为现在由订阅用户承担，
-	// 见 TestSubUserEditKeepsToken。
-	code, resp := subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsCreate(w, r) },
-		"/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1}],"mode":"relay"}`)
-	if code != 410 {
-		t.Fatalf("建合并订阅应 410（已退场），实际 %d %v", code, resp)
-	}
-	code, resp = subEditPUT(t, func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsUpdate(w, r) },
-		"/api/v1/subscriptions/merged/ms-x", "ms-x",
-		`{"selection":[{"panel":"local","landing":2}],"mode":"direct","name":"王五"}`)
-	if code != 410 {
-		t.Fatalf("编辑合并订阅应 410（已退场），实际 %d %v", code, resp)
+	// 1.4.40：旧合并订阅彻底移除——创建与编辑接口、记录都不存在。
+	// “编辑不换令牌、内容跟着新勾选走”的行为现在由订阅用户（见
+	// TestSubUserEditKeepsToken）与独立合并订阅承担。
+	// 旧合并令牌无从分辨：没有记录，handleSub 按未知令牌 404。
+	tok := generateSubToken()
+	if rec := callSub(t, s, tok, "/sub/"+tok, ""); rec.Code != 404 {
+		t.Fatalf("旧合并订阅令牌拉取应 404（记录已删），实际 %d", rec.Code)
 	}
 }
 
@@ -168,26 +151,7 @@ func TestSubEditValidation(t *testing.T) {
 		t.Fatalf("编辑不存在的用户应 404，实际 %d %v", code, resp)
 	}
 
-	// 1.4.27：合并订阅已退场，创建与编辑一律 410（到不了校验）。
-	code, resp = subModeCreatePOST(t, func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsCreate(w, r) },
-		"/api/v1/subscriptions/merged", `{"selection":[{"panel":"local","landing":1}],"mode":"both"}`)
-	if code != 410 {
-		t.Fatalf("建合并订阅应 410（已退场），实际 %d %v", code, resp)
-	}
-	mergedH := func(w http.ResponseWriter, r *http.Request) { s.handleMergedSubsUpdate(w, r) }
-	for _, body := range []string{
-		`{"selection":[]}`,
-		`{"selection":[{"panel":"local","landing":1}],"mode":"bogus"}`,
-		`{"selection":[{"panel":"local","landing":99}]}`,
-	} {
-		if code, resp := subEditPUT(t, mergedH, "/api/v1/subscriptions/merged/ms-x", "ms-x", body); code != 410 {
-			t.Fatalf("编辑合并订阅 %s 应 410（已退场），实际 %d %v", body, code, resp)
-		}
-	}
-	if code, resp := subEditPUT(t, mergedH, "/api/v1/subscriptions/merged/no-such-id", "no-such-id",
-		`{"selection":[{"panel":"local","landing":1}]}`); code != 410 {
-		t.Fatalf("编辑不存在的合并订阅也应 410（已退场），实际 %d %v", code, resp)
-	}
+	// 1.4.40：旧合并订阅彻底移除，不再有合并订阅的编辑校验。
 }
 
 func TestSubUserEditEmptySelectionIsAll(t *testing.T) {

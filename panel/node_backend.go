@@ -636,7 +636,7 @@ func nodeHasUser(node *BackendNode, key string) bool {
 // 调用方负责 saveConfig 落盘。
 func (s *Server) nodeBackendUsersForNode(node *BackendNode) ([]NodeConfigUser, bool) {
 	changed := false
-	users := make([]NodeConfigUser, 0, len(s.cfg.SubUsers)+len(s.cfg.MergedSubs))
+	users := make([]NodeConfigUser, 0, len(s.cfg.SubUsers)+len(s.cfg.IndependentMergedSubs))
 	for i := range s.cfg.SubUsers {
 		u := &s.cfg.SubUsers[i]
 		if u.Disabled {
@@ -659,30 +659,6 @@ func (s *Server) nodeBackendUsersForNode(node *BackendNode) ([]NodeConfigUser, b
 			Name: u.Name, Email: nodeUserEmail("subuser", u.ID),
 			VLESSUUID: uuids[node.Address],
 			Inbounds:  backendAssignInbounds(u.BackendScope, u.BackendTargets, node),
-		})
-	}
-	for i := range s.cfg.MergedSubs {
-		m := &s.cfg.MergedSubs[i]
-		if m.Disabled {
-			continue
-		}
-		if !nodeHasUser(node, userSubKey("merged", m.ID)) {
-			continue
-		}
-		// v1.4.4，四级指派：用户侧的第二道门（默认全部，不过滤）。
-		if !s.backendAssignAllows(m.BackendScope, m.BackendTargets, m.GroupID, node) {
-			continue
-		}
-		uuids, c := ensureNodeUUIDs(m.NodeUUIDs, []string{node.Address})
-		if c {
-			m.NodeUUIDs = uuids
-			changed = true
-		}
-		users = append(users, NodeConfigUser{
-			UserID: userSubKey("merged", m.ID), Kind: "merged", ID: m.ID,
-			Name: m.Name, Email: nodeUserEmail("merged", m.ID),
-			VLESSUUID: uuids[node.Address],
-			Inbounds:  backendAssignInbounds(m.BackendScope, m.BackendTargets, node),
 		})
 	}
 	for i := range s.cfg.IndependentMergedSubs {
