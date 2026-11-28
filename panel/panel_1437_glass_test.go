@@ -8,16 +8,17 @@ import (
 
 // ---------- 1.4.37：玻璃拟物主题（与客户端 0.1.18 同一套共享 token） ----------
 //
-// 新增 html[data-theme="glass"]（浅蓝灰底 #E9EEF3、亮蓝强调 #2B7FFF、
-// 深蓝灰文字 #33475B、次要文字 #6B7C8D、磨砂白 rgba(255,255,255,0.65–0.75)
-// ＋blur(12–16px)、卡片圆角 20–24px、边框 rgba(255,255,255,0.6) 2–3px、
-// 阴影 0 8px 30px rgba(51,71,91,0.10)、深藏青 #0F2A4A 配金色 #EEC362；
-// 数值全部取自 ~/workspace/031-invest/glass-theme-tokens.md，按观察数值
+// 新增 html[data-theme="glass"]（v1.4.38 按用户反馈改偏蓝：底色 #DCE8F3、
+// 横带 #EAF1F8、带蓝调磨砂面 rgba(230,238,248,0.55–0.65)、卡片顶部高光、
+// 底色渐变加深段 #D5E3F2 与顶部径向亮斑；亮蓝强调 #2B7FFF、深蓝灰文字
+// #33475B、次要文字 #6B7C8D、边框 rgba(255,255,255,0.6) 2–3px、blur(12–16px)、
+// 卡片圆角 20–24px、阴影 0 8px 30px rgba(51,71,91,0.10)、深藏青 #0F2A4A 配
+// 金色 #EEC362 不变；与客户端 0.1.19 同一套共享 token）；数值全部取自 ~/workspace/031-invest/glass-theme-tokens.md，按观察数值
 // 自己实现，不复制任何第三方主题文件）。顶栏 theme-btn 三档循环
 // 玻璃→浅色→深色→玻璃；设置页基础选项卡新增“界面主题”卡片，三选一
 // radio 立即生效并持久化；无保存值时默认玻璃（不再跟随系统），已保存
 // 浅色／深色的老用户继续尊重其选择；旧浅色／深色主题保留可切回。
-// 顶栏平时与背景融为一体，滚动后变磨砂白悬浮条置顶（.scrolled 只在
+// 顶栏平时与背景融为一体，滚动后变磨砂悬浮条置顶（.scrolled 只在
 // 玻璃主题下生效）；深藏青＋金色只用在登录卡品牌块与总览第一张主统计卡。
 // 内容区 1200px、区块留白 60–80px 一档；页面结构不动，只换主题层。
 // 顺手修正 v1.4.36 CHANGELOG“测试”一行：只有 test-1433-batch3.js 与
@@ -26,14 +27,14 @@ import (
 // 前端行为由 jsdom test-1437-glass.js 覆盖。
 
 func TestVersion1437(t *testing.T) {
-	if Version != "1.4.37" {
+	if Version != "1.4.38" {
 		t.Fatalf("Version 应为 1.4.37，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.37" {
+	if strings.TrimSpace(string(vb)) != "1.4.38" {
 		t.Fatalf("VERSION 文件应为 1.4.37，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }
@@ -59,7 +60,7 @@ func TestGlassFrontend1437(t *testing.T) {
 		t.Fatalf("style.css 应有 html[data-theme=\"glass\"] 变量块")
 	}
 	glassVars := css[glassIdx:]
-	for _, want := range []string{"#E9EEF3", "#2B7FFF", "#33475B", "#6B7C8D", "rgba(255,255,255,0.70)", "--radius:22px", "0 8px 30px rgba(51,71,91,0.10)", "#0F2A4A", "#EEC362"} {
+	for _, want := range []string{"#DCE8F3", "#2B7FFF", "#33475B", "#6B7C8D", "rgba(230,238,248,0.60)", "--radius:22px", "0 8px 30px rgba(51,71,91,0.10)", "#0F2A4A", "#EEC362"} {
 		if !strings.Contains(glassVars, want) {
 			t.Fatalf("玻璃变量块里缺 %s", want)
 		}
@@ -70,7 +71,7 @@ func TestGlassFrontend1437(t *testing.T) {
 		"backdrop-filter:blur(14px)",
 		"border:2px solid rgba(255,255,255,0.6)",
 		".topbar.scrolled",
-		"background:rgba(255,255,255,0.70)",
+		"background:rgba(230,238,248,0.65)",
 		"max-width:1200px",
 		"padding:70px 28px",
 	} {

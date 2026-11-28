@@ -18,14 +18,14 @@ import (
 // test-1434-batch4.js 覆盖。
 
 func TestVersion1434(t *testing.T) {
-	if Version != "1.4.37" {
+	if Version != "1.4.38" {
 		t.Fatalf("Version 应为 1.4.34，实际 %q", Version)
 	}
 	vb, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("读 VERSION 失败：%v", err)
 	}
-	if strings.TrimSpace(string(vb)) != "1.4.37" {
+	if strings.TrimSpace(string(vb)) != "1.4.38" {
 		t.Fatalf("VERSION 文件应为 1.4.34，实际 %q", strings.TrimSpace(string(vb)))
 	}
 }
